@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# OT-58 S2b (docs/THINK-2026-11-01-ot58-tiered-gate.md, section 2.4): turn the
+# job's checkout into the batch tree. Every job of a batch runs this right after
+# its checkout, with the plan job's resolved inputs, so every job tests one tree;
+# the step fails if the tree it built is not the plan's.
+name: Assemble the batch tree
+description: Merge each batch member onto the base, in order, and check the tree hash.
+inputs:
+  base:
+    description: The batch base SHA (main at plan time, or the base_sha input).
+    required: true
+  members:
+    description: "Space-separated PR:SHA pairs, in landing order (from the plan job)."
+    required: true
+  tree:
+    description: The tree hash the plan job assembled.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        BASE: ${{ inputs.base }}
+        MEMBERS: ${{ inputs.members }}
+        WANT_TREE: ${{ inputs.tree }}
+      run: |
+        set -euo pipefail
+        # A shallow checkout cannot merge: fetch the history once.
+        if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+          git fetch --quiet --no-tags --unshallow origin
+        fi
+        git fetch --quiet --no-tags origin "$BASE"
+        heads=()
+        for pair in $MEMBERS; do
+          pr="${pair%%:*}"
+          sha="${pair##*:}"
+          git fetch --quiet --no-tags origin "+refs/pull/${pr}/head:refs/batch/pr-${pr}"
+          got="$(git rev-parse "refs/batch/pr-${pr}")"
+          if [ "$got" != "$sha" ]; then
+            # The PR moved since the plan: this batch no longer tests its head.
+            if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+              echo "::error::PR #${pr} head moved (${sha} -> ${got}) and ${sha} is gone; re-plan the batch"
+              exit 1
+            fi
+            echo "::warning::PR #${pr} head moved to ${got} since the plan; the batch tests ${sha}"
+          fi
+          heads+=("$sha")
+        done
+        if [ ${#heads[@]} -eq 0 ]; then
+          # prefix=0: the base alone.
+          git -c advice.detachedHead=false checkout --quiet --detach "$BASE"
+          tree="$(git rev-parse 'HEAD^{tree}')"
+        else
+          out="$(scripts/batch-assemble.sh "$BASE" "${heads[@]}")"
+          echo "$out"
+          tree="$(sed -n 's/^tree=//p' <<<"$out")"
+        fi
+        if [ "$tree" != "$WANT_TREE" ]; then
+          echo "::error::batch tree ${tree} is not the plan's ${WANT_TREE}"
+          exit 1
+        fi
+        echo "Batch tree ${tree} (base ${BASE}; members: ${MEMBERS})" >> "$GITHUB_STEP_SUMMARY"
