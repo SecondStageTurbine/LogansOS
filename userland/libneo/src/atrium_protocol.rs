@@ -523,6 +523,41 @@ pub fn encode_reply(reply: Reply) -> [u8; REPLY_LEN] {
     out
 }
 
+/// F11 S5: an `OP_CREATE_SURFACE` reply that hands the client the session's
+/// keyboard layout id (`keymap_layout_logic.rs`; 0: US) in the reply's
+/// reserved word at byte 28, so a client that decodes text types in the
+/// layout the WM decodes in. The id US is the plain [`encode_reply`], byte
+/// for byte. Only a client that asks for it gets it: [`decode_reply`] still
+/// refuses a non-zero word, so the WM sends it only to such a client.
+#[cfg(any(feature = "atrium-keymap", test))]
+pub fn encode_create_reply(reply: Reply, layout: u32) -> [u8; REPLY_LEN] {
+    let mut out = encode_reply(Reply {
+        opcode: OP_CREATE_SURFACE,
+        ..reply
+    });
+    put_u32(&mut out, 28, layout);
+    out
+}
+
+/// The client side of [`encode_create_reply`]: the reply and the layout id.
+/// Anything but an `OP_CREATE_SURFACE` reply is refused, as [`decode_reply`]
+/// refuses it; the id is the client's to range-check.
+#[cfg(any(feature = "atrium-keymap", test))]
+pub fn decode_create_reply(input: &[u8]) -> Result<(Reply, u32), ProtocolError> {
+    if input.len() != REPLY_LEN {
+        return Err(ProtocolError::BadLength);
+    }
+    let mut plain = [0u8; REPLY_LEN];
+    plain.copy_from_slice(input);
+    let layout = get_u32(input, 28);
+    put_u32(&mut plain, 28, 0);
+    let reply = decode_reply(&plain)?;
+    if reply.opcode != OP_CREATE_SURFACE {
+        return Err(ProtocolError::BadField);
+    }
+    Ok((reply, layout))
+}
+
 /// The request a message that failed [`decode_request`] still names, so the
 /// receiver can refuse it in a reply: `(opcode, request_id)` when the bytes
 /// hold a whole header of this protocol (magic, version) for a request (no

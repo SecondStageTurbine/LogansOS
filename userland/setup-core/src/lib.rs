@@ -7,8 +7,9 @@
 //! decision is here, so the host KATs run the whole walk without QEMU:
 //!
 //! - the pages this build shows, in order ([`Wizard::pages`]): Welcome, then
-//!   (behind `stub_pages`) Language and Keyboard, then Time zone, Comfort
-//!   and Try. There is no Network page until S4 (§3.3);
+//!   (behind `stub_pages`) Language, then Keyboard (also with
+//!   `keyboard-layouts`, S5, where it is the real page), then Time zone,
+//!   Comfort and Try. There is no Network page until S4 (§3.3);
 //! - the key map: Up/Down and Tab move, Enter or Space chooses, Esc goes
 //!   back (on Welcome it asks before skipping, §4.2);
 //! - the rows: a title (with `N of M`, counting the pages after Welcome),
@@ -112,11 +113,17 @@ pub enum Input {
     Choose,
     /// Esc.
     Back,
-    /// A printable character: typed into the Time zone search (S3); Space
-    /// chooses on every other page; any other character does nothing there.
+    /// A printable character: typed into the Time zone search (S3), and
+    /// into the Keyboard page's test field (S5, decoded in the layout chosen
+    /// on the page); Space chooses on every other page; any other character
+    /// does nothing there.
     Char(u8),
-    /// Backspace: erases from the search (S3).
+    /// Backspace: erases from the search (S3) or the test field (S5).
     Erase,
+    /// S5: a key on the Keyboard page, as the layout chosen there types it
+    /// (any legend, or a dead key); the page composes it into the test field.
+    #[cfg(feature = "keyboard-layouts")]
+    Layout(keyboard::Typed),
 }
 
 /// How the wizard ended.
@@ -154,6 +161,9 @@ pub struct Choices {
     pub reduce_transparency: bool,
     /// S3: the zone chosen on the searchable page (`None`: not set).
     pub tz: Option<u16>,
+    /// S5: a keyboard layout id (`keymap_layout_logic.rs`; 0: US).
+    #[cfg(feature = "keyboard-layouts")]
+    pub layout: u8,
 }
 
 /// S3's Time zone page state.
@@ -180,6 +190,9 @@ pub struct Wizard {
     page: Page,
     focus: usize,
     choices: Choices,
+    /// S5: the Keyboard page's test field.
+    #[cfg(feature = "keyboard-layouts")]
+    field: keyboard::Field,
 }
 
 impl Wizard {
@@ -194,6 +207,8 @@ impl Wizard {
             page: Page::Welcome,
             focus: 0,
             choices: Choices::default(),
+            #[cfg(feature = "keyboard-layouts")]
+            field: keyboard::Field::default(),
         }
     }
 
@@ -288,12 +303,20 @@ impl Wizard {
         self.choices
     }
 
+    /// S5: the Keyboard page's test field.
+    #[cfg(feature = "keyboard-layouts")]
+    pub fn field(&self) -> &str {
+        keyboard::field(self)
+    }
+
     /// The pages this build shows, in order (Skip's confirmation is not one).
     pub fn pages(&self) -> Vec<Page> {
         let mut pages = Vec::new();
         pages.push(Page::Welcome);
         if self.stub_pages {
             pages.push(Page::Language);
+        }
+        if self.stub_pages || keyboard::SHOWN {
             pages.push(Page::Keyboard);
         }
         if self.time_zone {
@@ -316,7 +339,8 @@ impl Wizard {
                 o.push(String::from("Skip setup and use the defaults"));
                 o.push(String::from("Back"));
             }
-            Page::Language | Page::Keyboard => o.push(String::from("Continue")),
+            Page::Language => o.push(String::from("Continue")),
+            Page::Keyboard => keyboard::options(self, &mut o),
             Page::TimeZone if self.tz.is_some() => {
                 let t = self.tz.as_ref().expect("checked");
                 if !t.review {
@@ -411,7 +435,7 @@ impl Wizard {
                 ));
             }
             Page::Language => b.push(String::from("English is the only language for now.")),
-            Page::Keyboard => b.push(String::from("US is the only keyboard layout for now.")),
+            Page::Keyboard => keyboard::body(self, &mut b),
             Page::TimeZone => match self.tz.as_ref() {
                 None => b.push(String::from("Where are you? At Home: timezone Area/City.")),
                 Some(t) if t.review => {
@@ -448,6 +472,7 @@ impl Wizard {
                 None => String::from("Time zone: not set"),
             },
         });
+        keyboard::summary(self, &mut s);
         s.push(format!(
             "Reduce motion: {}. Reduce transparency: {}.",
             on_off(self.choices.reduce_motion),
@@ -465,6 +490,20 @@ impl Wizard {
                 Input::Erase => return self.erase(),
                 _ => {}
             }
+        }
+        // S5: the Keyboard page's test field takes characters (not Space,
+        // which chooses) and Backspace.
+        #[cfg(feature = "keyboard-layouts")]
+        match input {
+            Input::Layout(t) if self.page == Page::Keyboard => {
+                return keyboard::typed(self, Some(t));
+            }
+            Input::Char(c) if self.page == Page::Keyboard && c != b' ' => {
+                return keyboard::typed(self, Some(keyboard::Typed::Char(c as char)));
+            }
+            Input::Erase if self.page == Page::Keyboard => return keyboard::typed(self, None),
+            Input::Layout(_) => return Outcome::Nothing,
+            _ => {}
         }
         match input {
             Input::Char(b' ') => return self.on(Input::Choose),
@@ -491,6 +530,8 @@ impl Wizard {
             },
             Input::Choose => self.choose(),
             Input::Char(_) | Input::Erase => Outcome::Nothing,
+            #[cfg(feature = "keyboard-layouts")]
+            Input::Layout(_) => Outcome::Nothing,
         }
     }
 
@@ -531,7 +572,8 @@ impl Wizard {
             (Page::Welcome, _) => self.show(Page::SkipConfirm),
             (Page::SkipConfirm, 0) => Outcome::Done(Finish::Skipped),
             (Page::SkipConfirm, _) => self.show(Page::Welcome),
-            (Page::Language | Page::Keyboard, _) => self.show(self.next(self.page)),
+            (Page::Language, _) => self.show(self.next(self.page)),
+            (Page::Keyboard, i) => keyboard::choose(self, i),
             (Page::TimeZone, i) if self.tz.is_some() => {
                 let t = self.tz.as_ref().expect("checked");
                 match t.listed.get(i) {
@@ -593,7 +635,17 @@ fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
-#[cfg(test)]
+mod keyboard;
+#[cfg(feature = "keyboard-layouts")]
+pub use keyboard::{Dead, FIELD_MAX, LAYOUT_COUNT, LAYOUT_NAMES, Typed};
+
+#[cfg(all(test, feature = "keyboard-layouts"))]
+mod keyboard_tests;
+// S1's KATs are the build without layouts (the kill-switch: the page machine
+// they pin is the one `keyboard-layouts` off ships).
+#[cfg(all(test, not(feature = "keyboard-layouts")))]
 mod tests;
-#[cfg(test)]
+// S3's KATs walk Begin straight to the Time zone page, the build without
+// layouts; `keyboard_tests` walks the Keyboard page into S3's search.
+#[cfg(all(test, not(feature = "keyboard-layouts")))]
 mod tz_tests;

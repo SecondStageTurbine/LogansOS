@@ -54,3 +54,7 @@ desktop-session = []
 # Declared (never enabled here) so the mounted showcase_text.rs's kill-switch
 # cfg is known under check-cfg; both renderers are always host-tested.
 arthur-legacy-5x7-font = ["arthur-compositor"]
+# F11 S5: the mounted showcase_logic.rs decodes in the session's layout (its
+# create reply's id); `cargo test -p arthur-logic-tests --features
+# keyboard-layouts` runs the layout KAT.
+keyboard-layouts = []
