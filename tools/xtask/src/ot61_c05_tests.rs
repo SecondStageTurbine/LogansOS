@@ -113,6 +113,7 @@ fn a4_gate_passes_the_real_pal_and_overlay() {
         .chain(C20_SYSCALLS.iter())
         .chain(C21B_SYSCALLS.iter())
         .chain(S3_SYSCALLS.iter())
+        .chain(S3B_SYSCALLS.iter())
         .map(|s| s.to_string())
         .collect();
     want.extend(["SYS_EXIT", "SYS_MAP_REGION", "SYS_WRITE"].map(String::from));
@@ -151,6 +152,9 @@ const S3_SYSCALLS: [&str; 6] = [
     "SYS_BUFFER_UNMAP",
 ];
 
+/// The four calls rung 4 S3b adds (std::os::neoplutarch::channel).
+const S3B_SYSCALLS: [&str; 4] = ["SYS_SEND", "SYS_RECV", "SYS_GRANT", "SYS_RECV_GRANT"];
+
 /// The six calls C2.1b adds (std::fs, process::id, std::os::neoplutarch).
 const C21B_SYSCALLS: [&str; 6] = [
     "SYS_OPEN",
@@ -185,6 +189,7 @@ fn a4_g1_refuses_each_c13_syscall_once_unlisted() {
         .chain(C20_SYSCALLS.iter())
         .chain(C21B_SYSCALLS.iter())
         .chain(S3_SYSCALLS.iter())
+        .chain(S3B_SYSCALLS.iter())
     {
         let name = *name;
         let quoted = format!("\"{name}\"");
