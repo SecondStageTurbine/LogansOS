@@ -18,8 +18,8 @@ use libneo::{
     NEO_DIRENT_KIND_DIRECTORY, NEO_DIRENT_KIND_MODEL, NEO_DIRENT_KIND_REGULAR,
     NEO_DIRENT_KIND_SYMLINK, OPEN_ROOT_TEMPORARY, ProcessHandle, STDIN_FD, STDOUT_FD,
     parse_dirent_v1, sys_chan_create, sys_close, sys_exit, sys_model_drop, sys_observe, sys_open,
-    sys_read, sys_read_fd, sys_readdir, sys_recv, sys_send, sys_spawn, sys_sysstat, sys_wait,
-    sys_write,
+    sys_read, sys_read_fd, sys_readdir, sys_recv, sys_send, sys_spawn, sys_spawn_stdio,
+    sys_stdio_info, sys_sysstat, sys_wait, sys_write,
 };
 #[cfg(all(feature = "arthur-grants", feature = "net-dial-cap"))]
 use libneo::{NetDialCap, net_dial_rights, sys_net_dial_cap_derive};
@@ -1166,7 +1166,7 @@ fn spawn_child(name: &str) {
             return;
         }
     };
-    let (pid, process) = match sys_spawn(name, &[child]) {
+    let (pid, process) = match spawn_with_my_stdio(name, child) {
         Ok(spawned) => spawned,
         Err(e) => {
             write_all(SPAWN_FAIL);
@@ -1181,6 +1181,33 @@ fn spawn_child(name: &str) {
     write_all(NEWLINE);
     relay_to_child(local);
     wait_for_child(process);
+}
+
+/// L1a.1 step 2b (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.2):
+/// stdio is never inherited implicitly, so a shell whose own stdin and stdout
+/// were chosen at spawn (a terminal's pipes) names them for its child: the
+/// child's channel in slot 0, then this shell's stdin and stdout. With no
+/// selection (or a kernel without `pipe`: `ENOSYS`), the child is spawned as
+/// before, its stdio the console.
+fn spawn_with_my_stdio(name: &str, child: Handle) -> Result<(u32, ProcessHandle), i64> {
+    let Ok(info) = sys_stdio_info() else {
+        return sys_spawn(name, &[child]);
+    };
+    let mut handles = [child, Handle(0), Handle(0)];
+    let mut n = 1usize;
+    let mut pick = |slot: Option<u32>| {
+        slot.map(|s| {
+            handles[n] = Handle(s);
+            n += 1;
+            (n - 1) as u8
+        })
+    };
+    let stdin = pick(info.stdin);
+    let stdout = pick(info.stdout);
+    if stdin.is_none() && stdout.is_none() {
+        return sys_spawn(name, &[child]);
+    }
+    sys_spawn_stdio(name, &handles[..n], stdin, stdout, None)
 }
 
 fn relay_to_child(local: Handle) {

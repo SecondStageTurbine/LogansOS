@@ -1253,6 +1253,13 @@ neo-test-pipe-core = ["neo-test", "pipe"]
 neo-test-pipe-core-cp14-control = ["neo-test-pipe-core"]
 neo-test-pipe-park-kill = ["neo-test", "pipe"]
 neo-test-pipe-park-kill-control = ["neo-test-pipe-park-kill"]
+# L1a.1 step 2b: stdio chosen at spawn (`docs/THINK-2026-11-08-l1a1-stdio-selection.md`
+# §4). `pipe_stdio`: a ring-3 terminal (neo-init's `pipe-stdio-test`) spawns
+# neo-shell and neo-stdio-probe on pipes; the term page needs the Atrium buffer.
+# The control stores the stdio after the child can run, and must FAIL
+# (`pipe_stdio_prompt_not_in_pipe`, or `pipe_stdio_late_window_not_hit`).
+neo-test-pipe-stdio = ["neo-test", "pipe", "atrium-compositor-g1", "neo-test-atrium-runtime", "close-object-handles"]
+neo-test-pipe-stdio-late-control = ["neo-test-pipe-stdio"]
 # OT-98 (CP-98): a kill that races a natural exit, or finds its target parked
 # in sys_wait, completes or returns ESRCH and never panics. Control: claims the
 # natural exit at the reap and skips the sys_wait extraction, as before OT-98

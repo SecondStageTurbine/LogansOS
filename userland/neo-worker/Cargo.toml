@@ -40,6 +40,8 @@ atrium-surface-protocol = []
 desktop-lens = ["dep:neo-text", "libneo/atrium-launch"]
 # OT-88 A1a: the probe app, a second focusable WM client for the app-model
 # scenarios (`src/probe_app.rs`).
+# L1a.1 step 2b: the pipe_stdio scenario's probe child (src/stdio_probe.rs).
+pipe-stdio-test = []
 probe-app = ["dep:neo-text", "libneo/atrium-damage", "libneo/atrium-launch"]
 # Test only: the probe app exits 7 after its first key (per-client faults).
 probe-app-exit-after-key = ["probe-app"]

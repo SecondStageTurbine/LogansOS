@@ -542,6 +542,13 @@ pub struct Process {
     /// when the `Process` drops, after its last thread is freed.
     #[cfg(feature = "obj-quota")]
     obj_spawn: SwitchMutex<Option<crate::mm::mem_account_logic::ObjCharge>>,
+    /// L1a.1 step 2b: the stdio chosen at spawn (`SYS_SPAWN_STDIO`), as
+    /// references into this process's own handle table. Set before the
+    /// process is registered, so its first instruction sees it; never changed
+    /// after. Holds no object: the table stays the only owner
+    /// (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.1).
+    #[cfg(feature = "pipe")]
+    stdio: SwitchMutex<Stdio>,
     /// One-shot process-exit owner. Natural exit and forced kill CAS this
     /// from RUNNING to their own in-progress state; the loser leaves cleanup
     /// to the winner.
@@ -754,6 +761,8 @@ impl Process {
             live_threads: AtomicUsize::new(0),
             #[cfg(feature = "obj-quota")]
             obj_spawn: SwitchMutex::new(None),
+            #[cfg(feature = "pipe")]
+            stdio: SwitchMutex::new(Stdio::NONE),
             exit_state: AtomicU8::new(EXIT_STATE_RUNNING),
             ipv6_addresses: SwitchMutex::new(Vec::new()),
             exit_code: AtomicI32::new(EXIT_CODE_RUNNING),
@@ -784,6 +793,8 @@ impl Process {
             live_threads: AtomicUsize::new(0),
             #[cfg(feature = "obj-quota")]
             obj_spawn: SwitchMutex::new(None),
+            #[cfg(feature = "pipe")]
+            stdio: SwitchMutex::new(Stdio::NONE),
             exit_state: AtomicU8::new(EXIT_STATE_RUNNING),
             ipv6_addresses: SwitchMutex::new(Vec::new()),
             exit_code: AtomicI32::new(EXIT_CODE_RUNNING),
@@ -1626,6 +1637,87 @@ pub fn completed_gpu_compute_fence(token: crate::drivers::accel::DispatchToken) 
 pub struct InheritedHandle {
     pub handle: Handle,
     pub parent: Option<CapId>,
+}
+
+/// L1a.1 step 2b: one stdio role's handle, as a slot in the process's own
+/// table and the capability that was there at spawn. A use resolves the slot
+/// and requires the same `CapId` first, so a closed or reused slot is never
+/// mistaken for the selected handle (THINK §2.1). `CapId`s are never reused.
+#[cfg(feature = "pipe")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StdioRef {
+    pub slot: u32,
+    pub cap_id: CapId,
+}
+
+/// L1a.1 step 2b: a process's stdio selection.
+#[cfg(feature = "pipe")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stdio {
+    pub stdin: Option<StdioRef>,
+    pub stdout: Option<StdioRef>,
+    pub term: Option<StdioRef>,
+}
+
+#[cfg(feature = "pipe")]
+impl Stdio {
+    /// No selection: every process spawned without `SYS_SPAWN_STDIO`.
+    pub const NONE: Self = Self {
+        stdin: None,
+        stdout: None,
+        term: None,
+    };
+
+    /// A stdio was selected at spawn (even if its slots have gone since).
+    pub const fn selected(&self) -> bool {
+        self.stdin.is_some() || self.stdout.is_some() || self.term.is_some()
+    }
+
+    /// The selection a spawn of `inherited` with `sel` gives the child: each
+    /// role's slot is its index, and its `CapId` the child-side one the
+    /// spawn installs there. `sel` was checked against `inherited.len()`.
+    pub(crate) fn for_spawn(sel: SpawnStdio, inherited: &[InheritedHandle]) -> Self {
+        let r = |i: Option<u8>| {
+            i.map(|i| StdioRef {
+                slot: u32::from(i),
+                cap_id: inherited[usize::from(i)].handle.cap_id(),
+            })
+        };
+        Self {
+            stdin: r(sel.stdin),
+            stdout: r(sel.stdout),
+            term: r(sel.term),
+        }
+    }
+}
+
+/// L1a.1 step 2b: what a spawn is told about the child's stdio. `NONE` for
+/// every spawn but `SYS_SPAWN_STDIO`'s. A unit type without `pipe`, so the
+/// spawn path has one signature either way.
+#[cfg(feature = "pipe")]
+pub type SpawnStdio = crate::ipc::pipe_logic::StdioSel;
+#[cfg(not(feature = "pipe"))]
+#[derive(Clone, Copy, Debug)]
+pub struct SpawnStdio;
+#[cfg(not(feature = "pipe"))]
+impl SpawnStdio {
+    pub const NONE: Self = SpawnStdio;
+}
+
+impl Process {
+    /// L1a.1 step 2b: this process's stdio selection (a copy: the caller
+    /// drops the lock before it resolves or parks, THINK §2.1).
+    #[cfg(feature = "pipe")]
+    pub fn stdio(&self) -> Stdio {
+        without_interrupts(|| *self.stdio.lock())
+    }
+
+    /// The late-control's store (THINK §4): only the control build sets the
+    /// stdio after the child can run.
+    #[cfg(feature = "neo-test-pipe-stdio-late-control")]
+    pub fn set_stdio_late_for_control(&self, stdio: Stdio) {
+        without_interrupts(|| *self.stdio.lock() = stdio);
+    }
 }
 
 /// fds the file I/O syscalls hardwire: serial stdout (fd 1), and stdin (fd 0)
@@ -4410,7 +4502,7 @@ impl From<ElfError> for SpawnError {
 /// `spawn_user` compiles exactly as before (the closure below is still
 /// `spawn_user`'s, not a helper's, so no symbol in the kernel moves).
 macro_rules! spawn_user_body {
-    ($name:expr, $elf_bytes:expr, $inherited:expr, $new_pmap:expr) => {{
+    ($name:expr, $elf_bytes:expr, $inherited:expr, $new_pmap:expr, $stdio:expr) => {{
     let shootdown_quiesce = crate::mm::tlb_shootdown::quiesce_local_cpu();
     let result = without_interrupts(|| {
         let elf = Elf::parse($elf_bytes)?;
@@ -4470,6 +4562,20 @@ macro_rules! spawn_user_body {
                 );
             }
         }
+
+        // L1a.1 step 2b: the stdio selection, stored after the install block
+        // (the `handles` lock is dropped, so `stdio` is never taken under it)
+        // and before `register` and `try_push_ready`, so the child's first
+        // instruction already sees it (THINK §2.2).
+        #[cfg(feature = "pipe")]
+        {
+            let sel: SpawnStdio = $stdio;
+            if !sel.is_none() {
+                *process.stdio.lock() = Stdio::for_spawn(sel, $inherited);
+            }
+        }
+        #[cfg(not(feature = "pipe"))]
+        let _: SpawnStdio = $stdio;
 
         let proc_arc = register(process);
         drop(g);
@@ -4558,14 +4664,25 @@ pub fn spawn_user(
     elf_bytes: &[u8],
     inherited: &[InheritedHandle],
 ) -> Result<ProcessId, SpawnError> {
+    spawn_user_stdio(name, elf_bytes, inherited, SpawnStdio::NONE)
+}
+
+/// [`spawn_user`] with a stdio selection (L1a.1 step 2b), already checked
+/// against `inherited` by the caller (`SYS_SPAWN_STDIO`).
+pub fn spawn_user_stdio(
+    name: &'static str,
+    elf_bytes: &[u8],
+    inherited: &[InheritedHandle],
+    stdio: SpawnStdio,
+) -> Result<ProcessId, SpawnError> {
     #[cfg(not(feature = "mem-quota"))]
     {
-        spawn_user_body!(name, elf_bytes, inherited, Pmap::new())
+        spawn_user_body!(name, elf_bytes, inherited, Pmap::new(), stdio)
     }
     // OT-61 C2.2: an unbudgeted child shares its spawner's memory account.
     #[cfg(feature = "mem-quota")]
     {
-        spawn_user_in(name, elf_bytes, inherited, caller_mem_account())
+        spawn_user_in(name, elf_bytes, inherited, caller_mem_account(), stdio)
     }
 }
 
@@ -4619,7 +4736,13 @@ pub fn spawn_user_by_name_budgeted(
         .ok_or(SpawnError::Elf(ElfError::TooSmall))?;
     let account =
         crate::mm::mem_account_logic::MemAccount::child(&caller_mem_account(), limit_frames);
-    spawn_user_in(name_to_static(name), bytes, inherited, account)
+    spawn_user_in(
+        name_to_static(name),
+        bytes,
+        inherited,
+        account,
+        SpawnStdio::NONE,
+    )
 }
 
 /// OT-61 C2.2: [`spawn_user`] with the child's Pmap charged to `account`.
@@ -4629,6 +4752,7 @@ fn spawn_user_in(
     elf_bytes: &[u8],
     inherited: &[InheritedHandle],
     account: Arc<crate::mm::mem_account_logic::MemAccount>,
+    stdio: SpawnStdio,
 ) -> Result<ProcessId, SpawnError> {
     // OT-61 C2.2b: the parent pays for the spawn, before anything is
     // allocated (so a spawn loop trips its own budget). A failed spawn drops
@@ -4637,7 +4761,13 @@ fn spawn_user_in(
     let charge =
         crate::mm::mem_account_logic::ObjCharge::new(&caller_mem_account(), obj_weights::SPAWN)
             .map_err(|_| SpawnError::ObjQuota)?;
-    let spawned = spawn_user_body!(name, elf_bytes, inherited, Pmap::new_charged(account));
+    let spawned = spawn_user_body!(
+        name,
+        elf_bytes,
+        inherited,
+        Pmap::new_charged(account),
+        stdio
+    );
     #[cfg(feature = "obj-quota")]
     if let Ok(pid) = spawned
         && let Some(child) = get(pid)
@@ -4666,7 +4796,13 @@ pub fn spawn_user_by_name_budgeted2(
         limit_frames,
         obj_limit,
     );
-    spawn_user_in(name_to_static(name), bytes, inherited, account)
+    spawn_user_in(
+        name_to_static(name),
+        bytes,
+        inherited,
+        account,
+        SpawnStdio::NONE,
+    )
 }
 
 /// Phase 1.5 sys_spawn entry: look up a Limine module whose path ends
@@ -4690,6 +4826,22 @@ pub fn spawn_user_by_name(
     let bytes = crate::find_module_by_path_suffix(&path_suffix)
         .ok_or(SpawnError::Elf(ElfError::TooSmall))?;
     spawn_user(name_to_static(name), bytes, inherited)
+}
+
+/// [`spawn_user_by_name`] with a stdio selection (L1a.1 step 2b,
+/// `SYS_SPAWN_STDIO`). Budgeted spawns take none yet (THINK §2.2's non-goal).
+#[cfg(feature = "pipe")]
+pub fn spawn_user_by_name_stdio(
+    name: &str,
+    inherited: &[InheritedHandle],
+    stdio: SpawnStdio,
+) -> Result<ProcessId, SpawnError> {
+    let mut path_suffix = alloc::string::String::with_capacity(name.len() + 5);
+    path_suffix.push_str("/neo-");
+    path_suffix.push_str(name);
+    let bytes = crate::find_module_by_path_suffix(&path_suffix)
+        .ok_or(SpawnError::Elf(ElfError::TooSmall))?;
+    spawn_user_stdio(name_to_static(name), bytes, inherited, stdio)
 }
 
 /// Phase 1.5 stop-gap: Process::name is `&'static str` but `sys_spawn`

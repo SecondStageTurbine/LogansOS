@@ -451,4 +451,141 @@ mod tests {
         }
         assert_eq!(out, input);
     }
+
+    // ---- L1a.1 step 2b: the stdio word and SYS_STDIO_INFO (THINK
+    // `docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.2 and §2.4). The
+    // expected values are written out by hand from those sections. ----
+
+    fn sel(stdin: Option<u8>, stdout: Option<u8>, term: Option<u8>) -> StdioSel {
+        StdioSel {
+            stdin,
+            stdout,
+            term,
+        }
+    }
+
+    /// The words the THINK and the scenario use, decoded.
+    #[test]
+    fn stdio_word_decodes_the_designed_words() {
+        // Leg 1: stdin 0, stdout 1, no term (0x_FF_01_00).
+        assert_eq!(
+            decode_stdio_word(0x00FF_0100, 2, false),
+            Some(sel(Some(0), Some(1), None))
+        );
+        // The probe's: stdin 0, stdout 1, term 2 (0x02_01_00).
+        assert_eq!(
+            decode_stdio_word(0x0002_0100, 3, true),
+            Some(sel(Some(0), Some(1), Some(2)))
+        );
+        // The shell's child: channel 0, stdin 1, stdout 2 (0x_FF_02_01).
+        assert_eq!(
+            decode_stdio_word(0x00FF_0201, 3, false),
+            Some(sel(Some(1), Some(2), None))
+        );
+        // All none is SYS_SPAWN's child, even with no handles.
+        assert_eq!(
+            decode_stdio_word(0x00FF_FFFF, 0, false),
+            Some(StdioSel::NONE)
+        );
+        assert!(StdioSel::NONE.is_none());
+        assert!(!sel(None, Some(0), None).is_none());
+    }
+
+    /// Every step-2 refusal (THINK §2.2, "The errors, in order", step 2).
+    #[test]
+    fn stdio_word_refusals() {
+        // A bit in 24-63: bit 24, bit 63.
+        assert_eq!(decode_stdio_word(0x01FF_FFFF, 4, true), None);
+        assert_eq!(decode_stdio_word(0x8000_0000_00FF_FFFF, 4, true), None);
+        // An index at or past n (n = 2: index 2 is out; 0xFE is not 0xFF).
+        assert_eq!(decode_stdio_word(0x00FF_0200, 2, true), None);
+        assert_eq!(decode_stdio_word(0x00FF_FFFE, 2, true), None);
+        // n = 0 with any index.
+        assert_eq!(decode_stdio_word(0x00FF_FF00, 0, true), None);
+        // Two roles on one index: stdin = stdout, stdin = term, stdout = term.
+        assert_eq!(decode_stdio_word(0x00FF_0000, 2, true), None);
+        assert_eq!(decode_stdio_word(0x0000_FF00, 2, true), None);
+        assert_eq!(decode_stdio_word(0x0001_01FF, 2, true), None);
+        // A term index in a kernel without buffers.
+        assert_eq!(decode_stdio_word(0x0002_0100, 3, false), None);
+        // The same word is fine where buffers exist.
+        assert!(decode_stdio_word(0x0002_0100, 3, true).is_some());
+    }
+
+    /// `SYS_STDIO_INFO`'s byte oracle: THINK §2.4's four rows, hand-laid,
+    /// against the kernel's encoder and libneo's decoder.
+    #[test]
+    fn stdio_info_oracle() {
+        use super::libneo_pipe_abi as user;
+        // (bytes, (stdin, stdout, term, selected))
+        type Row = ([u8; 8], (Option<u16>, Option<u16>, Option<u16>, bool));
+        let rows: [Row; 4] = [
+            // stdin 0, stdout 1, term 2, selected.
+            (
+                [0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00],
+                (Some(0), Some(1), Some(2), true),
+            ),
+            // stdin 0, stdout 1, no term, selected.
+            (
+                [0x00, 0x00, 0x01, 0x00, 0xff, 0xff, 0x01, 0x00],
+                (Some(0), Some(1), None, true),
+            ),
+            // selected, stdout since closed.
+            (
+                [0x00, 0x00, 0xff, 0xff, 0x02, 0x00, 0x01, 0x00],
+                (Some(0), None, Some(2), true),
+            ),
+            // no selection, or all three none.
+            (
+                [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00],
+                (None, None, None, false),
+            ),
+        ];
+        for (bytes, (i, o, t, selected)) in rows {
+            assert_eq!(encode_stdio_info(i, o, t, selected), bytes);
+            let d = user::decode_stdio_info(bytes);
+            assert_eq!(
+                (d.stdin, d.stdout, d.term, d.selected),
+                (
+                    i.map(u32::from),
+                    o.map(u32::from),
+                    t.map(u32::from),
+                    selected
+                )
+            );
+        }
+        assert_eq!(STDIO_INFO_LEN, 8);
+        // A slot above 0xFF is still two bytes, little-endian.
+        assert_eq!(
+            encode_stdio_info(Some(0x0102), None, None, true),
+            [0x02, 0x01, 0xff, 0xff, 0xff, 0xff, 0x01, 0x00]
+        );
+    }
+
+    /// libneo's stdio word and syscall numbers against the kernel decoder
+    /// and hand-written values.
+    #[test]
+    fn stdio_word_libneo_half() {
+        use super::libneo_pipe_abi as user;
+        assert_eq!(user::stdio_word(Some(0), Some(1), None), 0x00FF_0100);
+        assert_eq!(user::stdio_word(Some(0), Some(1), Some(2)), 0x0002_0100);
+        assert_eq!(user::stdio_word(Some(1), Some(2), None), 0x00FF_0201);
+        assert_eq!(user::stdio_word(None, None, None), 0x00FF_FFFF);
+        assert_eq!(user::STDIO_NO_INDEX, STDIO_NO_INDEX);
+        assert_eq!(
+            (
+                user::SYS_SPAWN_STDIO,
+                user::SYS_STDIO_INFO,
+                user::SYS_STDIO_TERM_MAP
+            ),
+            (0x1BD, 0x1BE, 0x1BF)
+        );
+        for w in [
+            user::stdio_word(Some(0), Some(1), None),
+            user::stdio_word(Some(1), Some(2), None),
+            user::stdio_word(Some(2), Some(0), Some(1)),
+        ] {
+            assert!(decode_stdio_word(w, 3, true).is_some(), "{w:#x}");
+        }
+    }
 }
