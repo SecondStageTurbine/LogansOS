@@ -488,7 +488,7 @@ neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"
 # OT-61 C3a: the browser bundle's private C/C++ runtime (userland/neo-crt) in
 # a real-std process: libc checks against independent oracles, per-thread
 # errno, malloc from several threads.
-neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]

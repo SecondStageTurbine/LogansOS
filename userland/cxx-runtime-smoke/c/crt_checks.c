@@ -248,6 +248,43 @@ int crt_check_alloc(void)
 	return 0;
 }
 
+/* OT-61 C3c-1 prerequisites (SpiderMonkey on neo-crt; THINK T2, T3).
+ * arc4random_buf: musl 1.2.5's headers don't declare it, so it's declared
+ * here. The oracle is statistical, not a fixed answer: two 32-byte fills
+ * agree with probability 2^-256, and a 96 KiB fill (it crosses the kernel's
+ * 64 KiB per-call ceiling, so std loops) with no byte in its last 32 KiB
+ * nonzero has probability 2^-262144. GC chunks: SpiderMonkey's WASI path
+ * takes page-aligned memory from posix_memalign; a 256 KiB block is
+ * page-aligned and writable to its last byte. */
+void arc4random_buf(void *buf, size_t n);
+
+int crt_check_entropy(void)
+{
+	unsigned char a[32], b[32];
+	memset(a, 0, sizeof a);
+	memset(b, 0, sizeof b);
+	arc4random_buf(a, sizeof a);
+	arc4random_buf(b, sizeof b);
+	CHECK(80, "arc4random_buf: two fills differ", memcmp(a, b, sizeof a) != 0);
+	arc4random_buf(a, 0);
+	size_t big = 96 * 1024;
+	unsigned char *p = calloc(big, 1);
+	CHECK(81, "calloc 96 KiB", p != 0);
+	arc4random_buf(p, big);
+	size_t nonzero = 0;
+	for (size_t i = 64 * 1024; i < big; i++) nonzero += p[i] != 0;
+	CHECK(82, "arc4random_buf fills past the 64 KiB per-call ceiling", nonzero > 0);
+	free(p);
+	void *chunk = 0;
+	CHECK(83, "posix_memalign(4096, 256 KiB)",
+	      posix_memalign(&chunk, 4096, 256 * 1024) == 0 && ((uintptr_t)chunk & 4095) == 0);
+	((volatile unsigned char *)chunk)[256 * 1024 - 1] = 0x5A;
+	CHECK(84, "the chunk's last byte is writable",
+	      ((volatile unsigned char *)chunk)[256 * 1024 - 1] == 0x5A);
+	free(chunk);
+	return 0;
+}
+
 /* clock_gettime: a monotonic clock, and no wall clock. */
 int crt_check_clock(void)
 {
