@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "i18n-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "F11 S6a: the message catalog (ids, the English and Spanish tables, the fallback lookup); no_std, nothing links it yet"
+
+[dependencies]
+
+[dev-dependencies]
+# The KATs measure every row with the face and card the WM draws with.
+neo-atrium = { path = "../neo-atrium" }
+neo-text = { path = "../neo-text", features = ["inter"] }
