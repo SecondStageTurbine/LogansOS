@@ -155,13 +155,25 @@ struct Pending {
 
 impl Pending {
     fn push(&mut self, kind: Kind, action: u8, detail: u32, path: &str, intent: &str) -> bool {
+        self.push_at(kind, action, detail, path, intent, now_s())
+    }
+
+    /// [`Self::push`] with the record's time and flags given.
+    fn push_at(
+        &mut self,
+        kind: Kind,
+        action: u8,
+        detail: u32,
+        path: &str,
+        intent: &str,
+        (time_s, flags): (u64, u8),
+    ) -> bool {
         // The control (`arthur-action-log-chain-control`) breaks every link.
         let prev = if cfg!(feature = "arthur-action-log-chain-control") {
             [0u8; alc::PREV_LEN]
         } else {
             self.link
         };
-        let (time_s, flags) = now_s();
         let Some(bytes) = alc::encode(&Record {
             kind,
             action,
@@ -221,14 +233,45 @@ fn rotated(log: &[u8], len: usize) -> Option<Vec<u8>> {
 /// Append one record. `false`: it couldn't be (a line says so; the caller
 /// decides what that means for the action).
 pub fn append(kind: Kind, action: u16, detail: u32, path: &str, intent: &str) -> bool {
-    let ok = append_inner(kind, action, detail, path, intent);
+    append_timed(kind, action, detail, path, intent, None)
+}
+
+/// F11 S3 (setup-menu THINK §4.4): append one record whose time the caller
+/// worked out (`time_s` and its flags: [`alc::TIME_UTC`] or 0), for an
+/// event that happened before now. A repair or truncation marker written
+/// first still carries the time now.
+pub fn append_at(kind: Kind, path: &str, intent: &str, time_s: u64, flags: u8) -> bool {
+    append_timed(kind, 0, 0, path, intent, Some((time_s, flags)))
+}
+
+/// The time and flags [`now_s`] would give a record now.
+pub fn now() -> (u64, u8) {
+    now_s()
+}
+
+fn append_timed(
+    kind: Kind,
+    action: u16,
+    detail: u32,
+    path: &str,
+    intent: &str,
+    at: Option<(u64, u8)>,
+) -> bool {
+    let ok = append_inner(kind, action, detail, path, intent, at);
     if !ok {
         Line::new().s(b"ACTIONLOG append=failed\n").emit();
     }
     ok
 }
 
-fn append_inner(kind: Kind, action: u16, detail: u32, path: &str, intent: &str) -> bool {
+fn append_inner(
+    kind: Kind,
+    action: u16,
+    detail: u32,
+    path: &str,
+    intent: &str,
+    at: Option<(u64, u8)>,
+) -> bool {
     let Some(file) = open() else {
         return false;
     };
@@ -269,7 +312,8 @@ fn append_inner(kind: Kind, action: u16, detail: u32, path: &str, intent: &str) 
         }
     }
     let (path, intent) = (printable(path.as_bytes()), printable(intent.as_bytes()));
-    if !pending.push(kind, action as u8, detail, &path, &intent) {
+    let at = at.unwrap_or_else(now_s);
+    if !pending.push_at(kind, action as u8, detail, &path, &intent, at) {
         let _ = sys_close(file);
         return false;
     }
@@ -332,8 +376,9 @@ pub fn seed() {
     }
 }
 
-/// Boot test: verify the log and log its state (records, a break, the head).
-#[cfg(feature = "arthur-actions-test")]
+/// Verify the log and log its state (records, a break, the head): the
+/// actions boot test, and the setup menu after it appends (F11 S3).
+#[cfg(any(feature = "arthur-actions-test", feature = "setup-journal"))]
 pub fn report() {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let log = login::read_small_up_to(alc::PATH, CAP).unwrap_or_default();
