@@ -45,6 +45,10 @@ one thread, interpreter only, and build option (c).
   - `0004-jsglue-neoplutarch.patch`: `mozjs-sys/src/jsglue.cpp` (the Rust glue, compiled outside SpiderMonkey's own
     build) picks `<malloc.h>` and `malloc_usable_size` by platform. Our target joins the Linux/WASI branch, since
     musl has the header and neo-crt defines the function.
+  - `0005-mozalloc-no-abort-override.patch`: `memory/mozalloc/mozalloc_abort.cpp` defines `abort()` on Unix, to
+    route it to `mozalloc_abort`. neo-crt defines `abort()` and the program links it statically, so the two collide
+    (the C3c-1 smoke's first link: `duplicate symbol: abort`). Our target leaves the override out;
+    `mozalloc_abort` itself is unchanged.
 - `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
   neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
   `__neoplutarch__` predefined. configure's test programs link against a stub that defines exactly the symbols in
@@ -101,7 +105,7 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
 - **`bindings/`:** bindgen's `jsapi.rs` and `gluebindings.rs` for our target. The generator's bindgen step makes them
   by running upstream `mozjs-sys`'s own `build_bindings`, with libclang from the runner's `clang` and `neo-cc`'s target
   flags. The step fails if `jsapi.rs` lacks `wasiRecursionDepth` (trap B1).
-- **`patched/`:** the 29 files patches 0001–0004 change, whole and as patched, at their paths under the vendored
+- **`patched/`:** the 30 files patches 0001–0005 change, whole and as patched, at their paths under the vendored
   crate root. `patched/deleted.txt` names the one file they delete (`MoveOnlyFunction.h`). The product build lays
   these over the vendored tree instead of running `git apply`. The drift check proves they equal vendor plus
   patches.
@@ -115,6 +119,35 @@ Paths are `@SRC@` (the patched source root), `@OBJ@`, `@REPO@` and `@CRATES@` (t
 `3fc087fb` (pinned clang 19, with `glue_commands.json`): a gzip'd tar with sha256
 `5f0ec159242234e9458f3549269cb1412f25c828c01a57029a1aa88df7c28b3e`, taken from
 the job log and checked against that hash. The first copy was run 42518384967. Moving from the runner's clang 21 to the pinned 19 changed exactly two files: clang 19 rejects `-Wno-character-conversion`, so configure dropped it from all 167 compile entries, and `jsapi.rs` changed with libclang. That is the drift the pin now prevents.
+
+## The product build's crates: `patched/`
+
+`patched/mozjs`, `patched/mozjs-sys` and `patched/normalizer_glue` are what the product build compiles
+(`docs/THINK-2026-11-08-ot61-c3c1-product-build.md` §2). Each holds only a manifest, and `mozjs-sys` also a
+std-only `build.rs`. Their `[lib] path` is the vendored crate's own `src/lib.rs`, so the sources are upstream's,
+unchanged (with `generated/patched/` laid over the C++ in `mozjs-sys`'s build). The manifests drop the
+build-dependencies (cc, bindgen, cbindgen, walkdir, flate2, tar) and the optional dependencies of the features the
+frozen configuration can't build. `generator/check_patched_crates.py`, run by the generator job, holds them to that.
+
+`mozjs-sys`'s `build.rs` compiles `generated/compile_commands.json` and `generated/glue_commands.json` through
+`generator/neo-cc` with the pinned clang, archives the objects with that clang's `llvm-ar`, and includes the frozen
+bindings. It runs no Python, configure, make, bindgen, cbindgen, and no network.
+
+## Crates new for the product build's closure
+
+`userland/mozjs-smoke` resolves every crate through `[patch.crates-io]` to a vendored copy: #81's
+`third_party/ot61-browser/vendor/` (including `libz-sys` 1.1.31 with its bundled zlib, `pkg-config` and `vcpkg`) and
+its patched `libc` (`ot61-browser/patched/libc-0.2.191`, which gives our target `off_t`, `size_t` and the other types
+`libz-sys` and `mozjs` use), `third_party/ot61-swgl/vendor/` (neo-crt's `cc` and its helpers), or these, which no
+other closure had. Each is the crates.io release as `cargo vendor` wrote it, with its `.cargo-checksum.json`, so
+`xtask vendor-verify` covers it. A sweep for GPL/LGPL text in them found none.
+
+| Crate | Version | Licence | Why |
+|---|---|---|---|
+| `encoding_c` | 0.9.8 | Apache-2.0 OR MIT | `mozjs-sys`'s encoding FFI |
+| `icu_casemap` | 2.4.0 | Unicode-3.0 | ICU4X, through the normalizer |
+| `multiversion`, `multiversion-macros` | 0.9.2 | MIT OR Apache-2.0 | `encoding_rs`'s SIMD dispatch |
+| `write16` | 1.0.0 | Apache-2.0 OR MIT | `normalizer_glue` |
 
 ## Left out of the copy
 

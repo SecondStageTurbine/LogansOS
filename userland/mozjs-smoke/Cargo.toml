@@ -1,0 +1,98 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 C3c-1, SpiderMonkey
+# (interpreter, one thread) on x86_64-unknown-neoplutarch over neo-crt
+# (docs/THINK-2026-11-08-ot61-c3c1-product-build.md §4). mozjs, mozjs-sys and
+# mozjs_normalizer_glue are the product build's patched copies
+# (third_party/ot61-mozjs/patched/: manifests only, no build-dependencies;
+# mozjs-sys compiles the generator's frozen command lines). Every other
+# third-party crate resolves to a vendored copy through [patch.crates-io];
+# the first build runs on the CI runners.
+[workspace]
+
+[package]
+name = "mozjs-smoke"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 C3c-1 gate: SpiderMonkey evaluates, normalizes, dates and collects on-target"
+
+[[bin]]
+name = "mozjs-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+neo-std-pal = { path = "../neo-std-pal" }
+neo-crt = { path = "../neo-crt" }
+mozjs = { path = "../../third_party/ot61-mozjs/patched/mozjs", default-features = false, features = ["libz-sys"] }
+# zlib from libz-sys's bundled sources (`static`), never a system probe; #81's
+# layout-smoke does the same.
+libz-sys = { version = "1.1.19", default-features = false, features = ["libc", "stock-zlib", "static"] }
+
+# Every third-party crate resolves to a vendored closure: ot61-browser (#81's
+# L0 closure, including its patched libc with the neoplutarch types and its
+# libz-sys), ot61-swgl (neo-crt's cc), ot61-mozjs (the crates new here; see
+# third_party/ot61-mozjs/VENDORED.md for their licences). [patch] rather than
+# source replacement: build-std resolves std's own dependencies through the
+# same sources, and those are not vendored here.
+[patch.crates-io]
+autocfg = { path = "../../third_party/ot61-browser/vendor/autocfg-1.5.1" }
+cc = { path = "../../third_party/ot61-swgl/vendor/cc-1.2.63" }
+cfg-if = { path = "../../third_party/ot61-browser/vendor/cfg-if-1.0.5" }
+core_detect = { path = "../../third_party/ot61-browser/vendor/core_detect-1.0.0" }
+displaydoc = { path = "../../third_party/ot61-browser/vendor/displaydoc-0.2.7" }
+encoding_c = { path = "../../third_party/ot61-mozjs/vendor/encoding_c-0.9.8" }
+encoding_c_mem = { path = "../../third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6" }
+encoding_rs = { path = "../../third_party/ot61-browser/vendor/encoding_rs-0.8.44" }
+find-msvc-tools = { path = "../../third_party/ot61-swgl/vendor/find-msvc-tools-0.1.15" }
+icu_casemap = { path = "../../third_party/ot61-mozjs/vendor/icu_casemap-2.4.0" }
+icu_collections = { path = "../../third_party/ot61-browser/vendor/icu_collections-2.4.0" }
+icu_locale_core = { path = "../../third_party/ot61-browser/vendor/icu_locale_core-2.4.0" }
+icu_properties = { path = "../../third_party/ot61-browser/vendor/icu_properties-2.4.0" }
+icu_properties_data = { path = "../../third_party/ot61-browser/vendor/icu_properties_data-2.4.0" }
+icu_provider = { path = "../../third_party/ot61-browser/vendor/icu_provider-2.4.0" }
+libc = { path = "../../third_party/ot61-browser/patched/libc-0.2.191" }
+libz-sys = { path = "../../third_party/ot61-browser/vendor/libz-sys-1.1.31" }
+linked_list_allocator = { path = "../../third_party/ot61-swgl/vendor/linked_list_allocator-0.10.6" }
+litemap = { path = "../../third_party/ot61-browser/vendor/litemap-0.8.3" }
+log = { path = "../../third_party/ot61-browser/vendor/log-0.4.35" }
+multiversion = { path = "../../third_party/ot61-mozjs/vendor/multiversion-0.9.2" }
+multiversion-macros = { path = "../../third_party/ot61-mozjs/vendor/multiversion-macros-0.9.2" }
+multiversion_no_op = { path = "../../third_party/ot61-browser/vendor/multiversion_no_op-1.0.0" }
+num-traits = { path = "../../third_party/ot61-browser/vendor/num-traits-0.2.19" }
+pkg-config = { path = "../../third_party/ot61-browser/vendor/pkg-config-0.3.34" }
+potential_utf = { path = "../../third_party/ot61-browser/vendor/potential_utf-0.1.6" }
+proc-macro2 = { path = "../../third_party/ot61-browser/vendor/proc-macro2-1.0.107" }
+quote = { path = "../../third_party/ot61-browser/vendor/quote-1.0.47" }
+rustversion = { path = "../../third_party/ot61-browser/vendor/rustversion-1.0.23" }
+scopeguard = { path = "../../third_party/ot61-browser/vendor/scopeguard-1.2.0" }
+serde = { path = "../../third_party/ot61-browser/vendor/serde-1.0.229" }
+serde_core = { path = "../../third_party/ot61-browser/vendor/serde_core-1.0.229" }
+serde_derive = { path = "../../third_party/ot61-browser/vendor/serde_derive-1.0.229" }
+shlex = { path = "../../third_party/ot61-swgl/vendor/shlex-2.0.1" }
+simdutf8 = { path = "../../third_party/ot61-browser/vendor/simdutf8-0.1.5" }
+smallvec = { path = "../../third_party/ot61-browser/vendor/smallvec-1.16.4" }
+stable_deref_trait = { path = "../../third_party/ot61-browser/vendor/stable_deref_trait-1.2.1" }
+syn = { path = "../../third_party/ot61-browser/vendor/syn-3.0.9" }
+synstructure = { path = "../../third_party/ot61-browser/vendor/synstructure-0.14.0" }
+tinystr = { path = "../../third_party/ot61-browser/vendor/tinystr-0.8.5" }
+unicode-ident = { path = "../../third_party/ot61-browser/vendor/unicode-ident-1.0.27" }
+utf8_iter = { path = "../../third_party/ot61-browser/vendor/utf8_iter-1.1.0" }
+utf_types = { path = "../../third_party/ot61-browser/vendor/utf_types-1.0.0" }
+vcpkg = { path = "../../third_party/ot61-browser/vendor/vcpkg-0.2.15" }
+write16 = { path = "../../third_party/ot61-mozjs/vendor/write16-1.0.0" }
+writeable = { path = "../../third_party/ot61-browser/vendor/writeable-0.6.4" }
+yoke = { path = "../../third_party/ot61-browser/vendor/yoke-0.8.4" }
+yoke-derive = { path = "../../third_party/ot61-browser/vendor/yoke-derive-0.8.4" }
+zerofrom = { path = "../../third_party/ot61-browser/vendor/zerofrom-0.1.8" }
+zerofrom-derive = { path = "../../third_party/ot61-browser/vendor/zerofrom-derive-0.1.8" }
+zerotrie = { path = "../../third_party/ot61-browser/vendor/zerotrie-0.2.5" }
+zerovec = { path = "../../third_party/ot61-browser/vendor/zerovec-0.11.9" }
+zerovec-derive = { path = "../../third_party/ot61-browser/vendor/zerovec-derive-0.11.7" }
+
+# The frozen C++ flags carry -gdwarf-4, so an unstripped debug build is about
+# 165 MB, too big to stage as a boot module in the scenario's guest. Strip
+# debuginfo only: the symbol table stays, and the A4 TCB check reads it.
+[profile.dev]
+strip = "debuginfo"

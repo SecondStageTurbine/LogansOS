@@ -35,6 +35,8 @@ on:
       - 'userland/neo-layout-dom/**'
       - 'userland/neo-font-store/**'
       - 'third_party/ot61-swgl/**'
+      - 'third_party/ot61-mozjs/**'
+      - 'userland/mozjs-smoke/**'
       - 'userland/neoplutarch-std-overlay/**'
       - 'userland/neo-std-pal/**'
       - 'userland/x86_64-unknown-neoplutarch.json'
@@ -52,10 +54,15 @@ concurrency:
   group: ot61-closure-${{ github.ref }}
   cancel-in-progress: true
 
+# A public repo: hosted runners only, a read-only token, and no token left in
+# the checkout's git config for the build steps to read.
+permissions:
+  contents: read
+
 jobs:
   closure-build:
     name: html5ever + selectors closure (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -66,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # The disk bound (Janus #214): a free-space floor before the build, a
       # budget for what it writes after, and the build dirs removed at the
@@ -74,7 +83,7 @@ jobs:
       - name: Disk floor (12 GiB free)
         run: bash scripts/ci-disk-guard.sh check 12
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -129,7 +138,7 @@ jobs:
   # closure job, the first build of this third-party build code runs here.
   stylo-build:
     name: Stylo (C2.4) over the vendored closure (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     env:
@@ -140,8 +149,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -192,7 +203,7 @@ jobs:
   # started.)
   crt-build:
     name: neo-crt C/C++ runtime (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     env:
@@ -203,8 +214,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -241,7 +254,7 @@ jobs:
 
   swgl-build:
     name: SWGL S1 smoke over neo-crt (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -253,8 +266,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -305,7 +320,7 @@ jobs:
 
   webrender-build:
     name: WebRender S2 smoke on SWGL over neo-crt (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -317,8 +332,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -369,7 +386,7 @@ jobs:
 
   layout-build:
     name: Servo layout without script (L0-L4 smoke) on WebRender + SWGL (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -381,8 +398,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -439,3 +458,77 @@ jobs:
       # binary: the build the layout_smoke QEMU scenario runs (L0-L4).
       - name: xtask ot61-closure-build --layout (overlay std + layout + WebRender + A4 checks)
         run: cargo run -p xtask -- ot61-closure-build --layout
+
+  mozjs-build:
+    name: SpiderMonkey C3c-1 smoke over neo-crt (x86_64-unknown-neoplutarch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+
+    # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      NEO_CRT_CLANG_MAJOR: "19"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Ensure rustup is present (bootstrap if missing)
+        run: |
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none
+
+      # The same pinned clang as crt-build (the Dockerfile's major).
+      - name: Install clang (the Dockerfile's pinned major)
+        run: |
+          set -e
+          grep -q "^ARG NEO_CRT_CLANG_MAJOR=${NEO_CRT_CLANG_MAJOR}\$" Dockerfile \
+            || { echo "ERROR: Dockerfile pins a different NEO_CRT_CLANG_MAJOR"; exit 1; }
+          # llvm-<major> too: mozjs-sys archives its objects with llvm-ar.
+          if ! command -v "clang-${NEO_CRT_CLANG_MAJOR}" >/dev/null 2>&1 \
+            || ! command -v "llvm-ar-${NEO_CRT_CLANG_MAJOR}" >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              "clang-${NEO_CRT_CLANG_MAJOR}" "llvm-${NEO_CRT_CLANG_MAJOR}"
+          fi
+          "llvm-ar-${NEO_CRT_CLANG_MAJOR}" --version | head -1
+          "clang-${NEO_CRT_CLANG_MAJOR}" --version | head -1
+          test "$("clang-${NEO_CRT_CLANG_MAJOR}" -dumpversion | cut -d. -f1)" = "${NEO_CRT_CLANG_MAJOR}"
+          echo "NEO_CRT_CLANG=clang-${NEO_CRT_CLANG_MAJOR}" >> "$GITHUB_ENV"
+
+      # Every closure crate comes from a vendored copy (ot61-browser, ot61-swgl,
+      # ot61-mozjs) or the patched mozjs crates.
+      - name: The SpiderMonkey closure resolves to the vendored sources only
+        working-directory: userland/mozjs-smoke
+        run: |
+          set -e
+          registry=$(awk '/^name = /{n=$3} /^source = "registry/{print n}' Cargo.lock | tr -d '"')
+          echo "from crates.io: ${registry:-none}"
+          if [ -n "$registry" ]; then
+            echo "ERROR: a SpiderMonkey closure crate resolves to crates.io, not the vendored copy"
+            exit 1
+          fi
+
+      # The product build (THINK 2026-11-08 §2): mozjs-sys's std-only build
+      # script compiles the generator's frozen command lines through neo-cc,
+      # libz-sys compiles its bundled zlib; no Python, configure, bindgen or
+      # network. xtask lists the build scripts that ran and fails on any
+      # outside its allowed list.
+      - name: xtask ot61-closure-build --mozjs (overlay std + neo-crt + SpiderMonkey + A4 checks)
+        run: cargo run -p xtask -- ot61-closure-build --mozjs
