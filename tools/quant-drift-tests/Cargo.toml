@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "quant-drift-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "Host-only quantization-drift check: shipped Q4_K_M .neom vs llama.cpp Q4_K_M vs full precision"
+
+# Host-only, like ai-ops-tests: path-`mod`s the kernel's inference files so the
+# harness runs the SAME forward pass the kernel ships, not a re-implementation.
+[features]
+default = ["phase9-real-quant", "phase9-avx2-matmul"]
+phase9-real-quant = []
+phase9-quantized-matmul = []
+phase9-avx2-matmul = ["phase9-quantized-matmul"]
+# Declared (never enabled) so the kernel files' `#[cfg(feature = ...)]` gates
+# are known cfgs under check-cfg.
+soft-f32-only = []
+phase9-data-driven-config = []
+threaded-matmul = []
+prefill-perf = []
+par-elementwise = []
+neo-test-sys-generate-kv-persist-equivalence = []
+mt7601u = []
+usb-storage = []
+arthur-real-vocab = []
+agentic-actions-a2 = []
+agentic-actions-a3 = []
+
+[dependencies]
