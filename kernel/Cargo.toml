@@ -492,6 +492,11 @@ neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota", "kerne
 # OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+# OT-61 rung 4 (SWGL S2): WebRender 0.70 on SWGL, a display list rendered
+# into a caller buffer and compared with a hand-derived scene.
+# kernel-rng: WebRender's HashMaps seed from std's RandomState
+# (SYS_GETRANDOM); the scenario runs on -cpu max like std_entropy.
+neo-test-webrender-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is

@@ -1,0 +1,49 @@
+diff -ruN -x .cargo-checksum.json ../vendor/webrender-0.70.0/src/internal_types.rs webrender-0.70.0/src/internal_types.rs
+--- ../vendor/webrender-0.70.0/src/internal_types.rs	2026-10-31 03:57:42.646454905 +0000
++++ webrender-0.70.0/src/internal_types.rs	2026-10-31 04:35:42.080126003 +0000
+@@ -157,7 +157,7 @@
+     pub fn first(document_id: DocumentId) -> Self {
+         FrameStamp {
+             id: FrameId::first(),
+-            time: SystemTime::now(),
++            time: frame_time(),
+             document_id,
+         }
+     }
+@@ -165,7 +165,7 @@
+     /// Advances to a new frame.
+     pub fn advance(&mut self) {
+         self.id.advance();
+-        self.time = SystemTime::now();
++        self.time = frame_time();
+     }
+ 
+     /// An invalid sentinel FrameStamp.
+@@ -176,6 +176,27 @@
+     };
+ }
+ 
++/// The time a `FrameStamp` records. Nothing in WebRender reads it back
++/// (`FrameStamp::time` has no caller); it only has to differ from
++/// `UNIX_EPOCH` for the `is_valid` debug check.
++#[cfg(not(target_os = "neoplutarch"))]
++fn frame_time() -> SystemTime {
++    SystemTime::now()
++}
++
++/// LogansOS patch (OT-61 rung 4 S2): the browser bundle has no wall clock, and
++/// std's `SystemTime::now` aborts there rather than invent one. Record
++/// `UNIX_EPOCH` plus the monotonic time since the first frame (plus 1 ns, so it
++/// is never `UNIX_EPOCH` itself); see the comment above for why that's enough.
++#[cfg(target_os = "neoplutarch")]
++fn frame_time() -> SystemTime {
++    use std::sync::OnceLock;
++    use std::time::{Duration, Instant};
++    static START: OnceLock<Instant> = OnceLock::new();
++    let since = START.get_or_init(Instant::now).elapsed();
++    UNIX_EPOCH + since + Duration::from_nanos(1)
++}
++
+ /// Custom field embedded inside the Polygon struct of the plane-split crate.
+ #[derive(Copy, Clone, Debug)]
+ #[cfg_attr(feature = "capture", derive(Serialize))]

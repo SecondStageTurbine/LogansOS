@@ -1,0 +1,345 @@
+diff -ruN -x .cargo-checksum.json -I SPDX-License-Identifier ../vendor/wr_glyph_rasterizer-0.70.1/Cargo.toml wr_glyph_rasterizer-0.70.1/Cargo.toml
+--- ../vendor/wr_glyph_rasterizer-0.70.1/Cargo.toml	2026-10-31 05:19:40.785203289 +0000
++++ wr_glyph_rasterizer-0.70.1/Cargo.toml	2026-10-31 05:19:47.829545670 +0000
+@@ -141,5 +142,11 @@
+ [target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies.objc]
+ version = "0.2"
+ 
++[target.'cfg(target_os = "neoplutarch")'.dependencies.skrifa]
++version = "0.49"
++
++[target.'cfg(target_os = "neoplutarch")'.dependencies.zeno]
++version = "0.3"
++
+ [target.'cfg(target_os = "windows")'.dependencies.dwrote]
+ version = "0.11.5"
+diff -ruN -x .cargo-checksum.json -I SPDX-License-Identifier ../vendor/wr_glyph_rasterizer-0.70.1/src/lib.rs wr_glyph_rasterizer-0.70.1/src/lib.rs
+--- ../vendor/wr_glyph_rasterizer-0.70.1/src/lib.rs	2026-10-31 05:19:40.786167592 +0000
++++ wr_glyph_rasterizer-0.70.1/src/lib.rs	2026-10-31 05:19:47.830456116 +0000
+@@ -45,6 +46,9 @@
+     pub use crate::platform::unix::font;
+     #[cfg(target_os = "windows")]
+     pub use crate::platform::windows::font;
++    // LogansOS: skrifa outlines + zeno coverage (patched in for OT-61 rung 4).
++    #[cfg(target_os = "neoplutarch")]
++    pub use crate::platform::neoplutarch::font;
+ 
+     #[cfg(any(target_os = "ios", target_os = "macos"))]
+     pub mod macos {
+@@ -58,4 +62,8 @@
+     pub mod windows {
+         pub mod font;
+     }
++    #[cfg(target_os = "neoplutarch")]
++    pub mod neoplutarch {
++        pub mod font;
++    }
+ }
+diff -ruN -x .cargo-checksum.json -I SPDX-License-Identifier ../vendor/wr_glyph_rasterizer-0.70.1/src/platform/neoplutarch/font.rs wr_glyph_rasterizer-0.70.1/src/platform/neoplutarch/font.rs
+--- ../vendor/wr_glyph_rasterizer-0.70.1/src/platform/neoplutarch/font.rs	1970-01-01 00:00:00.000000000 +0000
++++ wr_glyph_rasterizer-0.70.1/src/platform/neoplutarch/font.rs	2026-10-31 05:19:47.831816874 +0000
+@@ -0,0 +1,304 @@
++// SPDX-License-Identifier: MPL-2.0
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++//! LogansOS (`target_os = "neoplutarch"`) font backend: OT-61 rung 4 S2
++//! (`docs/THINK-2026-10-31-ot61-r4-swgl-floor.md` §2).
++//!
++//! Outlines and metrics come from skrifa (Google Fonts' fontations), coverage
++//! from zeno; both are pure Rust. The geometry follows the unix (FreeType)
++//! backend step for step: the instance's transform is split into a scale and
++//! a shape (`compute_scale`, `invert_scale`), the FLIP/TRANSPOSE flags and
++//! synthetic italics shape it, the outline is scaled to the requested size
++//! and transformed with FreeType's sign convention, then moved by the
++//! subpixel offset. So glyph placement matches what upstream computes; what
++//! differs is who draws the outline and who fills it.
++//!
++//! Scope of this first backend:
++//! - fonts arrive as bytes (`add_raw_font`); there is no system font
++//!   directory, so `add_native_font` is refused;
++//! - outline glyphs only (no bitmap strikes, no colour glyphs);
++//! - unhinted, grayscale coverage: `Subpixel` renders as `Alpha` (no LCD
++//!   filter here), and `Mono` thresholds the coverage;
++//! - variable fonts follow the instance's variations;
++//! - not yet: synthetic bold (`SYNTHETIC_BOLD`; the unix backend emboldens
++//!   the outline with `FT_Outline_Embolden`), which renders at normal weight.
++
++use api::{ColorU, FontKey, FontRenderMode, FontTemplate, GlyphDimensions, NativeFontHandle};
++use api::FontInstanceFlags;
++use skrifa::instance::{LocationRef, Size};
++use skrifa::outline::{DrawSettings, OutlinePen};
++use skrifa::{FontRef, GlyphId, MetadataProvider, Tag};
++use std::sync::Arc;
++use zeno::{Command, Mask, Point};
++
++use crate::rasterizer::{FontInstance, GlyphFormat, GlyphKey};
++use crate::rasterizer::{GlyphRasterError, GlyphRasterResult, RasterizedGlyph};
++use crate::types::FastHashMap;
++
++struct FontData {
++    bytes: Arc<Vec<u8>>,
++    index: u32,
++}
++
++pub struct FontContext {
++    fonts: FastHashMap<FontKey, Arc<FontData>>,
++}
++
++// FontContext lives on a glyph-rasterizer thread; FontData is immutable bytes.
++unsafe impl Send for FontContext {}
++
++/// The outline in device pixels, y up, as FreeType would leave it after
++/// `FT_Set_Transform` + `FT_Set_Char_Size` + `FT_Outline_Translate`.
++struct Pen {
++    sx: f32,
++    sy: f32,
++    m: [f32; 4],
++    t: (f32, f32),
++    out: Vec<Command>,
++}
++
++impl Pen {
++    /// Font pixels (y up) to zeno's coordinates (y down).
++    fn map(&self, x: f32, y: f32) -> Point {
++        let (x, y) = (x * self.sx, y * self.sy);
++        let px = self.m[0] * x + self.m[1] * y + self.t.0;
++        let py = self.m[2] * x + self.m[3] * y + self.t.1;
++        Point::new(px, -py)
++    }
++}
++
++impl OutlinePen for Pen {
++    fn move_to(&mut self, x: f32, y: f32) {
++        let p = self.map(x, y);
++        self.out.push(Command::MoveTo(p));
++    }
++    fn line_to(&mut self, x: f32, y: f32) {
++        let p = self.map(x, y);
++        self.out.push(Command::LineTo(p));
++    }
++    fn quad_to(&mut self, cx0: f32, cy0: f32, x: f32, y: f32) {
++        let (c, p) = (self.map(cx0, cy0), self.map(x, y));
++        self.out.push(Command::QuadTo(c, p));
++    }
++    fn curve_to(&mut self, cx0: f32, cy0: f32, cx1: f32, cy1: f32, x: f32, y: f32) {
++        let (c0, c1, p) = (self.map(cx0, cy0), self.map(cx1, cy1), self.map(x, y));
++        self.out.push(Command::CurveTo(c0, c1, p));
++    }
++    fn close(&mut self) {
++        self.out.push(Command::Close);
++    }
++}
++
++/// A glyph's coverage: 8-bit, `width * height`, rows top to bottom, with its
++/// placement in WebRender's convention (`top` measured up from the baseline).
++struct Coverage {
++    left: i32,
++    top: i32,
++    width: u32,
++    height: u32,
++    alpha: Vec<u8>,
++}
++
++impl FontContext {
++    pub fn distribute_across_threads() -> bool {
++        false
++    }
++
++    pub fn new() -> FontContext {
++        FontContext {
++            fonts: FastHashMap::default(),
++        }
++    }
++
++    pub fn add_raw_font(&mut self, font_key: &FontKey, bytes: Arc<Vec<u8>>, index: u32) {
++        if !self.fonts.contains_key(font_key) {
++            if FontRef::from_index(&bytes, index).is_err() {
++                panic!("adding raw font failed: {} bytes are not a font (index {})", bytes.len(), index);
++            }
++            self.fonts.insert(*font_key, Arc::new(FontData { bytes, index }));
++        }
++    }
++
++    /// There is no system font directory to open a native handle from: every
++    /// font reaches the bundle as bytes, through a handle the embedder holds.
++    pub fn add_native_font(&mut self, _font_key: &FontKey, native_font_handle: NativeFontHandle) {
++        panic!(
++            "neoplutarch has no native fonts (asked for {:?}); pass the font's bytes instead",
++            native_font_handle.path
++        );
++    }
++
++    pub fn has_bitmap_strikes(_template: &FontTemplate) -> bool {
++        false
++    }
++
++    pub fn delete_font(&mut self, font_key: &FontKey) {
++        self.fonts.remove(font_key);
++    }
++
++    pub fn delete_font_instance(&mut self, _instance: &FontInstance) {}
++
++    pub fn get_glyph_index(&mut self, font_key: FontKey, ch: char) -> Option<u32> {
++        let data = self.fonts.get(&font_key)?;
++        let font = FontRef::from_index(&data.bytes, data.index).ok()?;
++        font.charmap().map(ch).map(|g| g.to_u32())
++    }
++
++    pub fn get_glyph_dimensions(
++        &mut self,
++        font: &FontInstance,
++        key: &GlyphKey,
++    ) -> Option<GlyphDimensions> {
++        let data = self.fonts.get(&font.font_key)?.clone();
++        let (cov, advance) = Self::coverage(&data, font, key)?;
++        Some(GlyphDimensions {
++            left: cov.left,
++            top: cov.top,
++            width: cov.width as i32,
++            height: cov.height as i32,
++            advance,
++        })
++    }
++
++    pub fn prepare_font(font: &mut FontInstance) {
++        match font.render_mode {
++            FontRenderMode::Mono => {
++                font.color = ColorU::new(0xFF, 0xFF, 0xFF, 0xFF);
++                font.disable_subpixel_position();
++            }
++            // No LCD filter here: subpixel text is rendered as grayscale.
++            FontRenderMode::Subpixel => {
++                font.render_mode = FontRenderMode::Alpha;
++                font.color = ColorU::new(0xFF, 0xFF, 0xFF, 0xFF);
++            }
++            FontRenderMode::Alpha => {
++                font.color = ColorU::new(0xFF, 0xFF, 0xFF, 0xFF);
++            }
++        }
++    }
++
++    pub fn begin_rasterize(_font: &FontInstance) {}
++
++    pub fn end_rasterize(_font: &FontInstance) {}
++
++    pub fn rasterize_glyph(&mut self, font: &FontInstance, key: &GlyphKey) -> GlyphRasterResult {
++        let data = self
++            .fonts
++            .get(&font.font_key)
++            .ok_or(GlyphRasterError::LoadFailed)?
++            .clone();
++        let (cov, _) = Self::coverage(&data, font, key).ok_or(GlyphRasterError::LoadFailed)?;
++        // Spaces and other empty glyphs: nothing to draw.
++        if cov.width == 0 || cov.height == 0 {
++            return Err(GlyphRasterError::LoadFailed);
++        }
++        let pad = if font.use_texture_padding() { 1 } else { 0 };
++        let (w, h) = (cov.width as usize, cov.height as usize);
++        let (bw, bh) = (w + 2 * pad, h + 2 * pad);
++        // BGRA8 with the coverage in every channel, as the unix backend
++        // stores FreeType's grayscale bitmaps.
++        let mono = font.render_mode == FontRenderMode::Mono;
++        let mut bytes = vec![0u8; bw * bh * 4];
++        for y in 0..h {
++            for x in 0..w {
++                let mut a = cov.alpha[y * w + x];
++                if mono {
++                    a = if a >= 0x80 { 0xFF } else { 0 };
++                }
++                let at = ((y + pad) * bw + x + pad) * 4;
++                bytes[at..at + 4].copy_from_slice(&[a, a, a, a]);
++            }
++        }
++        let format = match font.get_glyph_format() {
++            f @ (GlyphFormat::Alpha | GlyphFormat::TransformedAlpha) => f,
++            GlyphFormat::Subpixel => GlyphFormat::Alpha,
++            GlyphFormat::TransformedSubpixel => GlyphFormat::TransformedAlpha,
++            _ => GlyphFormat::Alpha,
++        };
++        Ok(RasterizedGlyph {
++            left: (cov.left - pad as i32) as f32,
++            top: (cov.top + pad as i32) as f32,
++            width: bw as i32,
++            height: bh as i32,
++            scale: 1.0,
++            format,
++            bytes,
++            is_packed_glyph: false,
++        })
++    }
++
++    /// The glyph's coverage and advance, with the instance's size, transform,
++    /// flags, variations and the key's subpixel offset applied.
++    fn coverage(data: &FontData, font: &FontInstance, key: &GlyphKey) -> Option<(Coverage, f32)> {
++        let face = FontRef::from_index(&data.bytes, data.index).ok()?;
++        let settings: Vec<(Tag, f32)> = font
++            .variations
++            .iter()
++            .map(|v| (Tag::from_u32(v.tag), v.value))
++            .collect();
++        let location = face.axes().location(settings.iter().copied());
++        let req = font.size.to_f64_px();
++        let (x_scale, y_scale) = font.transform.compute_scale().unwrap_or((1.0, 1.0));
++
++        let mut shape = font.transform.invert_scale(x_scale, y_scale);
++        if font.flags.contains(FontInstanceFlags::FLIP_X) {
++            shape = shape.flip_x();
++        }
++        if font.flags.contains(FontInstanceFlags::FLIP_Y) {
++            shape = shape.flip_y();
++        }
++        if font.flags.contains(FontInstanceFlags::TRANSPOSE) {
++            shape = shape.swap_xy();
++        }
++        let (mut tx, mut ty) = (0.0, 0.0);
++        if font.synthetic_italics.is_enabled() {
++            let (s, (tx_, ty_)) = font.synthesize_italics(shape, y_scale * req);
++            shape = s;
++            tx = tx_;
++            ty = ty_;
++        }
++        let (dx, dy) = font.get_subpx_offset(key);
++
++        let gid = GlyphId::new(key.index());
++        let glyph = face.outline_glyphs().get(gid)?;
++        let mut pen = Pen {
++            sx: x_scale as f32,
++            sy: y_scale as f32,
++            // FT_Set_Transform's matrix: WebRender's skews flip sign in y-up.
++            m: [shape.scale_x, -shape.skew_x, -shape.skew_y, shape.scale_y],
++            // FT_Set_Transform's delta plus the subpixel FT_Outline_Translate,
++            // both in y-up pixels.
++            t: ((tx + dx) as f32, (-ty - dy) as f32),
++            out: Vec::new(),
++        };
++        let loc: LocationRef = (&location).into();
++        glyph
++            .draw(DrawSettings::unhinted(Size::new(req as f32), loc), &mut pen)
++            .ok()?;
++        let advance = face
++            .glyph_metrics(Size::new((req * x_scale) as f32), loc)
++            .advance_width(gid)
++            .unwrap_or(0.0);
++        if pen.out.is_empty() {
++            return Some((
++                Coverage { left: 0, top: 0, width: 0, height: 0, alpha: Vec::new() },
++                advance,
++            ));
++        }
++        let (alpha, p) = Mask::new(&pen.out).render();
++        Some((
++            Coverage {
++                left: p.left,
++                // zeno's top is the first row in y-down pixels; WebRender's
++                // is the distance up from the baseline.
++                top: -p.top,
++                width: p.width,
++                height: p.height,
++                alpha,
++            },
++            advance,
++        ))
++    }
++}
