@@ -59,6 +59,7 @@
         feature = "probe-app",
         feature = "installer-probe",
         feature = "record-guard-probe",
+        feature = "terminal-app",
     ),
     allow(dead_code)
 )]
@@ -119,10 +120,15 @@ mod installer_probe;
 mod lens;
 #[cfg(feature = "probe-app")]
 mod probe_app;
+// L1a.3: the terminal window, and its test child.
 #[cfg(feature = "record-guard-probe")]
 mod record_guard;
 #[cfg(feature = "pipe-stdio-test")]
 mod stdio_probe;
+#[cfg(feature = "terminal-app")]
+mod terminal_app;
+#[cfg(feature = "terminal-app")]
+mod terminal_child;
 const BLOCK: Handle = Handle(1);
 
 #[cfg(feature = "atrium-surface-protocol")]
@@ -448,6 +454,16 @@ pub extern "C" fn _start() -> ! {
         sys_exit(probe_app::run());
     }
 
+    // L1a.3: spawned by the WM with its session channel, the terminal; spawned
+    // by the terminal with a stdio chosen, its test child.
+    #[cfg(feature = "terminal-app")]
+    {
+        if libneo::sys_stdio_info().is_ok_and(|info| info.selected) {
+            sys_exit(terminal_child::run());
+        }
+        sys_exit(terminal_app::run());
+    }
+
     #[cfg(feature = "pipe-stdio-test")]
     {
         sys_exit(stdio_probe::run());
@@ -658,7 +674,8 @@ pub extern "C" fn _start() -> ! {
         feature = "installer-probe",
         feature = "record-guard-probe",
         feature = "probe-app",
-        feature = "pipe-stdio-test"
+        feature = "pipe-stdio-test",
+        feature = "terminal-app"
     )))]
     {
         default_worker_main();

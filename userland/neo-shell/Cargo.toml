@@ -21,6 +21,9 @@ default = []
 # OT-66 K1a: pass Arthur a derived RootDirCap at spawn (cap-rooted-open kernels).
 cap-rooted-open = ["libneo/cap-rooted-open"]
 console-interactive = []
+# L1a.3: run as a terminal's child; with a term page chosen at spawn the
+# terminal echoes and edits the line (cooked), so the shell writes no echo.
+terminal-child = []
 v1-console-surface = []
 arthur-memory = []
 arthur-real-brain-boot = []

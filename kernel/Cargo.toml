@@ -1147,6 +1147,10 @@ neo-test-lock-stall = ["neo-test-login", "sak-lock-route"]
 # Arthur never receives the WM's reply, so the WM parks in its send; Super+L
 # still locks the input (L2b, CP-57).
 neo-test-lock-park = ["neo-test-login", "sak-lock-route"]
+# L1a.3 (terminal_lock_park): the lock with the terminal window in front; the
+# client table's polling loop (SYS_TRY_RECV, the pointer route) and the kernel
+# pipe with the stdio chosen at spawn.
+neo-test-terminal-lock = ["neo-test-login", "sak-lock-route", "atrium-pointer-forward", "ipc-try-send", "close-object-handles", "pipe"]
 # OT-88 S1: the settings store over two boots (OP_SETTING from a test
 # client, applied live; the idle lock at the chosen time; read back after a
 # reboot). The lock's kernel, as the product's.
@@ -1208,6 +1212,13 @@ neo-test-desktop-apps-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close
 # bounded frame account (SYS_SPAWN_BUDGETED, 256 MiB, neo-init).
 neo-test-desktop-browser-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "browser-runtime", "kernel-rng", "mem-quota"]
 neo-test-desktop-apps-fault-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# L1a.3: the DS-1 session with the terminal window as a second client
+# (docs/THINK-2026-10-31-l1a-terminal-window.md §8): the apps kernel plus the
+# kernel pipe and the stdio chosen at spawn (L1a.1). Only the userland differs
+# between the three: neo-shell, a cooked echo child, a 10 MiB flood.
+neo-test-desktop-terminal-shell-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
+neo-test-desktop-terminal-echo-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
+neo-test-desktop-terminal-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
 # The WM-liveness legs (app-model THINK §2.3 items 7, 8): a probe app that
 # never receives its reply, one that never finishes its handshake, and one
 # that exits between a request and the reply. A0k's tries keep
