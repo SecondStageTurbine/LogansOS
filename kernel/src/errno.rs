@@ -46,6 +46,8 @@ pub const EFAULT: i64 = -14;
 pub const EBUSY: i64 = -16;
 /// `-EEXIST` — target already exists.
 pub const EEXIST: i64 = -17;
+/// `-EXDEV` — a rename between two volumes (F0, `SYS_RENAME_AT`).
+pub const EXDEV: i64 = -18;
 /// `-ENOTDIR` — non-directory inode used where a directory is required.
 pub const ENOTDIR: i64 = -20;
 /// `-EINVAL` — bounds / arg validation failed (NULL where forbidden,

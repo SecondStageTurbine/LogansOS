@@ -28,10 +28,18 @@ use super::commit_logic::DeferredFrees;
 use super::format::{
     DIRECT_BLOCKS, DIRENT_SIZE, DOUBLE_INDIRECT_BLOCKS, DirEntry, FS_BLOCK_SIZE, FreeMapRef,
     INDIRECT_POINTERS_PER_BLOCK, INODE_SIZE, InodeRecord, MAX_FILE_BLOCKS, MAX_FILE_SIZE,
-    SINGLE_INDIRECT_BLOCKS, SUPERBLOCK_COPY_OFFSETS, SUPERBLOCK_SIZE, Superblock, block_offset,
-    file_data_blocks, free_map_block_count_for_total, free_map_byte_len, hash,
-    parse_directory_entries, parse_inode, write_dir_entry, write_inode, write_superblock,
+    SINGLE_INDIRECT_BLOCKS, SUPERBLOCK_COPY_OFFSETS, Superblock, block_offset, file_data_blocks,
+    free_map_block_count_for_total, free_map_byte_len, hash, parse_directory_entries, parse_inode,
+    write_dir_entry, write_inode, write_superblock,
 };
+
+// F0: mkdir_at, unlink_at, rename_at, stat_at.
+#[cfg(feature = "neofs-dir-ops")]
+mod dir_ops;
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub(super) use dir_ops::STOP_NEXT_BEFORE_PUBLISH;
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub(super) use dir_ops::probe as dir_ops_probe;
 
 struct NeoFsMetadata {
     superblock: Superblock,
@@ -291,6 +299,18 @@ impl NeoFsState {
             stop.exit_code.max(1)
         };
         report
+    }
+
+    /// #106 relay 403: keep the superblock copies' blocks cached, so no
+    /// commit reads the device under `entries` to merge into them
+    /// (`NeoFsBlockCache::pin_superblock_blocks`). Only a writable mount
+    /// writes superblocks.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub(super) fn pin_superblock_blocks(&self) -> Result<(), NeoFsError> {
+        if self.writable {
+            self.cache.pin_superblock_blocks()?;
+        }
+        Ok(())
     }
 
     pub(super) fn total_blocks(&self) -> u64 {
@@ -857,8 +877,21 @@ impl NeoFsState {
         Ok((new_inode_block, new_record))
     }
 
+    /// F0's F2 leg: every block on the device, and none in the cache (all
+    /// written first), so the next reads miss.
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    pub(super) fn debug_cold_cache(&self) -> Result<(), NeoFsError> {
+        let _entries = self.entries.lock();
+        self.cache.drain_all()?;
+        self.cache.forget_range(0, self.total_blocks());
+        Ok(())
+    }
+
     /// W1's byte oracle reads the device: everything cached is written first.
-    #[cfg(feature = "neo-test-neofs-file-replace")]
+    #[cfg(any(
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
+    ))]
     pub(super) fn debug_drain_all(&self) -> Result<(), NeoFsError> {
         let _entries = self.entries.lock();
         self.cache.drain_all()?;
@@ -1252,7 +1285,8 @@ impl NeoFsState {
         feature = "neo-test-neofs-large-write",
         feature = "neo-test-neofs-overwrite-frees",
         feature = "neo-test-neofs-grow-write",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub(super) fn debug_free_map_stats(&self) -> Result<FreeMapStats, NeoFsError> {
         let metadata = self.metadata.lock();
@@ -1466,7 +1500,8 @@ impl NeoFsState {
     /// debug_drain_to_barrier`). Returns the flushes it issued.
     #[cfg(any(
         feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub(super) fn debug_drain_to_barrier(&self) -> Result<u64, NeoFsError> {
         self.cache.debug_drain_to_barrier()
@@ -1956,6 +1991,43 @@ impl Inode for NeoInode {
             Some(name) => self.state.current_child_generation(name).map(Some),
             None => Ok(Some(self.state.root_snapshot().1.generation)),
         }
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn mkdir_at(&self, name: &str) -> Result<(), VfsError> {
+        dir_ops::mkdir(self, name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn unlink_at(&self, name: &str) -> Result<(), VfsError> {
+        dir_ops::unlink(self, name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn rename_at(&self, name: &str, to: &dyn Inode, to_name: &str) -> Result<(), VfsError> {
+        dir_ops::rename(self, name, to, to_name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn stat_at(&self, name: &str) -> Result<super::dir_ops_logic::StatAtV1, VfsError> {
+        dir_ops::stat(self, name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn reload_dir(&self) -> Result<Option<u32>, VfsError> {
+        dir_ops::reload(self)
+    }
+
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    fn debug_reload_later(
+        &self,
+    ) -> Option<alloc::boxed::Box<dyn FnOnce() -> Result<Option<u32>, VfsError> + '_>> {
+        Some(dir_ops::reload_later(self))
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn neofs_volume(&self) -> Option<(usize, Option<&str>)> {
+        Some((Arc::as_ptr(&self.state) as usize, self.name.as_deref()))
     }
 
     fn fsync(&self) -> Result<(), VfsError> {
@@ -3473,7 +3545,7 @@ fn write_superblock_copies(
     let bytes = write_superblock(superblock);
     let mut wrote = false;
     for offset in SUPERBLOCK_COPY_OFFSETS {
-        if offset + SUPERBLOCK_SIZE as u64 > device_bytes {
+        if !super::format::superblock_copy_on_device(offset, device_bytes) {
             continue;
         }
         write_bytes_at(device, offset, &bytes)?;
@@ -3498,7 +3570,7 @@ fn write_superblock_copies_cached(
     let bytes = write_superblock(superblock);
     let mut wrote = false;
     for offset in SUPERBLOCK_COPY_OFFSETS {
-        if offset + SUPERBLOCK_SIZE as u64 > device_bytes {
+        if !super::format::superblock_copy_on_device(offset, device_bytes) {
             continue;
         }
         cache.write_bytes_at(offset, &bytes, CachedBlockRole::Superblock)?;

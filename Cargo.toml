@@ -48,6 +48,7 @@ members = [
     "tools/neofs-tree-logic-tests",
     "tools/install-state-logic-tests",
     "tools/neofs-commit-logic-tests",
+    "tools/neofs-dir-ops-logic-tests",
     "tools/neofs-cache-logic-tests",
     "tools/fb-progress-logic-tests",
     "tools/apic-logic-tests",

@@ -1991,6 +1991,16 @@ neo-test-neofs-file-replace = [
     "neofs-file-replace",
     "neo-test-phase3-neofs-2e",
 ]
+# F0 (Plans/DISPATCH-2026-11-11-seat-e-f0-neofs-dir-ops.md): mkdir_at,
+# unlink_at, rename_at, stat_at on NeoFS (SYS_MKDIR_AT..SYS_STAT_AT, 26..29),
+# each one commit through the barrier, bounded by the directory handle's
+# rights. Off: no syscall number, no VFS method, no error variant. The WRITE
+# right a mutation needs lives on a scope handle (OT-66 K1b), so it needs
+# `cap-rooted-open`.
+neofs-dir-ops = ["cap-rooted-open"]
+# F0's scenario: the byte oracle, the rights, the refusals, and a rename
+# across directories cut before its publish (two boots).
+neo-test-neofs-dir-ops = ["neo-test", "neofs-dir-ops", "neo-test-phase3-neofs-2e"]
 # #206 AAG U2: a commit between a read and its re-check makes the read
 # return ESTALE. `vfs-read-no-recheck` (test only) drops the re-check.
 neo-test-neofs-read-recheck = ["neo-test", "neo-test-phase3-neofs-2e"]

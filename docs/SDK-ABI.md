@@ -130,7 +130,7 @@ includes `desktop` (…→ `product`, `desktop-session`), `atrium-pointer-forwar
 `system-store`, `power-cap` (→ the clean shutdown, K1-K7), and the Zenbook hardware features — and it
 deliberately does **not** include
 `browser-runtime`, `mem-quota`/`obj-quota`, `net-dial-cap`, `installer`, `wait-multiplex`,
-`neofs-file-replace`, `cap-rooted-open`, or `kernel-observability`.
+`neofs-file-replace`, `neofs-dir-ops`, `cap-rooted-open`, or `kernel-observability`.
 
 A call whose arm is not compiled returns `ENOSYS`; a call that is compiled but disabled by a runtime
 kill-switch (the Atrium switch) also returns `ENOSYS`. The `A` column below records the image-A status
@@ -185,6 +185,10 @@ of the listed features compiles the arm), `A` (image A), `libneo` (wrapper in `u
 | 23 | 0x17 | `SYS_FTRUNCATE` | `fd: u32, new_len: u64` | 0 | `EINVAL`, `EBADF`, `EACCES`, `EPERM`, `ESTALE`, VFS errors | always | yes | `sys_ftruncate` |
 | 24 | 0x18 | `SYS_FILE_REPLACE` | `fd: u32, bytes: ptr, len` | 0 | `EINVAL`, `EBADF`, `EACCES`, `EPERM`, `EBUSY`, `EEXIST`, `EIO`, `EISDIR`, `ENOENT`, `ENOMEM`, `ENOSYS`, `ENOTDIR`, `ESTALE` | `neofs-file-replace` | **no** | `sys_file_replace` |
 | 25 | 0x19 | `SYS_POWER` | `action: u64` (1 = power off, 2 = restart), `flags: u64` (0) | 0: the clean shutdown started (the caller is spared until the power goes) | `EINVAL` (action, flags), `EPERM` (no `PowerControl` cap, or the cap lacks that action's right), `EBUSY` (a shutdown is already running), `ENOSYS` (a kernel without `power-cap`) | `power-cap` | **no** | `sys_power` |
+| 26 | 0x1A | `SYS_MKDIR_AT` | `dir_fd: u32, name: ptr, name_len` (1..=47) | 0 | `EINVAL` (name: empty, over 47 bytes, `/`, NUL, `.`, `..`, not UTF-8; the folder full at 64 entries; too deep), `EFAULT`, `EBADF`, `EACCES` (the handle lacks WRITE or LOOKUP; a read-only volume), `EPERM` (under `.system`), `EEXIST`, `ENOTDIR`, `ESTALE` (the handle's folder is gone), `EAGAIN` (other commits kept landing while it read the folders; nothing changed, retry), `EIO`, `ENOSYS` | `neofs-dir-ops` | **no** | `sys_mkdir_at` |
+| 27 | 0x1B | `SYS_UNLINK_AT` | `dir_fd: u32, name: ptr, name_len` | 0 | as `SYS_MKDIR_AT`, plus `ENOENT`, `ENOTEMPTY`, `EBUSY` (the root's `hello.txt` or `model.neom`), `EISDIR` (a model or a symlink) | `neofs-dir-ops` | **no** | `sys_unlink_at` |
+| 28 | 0x1C | `SYS_RENAME_AT` | `dir_fd: u32, name: ptr, name_len, to_fd: u32, to_name: ptr, to_name_len` | 0 | as `SYS_UNLINK_AT`, plus `EEXIST` (never replaces), `EXDEV` (another volume), `EINVAL` (into itself) | `neofs-dir-ops` | **no** | `sys_rename_at` |
+| 29 | 0x1D | `SYS_STAT_AT` | `dir_fd: u32, name: ptr, name_len, out: ptr, out_len` (16 = `StatAtV1`) | 0, fills the reply | `EINVAL`, `EFAULT`, `EBADF`, `EACCES` (no LOOKUP), `EPERM`, `ENOENT`, `ENOTDIR`, `ESTALE`, `EAGAIN` (as `SYS_MKDIR_AT`), `ENOSYS` | `neofs-dir-ops` | **no** | `sys_stat_at` |
 
 Notes:
 - `SYS_SPAWN` inherits only handles carrying `GRANT` (and a spawned own-directory cap); a `File` handle
@@ -507,6 +511,7 @@ boundary.
 | `HandleInfo` | *(none — length only)* | — | `SYS_HANDLE_INFO` | 16 |
 | `MemInfoV1` / `MemInfoV2` | *(none — length only)* | — | `SYS_MEM_INFO` | 32 / 48 |
 | `InstallRowV1` | *(none — length only)* | — | `SYS_INSTALL_LIST` | 128 |
+| `StatAtV1` | *(none — length only)* | — | `SYS_STAT_AT` | 16 |
 
 Nested structs (no independent version, inherit the parent's versioning):
 - `SchedulerStatsV1` — nested inside `KernelObservabilityV1`
@@ -521,7 +526,8 @@ Nested structs (no independent version, inherit the parent's versioning):
 | 0–23 | Base: process, IPC, file, memory, status | **Populated** |
 | 24 | Base extension: whole-file replace | Populated under `neofs-file-replace` |
 | 25 | Base extension: power-off and restart | Populated under `power-cap` |
-| 26–0x3F | Reserved for base extensions | Empty |
+| 26–29 | Base extension: directory operations (F0) | Populated under `neofs-dir-ops` |
+| 30–0x3F | Reserved for base extensions | Empty |
 | 0x40–0x54 | Browser host runtime: VM, clock, futex/threads, per-process accounts | Populated under `browser-runtime` / quotas |
 | 0x55 | Boot-time record (L7.1) | Populated under `boot-time` |
 | 0x56–0xFF | Reserved | Empty |
@@ -537,7 +543,7 @@ Nested structs (no independent version, inherit the parent's versioning):
 
 ## Errno Table
 
-**24 constants. Values match Linux/POSIX for recognizability.** Kernel and libneo define identical
+**25 constants. Values match Linux/POSIX for recognizability.** Kernel and libneo define identical
 constants with identical values (libneo does not yet mirror `ECANCELED`). Error flow is raw `i64`
 returns — no conversion layer. Negative = error, zero or positive = success.
 
@@ -555,6 +561,7 @@ returns — no conversion layer. Negative = error, zero or positive = success.
 | `EFAULT` | -14 | Bad pointer (translate failed, out of user half, or overflow into kernel space) |
 | `EBUSY` | -16 | Resource is busy |
 | `EEXIST` | -17 | Target already exists |
+| `EXDEV` | -18 | A rename between two volumes |
 | `ENOTDIR` | -20 | Non-directory inode used where a directory is required |
 | `EISDIR` | -21 | Directory/non-regular inode used where a regular file is required |
 | `EINVAL` | -22 | Bounds, argument, flag or struct-size validation failed |
