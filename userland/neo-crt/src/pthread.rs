@@ -628,6 +628,21 @@ static KEYS: Mutex<Keys> = Mutex::new(Keys {
 
 struct Slots {
     values: [(u32, usize); KEYS_MAX],
+    /// Destructor rounds this thread has had, counted across both paths
+    /// (`run_key_destructors` and this `Drop`), so together they run at most
+    /// `PTHREAD_DESTRUCTOR_ITERATIONS` (#67 re-check, Chad).
+    rounds: usize,
+}
+
+/// Count one more destructor round in `rounds`; false once the thread has had
+/// them all.
+fn next_round(rounds: &mut usize) -> bool {
+    if *rounds < DESTRUCTOR_ITERATIONS {
+        *rounds += 1;
+        true
+    } else {
+        false
+    }
 }
 
 /// Any thread that touched a key, however it was made (a `std::thread`, or
@@ -636,13 +651,18 @@ struct Slots {
 /// Threads made by `pthread_create` have already run them
 /// (`run_key_destructors`, with every slot still reachable), so this finds
 /// nothing left there. Here the slots are being destroyed, so a destructor
-/// that sets a value again gets `ENOMEM` and there is one round, not
-/// `PTHREAD_DESTRUCTOR_ITERATIONS`. The main thread returning from `main`
-/// runs none, as POSIX has it for `exit`.
+/// that sets a value again gets `ENOMEM` and there is one round, and none
+/// if `run_key_destructors` already used all
+/// `PTHREAD_DESTRUCTOR_ITERATIONS` (a destructor that always re-arms runs 4
+/// times in all, not 5). The main thread returning from `main` runs none, as
+/// POSIX has it for `exit`.
 impl Drop for Slots {
     fn drop(&mut self) {
-        let values = &mut self.values;
-        destructor_rounds(|i, g| take_value(&mut values[i], g));
+        let Slots { values, rounds } = self;
+        destructor_rounds(
+            || next_round(rounds),
+            |i, g| take_value(&mut values[i], g),
+        );
     }
 }
 
@@ -659,7 +679,9 @@ fn take_value(slot: &mut (u32, usize), g: u32) -> usize {
 }
 
 std::thread_local! {
-    static SLOTS: RefCell<Slots> = const { RefCell::new(Slots { values: [(0, 0); KEYS_MAX] }) };
+    static SLOTS: RefCell<Slots> = const {
+        RefCell::new(Slots { values: [(0, 0); KEYS_MAX], rounds: 0 })
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -733,18 +755,29 @@ pub extern "C" fn pthread_setspecific(key: u32, value: *const c_void) -> c_int {
 /// passing it to its key's destructor (POSIX). Called when a thread made by
 /// `pthread_create` returns from its start routine.
 pub fn run_key_destructors() {
-    destructor_rounds(|i, g| {
-        SLOTS
-            .try_with(|s| take_value(&mut s.borrow_mut().values[i], g))
-            .unwrap_or(0)
-    });
+    destructor_rounds(
+        || {
+            SLOTS
+                .try_with(|s| next_round(&mut s.borrow_mut().rounds))
+                .unwrap_or(false)
+        },
+        |i, g| {
+            SLOTS
+                .try_with(|s| take_value(&mut s.borrow_mut().values[i], g))
+                .unwrap_or(0)
+        },
+    );
 }
 
-/// Up to `PTHREAD_DESTRUCTOR_ITERATIONS` rounds: each takes every live key's
-/// non-null value through `take(index, generation)` (which clears it) and
-/// passes it to the key's destructor; stop after a round that ran none.
-fn destructor_rounds(mut take: impl FnMut(usize, u32) -> usize) {
-    for _ in 0..DESTRUCTOR_ITERATIONS {
+/// Rounds while `next_round()` allows (it counts the thread's rounds, at most
+/// `PTHREAD_DESTRUCTOR_ITERATIONS`): each takes every live key's non-null
+/// value through `take(index, generation)` (which clears it) and passes it to
+/// the key's destructor; stop after a round that ran none.
+fn destructor_rounds(
+    mut next_round: impl FnMut() -> bool,
+    mut take: impl FnMut(usize, u32) -> usize,
+) {
+    while next_round() {
         let mut ran = false;
         for i in 0..KEYS_MAX {
             let (g, dtor) = {
