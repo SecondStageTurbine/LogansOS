@@ -1398,7 +1398,7 @@ impl PerCpuSchedulerInner {
         slot.thread.take()
     }
 
-    #[cfg(feature = "neo-test")]
+    #[cfg(any(feature = "neo-test", feature = "pipe"))]
     fn token_slot_occupied(&self, token: ThreadWakeToken) -> bool {
         self.token_parked
             .get(token.slot as usize)
@@ -1695,6 +1695,45 @@ pub fn with_channel_anchor<R>(
     // Dropped outside the scheduler lock: it may be the channel's last count.
     drop(anchor);
     ret
+}
+
+/// CP-67 for the pipe (L1a.1 step 2a): run a blocking pipe operation with
+/// `pipe` owned by the running thread rather than the caller's frame, as
+/// [`with_channel_anchor`] does for a channel. A thread force-killed while
+/// parked in the pipe is reaped with its stack freed raw; owned by the
+/// `Thread`, the `Arc` is dropped by `Thread::free` instead.
+#[cfg(all(feature = "pipe", not(feature = "neo-test-pipe-park-kill-control")))]
+pub fn with_pipe_anchor<R>(
+    pipe: alloc::sync::Arc<crate::ipc::pipe::PipeObject>,
+    op: impl FnOnce(&alloc::sync::Arc<crate::ipc::pipe::PipeObject>) -> R,
+) -> R {
+    let anchor: *const alloc::sync::Arc<crate::ipc::pipe::PipeObject> = without_interrupts(|| {
+        let mut s = current_scheduler().inner.lock();
+        debug_assert!(
+            s.current.pipe_anchor.is_none(),
+            "with_pipe_anchor: nested pipe anchor"
+        );
+        s.current.pipe_anchor.insert(pipe) as *const _
+    });
+    // SAFETY: as in `with_channel_anchor`: the slot is a field of the running
+    // thread's boxed `Thread`, which doesn't move while the thread parks,
+    // migrates and resumes; only this thread writes it until it is a reaped
+    // zombie, and `Thread::free` can't run while this frame can still run.
+    let ret = op(unsafe { &*anchor });
+    let anchor = without_interrupts(|| current_scheduler().inner.lock().current.pipe_anchor.take());
+    // Dropped outside the scheduler lock: it may be the pipe's last count.
+    drop(anchor);
+    ret
+}
+
+/// `pipe_park_kill_control`: the pre-fix shape, the pipe owned by the
+/// syscall frame across the park (the per-kill leak counter must catch it).
+#[cfg(all(feature = "pipe", feature = "neo-test-pipe-park-kill-control"))]
+pub fn with_pipe_anchor<R>(
+    pipe: alloc::sync::Arc<crate::ipc::pipe::PipeObject>,
+    op: impl FnOnce(&alloc::sync::Arc<crate::ipc::pipe::PipeObject>) -> R,
+) -> R {
+    op(&pipe)
 }
 
 /// `ipc_park_kill_control`: the pre-fix shape, the channel owned by the
@@ -2637,6 +2676,19 @@ pub fn debug_total_zombies() -> usize {
         total += sched.zombie_count.load(Ordering::Acquire);
     }
     total
+}
+
+/// L1a.1 step 2a: is `token`'s thread still parked on it? A pipe's full
+/// waiter list drops the tokens of threads killed while parked. Callers may
+/// hold a lock that orders before the scheduler's (the pipe's).
+#[cfg(feature = "pipe")]
+pub fn token_still_parked(token: ThreadWakeToken) -> bool {
+    without_interrupts(|| {
+        let Some(sched) = scheduler_for_cpu(token.cpu_id) else {
+            return false;
+        };
+        sched.inner.lock().token_slot_occupied(token)
+    })
 }
 
 #[cfg(feature = "neo-test")]

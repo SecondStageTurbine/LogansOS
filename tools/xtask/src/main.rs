@@ -5346,6 +5346,35 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // L1a.1 step 2a: the kernel pipe through its syscalls, run by
+        // stand-in processes: SYS_PIPE_CREATE, a round trip, EOF and EPIPE
+        // on the last endpoint, an atomic write woken by a partial read,
+        // per-handle counts, end-aware SYS_WAIT_ANY items, a slot reused
+        // under a wait (CP-61) and a write landing in the reader's
+        // check-to-park window from CPU 1 (CP-14). Controls, each must FAIL:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-pipe-core-cp14-control
+        // (pipe_cp14_lost_wake) and =wait-multiplex-no-identity-check
+        // (pipe_rebind_stranded).
+        name: "pipe_core",
+        feature: "neo-test-pipe-core",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1a.1 step 2a (CP-33, CP-67): threads killed while parked in a pipe
+        // read and a pipe write leave no pipe count; a killed thread's token
+        // is harmless; a full waiter list drops dead tokens, and with
+        // PARK_MAX live waiters the next is EAGAIN. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-pipe-park-kill-control (must FAIL:
+        // pipe_park_kill_arc_leaked).
+        name: "pipe_park_kill",
+        feature: "neo-test-pipe-park-kill",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-98 (CP-98): a kill that races a natural exit (the child's thread
         // waits unreaped in a zombie ring, or runs inside SYS_EXIT on another
         // CPU) returns ESRCH or defers to the reap; a kill of a process parked
@@ -11047,6 +11076,7 @@ const CORE_PATHS: &[&str] = &[
     // 7. The test machinery and the workflow.
     "kernel/src/test_harness.rs",
     "kernel/src/test_harness_latency_oracle.rs",
+    "kernel/src/test_harness_pipe.rs",
     "tools/xtask/",
     "scripts/",
     ".github/workflows/",
@@ -19060,6 +19090,46 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "token_park_teardown=no_corruption rounds=60",
             ],
             "tearing down a process whose thread is token-parked must never leave a CPU on its freed PML4 (CP-60)",
+        )?;
+    }
+    if scenario.name == "pipe_core" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "PIPE create bad_capacity=-22 small_capacity=-22 handles_ok=true write=3 read=3 bytes_ok=true read_end_write=-1 close_write=0 read_after_close=0",
+                "PIPE round read=5 write=5 bytes_ok=true counts=0/0/0 arc=1",
+                "PIPE eof zero_write=0 read=0",
+                "PIPE epipe zero_read=0 partial_write=16 later_write_epipe=true",
+                "PIPE atomic held_while_parked=300 write=300 drained=500 order_ok=true",
+                "PIPE nonblock read=-11",
+                "PIPE two_writers kill1=0 still_parked=true writers_left=1 kill2=0 read=0 arc=1",
+                "PIPE wait_read early=false result=1 latency_ticks=",
+                "PIPE wait_write early=false result=1 latency_ticks=",
+                "PIPE close_parked_read closed=true result=-9 arc=1",
+                "PIPE close_parked_write closed=true result=-9 arc=1",
+                "PIPE rebind result=1 latency_ticks=",
+                " arc=1/1",
+                "PIPE cp14 rounds=8 woken=8 window_hits=",
+                "pipe_core=ok create=round_trip round=5 eof=0 epipe=partial_then_epipe atomic=whole nonblock=eagain two_writers=eof_on_last wait=read,write_atomic close_parked=ebadf rebind=rewatched cp14=no_lost_wake",
+            ],
+            "the pipe's syscalls must round-trip, end with EOF and EPIPE on the last endpoint (a blocking write returning what it wrote), wake an atomic writer on any read that frees room, count endpoints per handle, wake SYS_WAIT_ANY on either end, re-watch a reused slot (CP-61) and never lose a write that lands between a reader's check and its park (CP-14)",
+        )?;
+    }
+    if scenario.name == "pipe_park_kill" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "PIPE kill leg=read terminate=0 returned=None arc parked=",
+                " after=1 readers=1",
+                "PIPE stale tokens_before=1 read=1",
+                "PIPE kill leg=write terminate=0 returned=None arc parked=",
+                " after=1 writers=0 buffered=16",
+                "PIPE full stale_before=8 extra=-11 live_total=8 arc=1",
+                "pipe_park_kill=ok legs=read,write arc=1 stale=harmless full=purged_then_eagain",
+            ],
+            "a thread killed while parked in a pipe must leave no pipe count behind (CP-67), its stale token must not hurt the next reader, and a full waiter list must drop dead tokens before refusing a live one",
         )?;
     }
     if scenario.name == "wait_any_core" {

@@ -21,12 +21,45 @@
 //!   is one more endpoint; closing the original leaves the granted one live.
 //! - The last reader closing wakes every parked writer (they get EPIPE);
 //!   the last writer closing wakes every parked reader (they get EOF).
+//!   The last close of an end also wakes the threads parked on that same
+//!   end (a sibling closed the handle they were blocked on), and a read or
+//!   write on a closed end is refused (`PipeError::EndClosed`, the kernel's
+//!   `EBADF`): Dexter's #56 F1.
 
 /// The two pipe sizes the terminal uses (L1a THINK §3.3).
 pub const STDIN_PIPE_CAPACITY: usize = 4 * 1024;
 pub const STDOUT_PIPE_CAPACITY: usize = 64 * 1024;
 /// The largest pipe a caller may create.
 pub const MAX_PIPE_CAPACITY: usize = 64 * 1024;
+/// The smallest pipe `SYS_PIPE_CREATE` makes: a write of at most
+/// [`PIPE_ATOMIC`] bytes is atomic only if it fits the capacity, so the
+/// capacity must be at least that (POSIX: `PIPE_BUF` <= capacity; Chad #56
+/// item 5). Kernel-internal pipes (the tests) may be smaller.
+pub const MIN_PIPE_CAPACITY: usize = PIPE_ATOMIC;
+
+/// `SYS_PIPE_CREATE`'s capacity rule: `MIN_PIPE_CAPACITY..=MAX_PIPE_CAPACITY`.
+pub const fn create_capacity_ok(capacity: usize) -> bool {
+    capacity >= MIN_PIPE_CAPACITY && capacity <= MAX_PIPE_CAPACITY
+}
+
+/// `SYS_PIPE_READ` / `SYS_PIPE_WRITE` flag: don't block (`EAGAIN`).
+pub const PIPE_NONBLOCK: u64 = 1;
+
+/// `SYS_PIPE_CREATE`'s return: the read end's handle in the low 32 bits,
+/// the write end's in the high 32 (libneo splits it the same way; the byte
+/// oracle is in `tools/pipe-logic-tests`).
+pub const fn pack_ends(read: u32, write: u32) -> u64 {
+    (read as u64) | ((write as u64) << 32)
+}
+
+/// The inverse of [`pack_ends`]: `(read, write)`.
+pub const fn unpack_ends(packed: u64) -> (u32, u32) {
+    (packed as u32, (packed >> 32) as u32)
+}
+/// A write of at most this many bytes (and no more than the capacity) is
+/// atomic: it is stored whole or waits for room, so two writers' small
+/// writes never interleave (POSIX's minimum `PIPE_BUF`; step-2 THINK §2a).
+pub const PIPE_ATOMIC: usize = 512;
 
 /// Which end a handle is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +107,10 @@ pub enum PipeError {
     TooManyEndpoints,
     /// Closing an end that has no endpoints left (a double close).
     NoSuchEndpoint,
+    /// Adding an endpoint to, or reading or writing through, an end whose
+    /// count reached 0: once an end is closed it stays closed (Dexter #46
+    /// note 1b; #56 F1, a thread whose sibling closed its handle).
+    EndClosed,
 }
 
 /// The state of one pipe. The bytes live in caller-owned storage of exactly
@@ -85,6 +122,9 @@ pub struct Pipe {
     len: usize,
     readers: u32,
     writers: u32,
+    /// An end's count has dropped to 0: it is closed for good.
+    read_closed: bool,
+    write_closed: bool,
 }
 
 impl Pipe {
@@ -99,6 +139,8 @@ impl Pipe {
             len: 0,
             readers: 1,
             writers: 1,
+            read_closed: false,
+            write_closed: false,
         })
     }
 
@@ -129,17 +171,63 @@ impl Pipe {
         self.len > 0 || self.writers == 0
     }
 
-    /// A write would not block (space, or EPIPE): readiness for a write end.
+    /// A write of up to `PIPE_ATOMIC` bytes would not block (room for it
+    /// whole, or EPIPE): readiness for a write end. "Any space" is not
+    /// enough: an atomic write waits for room for all of it, so a wait on
+    /// "any space" followed by a non-blocking write could spin (Dexter #56
+    /// F2). With this much room every write makes progress: one of at most
+    /// the threshold fits whole, a larger one is not atomic and stores some.
     pub const fn writable(&self) -> bool {
-        self.len < self.capacity || self.readers == 0
+        let need = if self.capacity < PIPE_ATOMIC {
+            self.capacity
+        } else {
+            PIPE_ATOMIC
+        };
+        self.capacity - self.len >= need || self.readers == 0
     }
 
-    /// One more handle on `end` (a grant or a duplicate).
+    /// A new pipe with no endpoints yet, for a caller whose handle installs
+    /// each count one (the kernel's `HandleTable` retains on install). Its
+    /// ends are open, not closed: the first `add_endpoint` on each succeeds.
+    pub const fn new_unattached(capacity: usize) -> Result<Self, PipeError> {
+        match Self::new(capacity) {
+            Ok(mut p) => {
+                p.readers = 0;
+                p.writers = 0;
+                Ok(p)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// A pipe with given endpoint counts, for the host KATs of the count
+    /// bounds (`TooManyEndpoints`, `EndClosed`); the kernel uses [`Pipe::new`].
+    #[doc(hidden)]
+    pub const fn with_endpoints(
+        capacity: usize,
+        readers: u32,
+        writers: u32,
+    ) -> Result<Self, PipeError> {
+        match Self::new(capacity) {
+            Ok(mut p) => {
+                p.readers = readers;
+                p.writers = writers;
+                Ok(p)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One more handle on `end` (a grant or a duplicate). An end whose
+    /// count has dropped to 0 can't be reopened.
     pub fn add_endpoint(&mut self, end: End) -> Result<(), PipeError> {
-        let count = match end {
-            End::Read => &mut self.readers,
-            End::Write => &mut self.writers,
+        let (count, closed) = match end {
+            End::Read => (&mut self.readers, self.read_closed),
+            End::Write => (&mut self.writers, self.write_closed),
         };
+        if closed {
+            return Err(PipeError::EndClosed);
+        }
         *count = count.checked_add(1).ok_or(PipeError::TooManyEndpoints)?;
         Ok(())
     }
@@ -153,27 +241,37 @@ impl Pipe {
         };
         *count = count.checked_sub(1).ok_or(PipeError::NoSuchEndpoint)?;
         let last = *count == 0;
-        Ok(match end {
-            // The last reader: writers get EPIPE. The buffer is now
-            // unreachable, so drop it (its bytes can never be read).
-            End::Read if last => {
-                self.head = 0;
-                self.len = 0;
-                Wake {
-                    readers: false,
-                    writers: true,
-                }
+        if last {
+            match end {
+                End::Read => self.read_closed = true,
+                End::Write => self.write_closed = true,
             }
-            // The last writer: readers drain what's left, then EOF.
-            End::Write if last => Wake {
-                readers: true,
-                writers: false,
-            },
-            _ => Wake::default(),
+        }
+        if !last {
+            return Ok(Wake::default());
+        }
+        // The last reader: the buffer is now unreachable, so drop it (its
+        // bytes can never be read). The last writer: readers drain what's
+        // left, then EOF.
+        if end == End::Read {
+            self.head = 0;
+            self.len = 0;
+        }
+        // Wake both sides: the other side's waiters get EPIPE or EOF, and
+        // this side's (a sibling closed the handle they were blocked on) get
+        // `EndClosed` instead of sleeping on an end nothing can wake.
+        Ok(Wake {
+            readers: true,
+            writers: true,
         })
     }
 
-    /// Store up to `src.len()` bytes into `storage` (`capacity` bytes).
+    /// Store up to `src.len()` bytes into `storage` (`capacity` bytes). A
+    /// write of at most [`PIPE_ATOMIC`] bytes that fits the capacity is
+    /// atomic: all of it, or `WouldBlock` until there is room for all of it.
+    /// A larger write stores what fits. A zero-length write is `BrokenPipe`
+    /// with no reader, else `Written(0)` (the zero-length contract, as
+    /// Linux's).
     pub fn write(
         &mut self,
         storage: &mut [u8],
@@ -182,6 +280,9 @@ impl Pipe {
         if storage.len() != self.capacity {
             return Err(PipeError::BadCapacity);
         }
+        if self.write_closed {
+            return Err(PipeError::EndClosed);
+        }
         if self.readers == 0 {
             return Ok((WriteOutcome::BrokenPipe, Wake::default()));
         }
@@ -189,7 +290,8 @@ impl Pipe {
             return Ok((WriteOutcome::Written(0), Wake::default()));
         }
         let space = self.capacity - self.len;
-        if space == 0 {
+        let atomic = src.len() <= PIPE_ATOMIC && src.len() <= self.capacity;
+        if space == 0 || (atomic && space < src.len()) {
             return Ok((WriteOutcome::WouldBlock, Wake::default()));
         }
         let n = space.min(src.len());
@@ -208,7 +310,13 @@ impl Pipe {
         ))
     }
 
-    /// Copy up to `dst.len()` buffered bytes out of `storage`.
+    /// Copy up to `dst.len()` buffered bytes out of `storage`. A zero-length
+    /// read is `Read(0)` while bytes or a writer remain, `Eof` with neither.
+    ///
+    /// Every read that frees space wakes the writers, not only one from a
+    /// full pipe: an atomic writer parks while the pipe is not full but has
+    /// too little room for its whole write, and must see each new byte of
+    /// room. A writer that still doesn't fit parks again.
     pub fn read(
         &mut self,
         storage: &[u8],
@@ -216,6 +324,9 @@ impl Pipe {
     ) -> Result<(ReadOutcome, Wake), PipeError> {
         if storage.len() != self.capacity {
             return Err(PipeError::BadCapacity);
+        }
+        if self.read_closed {
+            return Err(PipeError::EndClosed);
         }
         if self.len == 0 {
             let outcome = if self.writers == 0 {
@@ -231,7 +342,6 @@ impl Pipe {
             return Ok((ReadOutcome::Read(0), Wake::default()));
         }
         let n = self.len.min(dst.len());
-        let was_full = self.len == self.capacity;
         let first = n.min(self.capacity - self.head);
         dst[..first].copy_from_slice(&storage[self.head..self.head + first]);
         dst[first..n].copy_from_slice(&storage[..n - first]);
@@ -244,7 +354,7 @@ impl Pipe {
             ReadOutcome::Read(n),
             Wake {
                 readers: false,
-                writers: was_full,
+                writers: true,
             },
         ))
     }
