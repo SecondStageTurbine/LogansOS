@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 rung 6, the browser as
+# a window under the OT-88 app model. Built for x86_64-unknown-neoplutarch
+# only. Its first bins check, on-target, the std surface a window's loop
+# needs (channel::try_recv, std::os::neoplutarch::input).
+[workspace]
+
+[package]
+name = "browser-app"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 rung 6: the browser as an OT-88 app"
+
+[[bin]]
+name = "browser-io-smoke"
+path = "src/io_smoke.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "browser-io-peer"
+path = "src/io_peer.rs"
+test = false
+bench = false
+
+[dependencies]
+neo-std-pal = { path = "../neo-std-pal" }
