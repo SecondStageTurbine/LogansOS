@@ -271,7 +271,7 @@ Notes:
 - On a kernel without `real-lm`, all three generation calls are compiled as `EINVAL` stubs, not
   `ENOSYS`.
 
-### Network range (0x180–0x190) — sockets, TCP, DNS, TLS
+### Network range (0x180–0x191) — sockets, TCP, DNS, TLS, interface status
 
 With `net-dial-cap` off (image A) the pre-capability argument shapes and ambient roots are compiled.
 With `net-dial-cap` on, the legacy roots are closed (`ENOSYS`), `SYS_NET_DIAL` takes a fourth handle
@@ -297,6 +297,7 @@ live. See the capability section below.
 | 398 | 0x18E | `SYS_NET_TCP_ENABLE_TLS` | `h: u32, key: ptr, key_len` (exact key length) | 0 | `EINVAL` (key length), `EFAULT`, `EBADF`, `EPERM`, `ENOMEM` | always | yes | `sys_net_tcp_enable_tls` |
 | 399 | 0x18F | `SYS_NET_DIAL_CAP_DERIVE` | `parent_h: u32, host: ptr, host_len, port: u16` | derived `NetDialCap` handle | `EINVAL`, `EFAULT`, `EBADF`, `EPERM`, `EACCES` (widening), `ENOMEM`, `ENOSYS` (feature off) | `net-dial-cap` (else `ENOSYS`) | yes (ENOSYS) | `sys_net_dial_cap_derive` |
 | 400 | 0x190 | `SYS_GETRANDOM` | `buf: ptr, len` | bytes filled (= `len`; 0-length is a no-op) | `EINVAL` (`len` > `MAX_GETRANDOM_LEN`), `EFAULT`, `ENOMEM`, `ENOSYS` (feature off) | `kernel-rng` | yes | `sys_getrandom` |
+| 401 | 0x191 | `SYS_NET_IF_STATUS` | `out: ptr, out_len` (≥ 56 = `NetIfStatusV1`) | 0, writes the default interface's 56-byte record | `EINVAL` (null, `out_len` < 56), `EFAULT`, `ENOSYS` (feature off) | `net-info` (else `ENOSYS`) | no (ENOSYS) | `sys_net_if_status` |
 
 Notes:
 - Socket addresses are a small serialized form (≤32 bytes, family-tagged), not raw `sockaddr`
@@ -305,6 +306,12 @@ Notes:
   `bytes_out`) — no version field yet.
 - `SYS_NET_SHUTDOWN_TCP` and `SYS_NET_CONNECT_TCP` have libneo number constants but no wrapper
   functions.
+- `SYS_NET_IF_STATUS` (F11 S4) is read-only and needs no capability: the default interface (the DHCP
+  client's when it holds a lease, else the first with link, else the first registered). `NetIfStatusV1`,
+  little-endian: `version` u32 (1) @0, `flags` u32 @4 (bit 0 link up, 1 lease bound, 2 carrier,
+  3 present, 4 stale: the sources kept changing over 4 reads, so the parts may mix two states), `ifindex` u32 @8, `driver` [u8; 12] @12 (NUL-padded), `mac` [u8; 6] @24, `ipv4` [u8; 4] @30,
+  `prefix` u8 @34, pad @35, `router` [u8; 4] @36, `dns` [u8; 4] @40, pad u32 @44, `lease_secs_left` u64 @48
+  (`u64::MAX`: no lease). The hand-laid oracle is `tools/net-if-status-abi-tests`.
 
 ### Atrium: compositor, GPU, input (0x1A0–0x1B9)
 
@@ -490,6 +497,7 @@ boundary.
 | `MountRequestV1` | header `version` (must be 1) | 1 | `SYS_MOUNT` (input) | 32 + strings |
 | `ThreadInfoV1` | *(none — length only)* | — | `SYS_THREAD_GET_INFO` | 40 |
 | `NetStatsV1` | *(none — length only)* | — | `SYS_NET_STATS` | 32 |
+| `NetIfStatusV1` | `version` (1) | 1 | `SYS_NET_IF_STATUS` | 56 |
 | `TensorCreateDesc` | *(none — length only)* | — | `SYS_TENSOR_CREATE` | fixed |
 | `TensorQueryDesc` | *(none — length only)* | — | `SYS_TENSOR_QUERY` | fixed |
 | `BufferDescV1` | *(none — length only)* | — | `SYS_BUFFER_CREATE`/`_QUERY` | 24 |

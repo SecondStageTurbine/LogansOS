@@ -1471,8 +1471,9 @@ jobs:
     #                    forward-perf, ot16-graph-walker, phase9-data-driven-config
     #   misc:         browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
     #                 -> browser-runtime, net-dial-cap, virtio-accel, framebuffer-console, kernel-rng,
-    #                    model-boot-module (B1a: boot-module registry + second allocator zone)
-    #   boot-eth0:    boot-eth0                         -> usb-host, interface-identity
+    #                    model-boot-module (B1a: boot-module registry + second allocator zone), net-info (F11 S4)
+    #   boot-eth0:    boot-eth0,net-info                -> usb-host, interface-identity, and
+    #                 SYS_NET_IF_STATUS over the identity registry (misc has it without)
     #   desktop:      desktop                           -> the shipped desktop set: product +
     #                 desktop-session (atrium-input-routing, usb-hid, usb-hid-mouse) +
     #                 SYS_FB_OUTPUT_QUERY + the production session boot path in main.rs
@@ -1497,8 +1498,8 @@ jobs:
             "wifi-usb|mt7601u,wpa3-sae"
             "gpu-iommu|accel-intel,vtd"
             "atrium-ai|atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config"
-            "misc|browser-runtime,net-dial-cap,net-dial-public-only,virtio-accel,framebuffer-console,kernel-rng,model-boot-module"
-            "boot-eth0|boot-eth0"
+            "misc|browser-runtime,net-dial-cap,net-dial-public-only,virtio-accel,framebuffer-console,kernel-rng,model-boot-module,net-info"
+            "boot-eth0|boot-eth0,net-info"
             "desktop|desktop"
             "product-real-lm|desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick"
             "kill-inference|neo-test-inference-kill"

@@ -700,6 +700,44 @@ the `EINVAL` on a short buffer.
 **Kill-switch `net-info`:** off ⇒ the syscall is `ENOSYS`, the page shows "Network status is unavailable" and
 Continue, and the rest of the boot is unchanged.
 
+**As built (Seat I, 2026-11-09).** Where the build settles what §3.3 left open:
+- **The number is `0x191`**, after `SYS_GETRANDOM` (the network block 0x180–0x18F was full).
+- **`NetIfStatusV1` is 56 bytes, version 1**, little-endian: `version`, `flags`, `ifindex` (u32 each), `driver`
+  [12], `mac` [6], `ipv4` [4], `prefix` u8, a zero pad byte, `router` [4], `dns` [4], a zero pad u32, and
+  `lease_secs_left` u64 (`u64::MAX` without a lease). The hand-laid oracle is `tools/net-if-status-abi-tests`; it
+  holds the kernel's struct and libneo's independent byte decoder to the same records.
+- **One flag more than §3.3 named: bit 3, `PRESENT`** (a network device exists). It tells "no NIC" from "a NIC with
+  no link" without a sentinel `ifindex`.
+- **The default interface**: the DHCP client's when it holds a lease, else the first with link up, else the first
+  registered. A lease is reported only on its own interface.
+- **The lease's time left is on the DHCP client's clock**, whose ticks are the lease's seconds. It advances only
+  while something calls `net::tick` (the boot's bring-up; `net-tick` where present), so on image A it is the
+  lease's length less the bring-up's ticks. The renewal gap above stands.
+- **One coherent record (Janus, #100 relay 382).** The sources live in separate consistency domains (the DHCP
+  client, the device and identity registries, the IPv4 table, each driver's carrier), so reading them one after
+  another could return a mix no state ever held (an old lease with a new link-down). A **network-status
+  generation** (`kernel/src/net/status_gen.rs`) covers them: every writer of a source bumps it **inside its own
+  lock, after the write** (a DHCP state, lease or interface change; a device or interface registration; a
+  link-state change; an IPv4 address added or expired). The reader loads it, reads, and loads it again; on a
+  change it reads again, at most 4 times, then returns the last record with bit 4, `STALE`, set. It never spins
+  unbounded. The carriers have no lock, so they are read first, right after the first load: the record is the
+  state at that instant. Since the reader takes the writers' locks, a write it saw had bumped before the read,
+  and a write in its window moves the generation. The page shows nothing it can't trust: a `STALE` record reads
+  "Network status is unavailable." The host discriminator (`tools/net-if-status-abi-tests`) runs a writer in
+  every gap between the reader's reads, and shows a mixed record without the generation and a held-or-flagged
+  one with it.
+- **No new lock order.** Each network subsystem lock is taken alone and released before the next, and
+  `CLIENT`'s hold is unchanged. The syscall body runs IF=0, like every other net-lock taker (`net-tick` runs its
+  step IF-off), so it adds no new taker class (CP-37). None of them is an AI-governance lock (I-14).
+- **`net-info` is not in `desktop` yet**: the setup menu isn't in the product image. Its gate kernel is
+  `neo-test-setup-net-boot` (the intro kernel plus `net-info`). That makes the kill-switch a QEMU control:
+  `setup_menu_net_off` boots the plain intro kernel, where the number is `ENOSYS` and the page says the status is
+  unavailable. `setup_menu_net_nonic` is the no-NIC control on the `net-info` kernel.
+- **The page's words**: "Wired: connected, 10.0.2.15" (or "no address yet"), "Device: cdc-ecm. Lease: 23 h 53 min
+  left.", "Wired: no link.", "Network status is unavailable.", and "Wi-Fi: coming in a later version." Continue
+  reads "Continue" with an address and "Continue without a network" otherwise. The Try summary doesn't name the
+  network: it isn't a choice.
+
 ### S5 — keyboard layouts: a second table and a selector
 
 `keymap_layout_logic.rs` with US + UK, the WM's decoder selecting by id, the id passed to Arthur at spawn (and to

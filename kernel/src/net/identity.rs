@@ -103,6 +103,8 @@ pub fn register(id: u32, identity: &NetDeviceIdentity, initial_link: LinkState) 
             class,
             link: initial_link,
         });
+        // F11 S4: a status source changed (inside the lock, after the write).
+        crate::net::status_gen::bump();
         name
     };
     crate::serial_println!(
@@ -140,7 +142,11 @@ pub fn set_link_state(id: u32, link: LinkState) {
     }
     let mut registry = REGISTRY.lock();
     if let Some(entry) = registry.iter_mut().find(|e| e.id == id) {
-        entry.link = link;
+        // F11 S4: only a change is a new status (the refresh runs every tick).
+        if entry.link != link {
+            entry.link = link;
+            crate::net::status_gen::bump();
+        }
     }
 }
 

@@ -197,27 +197,42 @@ impl DhcpClient {
     }
 }
 
-pub fn inject_acd_conflict() {
+/// F11 S4 (Janus, #100 relay 382): run `f` on the client under its lock and,
+/// if the state, lease or interface changed (what `SYS_NET_IF_STATUS` reads),
+/// bump the network-status generation before the lock is released.
+fn change<R>(f: impl FnOnce(&mut DhcpClient) -> R) -> R {
     let mut client = CLIENT.lock();
-    client.acd = AcdState::Conflict;
-    client.state = DhcpState::Init;
-    client.lease = None;
+    let before = (client.state, client.lease, client.interface_id);
+    let r = f(&mut client);
+    if (client.state, client.lease, client.interface_id) != before {
+        crate::net::status_gen::bump();
+    }
+    r
+}
+
+pub fn inject_acd_conflict() {
+    change(|client| {
+        client.acd = AcdState::Conflict;
+        client.state = DhcpState::Init;
+        client.lease = None;
+    });
 }
 
 pub fn start_discover() -> u32 {
-    let mut client = CLIENT.lock();
-    client.start();
-    client.xid
+    change(|client| {
+        client.start();
+        client.xid
+    })
 }
 
 pub fn inject_offer(packet: &[u8]) -> Result<(), DhcpError> {
     let message = parse_message(packet)?;
-    CLIENT.lock().apply_offer(message, now())
+    change(|client| client.apply_offer(message, now()))
 }
 
 pub fn inject_ack(packet: &[u8]) -> Result<(), DhcpError> {
     let message = parse_message(packet)?;
-    let result = CLIENT.lock().apply_ack(message, now());
+    let result = change(|client| client.apply_ack(message, now()));
     if result.is_ok() {
         dns::configure_from_dhcp_lease(snapshot().lease);
     }
@@ -241,7 +256,7 @@ pub fn set_rx_demux_enabled(enabled: bool) {
 /// — must set this to its registered index, else DHCP never leaves wlan0.
 #[allow(dead_code)]
 pub fn set_interface_id(id: u32) {
-    CLIENT.lock().interface_id = id;
+    change(|client| client.interface_id = id);
 }
 
 /// CB-1b ISC-1 — the production wire-RX→DHCP bridge (the piece CB-1 lacked).
@@ -359,7 +374,7 @@ fn reply_for_us(message: &[u8]) -> bool {
 
 pub fn tick() {
     let now = CLOCK_TICKS.fetch_add(1, Ordering::AcqRel) + 1;
-    CLIENT.lock().tick(now);
+    change(|client| client.tick(now));
 }
 
 pub fn snapshot() -> DhcpSnapshot {
@@ -375,6 +390,28 @@ pub fn snapshot() -> DhcpSnapshot {
 
 pub fn now() -> u64 {
     CLOCK_TICKS.load(Ordering::Acquire)
+}
+
+/// F11 S4 (`SYS_NET_IF_STATUS`): the bound lease with the client's interface
+/// and clock, read in one hold of the client's lock (so the lease, the
+/// interface and the state agree). `None` unless a lease is in force
+/// (`Bound`, `Renewing` or `Rebinding`).
+#[cfg(feature = "net-info")]
+pub fn bound_lease() -> Option<crate::net::if_status_logic::Lease> {
+    let client = CLIENT.lock();
+    let lease = match client.state {
+        DhcpState::Bound | DhcpState::Renewing | DhcpState::Rebinding => client.lease?,
+        DhcpState::Init | DhcpState::Selecting | DhcpState::Requesting => return None,
+    };
+    Some(crate::net::if_status_logic::Lease {
+        ifindex: client.interface_id,
+        ip: lease.ip,
+        mask: lease.mask,
+        router: lease.router,
+        dns: lease.dns,
+        expiry: lease.expiry,
+        now: CLOCK_TICKS.load(Ordering::Acquire),
+    })
 }
 
 pub fn parse_message(packet: &[u8]) -> Result<DhcpMessage, DhcpError> {
