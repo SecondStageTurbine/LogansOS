@@ -434,6 +434,7 @@ fn spawn_neo_init() -> i32 {
         feature = "atrium-compositor-g1",
         feature = "system-store",
         feature = "mount-authority",
+        feature = "power-cap",
         feature = "neo-test-gpu-glass-slice6"
     )))]
     // Written as `&[][..]` (not `&[]`) to match the pre-C1.1 expression
@@ -455,85 +456,11 @@ fn spawn_neo_init() -> i32 {
             feature = "installer",
             feature = "atrium-compositor-g1",
             feature = "system-store",
-            feature = "mount-authority"
+            feature = "mount-authority",
+            feature = "power-cap"
         )
     ))]
-    // Not `vec![...]`: every push below is cfg-gated, which is the entire point
-    // of the compositional assembly (CP-34). A literal initializer cannot
-    // express "include this element only when a feature is on". The allow sits
-    // on the BLOCK, not the `let` — the lint's span covers creation plus the
-    // pushes, so a statement-level allow does not suppress it.
-    #[allow(clippy::vec_init_then_push)]
-    let inherited_vec: alloc::vec::Vec<process::InheritedHandle> = {
-        #[allow(unused_mut)]
-        let mut caps: alloc::vec::Vec<process::InheritedHandle> = alloc::vec::Vec::new();
-        #[cfg(feature = "net-dial-cap")]
-        caps.push(process::InheritedHandle {
-            handle: process::root_net_dial_cap(),
-            parent: None,
-        });
-        #[cfg(any(
-            feature = "neo-test-arthur-compositor",
-            feature = "neo-test-dw1-desktop-wm",
-            feature = "neo-test-dw2-scene-policy",
-            feature = "desktop-session"
-        ))]
-        caps.push(process::InheritedHandle {
-            handle: process::root_gpu_submit_cap(),
-            parent: None,
-        });
-        // DI-1a: the session root's non-delegable input-system authority.
-        #[cfg(all(feature = "desktop-session", feature = "atrium-pointer-forward"))]
-        caps.push(process::InheritedHandle {
-            handle: process::root_input_system_cap(),
-            parent: None,
-        });
-        #[cfg(feature = "browser-runtime")]
-        caps.push(process::InheritedHandle {
-            handle: process::root_browser_runtime_cap(),
-            parent: None,
-        });
-        // OT-87 R4.4: the installer authority, for neo-init to hand to the
-        // shell and the installer screen.
-        #[cfg(feature = "installer")]
-        caps.push(process::InheritedHandle {
-            handle: process::root_installer_cap(),
-            parent: None,
-        });
-        // OT-66 K1a: last, so the root caps above keep their indices.
-        #[cfg(feature = "cap-rooted-open")]
-        caps.push(process::InheritedHandle {
-            handle: process::root_dir_cap(),
-            parent: None,
-        });
-        // Moving the keyboard route takes the input-system authority (L2
-        // pre-merge AAG, F1), so the root holds it wherever the focus
-        // syscalls exist, not only with the pointer route. After the caps
-        // above, which keep their indices.
-        #[cfg(all(
-            feature = "atrium-compositor-g1",
-            not(all(feature = "desktop-session", feature = "atrium-pointer-forward"))
-        ))]
-        caps.push(process::InheritedHandle {
-            handle: process::root_input_system_cap(),
-            parent: None,
-        });
-        // OT-66 L1: the sign-in record's store, neo-init's alone. Last, so
-        // every cap above keeps its index.
-        #[cfg(feature = "system-store")]
-        caps.push(process::InheritedHandle {
-            handle: process::root_system_store_cap(),
-            parent: None,
-        });
-        // Dexter #187 item 3a: the mount authority, neo-init's alone. After
-        // the system store, so every cap above keeps its index.
-        #[cfg(feature = "mount-authority")]
-        caps.push(process::InheritedHandle {
-            handle: process::root_mount_authority_cap(),
-            parent: None,
-        });
-        caps
-    };
+    let inherited_vec: alloc::vec::Vec<process::InheritedHandle> = root_inherited_caps();
     #[cfg(feature = "neo-test-gpu-glass-slice6")]
     let inherited_vec: alloc::vec::Vec<process::InheritedHandle> = {
         let root_gpu_compute_caps = process::root_gpu_compute_test_caps()
@@ -558,6 +485,7 @@ fn spawn_neo_init() -> i32 {
         feature = "atrium-compositor-g1",
         feature = "system-store",
         feature = "mount-authority",
+        feature = "power-cap",
         feature = "neo-test-gpu-glass-slice6"
     ))]
     let inherited = &inherited_vec[..];
@@ -1140,4 +1068,111 @@ extern "C" fn _kernel_start() -> ! {
         // In Phase 1 this becomes the idle loop that yields to the scheduler.
         arch::halt_forever();
     }
+}
+
+/// neo-init's root capability table, in its index order (CP-34: each
+/// authority pushes only under its own feature, so no composition drops one).
+/// Janus's #8 review, item 1a: `power-cap` is in this gate and its callers',
+/// so a kernel whose only root authority is `power-cap` still installs the
+/// PowerControl cap; `ot90_cap` reads its cap from this table.
+// Not `vec![...]`: every push below is cfg-gated, which is the entire point
+// of the compositional assembly (CP-34). A literal initializer cannot
+// express "include this element only when a feature is on". The allow sits
+// on the BLOCK, not the `let` — the lint's span covers creation plus the
+// pushes, so a statement-level allow does not suppress it.
+#[cfg(all(
+    not(feature = "neo-test-gpu-glass-slice6"),
+    any(
+        feature = "net-dial-cap",
+        feature = "neo-test-arthur-compositor",
+        feature = "neo-test-dw1-desktop-wm",
+        feature = "neo-test-dw2-scene-policy",
+        feature = "desktop-session",
+        feature = "browser-runtime",
+        feature = "cap-rooted-open",
+        feature = "installer",
+        feature = "atrium-compositor-g1",
+        feature = "system-store",
+        feature = "mount-authority",
+        feature = "power-cap"
+    )
+))]
+#[allow(clippy::vec_init_then_push)]
+pub(crate) fn root_inherited_caps() -> alloc::vec::Vec<sched::process::InheritedHandle> {
+    use sched::process;
+    #[allow(unused_mut)]
+    let mut caps: alloc::vec::Vec<process::InheritedHandle> = alloc::vec::Vec::new();
+    #[cfg(feature = "net-dial-cap")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_net_dial_cap(),
+        parent: None,
+    });
+    #[cfg(any(
+        feature = "neo-test-arthur-compositor",
+        feature = "neo-test-dw1-desktop-wm",
+        feature = "neo-test-dw2-scene-policy",
+        feature = "desktop-session"
+    ))]
+    caps.push(process::InheritedHandle {
+        handle: process::root_gpu_submit_cap(),
+        parent: None,
+    });
+    // DI-1a: the session root's non-delegable input-system authority.
+    #[cfg(all(feature = "desktop-session", feature = "atrium-pointer-forward"))]
+    caps.push(process::InheritedHandle {
+        handle: process::root_input_system_cap(),
+        parent: None,
+    });
+    #[cfg(feature = "browser-runtime")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_browser_runtime_cap(),
+        parent: None,
+    });
+    // OT-87 R4.4: the installer authority, for neo-init to hand to the
+    // shell and the installer screen.
+    #[cfg(feature = "installer")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_installer_cap(),
+        parent: None,
+    });
+    // OT-66 K1a: last, so the root caps above keep their indices.
+    #[cfg(feature = "cap-rooted-open")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_dir_cap(),
+        parent: None,
+    });
+    // Moving the keyboard route takes the input-system authority (L2
+    // pre-merge AAG, F1), so the root holds it wherever the focus
+    // syscalls exist, not only with the pointer route. After the caps
+    // above, which keep their indices.
+    #[cfg(all(
+        feature = "atrium-compositor-g1",
+        not(all(feature = "desktop-session", feature = "atrium-pointer-forward"))
+    ))]
+    caps.push(process::InheritedHandle {
+        handle: process::root_input_system_cap(),
+        parent: None,
+    });
+    // OT-66 L1: the sign-in record's store, neo-init's alone. Last, so
+    // every cap above keeps its index.
+    #[cfg(feature = "system-store")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_system_store_cap(),
+        parent: None,
+    });
+    // Dexter #187 item 3a: the mount authority, neo-init's alone. After
+    // the system store, so every cap above keeps its index.
+    #[cfg(feature = "mount-authority")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_mount_authority_cap(),
+        parent: None,
+    });
+    // OT-90 P4: Shut down and Restart, neo-init's alone. Last, after the
+    // mount authority, so every cap above keeps its index.
+    #[cfg(feature = "power-cap")]
+    caps.push(process::InheritedHandle {
+        handle: process::root_power_control_cap(),
+        parent: None,
+    });
+    caps
 }
