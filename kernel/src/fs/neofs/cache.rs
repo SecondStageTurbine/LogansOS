@@ -749,8 +749,16 @@ fn wake_worker(waiter: Option<ThreadWakeToken>) {
     }
 }
 
+impl super::cache_logic::BlockKey for CachedBlock {
+    #[inline(always)]
+    fn block_key(&self) -> u64 {
+        self.block
+    }
+}
+
+/// The hot path of a large read-back: see `cache_logic`.
 fn find_cached_block(blocks: &[CachedBlock], block: u64) -> Option<usize> {
-    blocks.iter().position(|cached| cached.block == block)
+    super::cache_logic::find_block(blocks, block)
 }
 
 fn find_or_insert_full_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
