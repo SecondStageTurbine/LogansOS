@@ -86,6 +86,10 @@ default = ["kernel-diagnostic", "accel-sim", "inference-preemptible", "user-copy
 # fault halts the kernel, as before.
 user-copy-fixup = []
 kernel-diagnostic = []
+# `cargo xtask size-budget --stability` only: one behaviour-free call in
+# `_kernel_start` (a `black_box` of a 3-line function), the smallest change
+# the size budget must see as almost nothing. Never in an image.
+size-budget-probe = []
 accel-sim = []
 virtio-accel = []
 accel-intel = []
