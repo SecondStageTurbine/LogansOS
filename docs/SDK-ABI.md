@@ -127,7 +127,8 @@ within that family. Versioning is carried by the separate `_VERSION` constant. E
 Image A is the feature closure of `PRODUCT_IMAGE_KERNEL_FEATURES` (in `tools/xtask/src/main.rs`). It
 includes `desktop` (…→ `product`, `desktop-session`), `atrium-pointer-forward` (→
 `atrium-input-routing` → `atrium-compositor-g1`), `real-lm`, `kernel-rng`, `kernel-sysstat`,
-`system-store`, and the Zenbook hardware features — and it deliberately does **not** include
+`system-store`, `power-cap` (→ the clean shutdown, K1-K7), and the Zenbook hardware features — and it
+deliberately does **not** include
 `browser-runtime`, `mem-quota`/`obj-quota`, `net-dial-cap`, `installer`, `wait-multiplex`,
 `neofs-file-replace`, `cap-rooted-open`, or `kernel-observability`.
 
