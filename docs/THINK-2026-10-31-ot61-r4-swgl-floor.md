@@ -107,10 +107,41 @@ the compositor from its RO+NX mapping.
   asking.
 - This is a governed change, so it waits until S1 and S2 are green on CI.
 
+### 3.1 S3 in two steps
+
+**S3a (branch `claude/ot61-r4c-atrium`): the buffer calls from std, one process.**
+- The A4 change: `SYS_BUFFER_CREATE`, `MAP`, `QUERY`, `COMMIT_DAMAGE`, `UNMAP` and `SYS_DERIVE`.
+  - Each is in `allowed_syscalls` with a provenance line and in the G1/G2 tests (`S3_SYSCALLS`).
+  - Each is reached through `std::os::neoplutarch::atrium` (`create`, `map`, `unmap`, `query`, `commit_damage`,
+    `derive`), never as a raw call in the bundle.
+- Scenario `swgl_atrium_smoke` (`userland/swgl-smoke/src/atrium.rs`). One process holds both handles: the root
+  handle it created, and a sibling it derives with `USE` and `MAP_READ | QUERY | PRESENT`, which is exactly the
+  compositor's grant.
+  - SWGL draws S1's pattern into the client RW mapping. The whole page is pre-filled with `0xCD`, so the stride
+    padding and the page tail are canaries.
+  - After the flush and a full-surface damage commit, every byte of the page is compared through the RO mapping at
+    the second address.
+  - The derived handle's attenuation is asked, not assumed:
+    - mapping the client view is `EPERM`;
+    - committing is `EPERM`;
+    - a damage rectangle past the descriptor is `EINVAL`.
+  - The kernel side checks every frame comes back after exit (buffer, both mappings, both handles).
+- **The client can't present.** `SYS_FB_PRESENT` has no std trampoline and isn't in the manifest, so a bundle ELF
+  that asked would fail the A4 backstop at build time. The spike's runtime refusal (`scanout_authorized()` → `EPERM`)
+  is the kernel's second line. Proving it at runtime needs a raw call, so it belongs with the compositor-side
+  scenario, not in the bundle.
+
+**S3b (next): the grant across processes.**
+- The RO handle goes to a separate compositor process over a channel (`SYS_GRANT`, the `neo-worker` pattern).
+- That process maps it, presents it, and the pixels are checked on the framebuffer.
+- It adds the channel send/grant to the manifest, and the stride/size validation in the rendering context (the
+  spike's "negative dimensions/stride fail without overwrite").
+
 ## 4. Kill-switch and the default build
 
-Every piece is opt-in: standalone crates built only for their scenarios (`swgl_smoke`, later `webrender_smoke`), and
-test-only kernel features. No syscall. The default kernel and image are unchanged.
+Every piece is opt-in: standalone crates built only for their scenarios (`swgl_smoke`, `webrender_smoke`,
+`swgl_atrium_smoke`), and test-only kernel features. No new kernel syscall: S3a exposes existing Atrium calls to std
+processes only. The default kernel and image are unchanged.
 
 ## 5. Decisions (none blocks S1)
 

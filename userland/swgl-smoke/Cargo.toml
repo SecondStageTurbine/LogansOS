@@ -20,6 +20,14 @@ path = "src/main.rs"
 test = false
 bench = false
 
+# S3a: the same pattern rendered into a kernel Atrium buffer, read back
+# through the compositor's read-only view.
+[[bin]]
+name = "swgl-atrium-smoke"
+path = "src/atrium.rs"
+test = false
+bench = false
+
 [dependencies]
 neo-std-pal = { path = "../neo-std-pal" }
 neo-crt = { path = "../neo-crt" }
