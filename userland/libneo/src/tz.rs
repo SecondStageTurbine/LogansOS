@@ -262,3 +262,201 @@ pub fn local_to_utc(local: i64, id: ZoneId) -> LocalResult {
         }
     }
 }
+
+/// The true UTC instant of an RTC reading `wall` (seconds since 1970, the
+/// wall time counted as if UTC), by the session's settings
+/// (THINK-2026-11-02-time-zones §2.1, §2.3):
+///
+/// * an RTC that holds UTC (`rtc_local` false): the reading is UTC;
+/// * an RTC that holds local time in `zone`: the local reading as UTC; an
+///   ambiguous one (a boot in the repeated autumn hour) takes the earlier
+///   instant, as Windows does; one in the spring gap (which a correct RTC
+///   can't hold) takes the offset in force after the gap;
+/// * an RTC that holds local time with no zone set ([`UTC`], id 0): unknown.
+pub fn rtc_reading_utc(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> {
+    if !rtc_local {
+        return Some(wall);
+    }
+    if zone == UTC {
+        return None;
+    }
+    Some(match local_to_utc(wall, zone) {
+        LocalResult::Single(u) => u,
+        LocalResult::Ambiguous(earlier, _) => earlier,
+        LocalResult::Gap { offset_after, .. } => offset_after,
+    })
+}
+
+/// What `CLOCK_REALTIME` holds, from `SYS_CLOCK_REALTIME_STATUS`
+/// (THINK-2026-11-02-time-zones §2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Basis {
+    /// The kernel has no `rtc-offset` (the status call fails): realtime is
+    /// the computer's clock as read, and Home shows it as it always did, with
+    /// no zone and no marker (the kill-switch's behaviour).
+    Legacy,
+    /// Not confirmed yet: the computer's clock as read, possibly local time.
+    Rtc,
+    /// Confirmed UTC. From here on only the display applies the zone: a
+    /// later zone or RTC-mode change never re-interprets the instant.
+    Utc,
+}
+
+impl Basis {
+    /// The basis for a status call's result.
+    pub fn of(status: Result<bool, i64>) -> Self {
+        match status {
+            Ok(true) => Self::Utc,
+            Ok(false) => Self::Rtc,
+            Err(_) => Self::Legacy,
+        }
+    }
+}
+
+/// The label after the time Home shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// [`Basis::Legacy`]: none.
+    Plain,
+    /// [`Basis::Rtc`]: "zone not set" (the reading isn't known to be UTC).
+    NotSet,
+    /// [`Basis::Utc`]: the zone's abbreviation ("UTC" for no zone).
+    Zone(&'static str),
+}
+
+/// The wall time (seconds, counted as if UTC) Home shows for `realtime` and
+/// its label. Only [`Basis::Utc`] applies the zone; the other two show the
+/// reading as it is.
+pub fn shown(realtime: i64, basis: Basis, zone: ZoneId) -> (i64, Shown) {
+    match basis {
+        Basis::Legacy => (realtime, Shown::Plain),
+        Basis::Rtc => (realtime, Shown::NotSet),
+        Basis::Utc => {
+            let (local, offset) = utc_to_local(realtime, zone);
+            (
+                local,
+                Shown::Zone(if zone == UTC { "UTC" } else { offset.abbr }),
+            )
+        }
+    }
+}
+
+/// The offset to confirm (`SYS_CLOCK_CONFIRM_REALTIME`) for an RTC reading
+/// `wall`: the reading less its true UTC instant, or `None` when that is
+/// unknown ([`rtc_reading_utc`]).
+pub fn confirm_offset(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> {
+    rtc_reading_utc(wall, zone, rtc_local).and_then(|utc| wall.checked_sub(utc))
+}
+
+/// After a confirm of `confirmed` for the RTC reading `wall` (the reading
+/// the confirm was computed from), whether the settings now in force would
+/// have read that same reading differently: then only a restart applies
+/// them (the confirm is write-once), and Home says so.
+///
+/// It re-reads the confirm's own reading, never the clock now: a reading
+/// taken later can fall in another season, and comparing its offset with
+/// the confirmed one asked for a restart after every DST change (Janus,
+/// #60). The same zone always reads the same reading the same way, and so
+/// does any zone with the same rules.
+pub fn needs_restart(wall: i64, confirmed: i64, zone: ZoneId, rtc_local: bool) -> bool {
+    confirm_offset(wall, zone, rtc_local) != Some(confirmed)
+}
+
+/// A Home verb about the clock (THINK-2026-11-02-time-zones §2.5). The WM
+/// answers these itself; they never reach Arthur.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockVerb<'a> {
+    /// `timezone`: show the zone, its offset and the RTC mode.
+    Show,
+    /// `timezone <name>`: the name as typed (see [`find_zone`]).
+    Zone(&'a [u8]),
+    /// `rtc local` (true) / `rtc utc` (false).
+    Rtc(bool),
+}
+
+fn trim(b: &[u8]) -> &[u8] {
+    let start = b.iter().position(|&c| c != b' ').unwrap_or(b.len());
+    let end = b.iter().rposition(|&c| c != b' ').map_or(start, |i| i + 1);
+    &b[start..end]
+}
+
+/// The clock verb an intent-field line is, if any (ASCII case ignored,
+/// surrounding spaces ignored). `rtc` with anything but `local`/`utc` is not
+/// a verb: it goes to Arthur like any other line.
+pub fn parse_verb(line: &[u8]) -> Option<ClockVerb<'_>> {
+    let line = trim(line);
+    let (word, rest) = match line.iter().position(|&c| c == b' ') {
+        Some(i) => (&line[..i], trim(&line[i..])),
+        None => (line, &line[line.len()..]),
+    };
+    if word.eq_ignore_ascii_case(b"timezone") {
+        return Some(if rest.is_empty() {
+            ClockVerb::Show
+        } else {
+            ClockVerb::Zone(rest)
+        });
+    }
+    if word.eq_ignore_ascii_case(b"rtc") {
+        if rest.eq_ignore_ascii_case(b"local") {
+            return Some(ClockVerb::Rtc(true));
+        }
+        if rest.eq_ignore_ascii_case(b"utc") {
+            return Some(ClockVerb::Rtc(false));
+        }
+    }
+    None
+}
+
+/// `a` equals `b` ignoring ASCII case, with a space in `a` matching `_`.
+fn same_name(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(&x, &y)| x.eq_ignore_ascii_case(&y) || (x == b' ' && y == b'_'))
+}
+
+fn contains_name(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && hay.windows(needle.len()).any(|w| same_name(needle, w))
+}
+
+/// A zone for what the user typed: an IANA name or alias in any case
+/// (`america/new_york`, `US/Eastern`), spaces for underscores
+/// (`America/New York`), or a city alone when exactly one zone ends in it
+/// (`new york`, `sydney`). `utc` is zone 0. Otherwise `Err` with up to three
+/// zones whose names contain it, for the card's suggestions.
+pub fn find_zone(typed: &[u8]) -> Result<ZoneId, [Option<ZoneId>; 3]> {
+    let typed = trim(typed);
+    if let Some(i) = ZONES
+        .iter()
+        .position(|z| same_name(typed, z.name.as_bytes()))
+    {
+        return Ok(i as ZoneId);
+    }
+    if let Some(&(_, id)) = LINKS
+        .iter()
+        .find(|(alias, _)| same_name(typed, alias.as_bytes()))
+    {
+        return Ok(id);
+    }
+    let city = |z: &Zone| z.name.rsplit('/').next().unwrap_or(z.name);
+    let mut found = None;
+    let mut count = 0;
+    for (i, z) in ZONES.iter().enumerate() {
+        if same_name(typed, city(z).as_bytes()) {
+            found = Some(i as ZoneId);
+            count += 1;
+        }
+    }
+    if count == 1 {
+        return Ok(found.unwrap_or(UTC));
+    }
+    let mut out = [None; 3];
+    let mut n = 0;
+    for (i, z) in ZONES.iter().enumerate() {
+        if n < out.len() && contains_name(z.name.as_bytes(), typed) {
+            out[n] = Some(i as ZoneId);
+            n += 1;
+        }
+    }
+    Err(out)
+}

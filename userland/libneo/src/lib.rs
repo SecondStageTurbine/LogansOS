@@ -159,6 +159,10 @@ pub const SYS_VM_MAP: u64 = 0x40;
 pub const SYS_VM_UNMAP: u64 = 0x41;
 pub const SYS_VM_PROTECT: u64 = 0x42;
 pub const SYS_CLOCK_GETTIME: u64 = 0x43;
+/// `rtc-offset` (THINK-2026-11-02-time-zones §2.1): confirm realtime as UTC.
+pub const SYS_CLOCK_CONFIRM_REALTIME: u64 = 0x1C8;
+/// `rtc-offset`: whether realtime is confirmed UTC.
+pub const SYS_CLOCK_REALTIME_STATUS: u64 = 0x1C9;
 /// POSIX-canonical protection bits for [`sys_vm_map`]/[`sys_vm_protect`].
 pub const PROT_READ: u64 = 1;
 pub const PROT_WRITE: u64 = 2;
@@ -2301,6 +2305,26 @@ pub fn sys_clock_gettime(clock_id: u64) -> Result<u64, i64> {
     // SAFETY: SYS_CLOCK_GETTIME(clock_id) → ns or errno.
     let r = unsafe { raw3(SYS_CLOCK_GETTIME, clock_id, 0, 0) };
     if r < 0 { Err(r) } else { Ok(r as u64) }
+}
+
+/// `rtc-offset`: confirm `CLOCK_REALTIME` as UTC, once, with the RTC's
+/// offset from UTC in seconds (0 when the RTC holds UTC). The input-system
+/// authority (the WM) only. Errors: `EPERM`, `EINVAL` (past ±24 h),
+/// `EALREADY`, `EAGAIN` (no RTC epoch), `ENOSYS` (kernel without the rung).
+#[inline]
+pub fn sys_clock_confirm_realtime(offset_s: i64) -> Result<(), i64> {
+    // SAFETY: SYS_CLOCK_CONFIRM_REALTIME(offset_s) → 0 or errno; no memory.
+    let r = unsafe { raw3(SYS_CLOCK_CONFIRM_REALTIME, offset_s as u64, 0, 0) };
+    if r < 0 { Err(r) } else { Ok(()) }
+}
+
+/// `rtc-offset`: whether `CLOCK_REALTIME` is confirmed UTC (`ENOSYS` from a
+/// kernel without the rung).
+#[inline]
+pub fn sys_clock_realtime_status() -> Result<bool, i64> {
+    // SAFETY: SYS_CLOCK_REALTIME_STATUS() → 0 | 1 or errno; no memory.
+    let r = unsafe { raw3(SYS_CLOCK_REALTIME_STATUS, 0, 0, 0) };
+    if r < 0 { Err(r) } else { Ok(r == 1) }
 }
 
 /// C1.1 (P2): thread-info record returned by [`sys_thread_get_info`]

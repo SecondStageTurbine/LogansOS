@@ -239,4 +239,140 @@ mod tests {
         // Inside the range nothing changed: the 2026 KAT instants hold.
         assert_eq!(utc_to_local(1793512800, ny).1.abbr, "EST");
     }
+
+    /// The session's reading of the RTC (THINK §2.1/§2.3).
+    #[test]
+    fn rtc_reading_as_utc() {
+        use super::tz::rtc_reading_utc;
+        let ny = id("America/New_York");
+        // J.c.'s Zenbook: the RTC holds 2026-11-02 01:29 EST (day 20759,
+        // + 5340 s); the instant is 06:29 UTC (+ 23340 s).
+        let wall = 20759 * 86400 + 5340;
+        assert_eq!(rtc_reading_utc(wall, ny, true), Some(20759 * 86400 + 23340));
+        // An RTC that holds UTC: the reading is the instant, whatever the zone.
+        assert_eq!(rtc_reading_utc(wall, ny, false), Some(wall));
+        assert_eq!(rtc_reading_utc(wall, tz::UTC, false), Some(wall));
+        // Local RTC, no zone: unknown ("zone not set").
+        assert_eq!(rtc_reading_utc(wall, tz::UTC, true), None);
+        // The repeated hour takes the earlier instant (EDT): 1 Nov 01:30.
+        assert_eq!(
+            rtc_reading_utc(20758 * 86400 + 5400, ny, true),
+            Some(1793511000)
+        );
+        // The spring gap takes the offset after it: 8 Mar 02:30 -> 06:30 UTC.
+        assert_eq!(
+            rtc_reading_utc(20520 * 86400 + 9000, ny, true),
+            Some(1772951400)
+        );
+    }
+
+    /// Janus (#60): once realtime is confirmed UTC, only the display applies
+    /// the zone. Every instant below is worked out by hand from day numbers
+    /// (2026-11-02 is day 20759, 2026-11-01 day 20758).
+    #[test]
+    fn confirmed_utc_is_only_displayed_in_the_zone() {
+        use super::tz::{Basis, Shown, confirm_offset, needs_restart, shown};
+        let ny = id("America/New_York");
+        let sydney = id("Australia/Sydney");
+        // J.c.'s Zenbook: RTC 01:29 local, New York: confirm -18000 s, and
+        // realtime becomes 06:29 UTC = 1793577600 + 23340.
+        let wall = 20759 * 86400 + 5340;
+        assert_eq!(confirm_offset(wall, ny, true), Some(-18000));
+        let utc = 1_793_600_940;
+        assert_eq!(
+            shown(utc, Basis::Utc, ny),
+            (20759 * 86400 + 5340, Shown::Zone("EST"))
+        );
+        // Then `timezone Australia/Sydney`: 06:29 UTC is 17:29 AEDT (UTC+11),
+        // not 01:29 AEDT (the RTC's reading re-interpreted).
+        assert_eq!(
+            shown(utc, Basis::Utc, sydney),
+            (20759 * 86400 + 62940, Shown::Zone("AEDT"))
+        );
+        // The fold: confirmed earlier, now 06:30 UTC on 1 Nov, after the
+        // 06:00 UTC change: 01:30 EST, whatever is re-entered.
+        assert_eq!(
+            shown(20758 * 86400 + 23400, Basis::Utc, ny),
+            (20758 * 86400 + 5400, Shown::Zone("EST"))
+        );
+        // No zone, confirmed: UTC itself.
+        assert_eq!(shown(utc, Basis::Utc, tz::UTC), (utc, Shown::Zone("UTC")));
+        // Unconfirmed and the kill-switch: the reading as it is.
+        assert_eq!(shown(wall, Basis::Rtc, ny), (wall, Shown::NotSet));
+        assert_eq!(shown(wall, Basis::Legacy, ny), (wall, Shown::Plain));
+        assert_eq!(Basis::of(Ok(true)), Basis::Utc);
+        assert_eq!(Basis::of(Ok(false)), Basis::Rtc);
+        assert_eq!(Basis::of(Err(-38)), Basis::Legacy);
+        // A later mode or zone that would read the RTC differently needs a
+        // restart; the same settings don't.
+        // (`wall` is the reading the confirm used: 01:29 local.)
+        assert!(!needs_restart(wall, -18000, ny, true));
+        assert!(needs_restart(wall, -18000, ny, false));
+        assert!(needs_restart(wall, -18000, sydney, true));
+        assert!(needs_restart(wall, -18000, tz::UTC, true));
+        // Janus (#60): confirmed in New York at 2026-11-01 05:00 UTC, from
+        // the RTC reading 01:00 (the repeated hour: the earlier, EDT,
+        // instant), so -14400. At 06:30 UTC New York is on EST, but the same
+        // zone still reads the same reading the same way: no restart.
+        let fold = 20758 * 86400 + 3600;
+        assert_eq!(confirm_offset(fold, ny, true), Some(-14400));
+        assert!(!needs_restart(fold, -14400, ny, true));
+        // A zone with New York's rules reads it the same way, too.
+        let toronto = id("America/Toronto");
+        assert!(!needs_restart(fold, -14400, toronto, true));
+        // Chicago reads 01:00 as CDT, 06:00 UTC: a restart would change it.
+        assert!(needs_restart(fold, -14400, id("America/Chicago"), true));
+        // Dexter (#59): defined at the i64 extremes too.
+        for t in [i64::MAX, i64::MIN] {
+            for z in [ny, sydney, tz::UTC] {
+                let _ = confirm_offset(t, z, true);
+                let _ = needs_restart(t, -18000, z, true);
+                let _ = needs_restart(t, i64::MAX, z, false);
+            }
+        }
+        assert_eq!(confirm_offset(i64::MAX, tz::UTC, false), Some(0));
+    }
+
+    #[test]
+    fn home_verbs_parse() {
+        use super::tz::{ClockVerb, parse_verb};
+        assert_eq!(parse_verb(b"timezone"), Some(ClockVerb::Show));
+        assert_eq!(parse_verb(b"  TimeZone  "), Some(ClockVerb::Show));
+        assert_eq!(
+            parse_verb(b"timezone America/New_York"),
+            Some(ClockVerb::Zone(b"America/New_York"))
+        );
+        assert_eq!(
+            parse_verb(b"timezone  new york "),
+            Some(ClockVerb::Zone(b"new york"))
+        );
+        assert_eq!(parse_verb(b"rtc local"), Some(ClockVerb::Rtc(true)));
+        assert_eq!(parse_verb(b"RTC UTC"), Some(ClockVerb::Rtc(false)));
+        // Not verbs: they go to Arthur.
+        assert_eq!(parse_verb(b"rtc"), None);
+        assert_eq!(parse_verb(b"rtc please"), None);
+        assert_eq!(parse_verb(b"what timezone am i in"), None);
+        assert_eq!(parse_verb(b"timezones"), None);
+        assert_eq!(parse_verb(b""), None);
+    }
+
+    #[test]
+    fn typed_zone_names_resolve() {
+        use super::tz::find_zone;
+        let ny = id("America/New_York");
+        assert_eq!(find_zone(b"America/New_York"), Ok(ny));
+        assert_eq!(find_zone(b"america/new_york"), Ok(ny));
+        assert_eq!(find_zone(b"America/New York"), Ok(ny));
+        assert_eq!(find_zone(b"us/eastern"), Ok(ny));
+        assert_eq!(find_zone(b"new york"), Ok(ny));
+        assert_eq!(find_zone(b"New_York"), Ok(ny));
+        assert_eq!(find_zone(b"sydney"), Ok(id("Australia/Sydney")));
+        assert_eq!(find_zone(b"utc"), Ok(0));
+        // Nothing exact: up to three zones containing it, in id order.
+        let Err(near) = find_zone(b"york") else {
+            panic!("york is not a zone name");
+        };
+        assert_eq!(near[0], Some(ny));
+        assert_eq!(find_zone(b"atlantis"), Err([None, None, None]));
+    }
 }
