@@ -49,8 +49,10 @@ Two more linear walks sit next to it:
    - **The invariant:** within a cache, `blocks` never holds a block twice. Every push follows a lookup miss under
      the same `inner` (`read_block`, `write_bytes_at`, `find_or_insert_full_block`, `insert_read_locked`).
    - **Enforcement:** `BlockIndex::pushed` reports a second entry for a block, the cache `debug_assert!`s it never
-     does, and a host KAT covers the double insert. The index still keeps the scan's first-match answer if a
-     duplicate ever appeared, so release builds stay correct.
+     does, and a host KAT covers the double insert. If a duplicate ever appeared in a release build, lookups would
+     still return the scan's first-match answer. The length invariant (one index entry per cached block) holds only
+     while there are no duplicates, so it is checked in debug builds only, by design. The miss-before-push rule makes
+     the path unreachable, and the model check covers duplicates.
 5. **No new dependency**, and nothing in a hot path that only the product build exercises.
 
 ## 3. Options
@@ -67,7 +69,9 @@ build once the KATs and the scenarios are green).**
 - It is the only option that changes lookup cost without touching the order the drain relies on, so "index on"
   can be checked against "index off" exactly. The KAT runs both over the same operations and compares every result.
 - Removal stays O(n). That is no regression, because `Vec::remove` is already O(n) and removals are rare: only
-  eviction (product) and `forget_range`.
+  eviction (product) and `forget_range`. The exception is `forget_range` on the no-evict path, which goes from its
+  `retain` (O(n)) to `retain` plus `rebuild` (O(n log n)). It's rare, and the measured boot and verify are still well
+  ahead (§9).
 - C and D are faster on removal but change the drain's iteration order or need a new crate. Neither is worth it while
   removal is rare.
 - **Memory:** the index holds one 16-byte entry per cached block, so it is bounded by `blocks.len()` and adds no new
@@ -82,7 +86,7 @@ installer scenario in each mode.
 ## 4. B in detail
 
 - **`cache_logic.rs` (pure, host-tested)** gains `BlockIndex` (a `Vec<(block, slot)>` sorted by block; §9 says why
-  not a `BTreeMap`) with `find`, `pushed`, `removed(slot, block)` (drops that block's entry and shifts every slot
+  not a `BTreeMap`) with `find`, `pushed`, `removed(entries, slot, block)` (drops that block's entry, shifts every slot
   above it down by one), `rebuild(&[T])`, and `matches(&[T])` for the KATs and the crosscheck scenarios.
 - **`cache.rs`:** `find_cached_block` uses the index when the feature is on, else today's loop. The four places
   that change `blocks` keep the index in step: `push_block`, the `remove` in `evict_locked`, the `remove` loop and
@@ -180,7 +184,7 @@ serial timestamps):
 | main `13eed2c5` | 133.2, 133.7 s | 63.7, 63.7 s | 1.0 s |
 | index, `BTreeMap` (discarded) | 131.1 s | 31.1 s | 38.3 s |
 | index, sorted `Vec` (`06993824`) | 87.2, 86.5 s | 26.8, 26.9 s | 1.0 s |
-| **index with the incremental debug checks (`b1b49a31`)** | **91.9, 92.3 s** | **28.1, 28.7 s** | 1.1 s |
+| **index with the incremental debug checks, measured at `b1b49a31`** (the index code is unchanged at the build PR's head `c30975a3`, which merged main's unrelated code) | **91.9, 92.3 s** | **28.1, 28.7 s** | 1.1 s |
 
 **Scenarios, all PASS locally:**
 - `phase3_neofs_cache_index_crosscheck` (40.7 s), `_crosscheck_noevict` (11.1 s) and `phase3_neofs_cache_index_off`
@@ -199,10 +203,10 @@ and without repeated blocks.
 - **At `b1b49a31` the off leg wasn't the previous layer.** `neo-test-neofs-cache-index-off` only switched the lookup to
   the scan, while `neofs-cache-index` (a default feature) still kept the index up to date. So its 40.0 s against
   36.1 s with the index measured the lookup alone. Dexter's relay 326 caught it.
-- **Since `cc04384f`,** the off feature compiles every part of the index out: its lookup, its upkeep at the four
-  sites, and its checks. `phase3_neofs_cache_index_off` is therefore the previous layer, on the same image as
-  `phase3_neofs_cache_evict`: the same legs, a cache of at most 256 clean blocks, the same source tree, and only
-  that feature different.
+- **Since `cc04384f`,** no index code is active under the off feature. `neofs-cache-index` is still enabled, but
+  every use of it is excluded at compile time: the lookup, the upkeep at the four sites, and the checks. So
+  `phase3_neofs_cache_index_off` is the previous layer, on the same image as `phase3_neofs_cache_evict`: the same
+  legs, a cache of at most 256 clean blocks, the same source tree, and only that feature different.
 - **Interleaved, on the same machine:**
 
   | Run | Off (previous layer) | Index on |
@@ -222,7 +226,7 @@ They don't change the shape: the verify stays flat per file.
 |---|---|
 | `phase3_neofs_cache_index_crosscheck` | 46.6 s |
 | `phase3_neofs_cache_index_crosscheck_noevict` | 12.0 s |
-| `phase3_neofs_cache_index_off` | 40.0 s (scan lookup, index still kept; at `cc04384f` the true off leg is 40.4, 38.4 s) |
+| `phase3_neofs_cache_index_off` | 40.0 s at `b1b49a31`, where it was scan lookups with the index still kept; the true off leg since `cc04384f` is 40.4, 38.4 s |
 | `phase3_neofs_cache_evict` | 36.1 s |
 | `phase3_neofs_cache_evict_off` | 11.3 s |
 
