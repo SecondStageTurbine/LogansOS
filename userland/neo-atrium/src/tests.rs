@@ -1983,8 +1983,10 @@ fn intro_variants() -> Vec<(String, Vec<String>)> {
 }
 
 /// The persona rules (docs/VISION-arthur-persona.md) on every row the WM can
-/// draw: the intro variants, the help card and the hint. ASCII only (the
-/// text surface draws bytes; that also excludes every emoji), no `!`, no
+/// draw: the intro variants, the help card and the hint. Every character
+/// covered by the face (S6b: this was "ASCII only"; the Spanish table needs
+/// `¿áéíñóú`, all in Inter, and an emoji is still refused because the face
+/// has none), no `!` (nor `¡`), no
 /// time-of-day greeting (the kernel has no wall clock), the NOTE's length
 /// bounds (new rows <= 80, the variant-A greeting <= 90, B1b's rows <= 100),
 /// at most `CARD_MAX_ROWS` rows, and every row inside the card's text box at
@@ -2016,11 +2018,8 @@ fn intro_persona_kat_every_variant_and_the_help_card() {
         for (name, rows) in &cards {
             assert!(rows.len() <= CARD_MAX_ROWS, "{name}: {} rows", rows.len());
             for row in rows {
-                assert!(
-                    row.bytes().all(|b| (0x20..=0x7e).contains(&b)),
-                    "{name}: not printable ASCII: {row:?}"
-                );
-                assert!(!row.contains('!'), "{name}: exclamation: {row:?}");
+                assert!(covered(&font, row), "{name}: not in the face: {row:?}");
+                assert!(!row.contains(['!', '¡']), "{name}: exclamation: {row:?}");
                 for t in ["morning", "afternoon", "evening"] {
                     assert!(!row.contains(t), "{name}: time of day: {row:?}");
                 }
@@ -2046,8 +2045,123 @@ fn intro_persona_kat_every_variant_and_the_help_card() {
         let hint = measure(&font, HINT_PX, HINT);
         assert!(hint <= room, "hint {hint} px > {room}");
     }
-    assert!(HINT.bytes().all(|b| (0x20..=0x7e).contains(&b)) && !HINT.contains('!'));
+    let font = Font::from_bytes(INTER_REGULAR).unwrap();
+    assert!(covered(&font, HINT) && !HINT.contains('!'));
     assert!(HINT.len() <= 80);
+}
+
+/// The persona rules' character rule (S6b): every character is one the face
+/// draws (`glyph_id` read from Inter's cmap), and none is a control.
+fn covered(font: &neo_text::Font<'_>, row: &str) -> bool {
+    row.chars()
+        .all(|c| !c.is_control() && font.glyph_id(c) != 0)
+}
+
+/// S6b: the persona KAT's rules on every card in Spanish: the intro variants
+/// (with and without the clock), the help card, the hint, and the power
+/// cards. Every character in the face, no `!` or `¡`, at most
+/// `CARD_MAX_ROWS` rows, each row inside the card at its size. (The NOTE's
+/// byte bounds are English's; Spanish rows are held by their measured width,
+/// as `i18n-core`'s KAT holds every row.) The frame holds too: the greeting
+/// first, the exit last.
+#[test]
+fn persona_kat_in_spanish() {
+    use crate::clock::{Now, greeting_in};
+    use crate::intro::{help_lines_in, hint_in, intro_lines_in, intro_lines_now_in};
+    use crate::layout::CARD_MAX_ROWS;
+    use crate::power::{PowerCommand, confirm_lines_in, going_lines_in, refused_lines_in};
+    use crate::scene::{CARD_TEXT_PX, CLOCK_DATE_PX, CLOCK_TIME_PX, HINT_PX};
+    use i18n_core::{Lang, Msg, text};
+    use neo_text::Font;
+    use neo_text::fonts::INTER_REGULAR;
+    use neo_text::layout::measure;
+    let es = Lang::Es;
+    let font = Font::from_bytes(INTER_REGULAR).unwrap();
+    let mut cards: Vec<(String, Vec<String>)> = Vec::new();
+    for (model, usb) in intro_states() {
+        let rows = intro_lines_in(es, model, usb);
+        assert_eq!(rows[0], text(es, Msg::IntroGreeting));
+        assert_eq!(
+            rows.last().map(String::as_str),
+            Some(text(es, Msg::IntroExit))
+        );
+        cards.push((format!("{model:?} usb={usb}"), rows));
+        let now = Now {
+            hour: 17,
+            time: "12:59 p. m.",
+            date: "miércoles 30 de septiembre de 2026",
+        };
+        let rows = intro_lines_now_in(es, model, usb, &now);
+        assert_eq!(
+            rows[0],
+            "Buenas tardes. Ahora: 12:59 p. m., miércoles 30 de septiembre de 2026."
+        );
+        assert_eq!(rows[1], text(es, Msg::IntroName));
+        cards.push((format!("{model:?} usb={usb} clock"), rows));
+    }
+    cards.push(("help".into(), help_lines_in(es)));
+    for cmd in [PowerCommand::ShutDown, PowerCommand::Restart] {
+        cards.push((format!("{cmd:?}"), confirm_lines_in(es, cmd)));
+        cards.push((format!("{cmd:?} going"), going_lines_in(es, cmd)));
+    }
+    for errno in [-16, -38, -5] {
+        cards.push((format!("refused {errno}"), refused_lines_in(es, errno)));
+    }
+    assert_eq!(
+        (greeting_in(es, 5), greeting_in(es, 12), greeting_in(es, 18)),
+        ("Buenos días", "Buenas tardes", "Buenas noches")
+    );
+    for (w, h) in [(1920, 1080), (1280, 800)] {
+        let room = Layout::new(w, h, 640, 400).unwrap().card_text(1).w as f32;
+        for (name, rows) in &cards {
+            assert!(rows.len() <= CARD_MAX_ROWS, "{name}: {} rows", rows.len());
+            for row in rows {
+                assert!(covered(&font, row), "{name}: not in the face: {row:?}");
+                assert!(!row.contains(['!', '¡']), "{name}: exclamation: {row:?}");
+                let wide = measure(&font, CARD_TEXT_PX, row);
+                assert!(
+                    wide <= room,
+                    "{name} at {w}x{h}: {wide} px > {room}: {row:?}"
+                );
+            }
+        }
+        let hint = measure(&font, HINT_PX, hint_in(es));
+        assert!(hint <= room, "hint {hint} px > {room}");
+        // Home's readout: the longest time with the not-set mark, and the
+        // longest date, inside the readout's box.
+        let clock_room = Layout::new(w, h, 640, 400).unwrap().clock_box().w as f32;
+        for lang in [Lang::En, es] {
+            let time = format!(
+                "12:59{}{}",
+                text(lang, Msg::Pm),
+                text(lang, Msg::ClockReadoutZoneNotSet)
+            );
+            let t = measure(&font, CLOCK_TIME_PX, &time);
+            assert!(t <= clock_room, "{time:?} {t} px > {clock_room}");
+        }
+        let date = "miércoles 30 de septiembre de 2026";
+        let d = measure(&font, CLOCK_DATE_PX, date);
+        assert!(d <= clock_room, "{date:?} {d} px > {clock_room}");
+    }
+}
+
+/// S6b: the power card's button row in Spanish, and its two labels found by
+/// the hit test (`card_buttons`) on a row with accents elsewhere on the card.
+#[test]
+fn spanish_button_row_and_its_labels() {
+    use crate::intro::button_row_in;
+    use i18n_core::Lang;
+    let row = button_row_in(Lang::Es, "Apagar");
+    assert_eq!(row, format!("[ Apagar ]{}[ Volver ]", " ".repeat(17)));
+    // Columns count characters: an accented label lines up as an ASCII one
+    // (Back at column 27; the byte offset is 28, as `í` is two bytes).
+    let row = button_row_in(Lang::Es, "Sí");
+    assert!(row.ends_with("[ Volver ]"));
+    assert_eq!(row.chars().count(), 27 + "[ Volver ]".len());
+    assert_eq!(
+        button_row_in(Lang::En, "Shut down"),
+        crate::intro::button_row("Shut down")
+    );
 }
 
 /// The model-state rows are B1b's sentences verbatim (one row each: every
@@ -2482,7 +2596,7 @@ fn clock_greeting_hour_table() {
 /// The persona KAT over every clock variant: each intro variant (all model
 /// states, USB-only or not) at every hour, with the longest texts. The rules
 /// of `intro_persona_kat_every_variant_and_the_help_card` hold unchanged:
-/// ASCII only, no `!`, new rows <= 80 (B1b's <= 100), at most
+/// every character in the face, no `!`, new rows <= 80 (B1b's <= 100), at most
 /// `CARD_MAX_ROWS` rows, each inside the card at its size. The one rule that
 /// existed only because there was no clock, "no time-of-day word", becomes
 /// stricter, not looser: exactly one row carries one, the first, and it is
@@ -2536,11 +2650,8 @@ fn clock_persona_kat_every_variant_every_hour() {
                     "{name}"
                 );
                 for (i, row) in rows.iter().enumerate() {
-                    assert!(
-                        row.bytes().all(|b| (0x20..=0x7e).contains(&b)),
-                        "{name}: not printable ASCII: {row:?}"
-                    );
-                    assert!(!row.contains('!'), "{name}: exclamation: {row:?}");
+                    assert!(covered(&font, row), "{name}: not in the face: {row:?}");
+                    assert!(!row.contains(['!', '¡']), "{name}: exclamation: {row:?}");
                     let said: Vec<&str> =
                         words.iter().copied().filter(|t| row.contains(t)).collect();
                     if i == 0 {

@@ -238,6 +238,23 @@ const SETUP_MENU_NET_OFF_CAPTURE_REL: &str = "target/neo-test/setup_menu_net_off
 const SETUP_MENU_KEYS_CAPTURE_REL: &str = "target/neo-test/setup_menu_keys.ppm";
 const SETUP_MENU_KEYS_PAGE_REL: &str = "target/neo-test/setup_menu_keys_page.ppm";
 const SETUP_MENU_KEYS_US_CAPTURE_REL: &str = "target/neo-test/setup_menu_keys_us.ppm";
+/// F11 S6b: `setup_menu_lang`'s captures, one per page of the Spanish walk,
+/// the intro card and the help card; then its English control's.
+const SETUP_MENU_LANG_CAPTURE_REL: &str = "target/neo-test/setup_menu_lang.ppm";
+const SETUP_MENU_LANG_LANGUAGE_REL: &str = "target/neo-test/setup_menu_lang_language.ppm";
+const SETUP_MENU_LANG_WELCOME_REL: &str = "target/neo-test/setup_menu_lang_welcome.ppm";
+const SETUP_MENU_LANG_SKIP_REL: &str = "target/neo-test/setup_menu_lang_skip.ppm";
+const SETUP_MENU_LANG_TIMEZONE_REL: &str = "target/neo-test/setup_menu_lang_timezone.ppm";
+const SETUP_MENU_LANG_COMFORT_REL: &str = "target/neo-test/setup_menu_lang_comfort.ppm";
+const SETUP_MENU_LANG_TRY_REL: &str = "target/neo-test/setup_menu_lang_try.ppm";
+const SETUP_MENU_LANG_INTRO_REL: &str = "target/neo-test/setup_menu_lang_intro.ppm";
+const SETUP_MENU_LANG_HELP_REL: &str = "target/neo-test/setup_menu_lang_help.ppm";
+const SETUP_MENU_LANG_EN_CAPTURE_REL: &str = "target/neo-test/setup_menu_lang_en.ppm";
+const SETUP_MENU_LANG_EN_WELCOME_REL: &str = "target/neo-test/setup_menu_lang_en_welcome.ppm";
+const SETUP_MENU_LANG_EN_LANGUAGE_REL: &str = "target/neo-test/setup_menu_lang_en_language.ppm";
+const SETUP_MENU_LANG_EN_TRY_REL: &str = "target/neo-test/setup_menu_lang_en_try.ppm";
+const SETUP_MENU_LANG_EN_INTRO_REL: &str = "target/neo-test/setup_menu_lang_en_intro.ppm";
+const SETUP_MENU_LANG_EN_HELP_REL: &str = "target/neo-test/setup_menu_lang_en_help.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -1001,6 +1018,11 @@ struct DesktopScenario {
     /// S2-F2's damage-band check: `Some(home_flow)` (Home's first commit is
     /// the intent's whole answer, a few lines, not one keystroke's line).
     band: Option<bool>,
+    /// F11 S6b: more captures, each taken when the step at this index of
+    /// `steps` is reached (its prompt seen), before its command is sent. The
+    /// prompt is repeated here and checked, so a step list that moves can't
+    /// capture the wrong page.
+    captures: &'static [(usize, &'static [u8], &'static str)],
 }
 
 const fn desktop(
@@ -1017,10 +1039,11 @@ const fn desktop(
         mid: None,
         long_timeout: false,
         band: None,
+        captures: &[],
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 52] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 54] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1442,6 +1465,29 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 52] = [
             b"\r",
         )
     },
+    // F11 S6b: Spanish chosen on the Language page, every page of the walk,
+    // the intro card and the help card captured; and the control, English
+    // kept.
+    DesktopScenario {
+        long_timeout: true,
+        captures: SETUP_MENU_LANG_CAPTURES,
+        ..desktop(
+            "setup_menu_lang",
+            SETUP_MENU_LANG_STEPS,
+            SETUP_MENU_LANG_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        long_timeout: true,
+        captures: SETUP_MENU_LANG_EN_CAPTURES,
+        ..desktop(
+            "setup_menu_lang_en",
+            SETUP_MENU_LANG_EN_STEPS,
+            SETUP_MENU_LANG_EN_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // OT-87 R4.4: the Atrium installer in the intro session, booted as an
     // install scenario (`run_install_scenario`): the list captured as it
     // shows, the confirmation after Enter (`\r`).
@@ -1817,6 +1863,135 @@ const SETUP_MENU_KEYS_US_STEPS: &[SerialScriptStep] = &[
     CHIP0_AGAIN,
     AGAIN_ENTER,
     step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S6b (`setup_menu_lang`): Begin, then the Language page: Down to
+/// Español and Enter (the page redraws in Spanish); Esc back to Welcome and
+/// Esc again to its Skip confirmation, both in Spanish, and Esc back; Begin,
+/// Continue (Up wraps to it), S1's Time zone (UTC kept), Comfort's Continue,
+/// Try; then the intro session in Spanish, with `help` typed (the help
+/// card) and the session as usual, Arthur's English replies included.
+const SETUP_MENU_LANG_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=language rows=7", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=language focus=1", b"\n"),
+    step(b"DESKTOP setup redraw page=language focus=1", b"\x1b"),
+    step(b"DESKTOP setup page=welcome rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=skip rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=language rows=7", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=language focus=2", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// `setup_menu_lang`'s captures (step index, its prompt, the file): the
+/// Language page once Español is chosen, Welcome and Skip in Spanish, Time
+/// zone, Comfort and Try as each shows, the intro card, the help card.
+const SETUP_MENU_LANG_CAPTURES: &[(usize, &[u8], &str)] = &[
+    (
+        3,
+        b"DESKTOP setup redraw page=language focus=1",
+        SETUP_MENU_LANG_LANGUAGE_REL,
+    ),
+    (
+        4,
+        b"DESKTOP setup page=welcome rows=5",
+        SETUP_MENU_LANG_WELCOME_REL,
+    ),
+    (
+        5,
+        b"DESKTOP setup page=skip rows=5",
+        SETUP_MENU_LANG_SKIP_REL,
+    ),
+    (
+        9,
+        b"DESKTOP setup page=timezone rows=8",
+        SETUP_MENU_LANG_TIMEZONE_REL,
+    ),
+    (
+        11,
+        b"DESKTOP setup page=comfort rows=6",
+        SETUP_MENU_LANG_COMFORT_REL,
+    ),
+    (
+        13,
+        b"DESKTOP setup page=try rows=5",
+        SETUP_MENU_LANG_TRY_REL,
+    ),
+    (14, DESKTOP_INTRO_SHOWN_PROMPT, SETUP_MENU_LANG_INTRO_REL),
+    (
+        16,
+        b"DESKTOP help shown via=typed rows=6",
+        SETUP_MENU_LANG_HELP_REL,
+    ),
+];
+
+/// F11 S6b's control (`setup_menu_lang_en`): the same build with English
+/// kept: Begin, Continue on the Language page, S1's Time zone, Comfort, Try;
+/// then the intro session with `help`.
+const SETUP_MENU_LANG_EN_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=language rows=7", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=language focus=2", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// The control's captures: Welcome, the Language and Try pages, the intro
+/// card and the help card.
+const SETUP_MENU_LANG_EN_CAPTURES: &[(usize, &[u8], &str)] = &[
+    (
+        0,
+        b"DESKTOP setup page=welcome rows=5",
+        SETUP_MENU_LANG_EN_WELCOME_REL,
+    ),
+    (
+        1,
+        b"DESKTOP setup page=language rows=7",
+        SETUP_MENU_LANG_EN_LANGUAGE_REL,
+    ),
+    (
+        7,
+        b"DESKTOP setup page=try rows=5",
+        SETUP_MENU_LANG_EN_TRY_REL,
+    ),
+    (8, DESKTOP_INTRO_SHOWN_PROMPT, SETUP_MENU_LANG_EN_INTRO_REL),
+    (
+        10,
+        b"DESKTOP help shown via=typed rows=6",
+        SETUP_MENU_LANG_EN_HELP_REL,
+    ),
 ];
 
 /// F11 S1's control (`setup_menu_skip`): Esc on Welcome asks, Enter skips,
@@ -4478,6 +4653,26 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "setup_menu_keys_us",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("keyboard-layouts-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S6b: Spanish chosen on the Language page on the volatile
+        // overlay; every page, the intro card and the help card in Spanish,
+        // against the oracle's renders; key 6 holds Spanish.
+        name: "setup_menu_lang",
+        // Its kernel holds Home's hint, read back at the end, to Spanish.
+        feature: "neo-test-setup-lang-boot",
+        user_feature: Some("i18n-catalog-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S6b's control: the same build with English kept; today's
+        // Welcome, intro and help digests.
+        name: "setup_menu_lang_en",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("i18n-catalog-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -9109,6 +9304,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("setup-store-try-boot-test")
         | Some("setup-net-boot-test")
         | Some("keyboard-layouts-boot-test")
+        | Some("i18n-catalog-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -9442,7 +9638,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("power-menu-boot-test")
         | Some("setup-menu-boot-test")
         | Some("setup-store-try-boot-test")
-        | Some("setup-net-boot-test") => vec![
+        | Some("setup-net-boot-test")
+        // F11 S6b: Arthur is unchanged (his replies stay English).
+        | Some("i18n-catalog-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -16805,6 +17003,8 @@ struct SerialScriptPlan {
     /// A second capture: taken when the step with this prompt is reached,
     /// before its command is sent (the guest waits on that command).
     mid_capture: Option<(&'static [u8], &'static str)>,
+    /// F11 S6b: more captures, by step index ([`DesktopScenario::captures`]).
+    captures: &'static [(usize, &'static [u8], &'static str)],
 }
 
 /// The capture before the end one (prompt, capture path): DM-1's mid
@@ -16843,6 +17043,9 @@ fn configure_serial_for_scenario(
             if let Some((_, rel)) = mid_capture_for_scenario(scenario_name) {
                 remove_optional_file(&workspace_root().join(rel))?;
             }
+            for &(_, _, rel) in captures_for_scenario(scenario_name) {
+                remove_optional_file(&workspace_root().join(rel))?;
+            }
             CommandTarget::HmpKeyboard {
                 addr: hmp_addr,
                 screenshot_rel: script.screenshot_rel,
@@ -16857,7 +17060,13 @@ fn configure_serial_for_scenario(
         target,
         screenshot_after_command: script.screenshot_after_command,
         mid_capture: mid_capture_for_scenario(scenario_name),
+        captures: captures_for_scenario(scenario_name),
     }))
+}
+
+/// F11 S6b: a scenario's captures by step index (none for most).
+fn captures_for_scenario(scenario_name: &str) -> &'static [(usize, &'static [u8], &'static str)] {
+    desktop_scenario(scenario_name).map_or(&[], |d| d.captures)
 }
 
 fn reserve_tcp_addr(label: &str) -> Result<SocketAddr, String> {
@@ -17148,6 +17357,19 @@ fn drive_serial_script(plan: SerialScriptPlan) -> Result<(), String> {
                     if let Some((prompt, rel)) = plan.mid_capture
                         && plan.steps[next_command].prompt == prompt
                     {
+                        capture_command_target_to(&mut target, rel)?;
+                    }
+                    for &(at, prompt, rel) in plan.captures {
+                        if at != next_command {
+                            continue;
+                        }
+                        if plan.steps[at].prompt != prompt {
+                            return Err(format!(
+                                "capture {rel}: step {at} waits on {:?}, not {:?}",
+                                String::from_utf8_lossy(plan.steps[at].prompt),
+                                String::from_utf8_lossy(prompt)
+                            ));
+                        }
                         capture_command_target_to(&mut target, rel)?;
                     }
                     let capture_before_command = plan.screenshot_after_command == Some(command)
@@ -20771,7 +20993,9 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         | "setup_menu_net_nonic"
         | "setup_menu_net_off"
         | "setup_menu_keys"
-        | "setup_menu_keys_us" => "desktop_intro_boot",
+        | "setup_menu_keys_us"
+        | "setup_menu_lang"
+        | "setup_menu_lang_en" => "desktop_intro_boot",
         // F11 S2: the plain sign-in kernel, with the setup menu before it.
         login_scenarios::LOGIN_SETUP_STORE_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SCENARIO
@@ -22745,6 +22969,92 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             require_serial_absent(scenario, observed, needle, why)?;
         }
         require_framebuffer_capture(scenario, SETUP_MENU_KEYS_US_CAPTURE_REL)?;
+    }
+    // F11 S6b (setup-menu THINK §3.1, §5 S6): Español chosen on the Language
+    // page redraws the wizard in Spanish; every page, the intro card and the
+    // help card match the oracle's Spanish renders; key 6 holds Spanish (on
+    // the volatile overlay: in force, nothing written).
+    if scenario.name == "setup_menu_lang" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=language rows=7",
+                "DESKTOP setup redraw page=language focus=1",
+                "DESKTOP setup redraw page=language focus=1",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=skip rows=5",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=language rows=7",
+                "DESKTOP setup redraw page=language focus=2",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 lang=es-419",
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=1 kb=0",
+                "DESKTOP language=es-419 cause=settings live=1",
+                "SETTING applied key=6 value=1 status=0",
+                "SETTING applied key=7 value=0 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP help shown via=typed rows=6",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "Español on the Language page: the wizard redraws in Spanish, key 6 holds Spanish, and the intro session shows it",
+        )?;
+        for (needle, why) in [
+            ("SETTINGS written", "the volatile overlay writes no record"),
+            (
+                "DESKTOP setup done action=skip",
+                "Esc on the Skip page goes back; the walk ends with Try",
+            ),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_setup_lang_captures(scenario, true)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_LANG_CAPTURE_REL)?;
+    }
+    // F11 S6b's control: the same build, English kept: key 6 stays 0, no
+    // language change, and Welcome, the intro card and the help card are
+    // today's digests (the Language and Try pages, numbered with the Language
+    // page, against the oracle's English renders).
+    if scenario.name == "setup_menu_lang_en" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=language rows=7",
+                "DESKTOP setup redraw page=language focus=2",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 lang=en",
+                "SETTING applied key=6 value=0 status=0",
+                "SETTING applied key=7 value=0 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP help shown via=typed rows=6",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "English kept on the Language page: key 6 stays English and the session is today's",
+        )?;
+        for (needle, why) in [
+            ("SETTINGS written", "the volatile overlay writes no record"),
+            (
+                "DESKTOP language=",
+                "English kept: the language never changes",
+            ),
+            ("lang=1", "English kept: key 6 never holds Spanish"),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_setup_lang_captures(scenario, false)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_LANG_EN_CAPTURE_REL)?;
     }
     // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
     // defaults and no other page, and the session is the intro's.
@@ -25249,6 +25559,129 @@ fn require_motion_mid_capture(
             capture.display()
         ));
     }
+    Ok(())
+}
+
+/// F11 S6b: `setup_menu_lang`'s captures against `setup_oracle.py fixture
+/// es` (every page of the Spanish walk, the intro card, the help card), or
+/// its control's: the Language and Try pages against `fixture en`, and
+/// Welcome, the intro card and the help card against today's fixtures
+/// (`setup_oracle.py fixture`, `intro_oracle.py fixture`), unchanged.
+fn require_setup_lang_captures(scenario: TestScenario, spanish: bool) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod es {
+        include!("../../../fixtures/desktop-setup/setup_lang_es.rs");
+    }
+    #[allow(dead_code)]
+    mod en {
+        include!("../../../fixtures/desktop-setup/setup_lang_en.rs");
+    }
+    type Page = (
+        &'static str,
+        u64,
+        (usize, usize, usize, usize),
+        &'static [CardRow],
+        &'static str,
+    );
+    let pages: &[Page] = if spanish {
+        &[
+            (
+                SETUP_MENU_LANG_LANGUAGE_REL,
+                es::LANGUAGE_GLASS_1920X1080,
+                es::LANGUAGE_TEXT_BOX,
+                &es::LANGUAGE_PATTERNS,
+                "setup language es",
+            ),
+            (
+                SETUP_MENU_LANG_WELCOME_REL,
+                es::WELCOME_GLASS_1920X1080,
+                es::WELCOME_TEXT_BOX,
+                &es::WELCOME_PATTERNS,
+                "setup welcome es",
+            ),
+            (
+                SETUP_MENU_LANG_SKIP_REL,
+                es::SKIP_GLASS_1920X1080,
+                es::SKIP_TEXT_BOX,
+                &es::SKIP_PATTERNS,
+                "setup skip es",
+            ),
+            (
+                SETUP_MENU_LANG_TIMEZONE_REL,
+                es::TIMEZONE_GLASS_1920X1080,
+                es::TIMEZONE_TEXT_BOX,
+                &es::TIMEZONE_PATTERNS,
+                "setup timezone es",
+            ),
+            (
+                SETUP_MENU_LANG_COMFORT_REL,
+                es::COMFORT_GLASS_1920X1080,
+                es::COMFORT_TEXT_BOX,
+                &es::COMFORT_PATTERNS,
+                "setup comfort es",
+            ),
+            (
+                SETUP_MENU_LANG_TRY_REL,
+                es::TRY_GLASS_1920X1080,
+                es::TRY_TEXT_BOX,
+                &es::TRY_PATTERNS,
+                "setup try es",
+            ),
+            (
+                SETUP_MENU_LANG_INTRO_REL,
+                es::INTRO_GLASS_1920X1080,
+                es::INTRO_TEXT_BOX,
+                &es::INTRO_PATTERNS,
+                "intro es",
+            ),
+            (
+                SETUP_MENU_LANG_HELP_REL,
+                es::HELP_GLASS_1920X1080,
+                es::HELP_TEXT_BOX,
+                &es::HELP_PATTERNS,
+                "help es",
+            ),
+        ]
+    } else {
+        &[
+            (
+                SETUP_MENU_LANG_EN_LANGUAGE_REL,
+                en::LANGUAGE_GLASS_1920X1080,
+                en::LANGUAGE_TEXT_BOX,
+                &en::LANGUAGE_PATTERNS,
+                "setup language en",
+            ),
+            (
+                SETUP_MENU_LANG_EN_TRY_REL,
+                en::TRY_GLASS_1920X1080,
+                en::TRY_TEXT_BOX,
+                &en::TRY_PATTERNS,
+                "setup try en",
+            ),
+        ]
+    };
+    for &(rel, want, text_box, patterns, name) in pages {
+        require_framebuffer_capture(scenario, rel)?;
+        check_card_capture(scenario, rel, want, text_box, patterns, name)?;
+    }
+    if !spanish {
+        // Today's digests, unchanged: Welcome, the intro card, the help card.
+        require_framebuffer_capture(scenario, SETUP_MENU_LANG_EN_WELCOME_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_LANG_EN_WELCOME_REL, false)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_LANG_EN_INTRO_REL)?;
+        require_intro_capture(scenario, SETUP_MENU_LANG_EN_INTRO_REL, IntroCard::Intro)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_LANG_EN_HELP_REL)?;
+        require_intro_capture(scenario, SETUP_MENU_LANG_EN_HELP_REL, IntroCard::Help)?;
+    }
+    eprintln!(
+        "[xtask] {}: every captured card matches its oracle render ({})",
+        scenario.name,
+        if spanish {
+            "Spanish"
+        } else {
+            "English, today's digests"
+        }
+    );
     Ok(())
 }
 

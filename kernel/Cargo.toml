@@ -1271,6 +1271,11 @@ neo-test-desktop-clock-boot = ["neo-test-desktop-intro-boot"]
 # control): the intro kernel with SYS_NET_IF_STATUS. The kill-switch control
 # (`setup_menu_net_off`) boots the plain intro kernel, where it is ENOSYS.
 neo-test-setup-net-boot = ["neo-test-desktop-intro-boot", "net-info"]
+# F11 S6b: the setup menu with Español chosen (`setup_menu_lang`): the intro
+# kernel, whose end check holds Home's hint to the Spanish words
+# (scripts/desktop/setup_oracle.py fixture es). Its control
+# (`setup_menu_lang_en`) boots the plain intro kernel: today's English hint.
+neo-test-setup-lang-boot = ["neo-test-desktop-intro-boot"]
 # CP-66 (J3-P): force-kill of graph SYS_INFER_RUN callers inside the
 # accelerator admission section — parked behind a holder (terminate, and in the
 # threaded build the fault-kill sibling path) and, threaded, a holder preempted

@@ -562,7 +562,10 @@ impl BaseScene {
         }
         let font = Font::from_bytes(INTER_REGULAR)?;
         let card = self.layout.card_text(self.card.len());
-        let pen = |at: usize| measure(&font, CARD_TEXT_PX, &text[..at]);
+        // `at` is just past a `]` or at a `[` (ASCII), so always on a
+        // character boundary; `get` keeps a row with accents panic-free all
+        // the same.
+        let pen = |at: usize| measure(&font, CARD_TEXT_PX, text.get(..at).unwrap_or(""));
         let span = |r: core::ops::Range<usize>| {
             let (x0, x1) = (libm::floorf(pen(r.start)), libm::ceilf(pen(r.end)));
             Rect::new(
@@ -1122,13 +1125,14 @@ impl BaseScene {
         let base = |i: usize| (card.y + CARD_BASELINE + i * CARD_LINE_H) as i32;
         if self.card.is_empty() {
             let hint = l.hint();
-            let w = measure(font, HINT_PX, crate::intro::HINT);
+            let text = crate::intro::hint();
+            let w = measure(font, HINT_PX, text);
             let x = hint.x as f32 + (hint.w as f32 - w) / 2.0;
             draw_line(
                 canvas,
                 font,
                 HINT_PX,
-                crate::intro::HINT,
+                text,
                 x,
                 base(0),
                 LABEL_SECONDARY,

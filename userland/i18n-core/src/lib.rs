@@ -9,13 +9,14 @@
 //!   language.
 //! - [`text`]: the lookup, with a fallback to English for an empty entry.
 //!   [`lookup`] says whether the fallback was taken.
-//! - [`fill`]: positional `{}` arguments, the only formatting the strings
-//!   need. There are no plurals.
+//! - [`fill`]: `{}` arguments in order, or `{0}`..`{9}` by index where a
+//!   language orders them differently (the date). There are no plurals.
 //!
-//! **Nothing links this crate yet.** S6b moves the literals to these ids,
-//! adds the Language page and the `setup_menu_lang` gate, and puts the
-//! catalog behind the `i18n-catalog` kill-switch. Until then the images
-//! are unchanged.
+//! **S6b** moved the literals to these ids: `setup-core`, `neo-atrium`'s
+//! intro, power and clock cards, `libneo::civil` and Home's clock verbs draw
+//! from here. The `i18n-catalog` kill-switch shows the Language page; off,
+//! the language is English and every row is what shipped before S6b (the
+//! pinned table, `fixtures/en.txt`, and the crates' row KATs).
 //!
 //! **Command words are not translated.** `help`, `list /`, `timezone
 //! Area/City`, `rtc utc` and `rtc local` are what the parsers read, so they
@@ -31,11 +32,15 @@ extern crate alloc;
 use alloc::string::String;
 
 #[cfg(test)]
+mod stray;
+#[cfg(test)]
 mod tests;
 
-/// A language the catalog has a table for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A language the catalog has a table for. The default is English (the
+/// store's `Language` 0).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Lang {
+    #[default]
     En,
     Es,
 }
@@ -61,6 +66,14 @@ impl Lang {
         match self {
             Lang::En => "en",
             Lang::Es => "es-419",
+        }
+    }
+
+    /// The language's index (the setting's stored value).
+    pub const fn index(self) -> usize {
+        match self {
+            Lang::En => 0,
+            Lang::Es => 1,
         }
     }
 
@@ -180,6 +193,36 @@ catalog! {
     SetupNoticeZoneRestart = "Couldn't save the time zone. Restart to check it.",
         "No se pudo guardar la zona horaria. Reinicia para comprobarla.";
 
+    // ---- S6b: the Language page (`setup-core`, `i18n-catalog`) ----
+    SetupBodyLanguageChoose = "Choose the language for setup and Home.",
+        "Elige el idioma de la configuración y de Inicio.";
+    /// Arthur's replies stay in English (S6b's scope).
+    SetupBodyLanguageArthur = "Arthur answers in English for now.",
+        "Por ahora, Arthur responde en inglés.";
+
+    // ---- S4: the Network page (`setup-core`) ----
+    SetupTitleNetwork = "Network", "Red";
+    SetupContinueNoNetwork = "Continue without a network", "Continuar sin red";
+    NetUnavailable = "Network status is unavailable.",
+        "El estado de la red no está disponible.";
+    NetNoLink = "Wired: no link.", "Cable: sin enlace.";
+    /// The argument is the device's driver.
+    NetDevice = "Device: {}.", "Dispositivo: {}.";
+    /// The argument is the IPv4 address, dotted.
+    NetConnected = "Wired: connected, {}", "Cable: conectado, {}";
+    NetNoAddress = "Wired: connected, no address yet.",
+        "Cable: conectado, aún sin dirección.";
+    /// The arguments are the driver and the lease's time left
+    /// ([`Msg::LeaseMinutes`] and its kin).
+    NetDeviceLease = "Device: {}. Lease: {}.", "Dispositivo: {}. Concesión: {}.";
+    NetWifiLater = "Wi-Fi: coming in a later version.",
+        "Wi-Fi: llegará en una versión posterior.";
+    LeaseUnderMinute = "under a minute left", "queda menos de un minuto";
+    /// The argument is the minutes.
+    LeaseMinutes = "{} min left", "quedan {} min";
+    /// The arguments are the hours, then the minutes.
+    LeaseHours = "{} h {} min left", "quedan {} h {} min";
+
     // ---- Arthur's intro card and the help card (`neo-atrium` intro) ----
     IntroGreeting = "Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.",
         "Buen día. Soy Arthur: Assistant for Real-time Tasks, Home automation and User Requests.";
@@ -256,6 +299,9 @@ catalog! {
     /// The 12-hour clock's suffixes, with their leading space.
     Am = " AM", " a. m.";
     Pm = " PM", " p. m.";
+    /// S6b: the long date (`libneo::civil`). The arguments, by index, are
+    /// the weekday, the month, the day and the year.
+    DateLong = "{0}, {1} {2}, {3}", "{0} {2} de {1} de {3}";
 
     // ---- Home's verbs: the power card (`neo-atrium` power) ----
     PowerAskShutDown = "Shut down this computer?", "¿Apagar esta computadora?";
@@ -310,6 +356,9 @@ catalog! {
         "Guardado: el reloj de esta computadora guarda la hora local.";
     ClockSavedUtc = "Saved: this computer's clock keeps UTC.",
         "Guardado: el reloj de esta computadora guarda la hora UTC.";
+    /// S6b: Home's readout, after the time while the zone isn't set (S6a
+    /// missed it: the literal sat in neo-init's clock module).
+    ClockReadoutZoneNotSet = " (zone not set)", " (zona sin definir)";
 }
 
 /// The table for `lang`.
@@ -336,27 +385,78 @@ pub const fn text(lang: Lang, msg: Msg) -> &'static str {
     lookup(lang, msg).0
 }
 
-/// How many `{}` arguments `template` takes.
-pub fn arg_count(template: &str) -> usize {
-    template.matches("{}").count()
+/// One piece of a template: literal text, or an argument slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Piece<'a> {
+    Text(&'a str),
+    /// The argument with this index: `{}` takes the next in order, `{N}`
+    /// (one digit) takes argument `N`.
+    Arg(usize),
 }
 
-/// `template` with each `{}` replaced by the next of `args`, in order. A
-/// `{}` with no argument left stays as it is; spare arguments are ignored
-/// (a KAT holds every table's counts equal, so neither happens).
+/// The pieces of `template`, in order (no allocation: `libneo::civil` fills
+/// a fixed buffer with them). A `{` that starts neither `{}` nor `{N}` is
+/// text.
+pub fn pieces(template: &str) -> impl Iterator<Item = Piece<'_>> {
+    let mut rest = template;
+    let mut next = 0usize;
+    core::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let b = rest.as_bytes();
+        if b[0] == b'{' {
+            if b.get(1) == Some(&b'}') {
+                rest = &rest[2..];
+                next += 1;
+                return Some(Piece::Arg(next - 1));
+            }
+            if b.len() >= 3 && b[1].is_ascii_digit() && b[2] == b'}' {
+                rest = &rest[3..];
+                return Some(Piece::Arg(usize::from(b[1] - b'0')));
+            }
+        }
+        // Text up to the next `{` after the first character (which may be a
+        // `{` that starts no slot, or a multi-byte character).
+        let first = rest.chars().next().map_or(1, char::len_utf8);
+        let end = rest[first..].find('{').map_or(rest.len(), |i| i + first);
+        let (text, tail) = rest.split_at(end);
+        rest = tail;
+        Some(Piece::Text(text))
+    })
+}
+
+/// How many arguments `template` takes: one per `{}`, and one past the
+/// highest `{N}`.
+pub fn arg_count(template: &str) -> usize {
+    let (mut seq, mut max) = (0usize, 0usize);
+    let mut rest = template;
+    while let Some(at) = rest.find('{') {
+        let b = &rest.as_bytes()[at..];
+        if b.get(1) == Some(&b'}') {
+            seq += 1;
+        } else if b.len() >= 3 && b[1].is_ascii_digit() && b[2] == b'}' {
+            max = max.max(usize::from(b[1] - b'0') + 1);
+        }
+        rest = &rest[at + 1..];
+    }
+    seq.max(max)
+}
+
+/// `template` with each slot replaced by its argument. A slot with no
+/// argument stays as it is (`{}`); spare arguments are ignored (a KAT holds
+/// every table's counts equal, so neither happens).
 pub fn fill(template: &str, args: &[&str]) -> String {
     let mut out = String::with_capacity(template.len() + 16);
-    let mut rest = template;
-    let mut next = args.iter();
-    while let Some(at) = rest.find("{}") {
-        out.push_str(&rest[..at]);
-        match next.next() {
-            Some(a) => out.push_str(a),
-            None => out.push_str("{}"),
+    for piece in pieces(template) {
+        match piece {
+            Piece::Text(t) => out.push_str(t),
+            Piece::Arg(i) => match args.get(i) {
+                Some(a) => out.push_str(a),
+                None => out.push_str("{}"),
+            },
         }
-        rest = &rest[at + 2..];
     }
-    out.push_str(rest);
     out
 }
 

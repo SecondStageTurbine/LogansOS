@@ -1051,6 +1051,14 @@ jobs:
           cargo test -p setup-core --features keyboard-layouts
           cargo test -p neo-atrium --features keyboard-layouts
           cargo test -p arthur-logic-tests --features keyboard-layouts
+      # F11 S6b: the catalog wired in, with the Language page (`i18n-catalog`):
+      # the Spanish rows and the two-language store. The off build's KATs (every
+      # row as before S6b) are the default workspace run.
+      - name: cargo test, the language (i18n-catalog, blocking)
+        run: |
+          cargo test -p settings-core --features i18n-catalog
+          cargo test -p setup-core --features i18n-catalog
+          cargo test -p setup-core --features i18n-catalog,keyboard-layouts
 
       # Sharding coverage gate: prove the 4-way neo-test partition the QEMU
       # matrix uses is complete + pairwise-disjoint, so sharding can never
@@ -1393,6 +1401,9 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features keyboard-layouts -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features keyboard-layouts-boot-test -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home,keyboard-layouts -- -D warnings)
+          # F11 S6b: the language (the WM and its boot test, with the clock and the power verbs).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features i18n-catalog-boot-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features i18n-catalog,power-menu,desktop-clock,setup-tz -- -D warnings)
           # OT-87 R4.4b: the intro Home with the installer (the Install chip).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)

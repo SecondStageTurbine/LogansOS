@@ -13,6 +13,8 @@ test = false
 bench = false
 
 [dependencies]
+# F11 S6b: `civil`'s words and date pattern per language (no_std data).
+i18n-core = { path = "../i18n-core" }
 # Phase 1.5b BUILD-4: userspace heap. linked_list_allocator's `Heap` (the
 # unlocked variant) is wrapped in our own spin::Mutex inside LibneoHeap so
 # the GlobalAlloc trait's `&self` requirement is satisfiable. spin gives us

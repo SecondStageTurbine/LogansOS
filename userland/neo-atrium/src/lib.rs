@@ -199,6 +199,7 @@ pub mod contrast;
 pub mod icons;
 pub mod intro;
 pub mod keys;
+pub mod lang;
 pub mod layout;
 pub mod material;
 pub mod motion;

@@ -28,6 +28,8 @@ keyboard-layouts = []
 # Exact-area corner coverage (sqrt/asin) and the focus-light distance field.
 # Already in the tree via neo-text. MIT.
 libm = "0.2"
+# F11 S6b: the intro, power and clock words in the session's language.
+i18n-core = { path = "../i18n-core" }
 # Plex labels on the chrome (Desktop S2 engine).
 neo-text = { path = "../neo-text", features = ["inter"] }
 

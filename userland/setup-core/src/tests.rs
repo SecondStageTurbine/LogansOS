@@ -112,6 +112,7 @@ fn the_gate_walk() {
             reduce_motion: true,
             reduce_transparency: true,
             tz: None,
+            lang: Lang::En,
         }
     );
 }

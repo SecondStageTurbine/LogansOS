@@ -550,6 +550,44 @@ mod tests {
         assert_eq!(c.time_text().as_str(), "12:59 PM");
     }
 
+    /// S6b: the same instants in Spanish, written out by hand: the day before
+    /// the month, lower-case names, and the "a. m." / "p. m." suffixes. The
+    /// longest Spanish date (35 bytes, "é" is two) and time fit the buffers.
+    #[test]
+    fn civil_in_spanish() {
+        use i18n_core::Lang;
+        let c = civil::from_realtime_ns(1_792_604_880 * civil::NS_PER_SECOND);
+        assert_eq!(
+            c.date_text_in(Lang::Es).as_str(),
+            "miércoles 21 de octubre de 2026"
+        );
+        assert_eq!(c.time_text_in(Lang::Es).as_str(), "5:48 p. m.");
+        assert_eq!(
+            civil::from_unix_seconds(9 * 3_600 + 7 * 60)
+                .time_text_in(Lang::Es)
+                .as_str(),
+            "9:07 a. m."
+        );
+        let c = civil::from_unix_seconds(20_726 * 86_400 + 12 * 3_600 + 59 * 60);
+        let date = c.date_text_in(Lang::Es);
+        assert_eq!(date.as_str(), "miércoles 30 de septiembre de 2026");
+        assert_eq!(date.as_str().len(), 35);
+        assert_eq!(c.time_text_in(Lang::Es).as_str(), "12:59 p. m.");
+        // English through the `_in` path is the English text.
+        assert_eq!(c.date_text_in(Lang::En), c.date_text());
+    }
+
+    /// A full buffer stops on a character boundary, never inside "é".
+    #[test]
+    fn civil_text_truncates_on_a_character() {
+        let mut t = civil::Text::<4>::new();
+        t.push("abé");
+        assert_eq!(t.as_str(), "abé");
+        let mut t = civil::Text::<3>::new();
+        t.push("abé");
+        assert_eq!(t.as_str(), "ab");
+    }
+
     /// Two independent implementations agree: the kernel's days-from-civil
     /// (the seed) and libneo's civil-from-days (the display) invert each
     /// other on every day 1970..=2199.

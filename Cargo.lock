@@ -1059,6 +1059,7 @@ name = "libneo"
 version = "0.0.1"
 dependencies = [
  "getrandom 0.2.17",
+ "i18n-core",
  "linked_list_allocator",
  "neo-image-decode",
  "rustls",
@@ -1187,6 +1188,7 @@ dependencies = [
 name = "neo-atrium"
 version = "0.0.1"
 dependencies = [
+ "i18n-core",
  "libm",
  "neo-text",
 ]
@@ -1225,6 +1227,7 @@ version = "0.0.1"
 dependencies = [
  "action-log-core",
  "fetch-proto",
+ "i18n-core",
  "libneo",
  "login-core",
  "neo-atrium",
@@ -1787,6 +1790,9 @@ dependencies = [
 [[package]]
 name = "rtc-logic-tests"
 version = "0.0.1"
+dependencies = [
+ "i18n-core",
+]
 
 [[package]]
 name = "rtl8125-logic-tests"
@@ -1954,11 +1960,15 @@ name = "settings-core"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "i18n-core",
 ]
 
 [[package]]
 name = "setup-core"
 version = "0.0.1"
+dependencies = [
+ "i18n-core",
+]
 
 [[package]]
 name = "sha1"
@@ -2228,6 +2238,9 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 [[package]]
 name = "tz-logic-tests"
 version = "0.0.1"
+dependencies = [
+ "i18n-core",
+]
 
 [[package]]
 name = "uart_16550"

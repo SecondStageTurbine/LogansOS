@@ -10,6 +10,7 @@
 //! | `DEFAULTS7_GEN1` | 1 | today's five defaults, (6, 2, 0, 0) (7, 2, 0, 0) |
 //! | `CHANGED7_GEN2` | 2 | `tests.rs`'s `CHANGED` five, (6, 2, 0, 0) (7, 2, 0, 0) |
 //! | `LANGUAGE_1` | 3 | (6, 2, 0, 1): one past the only language |
+//! | `LANGUAGE_2` | 3 | (6, 2, 0, 2): one past Spanish, with `i18n-catalog` |
 //! | `LAYOUT_1` | 3 | (7, 2, 0, 1): one past the only layout (Spanish with `keyboard-layouts`) |
 //! | `LAYOUT_2` | 3 | (7, 2, 0, 2): one past Spanish, with `keyboard-layouts` |
 //! | `LAYOUT_BOOL` | 3 | (7, 1, 0, 0): the wrong type |
@@ -43,6 +44,14 @@ const LANGUAGE_1: [u8; 44] = [
     0x4e, 0x45, 0x4f, 0x53, 0x45, 0x54, 0x31, 0x00, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, // 0
     0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0xed, 0x42, 0x27, 0xf7, // 16
     0x2f, 0x04, 0xdc, 0x6a, 0xd4, 0x2e, 0xa3, 0x26, 0x9a, 0xc7, 0xaa, 0xf7, // 32
+];
+// LANGUAGE_2: 44 bytes, checksum 09e33ae04ff8efbff8653795aadfe5fc
+#[cfg(feature = "i18n-catalog")]
+#[rustfmt::skip]
+const LANGUAGE_2: [u8; 44] = [
+    0x4e, 0x45, 0x4f, 0x53, 0x45, 0x54, 0x31, 0x00, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, // 0
+    0x00, 0x00, 0x00, 0x00, 0x06, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0x09, 0xe3, 0x3a, 0xe0, // 16
+    0x4f, 0xf8, 0xef, 0xbf, 0xf8, 0x65, 0x37, 0x95, 0xaa, 0xdf, 0xe5, 0xfc, // 32
 ];
 // LAYOUT_1: 44 bytes, checksum c3055360dc2fff237ec5348fc4dac8a1
 #[rustfmt::skip]
@@ -115,14 +124,16 @@ fn a_five_key_record_reads_the_new_keys_as_defaults() {
 #[test]
 fn the_new_keys_ranges_types_and_ids() {
     assert_eq!(KEYS.map(Key::id), [1, 2, 3, 4, 5, 6, 7]);
-    #[cfg(not(feature = "keyboard-layouts"))]
+    #[cfg(not(any(feature = "keyboard-layouts", feature = "i18n-catalog")))]
     assert_eq!((LANGUAGE_COUNT, LAYOUT_COUNT), (1, 1));
+    #[cfg(not(feature = "i18n-catalog"))]
     assert_eq!(decode(&LANGUAGE_1), Err(RecordError::Value));
     #[cfg(not(feature = "keyboard-layouts"))]
     assert_eq!(decode(&LAYOUT_1), Err(RecordError::Value));
     assert_eq!(decode(&LAYOUT_BOOL), Err(RecordError::Type));
     assert_eq!(Key::from_id(8), None);
     let s = Settings::default();
+    #[cfg(not(feature = "i18n-catalog"))]
     assert_eq!(s.with(6, 1), Err(SetError::Value));
     #[cfg(not(feature = "keyboard-layouts"))]
     assert_eq!(s.with(7, 1), Err(SetError::Value));
@@ -153,7 +164,7 @@ fn the_new_keys_are_wm_only() {
 #[cfg(feature = "keyboard-layouts")]
 #[test]
 fn two_layouts_accept_uk_and_refuse_the_next_id() {
-    assert_eq!((LANGUAGE_COUNT, LAYOUT_COUNT), (1, 2));
+    assert_eq!(LAYOUT_COUNT, 2);
     assert_eq!(
         decode(&LAYOUT_1),
         Ok(Record {
@@ -174,4 +185,26 @@ fn two_layouts_accept_uk_and_refuse_the_next_id() {
         })
     );
     assert_eq!(s.with(7, 2), Err(SetError::Value));
+}
+
+/// F11 S6b (`i18n-catalog`): two languages, so Spanish (1) reads and sets,
+/// and one past it (2) is refused, in a record and in `with`.
+#[cfg(feature = "i18n-catalog")]
+#[test]
+fn two_languages_accept_spanish_and_refuse_the_next_id() {
+    assert_eq!(LANGUAGE_COUNT, 2);
+    assert_eq!(
+        decode(&LANGUAGE_1),
+        Ok(Record {
+            generation: 3,
+            settings: Settings {
+                language: 1,
+                ..Settings::default()
+            }
+        })
+    );
+    assert_eq!(decode(&LANGUAGE_2), Err(RecordError::Value));
+    let s = Settings::default();
+    assert_eq!(s.with(6, 1), Ok(Settings { language: 1, ..s }));
+    assert_eq!(s.with(6, 2), Err(SetError::Value));
 }

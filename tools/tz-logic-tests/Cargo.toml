@@ -5,3 +5,7 @@ version = "0.0.1"
 edition = "2024"
 license = "MPL-2.0"
 publish = false
+
+[dependencies]
+# S6b: `libneo::civil` (mounted by `#[path]`) takes its words from the catalog.
+i18n-core = { path = "../../userland/i18n-core" }

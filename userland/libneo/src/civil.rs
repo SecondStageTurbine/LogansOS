@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Epoch → civil time (OT-85): a `CLOCK_REALTIME` reading as a calendar date,
-//! weekday and 12-hour time, and its English text for the desktop. Pure: no
+//! weekday and 12-hour time, and its text for the desktop (in English, or,
+//! S6b, in a catalog language: `i18n-core`'s words and date pattern). Pure: no
 //! allocation, no syscall; the probe and the Atrium readout call the same
 //! functions. Host KATs: `tools/rtc-logic-tests` (mounted by `#[path]`).
 //!
@@ -25,30 +26,55 @@ pub struct Civil {
     pub second: u8,
 }
 
-pub const WEEKDAYS: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
+use i18n_core::{Lang, Msg, Piece, pieces, text};
+
+/// The weekdays' ids, Sunday first.
+const WEEKDAY_MSGS: [Msg; 7] = [
+    Msg::Sunday,
+    Msg::Monday,
+    Msg::Tuesday,
+    Msg::Wednesday,
+    Msg::Thursday,
+    Msg::Friday,
+    Msg::Saturday,
 ];
 
-pub const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
+/// The months' ids, January first.
+const MONTH_MSGS: [Msg; 12] = [
+    Msg::January,
+    Msg::February,
+    Msg::March,
+    Msg::April,
+    Msg::May,
+    Msg::June,
+    Msg::July,
+    Msg::August,
+    Msg::September,
+    Msg::October,
+    Msg::November,
+    Msg::December,
 ];
+
+/// The English names (the catalog's English table).
+pub const WEEKDAYS: [&str; 7] = {
+    let mut out = [""; 7];
+    let mut i = 0;
+    while i < 7 {
+        out[i] = text(Lang::En, WEEKDAY_MSGS[i]);
+        i += 1;
+    }
+    out
+};
+
+pub const MONTHS: [&str; 12] = {
+    let mut out = [""; 12];
+    let mut i = 0;
+    while i < 12 {
+        out[i] = text(Lang::En, MONTH_MSGS[i]);
+        i += 1;
+    }
+    out
+};
 
 /// `(year, month, day)` of the day `days` after 1970-01-01. The count is
 /// shifted to days since 0000-03-01 (719 468 of them before the epoch), so
@@ -91,7 +117,7 @@ pub const fn from_realtime_ns(ns: u64) -> Civil {
     from_unix_seconds(ns / NS_PER_SECOND)
 }
 
-/// Fixed-capacity ASCII text (no allocation).
+/// Fixed-capacity UTF-8 text (no allocation).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Text<const N: usize> {
     buf: [u8; N],
@@ -111,18 +137,19 @@ impl<const N: usize> Text<N> {
     }
 
     pub fn as_str(&self) -> &str {
-        // Only ASCII is ever pushed.
+        // Only whole characters are ever pushed.
         core::str::from_utf8(self.as_bytes()).unwrap_or("")
     }
 
-    /// Append `s`, truncated at capacity.
+    /// Append `s`, truncated at capacity on a character boundary.
     pub fn push(&mut self, s: &str) {
-        for &b in s.as_bytes() {
-            if self.len == N {
+        for c in s.chars() {
+            let n = c.len_utf8();
+            if self.len + n > N {
                 return;
             }
-            self.buf[self.len] = b;
-            self.len += 1;
+            c.encode_utf8(&mut self.buf[self.len..self.len + n]);
+            self.len += n;
         }
     }
 
@@ -160,18 +187,29 @@ impl<const N: usize> Default for Text<N> {
     }
 }
 
-/// "Wednesday, September 30, 2026" is the longest (29 bytes).
-pub type DateText = Text<32>;
-/// "12:59 PM" is the longest (8 bytes).
-pub type TimeText = Text<8>;
+/// "Wednesday, September 30, 2026" is English's longest (29 bytes);
+/// "miércoles 30 de septiembre de 2026", Spanish's (35).
+pub type DateText = Text<40>;
+/// "12:59 PM" is English's longest (8 bytes); "12:59 p. m.", Spanish's (11).
+pub type TimeText = Text<12>;
 
 impl Civil {
     pub const fn weekday_name(&self) -> &'static str {
-        WEEKDAYS[self.weekday as usize % 7]
+        self.weekday_name_in(Lang::En)
     }
 
     pub const fn month_name(&self) -> &'static str {
-        MONTHS[(self.month as usize + 11) % 12]
+        self.month_name_in(Lang::En)
+    }
+
+    /// S6b: the weekday in `lang`.
+    pub const fn weekday_name_in(&self, lang: Lang) -> &'static str {
+        text(lang, WEEKDAY_MSGS[self.weekday as usize % 7])
+    }
+
+    /// S6b: the month in `lang`.
+    pub const fn month_name_in(&self, lang: Lang) -> &'static str {
+        text(lang, MONTH_MSGS[(self.month as usize + 11) % 12])
     }
 
     /// The hour on a 12-hour clock (1..=12) and whether it is PM.
@@ -182,25 +220,38 @@ impl Civil {
 
     /// "Wednesday, October 21, 2026".
     pub fn date_text(&self) -> DateText {
+        self.date_text_in(Lang::En)
+    }
+
+    /// S6b: the date in `lang`, by its pattern (`Msg::DateLong`: weekday,
+    /// month, day, year by index): "miércoles 21 de octubre de 2026".
+    pub fn date_text_in(&self, lang: Lang) -> DateText {
         let mut t = DateText::new();
-        t.push(self.weekday_name());
-        t.push(", ");
-        t.push(self.month_name());
-        t.push(" ");
-        t.push_num(u32::from(self.day), 1);
-        t.push(", ");
-        t.push_num(self.year, 4);
+        for piece in pieces(text(lang, Msg::DateLong)) {
+            match piece {
+                Piece::Text(s) => t.push(s),
+                Piece::Arg(0) => t.push(self.weekday_name_in(lang)),
+                Piece::Arg(1) => t.push(self.month_name_in(lang)),
+                Piece::Arg(2) => t.push_num(u32::from(self.day), 1),
+                Piece::Arg(_) => t.push_num(self.year, 4),
+            }
+        }
         t
     }
 
     /// "5:48 PM" (12-hour, minutes zero-padded, no seconds).
     pub fn time_text(&self) -> TimeText {
+        self.time_text_in(Lang::En)
+    }
+
+    /// S6b: the time in `lang` (its AM/PM suffix): "5:48 p. m.".
+    pub fn time_text_in(&self, lang: Lang) -> TimeText {
         let (h, pm) = self.hour12();
         let mut t = TimeText::new();
         t.push_num(u32::from(h), 1);
         t.push(":");
         t.push_num(u32::from(self.minute), 2);
-        t.push(if pm { " PM" } else { " AM" });
+        t.push(text(lang, if pm { Msg::Pm } else { Msg::Am }));
         t
     }
 

@@ -184,6 +184,12 @@ fn store(current: Option<Current>, settings: &Settings) {
     // store accepted is a layout: the two counts agree, below).
     #[cfg(feature = "keyboard-layouts")]
     let _ = neo_atrium::keys::set_layout(settings.keyboard_layout as u8);
+    // F11 S6b: the session's language (an id the store accepted is one of
+    // the catalog's: `LANGUAGE_COUNT` is the catalog's).
+    #[cfg(feature = "i18n-catalog")]
+    neo_atrium::lang::set(
+        i18n_core::Lang::from_index(settings.language as usize).unwrap_or_default(),
+    );
 }
 
 // F11 S5: the store's range for `KeyboardLayout` is the layout table's.
@@ -660,6 +666,15 @@ fn apply(scene: &mut Scene, before: &Settings, next: &Settings) {
         Line::new()
             .s(b"DESKTOP keyboard layout=")
             .n(u64::from(neo_atrium::keys::layout()))
+            .s(b" cause=settings live=1\n")
+            .emit();
+    }
+    // F11 S6b: `store` set the session's language; say so.
+    #[cfg(feature = "i18n-catalog")]
+    if before.language != next.language {
+        Line::new()
+            .s(b"DESKTOP language=")
+            .s(neo_atrium::lang::get().tag().as_bytes())
             .s(b" cause=settings live=1\n")
             .emit();
     }

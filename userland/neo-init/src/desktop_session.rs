@@ -8220,6 +8220,7 @@ mod zone_verb {
     use alloc::format;
     use alloc::string::String;
     use alloc::vec::Vec;
+    use i18n_core::Msg;
     use libneo::tz::{self, ClockVerb, ZoneId};
 
     fn zone_name(id: ZoneId) -> &'static str {
@@ -8236,47 +8237,52 @@ mod zone_verb {
         format!("{}, UTC{}{:02}:{:02}", o.abbr, sign, m / 60, m % 60)
     }
 
+    /// S6b: `msg` in the session's language.
+    fn t(msg: Msg) -> String {
+        String::from(i18n_core::text(neo_atrium::lang::get(), msg))
+    }
+
+    /// S6b: `msg` in the session's language, with its arguments.
+    fn f(msg: Msg, args: &[&str]) -> String {
+        i18n_core::format(neo_atrium::lang::get(), msg, args)
+    }
+
     fn status_rows(scene: &Scene, head: String) -> Vec<String> {
         let mode = scene.clock.mode();
         let mut rows = Vec::new();
         rows.push(head);
         rows.push(if mode.zone == tz::UTC && mode.rtc_local {
-            String::from("Time zone: not set")
+            t(Msg::ZoneRowNotSet)
         } else if mode.basis == Basis::Utc {
-            format!(
-                "Time zone: {} ({})",
-                zone_name(mode.zone),
-                now_label(mode.zone)
+            f(
+                Msg::ZoneRowNow,
+                &[zone_name(mode.zone), &now_label(mode.zone)],
             )
         } else {
-            format!("Time zone: {}", zone_name(mode.zone))
+            f(Msg::ZoneRow, &[zone_name(mode.zone)])
         });
-        rows.push(String::from(if mode.rtc_local {
-            "This computer's clock keeps local time (as Windows does)."
+        rows.push(t(if mode.rtc_local {
+            Msg::ClockKeepsLocal
         } else {
-            "This computer's clock keeps UTC."
+            Msg::ClockKeepsUtc
         }));
         match mode.basis {
             // The kill-switch kernel: the readout is the clock as read.
             Basis::Legacy => {
-                rows.push(String::from(
-                    "Saved. This system shows the computer's clock",
-                ));
-                rows.push(String::from("as it reads, without a time zone."));
+                rows.push(t(Msg::ClockLegacy1));
+                rows.push(t(Msg::ClockLegacy2));
                 return rows;
             }
-            Basis::Rtc => rows.push(String::from("Set your zone: timezone America/New_York")),
-            Basis::Utc => rows.push(String::from("Change it: timezone Area/City")),
+            Basis::Rtc => rows.push(t(Msg::ClockSetZone)),
+            Basis::Utc => rows.push(t(Msg::ClockChangeZone)),
         }
         if mode.restart {
-            rows.push(String::from(
-                "Restart to read this computer's clock this way.",
-            ));
+            rows.push(t(Msg::ClockRestart));
         }
-        rows.push(String::from(if mode.rtc_local {
-            "Off by whole hours? Type: rtc utc"
+        rows.push(t(if mode.rtc_local {
+            Msg::ClockOffUtc
         } else {
-            "Off by whole hours? Type: rtc local"
+            Msg::ClockOffLocal
         }));
         rows
     }
@@ -8288,7 +8294,7 @@ mod zone_verb {
         let mode = scene.clock.mode();
         let (zone, rtc_local) = (mode.zone, mode.rtc_local);
         let rows = match verb {
-            ClockVerb::Show => status_rows(scene, String::from("The clock")),
+            ClockVerb::Show => status_rows(scene, t(Msg::ClockTitle)),
             ClockVerb::Zone(typed) => match tz::find_zone(typed) {
                 Ok(id) => {
                     super::clock::set_mode(scene, id, rtc_local)?;
@@ -8301,21 +8307,20 @@ mod zone_verb {
                         .n(u64::from(scene.clock.mode().restart))
                         .s(b"\n")
                         .emit();
-                    status_rows(scene, format!("Time zone set to {}.", zone_name(id)))
+                    status_rows(scene, f(Msg::ClockZoneSet, &[zone_name(id)]))
                 }
                 Err(near) => {
                     let typed = core::str::from_utf8(typed).unwrap_or("?");
                     let mut rows = Vec::new();
-                    rows.push(format!("There's no time zone called \"{typed}\"."));
+                    rows.push(f(Msg::ClockNoZone, &[typed]));
                     let names: Vec<&str> = near.iter().flatten().map(|&i| zone_name(i)).collect();
                     if names.is_empty() {
-                        rows.push(String::from("Type timezone Area/City, for example"));
-                        rows.push(String::from(
-                            "timezone America/New_York or timezone Europe/London.",
-                        ));
+                        rows.push(t(Msg::ClockTypeZone));
+                        rows.push(t(Msg::ClockTypeZoneExamples));
                     } else {
-                        rows.push(String::from("Did you mean:"));
+                        rows.push(t(Msg::ClockDidYouMean));
                         for n in names {
+                            // The command as typed (not translated).
                             rows.push(format!("  timezone {n}"));
                         }
                     }
@@ -8334,10 +8339,10 @@ mod zone_verb {
                     .emit();
                 status_rows(
                     scene,
-                    String::from(if local {
-                        "Saved: this computer's clock keeps local time."
+                    t(if local {
+                        Msg::ClockSavedLocal
                     } else {
-                        "Saved: this computer's clock keeps UTC."
+                        Msg::ClockSavedUtc
                     }),
                 )
             }
@@ -8459,11 +8464,13 @@ mod clock {
     }
 
     impl Words {
+        /// S6b: in the session's language.
         fn of(c: Civil) -> Self {
+            let lang = neo_atrium::lang::get();
             Self {
                 hour: c.hour,
-                time: c.time_text(),
-                date: c.date_text(),
+                time: c.time_text_in(lang),
+                date: c.date_text_in(lang),
             }
         }
 
@@ -8511,7 +8518,10 @@ mod clock {
         match label {
             // The kill-switch: today's readout, no label.
             Shown::Plain => {}
-            Shown::NotSet => time.push_str(" (zone not set)"),
+            Shown::NotSet => time.push_str(i18n_core::text(
+                neo_atrium::lang::get(),
+                i18n_core::Msg::ClockReadoutZoneNotSet,
+            )),
             Shown::Zone(abbr) => {
                 time.push(' ');
                 time.push_str(abbr);

@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
-//! S6a's host KATs (`Plans/DISPATCH-2026-11-09-seat-c-setup-s6a-i18n-catalog.md`):
+//! The catalog's host KATs (S6a, `Plans/DISPATCH-2026-11-09-seat-c-setup-s6a-i18n-catalog.md`;
+//! S6b, `Plans/DISPATCH-2026-11-12-seat-c-setup-s6b-language.md`):
 //!
 //! 1. every id has an entry in both tables, with the same `{}` count, and no
 //!    lookup falls back;
-//! 2. the English table is today's literals, byte for byte, read from the
-//!    source files that draw them (until S6b swaps the literals for ids);
+//! 2. the English table equals the pinned snapshot (`fixtures/en.txt`), and
+//!    the code that shows these surfaces holds no user-visible literal
+//!    outside the catalog (`stray.rs`);
 //! 3. every character of every entry is in the face the text engine draws
 //!    with (Inter Regular, read from its cmap, not assumed);
 //! 4. every row, filled with its widest realistic arguments, fits the card's
@@ -83,505 +85,76 @@ fn fill_is_positional_and_leaves_a_missing_argument_visible() {
     );
 }
 
-// ---- 2. English is today's literals ----
-
-const SETUP_CORE: &str = include_str!("../../setup-core/src/lib.rs");
-const KEYBOARD: &str = include_str!("../../setup-core/src/keyboard.rs");
-const LAYOUTS: &str = include_str!("../../../kernel/src/drivers/keymap_layout_logic.rs");
-const SETUP_VIEW: &str = include_str!("../../neo-init/src/desktop_session/setup.rs");
-const DESKTOP: &str = include_str!("../../neo-init/src/desktop_session.rs");
-const INTRO: &str = include_str!("../../neo-atrium/src/intro.rs");
-const CLOCK: &str = include_str!("../../neo-atrium/src/clock.rs");
-const POWER: &str = include_str!("../../neo-atrium/src/power.rs");
-const CIVIL: &str = include_str!("../../libneo/src/civil.rs");
-
-/// Where a literal sits in its file.
-#[derive(Clone, Copy)]
-enum At {
-    /// A whole string literal: `"…"`.
-    Whole,
-    /// The end of a longer format string: `…"`.
-    Tail,
+/// `{N}` takes argument `N`, so a language can order them its own way (the
+/// date); text braces that are neither slot stay text.
+#[test]
+fn indexed_slots_reorder_and_count() {
+    let args = ["miércoles", "octubre", "21", "2026"];
+    assert_eq!(
+        fill(text(Lang::Es, Msg::DateLong), &args),
+        "miércoles 21 de octubre de 2026"
+    );
+    assert_eq!(
+        fill(
+            text(Lang::En, Msg::DateLong),
+            &["Wednesday", "October", "21", "2026"]
+        ),
+        "Wednesday, October 21, 2026"
+    );
+    assert_eq!(arg_count("{0} {2} de {1} de {3}"), 4);
+    assert_eq!(arg_count("{} and {}"), 2);
+    assert_eq!(arg_count("{x} {"), 0);
+    assert_eq!(fill("{x} {", &["a"]), "{x} {");
+    assert_eq!(fill("{1}{0}", &["a"]), "{}a");
+    assert_eq!(fill("é{}ñ", &["x"]), "éxñ");
+    assert_eq!(
+        pieces("a{}b{1}").collect::<Vec<_>>(),
+        [
+            Piece::Text("a"),
+            Piece::Arg(0),
+            Piece::Text("b"),
+            Piece::Arg(1)
+        ]
+    );
 }
 
-/// Each id, the file that shows it today and the literal as written there
-/// (named format arguments and `\"` escapes included). An id shown from two
-/// places is listed twice.
-const SOURCES: &[(Msg, &str, &str, At)] = {
-    use At::*;
-    use Msg::*;
-    &[
-        (
-            SetupHint,
-            SETUP_CORE,
-            "Up/Down to move, Enter to choose, Esc to go back.",
-            Whole,
-        ),
-        (
-            SetupSearchHint,
-            SETUP_CORE,
-            "Type to search. Up/Down, Enter to choose.",
-            Whole,
-        ),
-        (SetupBegin, SETUP_CORE, "Begin", Whole),
-        (SetupSkip, SETUP_CORE, "Skip setup", Whole),
-        (
-            SetupSkipDefaults,
-            SETUP_CORE,
-            "Skip setup and use the defaults",
-            Whole,
-        ),
-        (SetupBack, SETUP_CORE, "Back", Whole),
-        (SetupContinue, SETUP_CORE, "Continue", Whole),
-        (SetupTryOption, SETUP_CORE, "Try LogansOS", Whole),
-        (
-            SetupReduceMotionOption,
-            SETUP_CORE,
-            "{} Reduce motion",
-            Whole,
-        ),
-        (
-            SetupReduceTransparencyOption,
-            SETUP_CORE,
-            "{} Reduce transparency",
-            Whole,
-        ),
-        (SetupTitleWelcome, SETUP_CORE, "Set up LogansOS", Whole),
-        (SetupTitleSkip, SETUP_CORE, "Skip setup?", Whole),
-        (SetupTitleLanguage, SETUP_CORE, "Language", Whole),
-        (SetupTitleKeyboard, SETUP_CORE, "Keyboard", Whole),
-        (SetupTitleTimeZone, SETUP_CORE, "Time zone", Whole),
-        (SetupTitleComfort, SETUP_CORE, "Comfort", Whole),
-        (SetupTitleTry, SETUP_CORE, "Try LogansOS", Whole),
-        (SetupTitlePage, SETUP_CORE, "{name} ({n} of {total})", Whole),
-        (
-            SetupBodyWelcome,
-            SETUP_CORE,
-            "A few short screens. You can change any of these later.",
-            Whole,
-        ),
-        (
-            SetupBodySkip,
-            SETUP_CORE,
-            "The defaults are UTC, with full motion and transparency.",
-            Whole,
-        ),
-        (
-            SetupBodyLanguage,
-            SETUP_CORE,
-            "English is the only language for now.",
-            Whole,
-        ),
-        (
-            SetupBodyKeyboard,
-            KEYBOARD,
-            "US is the only keyboard layout for now.",
-            Whole,
-        ),
-        (
-            SetupKeyboardBodyChoose,
-            KEYBOARD,
-            "Choose the layout printed on your keys.",
-            Whole,
-        ),
-        (SetupKeyboardTryIt, KEYBOARD, "Try it: {}_", Whole),
-        (SetupSummaryKeyboard, KEYBOARD, "Keyboard: {}", Whole),
-        (LayoutEnglishUs, LAYOUTS, "English (US)", Whole),
-        (LayoutSpanishSpain, LAYOUTS, "Spanish (Spain)", Whole),
-        (
-            SetupBodyTimeZoneNoSearch,
-            SETUP_CORE,
-            "Where are you? At Home: timezone Area/City.",
-            Whole,
-        ),
-        (
-            SetupBodyZoneSet,
-            SETUP_CORE,
-            "Time zone: {name}. The clock is set.",
-            Whole,
-        ),
-        (
-            SetupBodyZoneLater,
-            SETUP_CORE,
-            "Change it later at Home: timezone Area/City.",
-            Whole,
-        ),
-        (
-            SetupBodySearchEmpty,
-            SETUP_CORE,
-            "Type a city to search, or pick one.",
-            Whole,
-        ),
-        (
-            SetupBodySearchNone,
-            SETUP_CORE,
-            "Search: {}  (no zone matches)",
-            Whole,
-        ),
-        (SetupBodySearch, SETUP_CORE, "Search: {}", Whole),
-        (
-            SetupBodyComfort,
-            SETUP_CORE,
-            "Make the screen calmer, if you like.",
-            Whole,
-        ),
-        (SetupNotSet, SETUP_CORE, "not set", Whole),
-        (ZoneRow, SETUP_CORE, "Time zone: {}", Whole),
-        (ZoneRow, DESKTOP, "Time zone: {}", Whole),
-        (
-            SetupSummaryZoneClockNotSet,
-            SETUP_CORE,
-            "Time zone: {name} (clock not set)",
-            Whole,
-        ),
-        (ZoneRowNotSet, SETUP_CORE, "Time zone: not set", Whole),
-        (ZoneRowNotSet, DESKTOP, "Time zone: not set", Whole),
-        (
-            SetupSummaryComfort,
-            SETUP_CORE,
-            "Reduce motion: {}. Reduce transparency: {}.",
-            Whole,
-        ),
-        (On, SETUP_CORE, "on", Whole),
-        (Off, SETUP_CORE, "off", Whole),
-        (
-            SetupNoticeZoneInUse,
-            SETUP_VIEW,
-            "Couldn't save the time zone. In use: {name}.",
-            Whole,
-        ),
-        (
-            SetupNoticeZoneRestart,
-            SETUP_VIEW,
-            "Couldn't save the time zone. Restart to check it.",
-            Whole,
-        ),
-        (
-            IntroGreeting,
-            INTRO,
-            "Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.",
-            Whole,
-        ),
-        (
-            IntroName,
-            INTRO,
-            "I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.",
-            Whole,
-        ),
-        (
-            IntroHousehold,
-            INTRO,
-            "The household side comes later; for now, I look after this computer for you.",
-            Whole,
-        ),
-        (
-            IntroPrivacy,
-            INTRO,
-            "I work entirely on this machine, and I don't send what you tell me anywhere.",
-            Whole,
-        ),
-        (
-            IntroUsbOnly,
-            INTRO,
-            "On this machine I can't keep anything once it's switched off, not yet.",
-            Whole,
-        ),
-        (
-            IntroAsk,
-            INTRO,
-            "Ask in your own words: \\\"What does a CPU do?\\\", for instance.",
-            Whole,
-        ),
-        (
-            IntroList,
-            INTRO,
-            "\\\"list /\\\" shows you the files on this machine.",
-            Whole,
-        ),
-        (
-            IntroListStill,
-            INTRO,
-            "\\\"list /\\\" still shows you the files on this machine.",
-            Whole,
-        ),
-        (
-            IntroExit,
-            INTRO,
-            "Type help for what you can do yourself. Esc always brings you back here.",
-            Whole,
-        ),
-        (
-            HelpTitle,
-            INTRO,
-            "What you can do yourself, without asking me:",
-            Whole,
-        ),
-        (
-            HelpEsc,
-            INTRO,
-            "Esc sets me aside and brings you back to Home.",
-            Whole,
-        ),
-        (
-            HelpList,
-            INTRO,
-            "\\\"list /\\\" opens the Lens: a read-only view of the files on this machine.",
-            Whole,
-        ),
-        (
-            HelpChips,
-            INTRO,
-            "The chips on the left switch between me and the Lens; Tab reaches them.",
-            Whole,
-        ),
-        (
-            HelpDrag,
-            INTRO,
-            "Drag a window by its title bar to move it, or by an edge to resize it.",
-            Whole,
-        ),
-        (
-            HelpType,
-            INTRO,
-            "Start typing to ask me something, or press Esc to close this card.",
-            Whole,
-        ),
-        (
-            IntroHint,
-            INTRO,
-            "Type help, or click here, for what you can do yourself.",
-            Whole,
-        ),
-        (
-            IntroModelAbsent,
-            INTRO,
-            "I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with.",
-            Whole,
-        ),
-        (
-            IntroModelDamaged,
-            INTRO,
-            "My model file is damaged, so I won't use it. Re-create the USB from the original image.",
-            Whole,
-        ),
-        (
-            IntroModelLoadFailed,
-            INTRO,
-            "My model didn't load, so I'm running without it. The details are in /model.",
-            Whole,
-        ),
-        (
-            IntroTooLittleMemory,
-            INTRO,
-            "This computer has {have_gb} GB of memory; my smallest brain needs {need_gb} GB.",
-            Whole,
-        ),
-        (
-            IntroCantThink,
-            INTRO,
-            "I can't think yet, but \\\"list /\\\" still shows you the files on this machine.",
-            Whole,
-        ),
-        (ButtonBack, INTRO, "[ Back ]", Tail),
-        (GoodMorning, CLOCK, "Good morning", Whole),
-        (GoodAfternoon, CLOCK, "Good afternoon", Whole),
-        (GoodEvening, CLOCK, "Good evening", Whole),
-        (GreetingRow, CLOCK, "{}. It's {} on {}.", Whole),
-        (Sunday, CIVIL, "Sunday", Whole),
-        (Monday, CIVIL, "Monday", Whole),
-        (Tuesday, CIVIL, "Tuesday", Whole),
-        (Wednesday, CIVIL, "Wednesday", Whole),
-        (Thursday, CIVIL, "Thursday", Whole),
-        (Friday, CIVIL, "Friday", Whole),
-        (Saturday, CIVIL, "Saturday", Whole),
-        (January, CIVIL, "January", Whole),
-        (February, CIVIL, "February", Whole),
-        (March, CIVIL, "March", Whole),
-        (April, CIVIL, "April", Whole),
-        (May, CIVIL, "May", Whole),
-        (June, CIVIL, "June", Whole),
-        (July, CIVIL, "July", Whole),
-        (August, CIVIL, "August", Whole),
-        (September, CIVIL, "September", Whole),
-        (October, CIVIL, "October", Whole),
-        (November, CIVIL, "November", Whole),
-        (December, CIVIL, "December", Whole),
-        (Am, CIVIL, " AM", Whole),
-        (Pm, CIVIL, " PM", Whole),
-        (PowerAskShutDown, POWER, "Shut down this computer?", Whole),
-        (PowerShutDown, POWER, "Shut down", Whole),
-        (PowerAskRestart, POWER, "Restart this computer?", Whole),
-        (PowerRestart, POWER, "Restart", Whole),
-        (
-            PowerWarning,
-            POWER,
-            "Open apps close first; anything they haven't saved is lost.",
-            Whole,
-        ),
-        (
-            PowerConfirmHint,
-            POWER,
-            "Enter to go ahead; any other key goes back.",
-            Whole,
-        ),
-        (PowerShuttingDown, POWER, "Shutting down...", Whole),
-        (PowerRestarting, POWER, "Restarting...", Whole),
-        (PowerBusy, POWER, "It's already shutting down.", Whole),
-        (
-            PowerUnsupported,
-            POWER,
-            "This system can't do that from here.",
-            Whole,
-        ),
-        (PowerFailed, POWER, "That didn't work.", Whole),
-        (PowerError, POWER, "(error {errno}) Press any key.", Whole),
-        (ZoneRowNow, DESKTOP, "Time zone: {} ({})", Whole),
-        (
-            ClockKeepsLocal,
-            DESKTOP,
-            "This computer's clock keeps local time (as Windows does).",
-            Whole,
-        ),
-        (
-            ClockKeepsUtc,
-            DESKTOP,
-            "This computer's clock keeps UTC.",
-            Whole,
-        ),
-        (
-            ClockLegacy1,
-            DESKTOP,
-            "Saved. This system shows the computer's clock",
-            Whole,
-        ),
-        (
-            ClockLegacy2,
-            DESKTOP,
-            "as it reads, without a time zone.",
-            Whole,
-        ),
-        (
-            ClockSetZone,
-            DESKTOP,
-            "Set your zone: timezone America/New_York",
-            Whole,
-        ),
-        (
-            ClockChangeZone,
-            DESKTOP,
-            "Change it: timezone Area/City",
-            Whole,
-        ),
-        (
-            ClockRestart,
-            DESKTOP,
-            "Restart to read this computer's clock this way.",
-            Whole,
-        ),
-        (
-            ClockOffUtc,
-            DESKTOP,
-            "Off by whole hours? Type: rtc utc",
-            Whole,
-        ),
-        (
-            ClockOffLocal,
-            DESKTOP,
-            "Off by whole hours? Type: rtc local",
-            Whole,
-        ),
-        (ClockTitle, DESKTOP, "The clock", Whole),
-        (ClockZoneSet, DESKTOP, "Time zone set to {}.", Whole),
-        (
-            ClockNoZone,
-            DESKTOP,
-            "There's no time zone called \\\"{typed}\\\".",
-            Whole,
-        ),
-        (
-            ClockTypeZone,
-            DESKTOP,
-            "Type timezone Area/City, for example",
-            Whole,
-        ),
-        (
-            ClockTypeZoneExamples,
-            DESKTOP,
-            "timezone America/New_York or timezone Europe/London.",
-            Whole,
-        ),
-        (ClockDidYouMean, DESKTOP, "Did you mean:", Whole),
-        (
-            ClockSavedLocal,
-            DESKTOP,
-            "Saved: this computer's clock keeps local time.",
-            Whole,
-        ),
-        (
-            ClockSavedUtc,
-            DESKTOP,
-            "Saved: this computer's clock keeps UTC.",
-            Whole,
-        ),
-    ]
-};
+// ---- 2. English is pinned ----
 
-/// The literal as the program prints it: `\"` unescaped, and each named
-/// format argument (`{name}`) written as the catalog's positional `{}`.
-fn as_printed(source: &str) -> String {
-    let unescaped = source.replace("\\\"", "\"");
+/// S6a's English table, as shipped (the literals the code printed before S6b
+/// moved them here), plus the rows S6b added: one `Id<TAB>text` line per id,
+/// in table order. Any English wording change edits this file on purpose.
+const EN_PINNED: &str = include_str!("../fixtures/en.txt");
+
+fn en_table() -> String {
     let mut out = String::new();
-    let mut rest = unescaped.as_str();
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        match after.find('}') {
-            Some(close)
-                if after[..close]
-                    .bytes()
-                    .all(|b| b == b'_' || b.is_ascii_lowercase() || b.is_ascii_digit()) =>
-            {
-                out.push_str("{}");
-                rest = &after[close + 1..];
-            }
-            _ => {
-                out.push('{');
-                rest = after;
-            }
-        }
+    for &m in Msg::ALL {
+        out.push_str(&format!("{m:?}\t{}\n", text(Lang::En, m)));
     }
-    out.push_str(rest);
     out
 }
 
 #[test]
-fn english_is_todays_literals_byte_for_byte() {
-    let mut missing = Vec::new();
-    for &(m, file, literal, at) in SOURCES {
-        let needle = match at {
-            At::Whole => format!("\"{literal}\""),
-            At::Tail => format!("{literal}\""),
-        };
-        if !file.contains(needle.as_str()) {
-            missing.push(format!("{m:?}: {needle}"));
-        }
-        assert_eq!(
-            text(Lang::En, m),
-            as_printed(literal),
-            "{m:?}: the English entry isn't the literal the code prints"
+fn english_is_the_pinned_table() {
+    let got = en_table();
+    if got != EN_PINNED {
+        let want: Vec<&str> = EN_PINNED.lines().collect();
+        let diff: Vec<String> = got
+            .lines()
+            .enumerate()
+            .filter(|&(i, l)| want.get(i) != Some(&l))
+            .map(|(i, l)| format!("line {}: {l:?} (pinned: {:?})", i + 1, want.get(i)))
+            .collect();
+        panic!(
+            "the English table differs from fixtures/en.txt:\n{}",
+            diff.join("\n")
         );
     }
-    assert!(
-        missing.is_empty(),
-        "literals no longer in the source:\n{}",
-        missing.join("\n")
-    );
-    for &m in Msg::ALL {
-        assert!(
-            SOURCES.iter().any(|s| s.0 == m),
-            "{m:?} has no source literal to hold it to"
-        );
-    }
+}
+
+#[test]
+#[ignore = "writes fixtures/en.txt's contents to stdout, for a deliberate wording change"]
+fn print_en_table() {
+    std::print!("{}", en_table());
 }
 
 // ---- 3. Every character is in the face ----
@@ -638,6 +211,8 @@ fn spanish_uses_only_these_non_ascii_characters() {
 const ZONE: &str = "America/Argentina/Buenos_Aires";
 const TYPED: &str = "America/Argentina/ComodRivadavia";
 const OFFSET: &str = "AKDT, UTC-08:00";
+/// A driver's name at the status call's 12 bytes (`libneo::net_if_status`).
+const DRIVER: &str = "ax88179_178a";
 
 /// `msg`'s row in `lang` as a card draws it: the focus mark on an option,
 /// and the widest realistic arguments filled in.
@@ -651,21 +226,26 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             .unwrap()
     };
     let time = format!("12:59{}", longest(&[Am, Pm]));
-    let date = format!(
-        "{}, {} 30, 2026",
-        longest(&[
-            Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday,
-        ]),
-        longest(&[
-            January, February, March, April, May, June, July, August, September, October, November,
-            December,
-        ])
+    let date = fill(
+        t(DateLong),
+        &[
+            longest(&[
+                Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday,
+            ]),
+            longest(&[
+                January, February, March, April, May, June, July, August, September, October,
+                November, December,
+            ]),
+            "30",
+            "2026",
+        ],
     );
     let on_off = longest(&[On, Off]);
     let args: Vec<String> = match m {
         SetupReduceMotionOption | SetupReduceTransparencyOption => vec!["[x]".into()],
         SetupTitlePage => vec![
             longest(&[
+                SetupTitleNetwork,
                 SetupTitleLanguage,
                 SetupTitleKeyboard,
                 SetupTitleTimeZone,
@@ -690,11 +270,32 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             date,
         ],
         PowerError => vec!["-38".into()],
+        DateLong => vec![
+            "miércoles".into(),
+            "septiembre".into(),
+            "30".into(),
+            "2026".into(),
+        ],
         ZoneRowNow => vec![ZONE.into(), OFFSET.into()],
         // The test field at `setup_core::keyboard::FIELD_MAX` (24) of the
         // widest Latin capital.
         SetupKeyboardTryIt => vec!["W".repeat(24)],
         SetupSummaryKeyboard => vec![longest(&[LayoutEnglishUs, LayoutSpanishSpain]).into()],
+        NetDevice => vec![DRIVER.into()],
+        NetConnected => vec!["255.255.255.255".into()],
+        NetDeviceLease => vec![
+            DRIVER.into(),
+            [
+                t(LeaseUnderMinute).into(),
+                fill(t(LeaseMinutes), &["59"]),
+                fill(t(LeaseHours), &["23", "59"]),
+            ]
+            .into_iter()
+            .max_by_key(|s: &String| s.chars().count())
+            .unwrap(),
+        ],
+        LeaseMinutes => vec!["59".into()],
+        LeaseHours => vec!["23".into(), "59".into()],
         _ => Vec::new(),
     };
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -708,6 +309,7 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             | SetupBack
             | SetupContinue
             | SetupTryOption
+            | SetupContinueNoNetwork
             | SetupReduceMotionOption
             | SetupReduceTransparencyOption
     );

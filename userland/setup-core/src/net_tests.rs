@@ -4,6 +4,9 @@
 
 use super::*;
 
+/// The last row (S1's hint), written out.
+const HINT: &str = "Up/Down to move, Enter to choose, Esc to go back.";
+
 fn rows(w: &Wizard) -> Vec<String> {
     w.rows()
 }
@@ -133,10 +136,10 @@ fn the_page_has_only_continue() {
 
 #[test]
 fn lease_words() {
-    assert_eq!(lease_left(0), "under a minute left");
-    assert_eq!(lease_left(59), "under a minute left");
-    assert_eq!(lease_left(60), "1 min left");
-    assert_eq!(lease_left(3599), "59 min left");
-    assert_eq!(lease_left(3600), "1 h 0 min left");
-    assert_eq!(lease_left(86_000), "23 h 53 min left");
+    assert_eq!(lease_left(Lang::En, 0), "under a minute left");
+    assert_eq!(lease_left(Lang::En, 59), "under a minute left");
+    assert_eq!(lease_left(Lang::En, 60), "1 min left");
+    assert_eq!(lease_left(Lang::En, 3599), "59 min left");
+    assert_eq!(lease_left(Lang::En, 3600), "1 h 0 min left");
+    assert_eq!(lease_left(Lang::En, 86_000), "23 h 53 min left");
 }
