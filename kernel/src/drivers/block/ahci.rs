@@ -329,6 +329,13 @@ struct AhciPortInner {
 }
 
 impl BlockDevice for AhciDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<block::ShutdownStep> {
+        Some(block::ShutdownStep::AhciPort {
+            port_base: self.port_base.as_u64(),
+        })
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }
@@ -590,6 +597,45 @@ fn request_sector_count(buffers: &[Arc<DmaBuffer>]) -> BlockResult<u16> {
     }
     let sectors = bytes / SECTOR_SIZE as usize;
     u16::try_from(sectors).map_err(|_| BlockError::Unsupported)
+}
+
+/// OT-90 P3b-2 (K6): stop the port's engines, registers only. Its ATA
+/// FLUSH CACHE and STANDBY IMMEDIATE (THINK §5.1) need the command path and
+/// its lock, so they aren't sent: K2's NeoFS drain already flushed the
+/// device it wrote.
+///
+/// Unlike `stop_port` (the probe's), it reports the engine that didn't stop
+/// (Janus's #7 review, item 2b), and clears FRE only once CR is clear: AHCI
+/// 1.3.1 §10.1.2 lets software clear FRE only then, so a port whose CR stays
+/// set keeps FRE and is reported.
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_stop_port(port_base: u64) -> Result<(), &'static str> {
+    let port_base = VirtAddr::new(port_base);
+    let idle = |bit: u32| {
+        (0..PORT_IDLE_TIMEOUT_SPINS).any(|_| {
+            // SAFETY: the port's registers, mapped at probe; K6 runs alone.
+            let clear = unsafe { mmio_read32(port_base, PX_CMD) } & bit == 0;
+            core::hint::spin_loop();
+            clear
+        })
+    };
+    // SAFETY: as above.
+    unsafe {
+        let cmd = mmio_read32(port_base, PX_CMD);
+        mmio_write32(port_base, PX_CMD, cmd & !PX_CMD_ST);
+    }
+    if !idle(PX_CMD_CR) {
+        return Err("cr-stuck");
+    }
+    // SAFETY: as above.
+    unsafe {
+        let cmd = mmio_read32(port_base, PX_CMD);
+        mmio_write32(port_base, PX_CMD, cmd & !PX_CMD_FRE);
+    }
+    if !idle(PX_CMD_FR) {
+        return Err("fr-stuck");
+    }
+    Ok(())
 }
 
 fn stop_port(port_base: VirtAddr) {

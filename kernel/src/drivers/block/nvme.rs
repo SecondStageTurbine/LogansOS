@@ -494,6 +494,13 @@ struct NvmeCommand {
 }
 
 impl BlockDevice for NvmeNamespaceDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<block::ShutdownStep> {
+        Some(block::ShutdownStep::Nvme {
+            mmio: self.inner.lock().mmio.as_u64(),
+        })
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }
@@ -985,6 +992,43 @@ fn request_sector_count(buffers: &[Arc<DmaBuffer>]) -> BlockResult<u16> {
     }
     let sectors = bytes / SECTOR_SIZE as usize;
     u16::try_from(sectors).map_err(|_| BlockError::Unsupported)
+}
+
+/// OT-90 P3b-2 (K6): a normal shutdown notification (NVMe 2.0 §3.6.2):
+/// CC.SHN = 01b, wait for CSTS.SHST = 10b (shutdown complete: the
+/// controller has written its volatile cache), then CC.EN = 0. Registers
+/// only. `wait(us, done)` bounds each wait. Returns the step that ran out of
+/// time, if one did.
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_notify(
+    mmio: u64,
+    wait: &dyn Fn(u64, &mut dyn FnMut() -> bool) -> bool,
+) -> Result<(), &'static str> {
+    const CC_SHN_NORMAL: u32 = 0b01 << 14;
+    const CC_SHN_MASK: u32 = 0b11 << 14;
+    const CSTS_SHST_MASK: u32 = 0b11 << 2;
+    const CSTS_SHST_COMPLETE: u32 = 0b10 << 2;
+    let mmio = VirtAddr::new(mmio);
+    // SAFETY: the controller's registers, mapped at probe; K6 runs alone.
+    unsafe {
+        let cc = mmio_read32(mmio, REG_CC);
+        mmio_write32(mmio, REG_CC, (cc & !CC_SHN_MASK) | CC_SHN_NORMAL);
+    }
+    let shut = wait(1_000_000, &mut || unsafe {
+        mmio_read32(mmio, REG_CSTS) & CSTS_SHST_MASK == CSTS_SHST_COMPLETE
+    });
+    unsafe {
+        let cc = mmio_read32(mmio, REG_CC);
+        mmio_write32(mmio, REG_CC, cc & !CC_ENABLE);
+    }
+    let disabled = wait(500_000, &mut || unsafe {
+        mmio_read32(mmio, REG_CSTS) & CSTS_RDY == 0
+    });
+    match (shut, disabled) {
+        (true, true) => Ok(()),
+        (false, _) => Err("shst-timeout"),
+        (true, false) => Err("rdy-timeout"),
+    }
 }
 
 fn disable_controller(mmio: VirtAddr) -> Result<(), ProbeError> {
