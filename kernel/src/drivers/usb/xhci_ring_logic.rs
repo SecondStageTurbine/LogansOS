@@ -340,6 +340,37 @@ impl ConsumerRing {
     }
 }
 
+/// OT-100 R2, relay 395: admission to a ring shared under a lock, against an
+/// optional deadline tick. With `None` this is `lock()`, today's unbounded
+/// wait. With `Some(end)` the lock is only tried until `end`, and `end` is
+/// read again once the lock is held: if it has passed meanwhile, the guard is
+/// given back (dropped) and nothing is admitted, so no command is published
+/// after its deadline, however long another CPU held the lock.
+pub fn admit_until<G>(
+    until: Option<u64>,
+    mut now: impl FnMut() -> u64,
+    mut try_lock: impl FnMut() -> Option<G>,
+    lock: impl FnOnce() -> G,
+    mut spin: impl FnMut(),
+) -> Option<G> {
+    let Some(end) = until else {
+        return Some(lock());
+    };
+    loop {
+        if now() >= end {
+            return None;
+        }
+        if let Some(guard) = try_lock() {
+            if now() >= end {
+                drop(guard);
+                return None;
+            }
+            return Some(guard);
+        }
+        spin();
+    }
+}
+
 #[cfg(test)]
 mod cb2_endpoint_recovery_oracle {
     //! Hand-laid-out byte fixtures for the CB-2 endpoint-recovery command TRBs

@@ -455,6 +455,10 @@ usb-hid = ["usb-host"]
 # FAT on it mounts as `deviceN` or `deviceN:pM` (L3a). Off: the device
 # enumerates and stays unclaimed, as before (the kill-switch).
 usb-storage = ["usb-host"]
+# OT-100 R2: the USB mass-storage write path (WRITE(10), SYNCHRONIZE CACHE(10),
+# the MODE SENSE(6) write-protect check), every write still behind the guard.
+# Off: the driver is read-only, as L3u (docs/THINK-2026-11-10-ot100-usb-persistence.md).
+usb-storage-write = ["usb-storage"]
 # OT (Milestone-A input): the USB HID boot-protocol MOUSE (the GUI pointer),
 # mirroring the keyboard on the same xHCI arena-fenced stack. Independent
 # kill-switch: off ⇒ hid_mouse + its init are absent ⇒ keyboard-only, bit-for-bit.
@@ -2197,6 +2201,10 @@ neo-test-usb-enumerate = ["neo-test", "usb-host"]
 # reads back; `-off` (no `usb-storage`) is the kill-switch.
 neo-test-usb-storage-read = ["neo-test-phase3-fat32", "usb-storage"]
 neo-test-usb-storage-off = ["neo-test", "usb-host"]
+# OT-100 R2: two usb-storage sticks, one sealed: the sealed one is probed, written
+# across the chunk boundaries, flushed and read back; the unsealed one is never
+# probed or written. xtask hashes both images and reads QEMU's SCSI trace.
+neo-test-usb-msc-write = ["neo-test", "usb-storage-write"]
 # #30: a stick hot-plugged, bound and read, then pulled while a reader runs:
 # the driver is told, the block device leaves the registry, and every read
 # after (and the one in flight) fails NoDevice.

@@ -91,6 +91,26 @@ pub enum BlockError {
     WriteRefused,
 }
 
+/// OT-100 R2: what a device's write probe found (THINK §3.5).
+#[cfg(feature = "usb-storage-write")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteProbe {
+    /// MODE SENSE's write-protect bit; `None` when the device would not say.
+    pub write_protected: Option<bool>,
+    pub sync: SyncSupport,
+}
+
+/// OT-100 R2: whether SYNCHRONIZE CACHE works on the device.
+#[cfg(feature = "usb-storage-write")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncSupport {
+    Ok,
+    /// ILLEGAL REQUEST: the device does not do it.
+    Unsupported,
+    /// It failed another way.
+    Failed,
+}
+
 pub type BlockResult<T> = Result<T, BlockError>;
 
 pub struct BlockRequest<'a> {
@@ -142,6 +162,22 @@ pub trait BlockDevice: Send + Sync {
 
     fn flush(&self) -> BlockResult<()> {
         Err(BlockError::Unsupported)
+    }
+
+    /// OT-100 R2: whether the medium is write-protected, if the driver knows
+    /// (`None`: unknown, or a driver that never asks).
+    #[cfg(feature = "usb-storage-write")]
+    fn write_protected(&self) -> Option<bool> {
+        None
+    }
+
+    /// OT-100 R2 (THINK §3.5): ask the device whether it can be written and
+    /// flushed. Only [`write_probe`] calls it, through the guard, so a device
+    /// the guard has not armed never receives a probe. `None`: the driver has
+    /// no probe.
+    #[cfg(feature = "usb-storage-write")]
+    fn write_probe(&self) -> Option<WriteProbe> {
+        None
     }
 
     fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
@@ -564,6 +600,21 @@ impl BlockDevice for GuardedDevice {
         self.inner.flush()
     }
 
+    #[cfg(feature = "usb-storage-write")]
+    fn write_protected(&self) -> Option<bool> {
+        self.inner.write_protected()
+    }
+
+    /// OT-100 R2: a device the guard has not armed is never probed (THINK
+    /// §3.5, Dexter's F4): judging it takes reads only.
+    #[cfg(feature = "usb-storage-write")]
+    fn write_probe(&self) -> Option<WriteProbe> {
+        if !self.writes_allowed() {
+            return None;
+        }
+        self.inner.write_probe()
+    }
+
     fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         #[cfg(feature = "installer")]
         self.reads.fetch_add(1, Ordering::Relaxed);
@@ -803,6 +854,17 @@ pub fn unregister_device(index: usize) -> bool {
         name
     );
     true
+}
+
+/// OT-100 R2: probe registered device `index` for writing (THINK §3.5).
+/// `None` when there is no such device, the guard has not armed it, or the
+/// driver has no probe; nothing is sent to the device in any of those cases.
+#[cfg(feature = "usb-storage-write")]
+pub fn write_probe(index: usize) -> Option<WriteProbe> {
+    let registry = REGISTRY.lock();
+    let device = registry.guards.get(index)?.clone();
+    drop(registry);
+    device.write_probe()
 }
 
 #[allow(dead_code)]

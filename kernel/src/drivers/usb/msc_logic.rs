@@ -443,3 +443,913 @@ pub fn command(pipe: &mut impl Pipe, tag: u32, lun: u8, cdb: &[u8], data: &mut [
         CswVerdict::Failed { .. } => Outcome::Failed { len: got },
     }
 }
+
+// ---------------------------------------------------------------------------
+// OT-100 R2: the write path (`docs/THINK-2026-11-10-ot100-usb-persistence.md`
+// §3). Only `usb-storage-write` kernels call anything below; [`command`] and
+// [`ALLOWED_OPCODES`] above are the read-only driver's, unchanged.
+// ---------------------------------------------------------------------------
+
+/// A command's data stage, by direction (BOT §5.1: `bmCBWFlags` bit 7).
+pub enum Data<'a> {
+    /// No data stage.
+    None,
+    /// Device-to-host into the slice.
+    In(&'a mut [u8]),
+    /// Host-to-device from the slice.
+    Out(&'a [u8]),
+}
+
+/// A data stage's direction, as the write allowlist names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    None,
+    In,
+    Out,
+}
+
+impl Data<'_> {
+    pub fn dir(&self) -> Dir {
+        match self {
+            Data::None => Dir::None,
+            Data::In(_) => Dir::In,
+            Data::Out(_) => Dir::Out,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Data::None => 0,
+            Data::In(b) => b.len(),
+            Data::Out(b) => b.len(),
+        }
+    }
+}
+
+/// The write path's allowlist (THINK §3.1): every opcode with the one
+/// direction it may run in. Today's six keep theirs; WRITE(10) runs only
+/// host-to-device, SYNCHRONIZE CACHE(10) with no data, MODE SENSE(6) only
+/// device-to-host. A known opcode in the wrong direction is refused like an
+/// unknown one, before a byte reaches the device.
+pub const WRITE_PATH_COMMANDS: [(u8, Dir); 9] = [
+    (0x12, Dir::In),   // INQUIRY
+    (0x00, Dir::None), // TEST UNIT READY
+    (0x03, Dir::In),   // REQUEST SENSE
+    (0x25, Dir::In),   // READ CAPACITY(10)
+    (0x9e, Dir::In),   // SERVICE ACTION IN(16): READ CAPACITY(16)
+    (0x28, Dir::In),   // READ(10)
+    (0x2a, Dir::Out),  // WRITE(10)
+    (0x35, Dir::None), // SYNCHRONIZE CACHE(10)
+    (0x1a, Dir::In),   // MODE SENSE(6)
+];
+
+pub const OP_WRITE_10: u8 = 0x2a;
+pub const OP_SYNCHRONIZE_CACHE_10: u8 = 0x35;
+pub const OP_MODE_SENSE_6: u8 = 0x1a;
+
+/// Whether `cdb`'s opcode may run with a data stage in `dir`.
+pub fn cdb_allowed_dir(cdb: &[u8], dir: Dir) -> bool {
+    cdb.first().is_some_and(|op| {
+        WRITE_PATH_COMMANDS
+            .iter()
+            .any(|&(o, d)| o == *op && d == dir)
+    })
+}
+
+/// WRITE(10) (`0x2a`): `blocks` blocks at `lba`, both big-endian. FUA (byte
+/// 1 bit 3) and every other flag stay 0 (Linux `BROKEN_FUA`).
+pub fn cdb_write_10(lba: u32, blocks: u16) -> [u8; 10] {
+    let mut c = [0u8; 10];
+    c[0] = OP_WRITE_10;
+    c[2..6].copy_from_slice(&lba.to_be_bytes());
+    c[7..9].copy_from_slice(&blocks.to_be_bytes());
+    c
+}
+
+/// SYNCHRONIZE CACHE(10) (`0x35`) of the whole medium: LBA 0, 0 blocks (SBC:
+/// "all logical blocks from the LBA to the end").
+pub fn cdb_synchronize_cache_10() -> [u8; 10] {
+    [OP_SYNCHRONIZE_CACHE_10, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+/// MODE SENSE(6)'s allocation length: the 4-byte header only (THINK §3.1;
+/// Linux `sd` asks USB devices for little, as large page-0x3f reads hang
+/// some of them).
+pub const MODE_SENSE_HEADER_LEN: u8 = 4;
+
+/// MODE SENSE(6) (`0x1a`): DBD set (no block descriptors), page 0x3f (all),
+/// the header only.
+pub fn cdb_mode_sense_6_header() -> [u8; 6] {
+    [OP_MODE_SENSE_6, 0x08, 0x3f, 0, MODE_SENSE_HEADER_LEN, 0]
+}
+
+/// The write-protect bit of a MODE SENSE(6) reply: byte 2 (device-specific
+/// parameter) bit 7. `None` if fewer than 3 bytes arrived.
+pub fn mode_sense_write_protected(reply: &[u8]) -> Option<bool> {
+    reply.get(2).map(|b| b & 0x80 != 0)
+}
+
+/// WRITE(10)'s per-command cap in blocks: the bounce buffer, as for reads.
+pub const MAX_WRITE_BLOCKS: u16 = MAX_READ_BLOCKS;
+
+/// An LBA a 32-bit command cannot address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutOfRange;
+
+/// The next WRITE(10) of a split write: `(lba, blocks)` for the part of
+/// `count` blocks from `lba` starting `done` blocks in, at most `max`
+/// blocks (clamped to 1..=[`MAX_WRITE_BLOCKS`]). `Ok(None)` when done;
+/// `Err(OutOfRange)` when the part's first or last block does not fit 32
+/// bits, so nothing is sent for it (THINK §3.2).
+pub fn next_write(
+    lba: u64,
+    count: u64,
+    done: u64,
+    max: u16,
+) -> Result<Option<(u32, u16)>, OutOfRange> {
+    if done >= count {
+        return Ok(None);
+    }
+    let max = max.clamp(1, MAX_WRITE_BLOCKS);
+    let at = lba.checked_add(done).ok_or(OutOfRange)?;
+    let at = u32::try_from(at).map_err(|_| OutOfRange)?;
+    let blocks = (count - done).min(u64::from(max)) as u16;
+    at.checked_add(u32::from(blocks) - 1).ok_or(OutOfRange)?;
+    Ok(Some((at, blocks)))
+}
+
+/// Whether a split read of `count` blocks from `lba` reaches a block past
+/// READ(10)'s 32 bits: such a read is refused before any command (THINK
+/// §3.2: [`next_read`] stops there, which would leave a short read).
+pub fn read_past_32_bits(lba: u64, count: u64) -> bool {
+    count != 0
+        && lba
+            .checked_add(count - 1)
+            .is_none_or(|last| last > u64::from(u32::MAX))
+}
+
+pub const SENSE_KEY_DATA_PROTECT: u8 = 0x7;
+pub const SENSE_KEY_ILLEGAL_REQUEST: u8 = 0x5;
+pub const SENSE_KEY_MEDIUM_ERROR: u8 = 0x3;
+pub const SENSE_KEY_HARDWARE_ERROR: u8 = 0x4;
+
+/// What to do after a WRITE(10) or SYNCHRONIZE CACHE failed with `sense`
+/// (THINK §3.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteAction {
+    /// UNIT ATTENTION: retry once.
+    Retry,
+    /// NOT READY: retry after a pause, a few times.
+    Wait,
+    /// DATA PROTECT: the medium is write-protected; latch it.
+    WriteProtected,
+    /// ILLEGAL REQUEST: the device does not do this command (for SYNCHRONIZE
+    /// CACHE: latch `sync_unsupported`, Haiku's `sync_support = 0`).
+    Unsupported,
+    /// MEDIUM ERROR, HARDWARE ERROR, anything else: an I/O error.
+    Fail,
+}
+
+pub fn write_action(sense: Sense) -> WriteAction {
+    match sense.key {
+        SENSE_KEY_UNIT_ATTENTION => WriteAction::Retry,
+        SENSE_KEY_NOT_READY => WriteAction::Wait,
+        SENSE_KEY_DATA_PROTECT => WriteAction::WriteProtected,
+        SENSE_KEY_ILLEGAL_REQUEST => WriteAction::Unsupported,
+        _ => WriteAction::Fail,
+    }
+}
+
+/// Run one command on the write path (THINK §3.2; BOT §6.7's host cases):
+/// the data stage's direction is `data`'s, the CBW's flag follows it, and
+/// the pair must be in [`WRITE_PATH_COMMANDS`].
+///
+/// - `In`: as [`command`].
+/// - `Out`: a bulk-OUT of the slice. A stall clears the bulk-out halt and
+///   still reads the CSW (BOT §6.7.3); a transport error is reset recovery.
+///   The CSW's residue must not claim more was taken than was sent; a
+///   passed status with a non-zero residue is a short write, reported as
+///   `Failed` with the bytes the device took.
+pub fn command_dir(pipe: &mut impl Pipe, tag: u32, lun: u8, cdb: &[u8], data: Data<'_>) -> Outcome {
+    let dir = data.dir();
+    let data_len = data.len() as u32;
+    let reset = |pipe: &mut _, reason| Outcome::Reset {
+        reason,
+        recovered: reset_recovery(pipe),
+    };
+    if !cdb_allowed_dir(cdb, dir) || (dir != Dir::None && data_len == 0) {
+        return Outcome::Reset {
+            reason: ResetReason::NotAllowed,
+            recovered: true,
+        };
+    }
+    let Some(cbw) = encode_cbw(tag, data_len, dir == Dir::In, lun, cdb) else {
+        return Outcome::Reset {
+            reason: ResetReason::Cbw,
+            recovered: true,
+        };
+    };
+    match pipe.bulk_out(&cbw) {
+        Xfer::Done(n) if n == CBW_LEN => {}
+        _ => return reset(pipe, ResetReason::Cbw),
+    }
+    // Bytes moved in the data stage, if the transport knows (a stall does
+    // not say how many went).
+    let mut moved: Option<usize> = Some(0);
+    match data {
+        Data::None => {}
+        Data::In(buf) => match pipe.bulk_in(buf) {
+            Xfer::Done(n) => moved = Some(n.min(buf.len())),
+            Xfer::Stall => {
+                if !pipe.clear_halt_in() {
+                    return reset(pipe, ResetReason::Data);
+                }
+            }
+            Xfer::Error => return reset(pipe, ResetReason::Data),
+        },
+        Data::Out(buf) => match pipe.bulk_out(buf) {
+            Xfer::Done(n) => moved = Some(n.min(buf.len())),
+            Xfer::Stall => {
+                if !pipe.clear_halt_out() {
+                    return reset(pipe, ResetReason::Data);
+                }
+                moved = None;
+            }
+            Xfer::Error => return reset(pipe, ResetReason::Data),
+        },
+    }
+    let mut csw = [0u8; CSW_LEN];
+    let mut csw_len = None;
+    for _ in 0..2 {
+        match pipe.bulk_in(&mut csw) {
+            Xfer::Done(n) => {
+                csw_len = Some(n);
+                break;
+            }
+            Xfer::Stall => {
+                if !pipe.clear_halt_in() {
+                    break;
+                }
+            }
+            Xfer::Error => break,
+        }
+    }
+    // A 0-length CSW (a stray zero-length packet after the data): read once
+    // more (Linux `transport.c`).
+    if csw_len == Some(0) {
+        csw_len = match pipe.bulk_in(&mut csw) {
+            Xfer::Done(n) => Some(n),
+            _ => None,
+        };
+    }
+    let Some(n) = csw_len else {
+        return reset(pipe, ResetReason::Csw);
+    };
+    let (passed, residue) = match check_csw(&csw[..n.min(CSW_LEN)], tag, data_len) {
+        CswVerdict::PhaseError(why) => return reset(pipe, ResetReason::Phase(why)),
+        CswVerdict::Passed { residue } => (true, residue),
+        CswVerdict::Failed { residue } => (false, residue),
+    };
+    let taken = (data_len - residue) as usize;
+    match (dir, moved) {
+        // More arrived than the device says it sent.
+        (Dir::In, Some(got)) if taken < got => reset(pipe, ResetReason::ResidueMismatch),
+        // The device says it took more than was sent.
+        (Dir::Out, Some(sent)) if taken > sent => reset(pipe, ResetReason::ResidueMismatch),
+        (Dir::In, got) => {
+            let len = got.unwrap_or(0);
+            if passed {
+                Outcome::Passed { len }
+            } else {
+                Outcome::Failed { len }
+            }
+        }
+        (Dir::Out, _) if passed && residue == 0 => Outcome::Passed { len: taken },
+        (Dir::Out, _) => Outcome::Failed { len: taken },
+        (Dir::None, _) if passed => Outcome::Passed { len: 0 },
+        (Dir::None, _) => Outcome::Failed { len: 0 },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OT-100 R2 (relay 393 F1–F3): the write path's time bounds, retry policy,
+// latches and diagnostics, as pure logic over a [`WritePort`], so a host test
+// drives them with a controlled clock. The kernel's port is `msc.rs`'s.
+// ---------------------------------------------------------------------------
+
+/// The timer tick's period in ms (the kernel's 100 Hz `TICKS`).
+pub const MS_PER_TICK: u64 = 10;
+/// One WRITE(10) attempt's bound: its CBW, data and CSW, its REQUEST SENSE
+/// and any reset recovery, all together.
+pub const WRITE_ATTEMPT_MS: u64 = 10_000;
+/// One SYNCHRONIZE CACHE(10) attempt's bound, the same way.
+pub const SYNC_ATTEMPT_MS: u64 = 30_000;
+/// The write probe's MODE SENSE(6) and TEST UNIT READY, each.
+pub const PROBE_ATTEMPT_MS: u64 = 10_000;
+/// NOT READY on a WRITE: retried this many times, after a pause each.
+pub const NOT_READY_TRIES: u32 = 4;
+pub const NOT_READY_PAUSE_MS: u64 = 250;
+/// A WRITE chunk's attempts, at most: the first, one UNIT ATTENTION retry,
+/// the NOT READY retries, one retry after a recovered reset. A passed
+/// deadline ends the chunk at once.
+pub const WRITE_MAX_ATTEMPTS: u32 = 1 + 1 + NOT_READY_TRIES + 1;
+/// `flush`'s SYNCHRONIZE CACHE attempts, at most.
+pub const SYNC_MAX_ATTEMPTS: u32 = 3;
+
+/// An attempt of `ms`, in ticks: [`Deadline::after`]'s whole ticks plus its
+/// one extra tick.
+pub const fn attempt_ticks(ms: u64) -> u64 {
+    ms.div_ceil(MS_PER_TICK) + 1
+}
+
+/// A WRITE chunk's worst case in ticks: every attempt to its deadline (an
+/// expired deadline beats any completion, so no attempt runs past it), plus
+/// the NOT READY pauses.
+pub const fn write_chunk_bound_ticks() -> u64 {
+    WRITE_MAX_ATTEMPTS as u64 * attempt_ticks(WRITE_ATTEMPT_MS)
+        + NOT_READY_TRIES as u64 * NOT_READY_PAUSE_MS.div_ceil(MS_PER_TICK)
+}
+
+/// [`write_chunk_bound_ticks`] in ms: 71,070.
+pub const fn write_chunk_bound_ms() -> u64 {
+    write_chunk_bound_ticks() * MS_PER_TICK
+}
+
+/// A flush's worst case in ms, 90,030: every SYNC attempt to its deadline.
+/// (Since a passed deadline ends a flush, at most one attempt reaches it; the
+/// bound stays the simple product.)
+pub const fn flush_bound_ms() -> u64 {
+    SYNC_MAX_ATTEMPTS as u64 * attempt_ticks(SYNC_ATTEMPT_MS) * MS_PER_TICK
+}
+
+/// An absolute deadline on the tick clock. One is made per attempt, and every
+/// wait in that attempt (its transfers, its sense, its recovery) stops at the
+/// same tick: a slow stage leaves less time for the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deadline {
+    /// The first tick at which the attempt has run out of time.
+    pub end: u64,
+}
+
+impl Deadline {
+    /// `ms` from `now`, rounded up to whole ticks, plus one tick (the current
+    /// tick may be almost over).
+    pub fn after(now: u64, ms: u64) -> Self {
+        Deadline {
+            end: now.saturating_add(attempt_ticks(ms)),
+        }
+    }
+
+    pub fn passed(&self, now: u64) -> bool {
+        now >= self.end
+    }
+}
+
+/// One look at a transfer: done with `(completion code, residue)`, still
+/// pending, or the device is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Poll {
+    Done(u32, u32),
+    Pending,
+    Gone,
+}
+
+/// How a [`wait_by`] ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    Done(u32, u32),
+    /// The deadline passed.
+    TimedOut,
+    /// The device is gone.
+    Gone,
+    /// The poll backstop ran out with the clock not reaching the deadline
+    /// (a tick that does not advance).
+    Backstop,
+}
+
+/// Wait for one transfer until `deadline`: `poll` looks, `idle` pauses
+/// between looks, `now` reads the tick. At most `backstop` looks, for a tick
+/// that does not advance (interrupts off).
+///
+/// An expired deadline beats a completion (relay 394 F1a): the tick is read
+/// before each look and again after a look that found one, so a completion
+/// that is ready only on or after the deadline's tick, or that a thread
+/// resumed after the deadline finds waiting, is `TimedOut`, never `Done`.
+pub fn wait_by(
+    deadline: Deadline,
+    backstop: u64,
+    mut now: impl FnMut() -> u64,
+    mut poll: impl FnMut() -> Poll,
+    mut idle: impl FnMut(),
+) -> Waited {
+    for _ in 0..backstop {
+        if deadline.passed(now()) {
+            return Waited::TimedOut;
+        }
+        match poll() {
+            Poll::Done(code, residue) => {
+                if deadline.passed(now()) {
+                    return Waited::TimedOut;
+                }
+                return Waited::Done(code, residue);
+            }
+            Poll::Gone => return Waited::Gone,
+            Poll::Pending => {}
+        }
+        idle();
+    }
+    Waited::Backstop
+}
+
+/// The steps of clearing a halted bulk endpoint (BOT §6.7: the host's
+/// endpoint recovery, then the device's CLEAR_FEATURE(ENDPOINT_HALT)), each
+/// stopping its own waits at `until`, the attempt's deadline tick, if any.
+pub trait HaltClear {
+    fn now(&mut self) -> u64;
+    /// The host side's first command: Reset Endpoint or Stop Endpoint (or
+    /// nothing, if the endpoint is already stopped). True if it completed.
+    fn stop_endpoint(&mut self, until: Option<u64>) -> bool;
+    /// The host side's second: restart the ring and Set TR Dequeue Pointer.
+    fn set_dequeue(&mut self, until: Option<u64>) -> bool;
+    /// The device side: CLEAR_FEATURE(ENDPOINT_HALT) on EP0.
+    fn clear_feature(&mut self, until: Option<u64>) -> bool;
+}
+
+/// Clear a halted endpoint: true if Set TR Dequeue and CLEAR_FEATURE both
+/// worked (today's result; Reset/Stop's own result is not part of it). With a
+/// deadline, every step starts only while it hasn't passed (relay 394 F1b):
+/// a step that runs out the clock is the last one. `None` runs all three, as
+/// today.
+pub fn clear_halt_by(ops: &mut impl HaltClear, deadline: Option<Deadline>) -> bool {
+    fn live(ops: &mut impl HaltClear, deadline: Option<Deadline>) -> bool {
+        match deadline {
+            Some(d) => !d.passed(ops.now()),
+            None => true,
+        }
+    }
+    let until = deadline.map(|d| d.end);
+    if !live(ops, deadline) {
+        return false;
+    }
+    let _ = ops.stop_endpoint(until);
+    if !live(ops, deadline) {
+        return false;
+    }
+    let dequeued = ops.set_dequeue(until);
+    if !live(ops, deadline) {
+        return false;
+    }
+    let cleared = ops.clear_feature(until);
+    dequeued && cleared
+}
+
+/// Which write-path command an event is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    Write,
+    Sync,
+}
+
+/// What the write path reports (the kernel prints each as one serial line;
+/// the host tests collect them). These are the PR's trap-bank discriminators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteEvent {
+    /// The device went away during `op`.
+    Gone { op: Op, lba: u32 },
+    /// UNIT ATTENTION; the command is retried once (`INITIAL_READ10`).
+    UnitAttention {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        sense: Sense,
+    },
+    /// NOT READY; retry `attempt` after a pause.
+    NotReady {
+        op: Op,
+        lba: u32,
+        sense: Sense,
+        attempt: u32,
+    },
+    /// DATA PROTECT: write-protect is now latched.
+    DataProtect { op: Op, lba: u32 },
+    /// SYNCHRONIZE CACHE refused with ILLEGAL REQUEST: flushing is now off.
+    SyncUnsupported,
+    /// A failed status that ends the command: the device took `took` bytes;
+    /// the sense, if one came back.
+    Failed {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        took: usize,
+        sense: Option<Sense>,
+    },
+    /// Reset recovery ran (the `n`th in this chunk).
+    Reset {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        n: u32,
+        reason: ResetReason,
+        recovered: bool,
+    },
+    /// The attempt's deadline passed (`MAX_SECTORS_*`): `stage` is where the
+    /// command stood (`None`: in its REQUEST SENSE), after `elapsed` ticks.
+    Deadline {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        ms: u64,
+        stage: Option<ResetReason>,
+        elapsed: u64,
+    },
+}
+
+/// The device side of the write path.
+pub trait WritePort {
+    /// The tick clock.
+    fn now(&mut self) -> u64;
+    /// The device was unplugged.
+    fn gone(&self) -> bool;
+    /// One write-path command ([`command_dir`]); every wait in it, recovery
+    /// included, stops at `by`.
+    fn command(&mut self, cdb: &[u8], data: Data<'_>, by: Deadline) -> Outcome;
+    /// REQUEST SENSE through the write path, stopping at `by` (the failed
+    /// command's own deadline). `None` if no sense came back.
+    fn sense(&mut self, by: Deadline) -> Option<Sense>;
+    /// Wait about `ms` (NOT READY's back-off).
+    fn pause(&mut self, ms: u64);
+    fn event(&mut self, event: WriteEvent);
+}
+
+/// What the probe and the writes have learned, shared by every path that
+/// reads it (`write_protected()`, `supports_flush()`, the write gate).
+pub struct WriteLatches {
+    /// 0 unknown, 1 not write-protected, 2 write-protected.
+    protect: core::sync::atomic::AtomicU8,
+    sync_ok: core::sync::atomic::AtomicBool,
+}
+
+const PROTECT_UNKNOWN: u8 = 0;
+const PROTECT_NO: u8 = 1;
+const PROTECT_YES: u8 = 2;
+
+impl Default for WriteLatches {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WriteLatches {
+    pub const fn new() -> Self {
+        WriteLatches {
+            protect: core::sync::atomic::AtomicU8::new(PROTECT_UNKNOWN),
+            sync_ok: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn write_protected(&self) -> Option<bool> {
+        use core::sync::atomic::Ordering;
+        match self.protect.load(Ordering::Acquire) {
+            PROTECT_NO => Some(false),
+            PROTECT_YES => Some(true),
+            _ => None,
+        }
+    }
+
+    /// MODE SENSE's answer. Never clears a latched write-protect.
+    pub fn note_mode_sense(&self, write_protected: bool) {
+        use core::sync::atomic::Ordering;
+        let new = if write_protected {
+            PROTECT_YES
+        } else {
+            PROTECT_NO
+        };
+        let _ = self.protect.fetch_max(new, Ordering::AcqRel);
+    }
+
+    /// DATA PROTECT from any write-path command: latched for good.
+    pub fn latch_write_protected(&self) {
+        use core::sync::atomic::Ordering;
+        self.protect.store(PROTECT_YES, Ordering::Release);
+    }
+
+    pub fn sync_ok(&self) -> bool {
+        self.sync_ok.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn set_sync_ok(&self, ok: bool) {
+        self.sync_ok
+            .store(ok, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// How a WRITE chunk ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkResult {
+    /// The device took every byte.
+    Written,
+    NoDevice,
+    /// DATA PROTECT (now latched); refuse.
+    WriteProtected,
+    Io,
+}
+
+/// One WRITE(10) chunk of `blocks` blocks at `lba` (THINK §3.4): each attempt
+/// has one deadline for its command, its sense and its recovery; at most
+/// [`WRITE_MAX_ATTEMPTS`] attempts; a passed deadline is final.
+pub fn write_chunk(
+    port: &mut impl WritePort,
+    latches: &WriteLatches,
+    lba: u32,
+    blocks: u16,
+    bytes: &[u8],
+) -> ChunkResult {
+    let op = Op::Write;
+    let mut attentions = 0;
+    let mut not_ready = 0;
+    let mut resets = 0;
+    for _ in 0..WRITE_MAX_ATTEMPTS {
+        if port.gone() {
+            port.event(WriteEvent::Gone { op, lba });
+            return ChunkResult::NoDevice;
+        }
+        let start = port.now();
+        let by = Deadline::after(start, WRITE_ATTEMPT_MS);
+        let deadline = |port: &mut _, stage| {
+            let elapsed = WritePort::now(port).saturating_sub(start);
+            WritePort::event(
+                port,
+                WriteEvent::Deadline {
+                    op,
+                    lba,
+                    blocks,
+                    ms: WRITE_ATTEMPT_MS,
+                    stage,
+                    elapsed,
+                },
+            );
+            ChunkResult::Io
+        };
+        match port.command(&cdb_write_10(lba, blocks), Data::Out(bytes), by) {
+            Outcome::Passed { len } if len == bytes.len() => return ChunkResult::Written,
+            Outcome::Passed { len } | Outcome::Failed { len } => {
+                let sense = port.sense(by);
+                if sense.is_none() && port.gone() {
+                    port.event(WriteEvent::Gone { op, lba });
+                    return ChunkResult::NoDevice;
+                }
+                let action = sense.map(write_action);
+                // DATA PROTECT is a refusal, never an advance: it latches
+                // even if the deadline passed while its sense came back.
+                if action == Some(WriteAction::WriteProtected) {
+                    latches.latch_write_protected();
+                    port.event(WriteEvent::DataProtect { op, lba });
+                    return ChunkResult::WriteProtected;
+                }
+                // A passed deadline beats whatever the sense says: a late
+                // UNIT ATTENTION or NOT READY authorizes no retry (relay 394
+                // F1a).
+                if by.passed(port.now()) {
+                    return deadline(port, None);
+                }
+                match action {
+                    Some(WriteAction::Retry) if attentions == 0 => {
+                        attentions += 1;
+                        port.event(WriteEvent::UnitAttention {
+                            op,
+                            lba,
+                            blocks,
+                            sense: sense.unwrap_or(NO_SENSE),
+                        });
+                    }
+                    Some(WriteAction::Wait) if not_ready < NOT_READY_TRIES => {
+                        not_ready += 1;
+                        port.event(WriteEvent::NotReady {
+                            op,
+                            lba,
+                            sense: sense.unwrap_or(NO_SENSE),
+                            attempt: not_ready,
+                        });
+                        port.pause(NOT_READY_PAUSE_MS);
+                    }
+                    _ => {
+                        port.event(WriteEvent::Failed {
+                            op,
+                            lba,
+                            blocks,
+                            took: len,
+                            sense,
+                        });
+                        return ChunkResult::Io;
+                    }
+                }
+            }
+            Outcome::Reset { reason, recovered } => {
+                if port.gone() {
+                    port.event(WriteEvent::Gone { op, lba });
+                    return ChunkResult::NoDevice;
+                }
+                if by.passed(port.now()) {
+                    return deadline(port, Some(reason));
+                }
+                resets += 1;
+                port.event(WriteEvent::Reset {
+                    op,
+                    lba,
+                    blocks,
+                    n: resets,
+                    reason,
+                    recovered,
+                });
+                if reason == ResetReason::NotAllowed || resets > 1 || !recovered {
+                    return ChunkResult::Io;
+                }
+            }
+        }
+    }
+    port.event(WriteEvent::Failed {
+        op,
+        lba,
+        blocks,
+        took: 0,
+        sense: None,
+    });
+    ChunkResult::Io
+}
+
+/// Sense bytes for an event when none came back.
+const NO_SENSE: Sense = Sense {
+    key: 0xff,
+    asc: 0xff,
+    ascq: 0xff,
+};
+
+/// How one SYNCHRONIZE CACHE(10) ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncResult {
+    Synced,
+    /// ILLEGAL REQUEST: the device doesn't do it.
+    Unsupported,
+    /// DATA PROTECT (now latched).
+    WriteProtected,
+    NoDevice,
+    /// The attempt's deadline passed: final, never retried (relay 395).
+    TimedOut,
+    Failed,
+}
+
+/// One SYNCHRONIZE CACHE(10), with one deadline for the command, its sense
+/// and its recovery. DATA PROTECT latches write-protect here as on a WRITE. A
+/// passed deadline is [`SyncResult::TimedOut`], which `flush` does not retry.
+pub fn sync_once(port: &mut impl WritePort, latches: &WriteLatches) -> SyncResult {
+    let op = Op::Sync;
+    if port.gone() {
+        port.event(WriteEvent::Gone { op, lba: 0 });
+        return SyncResult::NoDevice;
+    }
+    let start = port.now();
+    let by = Deadline::after(start, SYNC_ATTEMPT_MS);
+    let deadline = |port: &mut _, stage| {
+        let elapsed = WritePort::now(port).saturating_sub(start);
+        WritePort::event(
+            port,
+            WriteEvent::Deadline {
+                op,
+                lba: 0,
+                blocks: 0,
+                ms: SYNC_ATTEMPT_MS,
+                stage,
+                elapsed,
+            },
+        );
+        SyncResult::TimedOut
+    };
+    match port.command(&cdb_synchronize_cache_10(), Data::None, by) {
+        Outcome::Passed { .. } => SyncResult::Synced,
+        Outcome::Failed { .. } => {
+            let sense = port.sense(by);
+            if sense.is_none() && port.gone() {
+                port.event(WriteEvent::Gone { op, lba: 0 });
+                return SyncResult::NoDevice;
+            }
+            let action = sense.map(write_action);
+            // DATA PROTECT latches even if the deadline passed meanwhile; it
+            // is a refusal, not an advance.
+            if action == Some(WriteAction::WriteProtected) {
+                latches.latch_write_protected();
+                port.event(WriteEvent::DataProtect { op, lba: 0 });
+                return SyncResult::WriteProtected;
+            }
+            // A passed deadline beats a late sense (relay 394 F1a).
+            if by.passed(port.now()) {
+                return deadline(port, None);
+            }
+            match action {
+                Some(WriteAction::Unsupported) => SyncResult::Unsupported,
+                _ => {
+                    port.event(WriteEvent::Failed {
+                        op,
+                        lba: 0,
+                        blocks: 0,
+                        took: 0,
+                        sense,
+                    });
+                    SyncResult::Failed
+                }
+            }
+        }
+        Outcome::Reset { reason, recovered } => {
+            if port.gone() {
+                port.event(WriteEvent::Gone { op, lba: 0 });
+                return SyncResult::NoDevice;
+            }
+            if by.passed(port.now()) {
+                return deadline(port, Some(reason));
+            }
+            port.event(WriteEvent::Reset {
+                op,
+                lba: 0,
+                blocks: 0,
+                n: 1,
+                reason,
+                recovered,
+            });
+            SyncResult::Failed
+        }
+    }
+}
+
+/// How a flush ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlushResult {
+    Flushed,
+    /// Flushing is off (never probed ok, or ILLEGAL REQUEST since).
+    Unsupported,
+    WriteProtected,
+    NoDevice,
+    /// A SYNC attempt's deadline passed: the flush ends there (relay 395).
+    TimedOut,
+    Io,
+}
+
+/// `flush`: SYNCHRONIZE CACHE only once the probe showed it works, at most
+/// [`SYNC_MAX_ATTEMPTS`] times. ILLEGAL REQUEST latches flushing off; DATA
+/// PROTECT latches write-protect and ends it; a passed deadline ends it too:
+/// only a failure inside its deadline is retried.
+pub fn flush(port: &mut impl WritePort, latches: &WriteLatches) -> FlushResult {
+    if !latches.sync_ok() {
+        return FlushResult::Unsupported;
+    }
+    for _ in 0..SYNC_MAX_ATTEMPTS {
+        match sync_once(port, latches) {
+            SyncResult::Synced => return FlushResult::Flushed,
+            SyncResult::Unsupported => {
+                latches.set_sync_ok(false);
+                port.event(WriteEvent::SyncUnsupported);
+                return FlushResult::Unsupported;
+            }
+            SyncResult::WriteProtected => return FlushResult::WriteProtected,
+            SyncResult::NoDevice => return FlushResult::NoDevice,
+            SyncResult::TimedOut => return FlushResult::TimedOut,
+            SyncResult::Failed => {}
+        }
+    }
+    FlushResult::Io
+}
+
+/// The write probe's answer (THINK §3.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeResult {
+    pub write_protected: Option<bool>,
+    pub sync: SyncResult,
+}
+
+/// The write probe: MODE SENSE(6)'s header for write-protect, TEST UNIT READY
+/// (some devices report UNIT ATTENTION after a refused MODE SENSE), one
+/// SYNCHRONIZE CACHE(10). Each has its own deadline, and so does each sense.
+pub fn write_probe(port: &mut impl WritePort, latches: &WriteLatches) -> ProbeResult {
+    let mut header = [0u8; MODE_SENSE_HEADER_LEN as usize];
+    let by = Deadline::after(port.now(), PROBE_ATTEMPT_MS);
+    match port.command(&cdb_mode_sense_6_header(), Data::In(&mut header), by) {
+        Outcome::Passed { len } => {
+            if let Some(wp) = mode_sense_write_protected(&header[..len]) {
+                latches.note_mode_sense(wp);
+            }
+        }
+        // Clear the device's pending sense; unknown is the answer.
+        Outcome::Failed { .. } => {
+            let _ = port.sense(by);
+        }
+        Outcome::Reset { .. } => {}
+    }
+    let by = Deadline::after(port.now(), PROBE_ATTEMPT_MS);
+    if let Outcome::Failed { .. } = port.command(&cdb_test_unit_ready(), Data::None, by) {
+        let _ = port.sense(by);
+    }
+    let sync = sync_once(port, latches);
+    latches.set_sync_ok(sync == SyncResult::Synced);
+    ProbeResult {
+        write_protected: latches.write_protected(),
+        sync,
+    }
+}
