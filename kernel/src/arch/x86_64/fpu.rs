@@ -163,7 +163,25 @@ pub fn required_xstate_mask() -> u64 {
     REQUIRED_XSTATE_MASK
 }
 
+/// Set once the boot CPU has published the save policy (#52 review, item 1).
+/// From then on the policy is immutable: an AP checks it (`check_ap`) and
+/// never stores it, and one that cannot run under it stays offline.
+static POLICY_PUBLISHED: AtomicU8 = AtomicU8::new(0);
+
+fn policy_published() -> bool {
+    POLICY_PUBLISHED.load(Ordering::Acquire) != 0
+}
+
 pub fn prepare_cr4_for_xsave(cr4: &mut u64) -> bool {
+    if policy_published() {
+        // An AP: CR4.OSXSAVE only when the policy saves with XSAVE (so ring 3
+        // on this CPU sees AVX only when it is saved) and this CPU can.
+        if xsave_active() && xsave_plan_supported() {
+            *cr4 |= CR4_OSXSAVE;
+            return true;
+        }
+        return false;
+    }
     if xsave_plan_supported() {
         *cr4 |= CR4_OSXSAVE;
         true
@@ -173,7 +191,103 @@ pub fn prepare_cr4_for_xsave(cr4: &mut u64) -> bool {
     }
 }
 
-pub fn finish_xsave_init(requested: bool) {
+/// Finish this CPU's FPU save setup. The boot CPU publishes the policy; an
+/// AP checks that it can run under it, and the verdict says whether it may
+/// come online.
+pub fn finish_xsave_init(requested: bool) -> super::fpu_logic::ApVerdict {
+    if policy_published() {
+        return check_ap(requested);
+    }
+    publish_policy(requested);
+    #[cfg(feature = "neo-test-xsave-ap-policy")]
+    POLICY_AREA_AT_PUBLISH.store(save_area_size() as u64, Ordering::Relaxed);
+    POLICY_PUBLISHED.store(1, Ordering::Release);
+    super::fpu_logic::ApVerdict::Admit
+}
+
+/// An AP against the published policy. Writes only this CPU's XCR0.
+fn check_ap(requested: bool) -> super::fpu_logic::ApVerdict {
+    use super::fpu_logic::{ApXsave, Policy, ap_verdict};
+
+    let policy = Policy {
+        xsave: xsave_active(),
+        mask: xstate_mask(),
+        area: save_area_size(),
+    };
+    if !policy.xsave {
+        return ap_verdict(policy, no_xsave_ap());
+    }
+    let xcr0 = if requested {
+        // SAFETY: `prepare_cr4_for_xsave` set CR4.OSXSAVE only after CPUID
+        // reported XSAVE, AVX, leaf 0xD and x87|SSE|AVX, the policy's mask.
+        unsafe { write_xcr0(policy.mask) };
+        // SAFETY: CR4.OSXSAVE is set, so XGETBV(0) is legal.
+        Some(unsafe { read_xcr0() })
+    } else {
+        None
+    };
+    let need = if requested {
+        ap_test_need(xsave_area_size_quiet(policy.mask).0)
+    } else {
+        0
+    };
+    let ap = ApXsave {
+        plan_supported: requested,
+        xcr0,
+        need,
+    };
+    // The revert-check: an AP republishes its own policy, as before.
+    #[cfg(feature = "neo-test-xsave-ap-policy-control")]
+    if requested {
+        FPU_SAVE_AREA_SIZE.store(need as u64, Ordering::Relaxed);
+        return super::fpu_logic::ApVerdict::Admit;
+    }
+    ap_verdict(policy, ap)
+}
+
+fn no_xsave_ap() -> super::fpu_logic::ApXsave {
+    super::fpu_logic::ApXsave {
+        plan_supported: false,
+        xcr0: None,
+        need: 0,
+    }
+}
+
+/// `xsave_ap_policy`: the first AP checked needs 64 bytes more than the
+/// policy holds (it must stay offline), the second 64 bytes less (it comes
+/// online, and the policy must not shrink to it).
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+fn ap_test_need(need: usize) -> usize {
+    match AP_CHECKS.fetch_add(1, Ordering::AcqRel) {
+        0 => need + XSAVE_ALIGN,
+        1 => need - XSAVE_ALIGN,
+        _ => need,
+    }
+}
+
+#[cfg(not(feature = "neo-test-xsave-ap-policy"))]
+fn ap_test_need(need: usize) -> usize {
+    need
+}
+
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+static AP_CHECKS: AtomicU32 = AtomicU32::new(0);
+
+/// `xsave_ap_policy`: the area the boot CPU published.
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+static POLICY_AREA_AT_PUBLISH: AtomicU64 = AtomicU64::new(0);
+
+/// `xsave_ap_policy`: (area published by the boot CPU, APs checked).
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+pub fn ap_policy_for_test() -> (usize, u32) {
+    (
+        POLICY_AREA_AT_PUBLISH.load(Ordering::Relaxed) as usize,
+        AP_CHECKS.load(Ordering::Acquire),
+    )
+}
+
+/// The boot CPU's half: decide and publish the policy.
+fn publish_policy(requested: bool) {
     if !requested {
         publish_fxsave_fallback();
         return;
@@ -209,13 +323,23 @@ static EBX_SEEN: AtomicU32 = AtomicU32::new(0);
 /// x87|SSE's 576 with AVX enabled); every enabled component's offset plus
 /// size bounds it from below.
 fn xsave_area_size_for(mask: u64) -> usize {
-    use super::fpu_logic::{Component, ebx_understated};
+    let (size, ebx) = xsave_area_size_quiet(mask);
+    EBX_SEEN.store(ebx, Ordering::Relaxed);
+    if super::fpu_logic::ebx_understated(ebx, size) {
+        EBX_UNDERSTATED.store(1, Ordering::Relaxed);
+    }
+    size
+}
+
+/// `xsave_area_size_for` without recording anything: `(size, CPUID EBX)`.
+fn xsave_area_size_quiet(mask: u64) -> (usize, u32) {
+    use super::fpu_logic::Component;
 
     // `xsave_ebx_understated` test: answer EBX the way WHPX did, x87|SSE's
     // size, whatever XCR0 holds.
-    #[cfg(not(feature = "neo-test-xsave-ebx-understated"))]
+    #[cfg(not(feature = "test-xsave-ebx-576"))]
     let ebx = cpuid_count(0xD, 0).ebx;
-    #[cfg(feature = "neo-test-xsave-ebx-understated")]
+    #[cfg(feature = "test-xsave-ebx-576")]
     let ebx = super::fpu_logic::XSAVE_LEGACY_AND_HEADER as u32;
     let components = (2..63u32).filter(|&i| mask & (1u64 << i) != 0).map(|i| {
         let leaf = cpuid_count(0xD, i);
@@ -224,19 +348,15 @@ fn xsave_area_size_for(mask: u64) -> usize {
             offset: leaf.ebx,
         }
     });
-    #[cfg(not(feature = "neo-test-xsave-ebx-understated-control"))]
+    #[cfg(not(feature = "test-xsave-ebx-trusted"))]
     let size = super::fpu_logic::xsave_area_size(ebx, components);
     // The revert-check: size the area from EBX alone, as before.
-    #[cfg(feature = "neo-test-xsave-ebx-understated-control")]
+    #[cfg(feature = "test-xsave-ebx-trusted")]
     let size = {
         drop(components);
         align_up((ebx as usize).max(FXSAVE_SIZE), XSAVE_ALIGN)
     };
-    EBX_SEEN.store(ebx, Ordering::Relaxed);
-    if ebx_understated(ebx, size) {
-        EBX_UNDERSTATED.store(1, Ordering::Relaxed);
-    }
-    size
+    (size, ebx)
 }
 
 /// CPUID.(0DH,0):EBX as read at init, and whether it understated the area
@@ -291,26 +411,17 @@ fn cpuid_max_basic_leaf() -> u32 {
 }
 
 fn cpuid_count(leaf: u32, subleaf: u32) -> CpuidResult {
-    let eax: u32;
-    let ebx: u32;
-    let ecx: u32;
-    let edx: u32;
-    // SAFETY: CPUID is a serializing CPU-query instruction. RBX is preserved
-    // around the instruction because LLVM reserves it on x86_64.
-    unsafe {
-        asm!(
-            "push rbx",
-            "cpuid",
-            "mov {ebx_out:e}, ebx",
-            "pop rbx",
-            inout("eax") leaf => eax,
-            inout("ecx") subleaf => ecx,
-            lateout("edx") edx,
-            ebx_out = lateout(reg) ebx,
-            options(nomem)
-        );
+    // `__cpuid_count`, not hand-written `push rbx; cpuid; mov {out:e}, ebx;
+    // pop rbx`: with a `reg` output the allocator may pick rbx itself, and the
+    // `pop` then discards CPUID's EBX (seen in the opt-level-3 product kernel,
+    // #52 follow-up: an AP read CPUID.(0DH,2):EBX as a stack address).
+    let r = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+    CpuidResult {
+        eax: r.eax,
+        ebx: r.ebx,
+        ecx: r.ecx,
+        edx: r.edx,
     }
-    CpuidResult { eax, ebx, ecx, edx }
 }
 
 /// Read XCR0.

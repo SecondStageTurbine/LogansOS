@@ -144,6 +144,27 @@ pub fn hold_forever_for_test() {
     }
 }
 
+/// `fb_gp_holding_serial` (#52 review, item 4): a kernel-mode #GP while this
+/// CPU holds `SERIAL`, as a fault in the middle of a print would be. The
+/// guard is never released; the fatal-trap path must reach the panic screen
+/// without printing first.
+#[cfg(feature = "neo-test-fb-gp-holding-serial")]
+pub fn gp_holding_lock_for_test() -> ! {
+    x86_64::instructions::interrupts::disable();
+    let guard = SERIAL.lock();
+    core::mem::forget(guard);
+    // SAFETY: a load through a non-canonical address raises #GP(0) before
+    // any memory is read; the fatal path never returns here.
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, qword ptr [{0}]",
+            inout(reg) 0x8000_0000_0000_0000u64 => _,
+            options(nostack, readonly)
+        );
+    }
+    panic!("fb_gp_holding_serial: the non-canonical load did not fault");
+}
+
 /// Whether `SERIAL` is held (by anyone).
 #[cfg(feature = "neo-test-fb-panic-holding-serial")]
 pub fn locked_for_test() -> bool {
