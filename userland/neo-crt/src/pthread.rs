@@ -476,7 +476,8 @@ pub unsafe extern "C" fn pthread_mutex_timedlock(
     m: *mut PthreadMutex,
     at: *const Timespec,
 ) -> c_int {
-    // POSIX measures a timed lock against CLOCK_REALTIME; there is none.
+    // POSIX measures a timed lock against CLOCK_REALTIME. neo-crt answers that
+    // clock now (#86), but timed locks aren't implemented yet.
     let _ = (m, at);
     EINVAL
 }

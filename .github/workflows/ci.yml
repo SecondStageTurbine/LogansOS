@@ -982,8 +982,14 @@ jobs:
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
             echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+            # OT-119(f): a pinned rustup-init checked against its SHA-256, not a piped script.
+            RUSTUP_INIT_VERSION=1.29.3
+            RUSTUP_INIT_SHA256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+            curl --proto '=https' --tlsv1.2 -sSf -o "$RUNNER_TEMP/rustup-init" \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/rustup-init"
+            "$RUNNER_TEMP/rustup-init" -y --default-toolchain none --profile minimal --no-modify-path
           fi
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
@@ -1255,8 +1261,14 @@ jobs:
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
             echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+            # OT-119(f): a pinned rustup-init checked against its SHA-256, not a piped script.
+            RUSTUP_INIT_VERSION=1.29.3
+            RUSTUP_INIT_SHA256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+            curl --proto '=https' --tlsv1.2 -sSf -o "$RUNNER_TEMP/rustup-init" \
+              "https://static.rust-lang.org/rustup/archive/${RUSTUP_INIT_VERSION}/x86_64-unknown-linux-gnu/rustup-init"
+            echo "${RUSTUP_INIT_SHA256}  $RUNNER_TEMP/rustup-init" | sha256sum -c -
+            chmod +x "$RUNNER_TEMP/rustup-init"
+            "$RUNNER_TEMP/rustup-init" -y --default-toolchain none --profile minimal --no-modify-path
           fi
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"

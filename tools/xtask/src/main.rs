@@ -2833,7 +2833,7 @@ fn scenario_timeout(name: &str) -> Duration {
         | "login_settings_refused"
         | "login_arthur_permission" => Duration::from_secs(600),
         // B1b: the hermetic fixture run measured 132 s locally (most of it the
-        // 5.4 MB vocab parse under TCG); 420 s is headroom. A real 485 MB model
+        // 5.4 MB vocab parse under TCG); 420 s is headroom. A real 0.5B model
         // (NEO_STAGE_B_*) gets the real-brain budget: the in-kernel BLAKE3 of
         // every byte under TCG adds to the load.
         "arthur_boot_module_answers"
@@ -11571,7 +11571,27 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
 
 // === neo-test ===
 
-fn cmd_neo_test(args: &[String]) -> Result<(), String> {
+/// The parsed `neo-test` command line. Kept separate from running it, so the
+/// tier contract can be tested: no `--tier` and `--tier full` are the same run
+/// (OT-58's kill-switch: the full tier is today's suite, sharded the same way).
+#[derive(Debug, PartialEq, Eq)]
+struct NeoTestArgs<'a> {
+    include_ignored: bool,
+    no_meta: bool,
+    meta_only: bool,
+    build_only: bool,
+    bare_metal_mode: bool,
+    include_explicit: bool,
+    keep_going: bool,
+    rerun_timeouts: bool,
+    quick_tier: bool,
+    changed_from: Option<String>,
+    shard: Option<ShardSpec>,
+    requested: Vec<&'a str>,
+}
+
+/// Parses `neo-test`'s arguments. `Ok(None)` means help was printed.
+fn parse_neo_test_args(args: &[String]) -> Result<Option<NeoTestArgs<'_>>, String> {
     let mut include_ignored = false;
     let mut no_meta = false;
     let mut meta_only = false;
@@ -11617,7 +11637,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
             "all" => include_explicit = true,
             "-h" | "--help" => {
                 print_neo_test_help();
-                return Ok(());
+                return Ok(None);
             }
             // --shard I/N runs only scenario subset I of N from the default
             // suite (see shard_partition). Accepts both `--shard I/N` and
@@ -11636,6 +11656,40 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
         }
         idx += 1;
     }
+    Ok(Some(NeoTestArgs {
+        include_ignored,
+        no_meta,
+        meta_only,
+        build_only,
+        bare_metal_mode,
+        include_explicit,
+        keep_going,
+        rerun_timeouts,
+        quick_tier,
+        changed_from,
+        shard,
+        requested,
+    }))
+}
+
+fn cmd_neo_test(args: &[String]) -> Result<(), String> {
+    let Some(NeoTestArgs {
+        include_ignored,
+        no_meta,
+        meta_only,
+        build_only,
+        bare_metal_mode,
+        include_explicit,
+        keep_going,
+        rerun_timeouts,
+        quick_tier,
+        changed_from,
+        shard,
+        requested,
+    }) = parse_neo_test_args(args)?
+    else {
+        return Ok(());
+    };
 
     fs::create_dir_all(workspace_root().join(TEST_OUTPUT_REL))
         .map_err(|e| format!("create {TEST_OUTPUT_REL}: {e}"))?;
@@ -19389,7 +19443,7 @@ fn prepare_stage_b_required_real_brain_model() -> Result<PathBuf, String> {
     let gguf = env::var(STAGE_B_GGUF_ENV).ok();
     if !stage_b_real_artifact_selected(neom.as_deref(), gguf.as_deref()) {
         return Err(format!(
-            "Arthur compositor Slice B requires a real 485 MB Qwen 2.5 0.5B artifact; set {STAGE_B_NEOM_ENV} or {STAGE_B_GGUF_ENV} (fixture fallback is forbidden for the JOINT bare-metal capstone)"
+            "Arthur compositor Slice B requires a real Qwen 2.5 0.5B artifact; set {STAGE_B_NEOM_ENV} or {STAGE_B_GGUF_ENV} (fixture fallback is forbidden for the JOINT bare-metal capstone)"
         ));
     }
     let path = prepare_stage_b_real_brain_model()?;
@@ -23318,7 +23372,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "SHOWCASE memory stage=model_resident used_bytes=",
                 // The footer names the model from the path it was loaded from.
                 "ARTHUR footer model=\"Qwen2.5 0.5B\"",
-                "SHOWCASE footprint discriminator=model-485MB-plus-compositor source=qwen2.5-0.5b",
+                "SHOWCASE footprint discriminator=model-plus-compositor source=qwen2.5-0.5b",
                 "SHOWCASE model resident with_compositor=true source=neofs",
                 "SHOWCASE slice=A greeting=composited qemu_gate=ready",
                 "SHOWCASE surface destroyed client=arthur registry_alive=false",
@@ -23326,7 +23380,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "SHOWCASE bypass_oracle client_present=EPERM framebuffer_unchanged=true poison=0x00d123e4 destination=0,0",
                 "SHOWCASE pixel_oracle text=Arthur font=Inter px=22 window=28x20 within_bounds=560/560 coverage_slack=2/255 destination=64,64 source=shared-pixel-buffer",
             ],
-            "Arthur compositor Slice A must prove the ordered boot, client-owned surface, backend-independent scanout authority, denied fresh-buffer bypass with unchanged framebuffer, authorized compositor present, 485 MB footprint discriminator, model residency, and composited-pixel seam",
+            "Arthur compositor Slice A must prove the ordered boot, client-owned surface, backend-independent scanout authority, denied fresh-buffer bypass with unchanged framebuffer, authorized compositor present, model footprint discriminator, model residency, and composited-pixel seam",
         )?;
         require_serial_absent(
             scenario,
@@ -28000,7 +28054,7 @@ mod tests {
 
     /// B1c (F8): `iso --with-model` refuses a file that fails its pin, naming
     /// both digests, and accepts one that matches (the committed KAT fixture
-    /// against its own pin stands in for the 485 MB model).
+    /// against its own pin stands in for the real 0.5B model).
     #[test]
     fn with_model_digest_check_accepts_the_pin_and_names_a_mismatch() {
         let root = workspace_root();
@@ -29962,6 +30016,38 @@ mod tests {
     }
 
     /// N == 1 is the identity partition: shard 1/1 is the whole suite.
+    #[test]
+    fn no_tier_is_the_full_tier() {
+        // OT-58's kill-switch: without `--tier`, neo-test runs exactly what
+        // `--tier full` runs, so the full tier is today's suite and sharding.
+        let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let cases: [&[&str]; 4] = [
+            &[],
+            &["--shard", "1/4"],
+            &["--shard=3/4", "--keep-going", "--rerun-timeouts"],
+            &["ipc_try_send", "pipe_core"],
+        ];
+        for case in cases {
+            let plain = argv(case);
+            let mut before = argv(&["--tier", "full"]);
+            before.extend(plain.iter().cloned());
+            let mut after = plain.clone();
+            after.extend(argv(&["--tier", "full"]));
+            let p = parse_neo_test_args(&plain).unwrap().unwrap();
+            assert!(!p.quick_tier, "{case:?}");
+            assert_eq!(
+                p,
+                parse_neo_test_args(&before).unwrap().unwrap(),
+                "{case:?}"
+            );
+            assert_eq!(p, parse_neo_test_args(&after).unwrap().unwrap(), "{case:?}");
+        }
+        let quick_args = argv(&["--tier", "quick"]);
+        let quick = parse_neo_test_args(&quick_args).unwrap().unwrap();
+        assert!(quick.quick_tier);
+        assert!(parse_neo_test_args(&argv(&["--tier", "fast"])).is_err());
+    }
+
     #[test]
     fn shard_count_one_is_identity() {
         let full = canonical_suite();

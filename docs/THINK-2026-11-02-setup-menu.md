@@ -662,8 +662,8 @@ and the scenario's whole-disk BLAKE3 is identical before/after.
 record with all seven keys is a hand-laid byte fixture (the format rule: an independent byte example, not just a
 round-trip).
 
-**Kill-switch `setup-store`:** off ⇒ the new keys are not compiled and the record is byte-identical to today's
-three-key one; the wizard's store calls are no-ops.
+**Kill-switch `setup-store`:** off ⇒ the new keys are not compiled and the record is byte-identical to the record before
+S2 (five keys, not three: keys 4 and 5 came with the time-zone work; corrected in the 2026-11-18 consolidation); the wizard's store calls are no-ops.
 
 ### S3 — the Time zone page and the one confirm
 

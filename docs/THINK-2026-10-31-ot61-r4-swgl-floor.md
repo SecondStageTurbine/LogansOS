@@ -35,7 +35,7 @@
 
 ## 2. S2: WebRender 0.70 on SWGL
 
-**The closure grows to about 87 crates.** Measured by resolving `webrender = "=0.70.0"` with `sw_compositor`, no
+**The closure grows to 99 crates** (as vendored in #77; this THINK first estimated about 87). Measured by resolving `webrender = "=0.70.0"` with `sw_compositor`, no
 default features. Licences: 45 "MIT OR Apache-2.0", 13 "MIT/Apache-2.0", 11 MPL-2.0, 9 MIT, a few Apache-2.0,
 BSD-3-Clause, Unlicense-or-MIT, and unicode-ident's Unicode-3.0. `r-efi` is "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
 and is taken under MIT. `unicode-ident` adds the Unicode-3.0 data licence, which the standing list doesn't name; it

@@ -154,8 +154,8 @@ every time after the release's last explicit transition. For example
   as an alias of its replacement. Id 0 is `UTC`.
 - **Aliases** (`US/Eastern`, `Asia/Calcutta`) resolve to their canonical zone by name, but never get their own id.
 - **Refresh: cadence and owner.** Each IANA release (a few a year, announced on the `tz-announce` list) gets one
-  regeneration PR. The owner is whichever seat the PM names for the standing item; the build proposes adding it to the
-  open-threads board.
+  regeneration PR. The owner is the PM, as a standing item: OT-118 in `docs/OPEN-THREADS.md` (named in the 2026-11-18
+  consolidation).
   - The generator refuses a checkout that isn't exactly at a release tag (`git describe --tags --exact-match`), and
     records the tag and commit in the table. 2026e is tag `2026e`, commit `039ef27c`, and its signed tag object is
     `db07415c`; anyone can check that signature with `git tag -v 2026e`.
@@ -165,8 +165,9 @@ every time after the release's last explicit transition. For example
 - **Size:** about 340 canonical zones at roughly 40 bytes each, around 14 KiB, linked only into userland binaries that
   call it (the WM, and Arthur once §2.6 lands).
 
-**The limitation, stated precisely:** the table is **exact for any time after its release's last explicit transition**
-in a zone. That's true of the present when the table is generated from the current release (Dexter checked all 448 host
+**The limitation, stated precisely:** the table is **exact for the present at generation time, and for a later present only until the
+next transition its release doesn't include** in a zone (wording tightened in the 2026-11-18 consolidation, per
+Dexter's #51 re-check note 6). That's true of the present when the table is generated from the current release (Dexter checked all 448 host
 zones against `zoneinfo` at 2026-11-02 and found no disagreement).
 - An earlier date converts with the final rule. New York before 2007, when DST ran April to October, is off by an hour on
   some dates, and so is `Africa/Casablanca` on 2026-06-01: +01 in fact, the footer `<+00>0` says +00. A KAT pins that
