@@ -1077,6 +1077,7 @@ dependencies = [
  "neo-layout-dom",
  "neo-static-page",
  "neo-std-pal",
+ "nmc1-client",
  "servo-fonts",
  "servo-fonts-traits",
  "servo-layout",
@@ -1281,6 +1282,10 @@ dependencies = [
 [[package]]
 name = "new_debug_unreachable"
 version = "1.0.6"
+
+[[package]]
+name = "nmc1-client"
+version = "0.0.1"
 
 [[package]]
 name = "nom"

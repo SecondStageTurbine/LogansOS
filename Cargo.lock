@@ -1336,6 +1336,10 @@ name = "net-rx-logic-tests"
 version = "0.0.1"
 
 [[package]]
+name = "nmc1-client"
+version = "0.0.1"
+
+[[package]]
 name = "ntls-logic-tests"
 version = "0.0.1"
 

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "nmc1-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OT-61 L5: the client side of the Atrium surface protocol's NMC1 records (ADR-073), for a std client that can't link libneo"
+
+[dependencies]
+
+# The host tests mount libneo's protocol module by path (as
+# tools/atrium-logic-tests does): libneo itself is a no_std runtime and can't
+# link into a std test binary.
+# The mounted file's cfg names (compiled in under test anyway).
+[features]
+dw2-scene-policy = []
+atrium-yield = []
+atrium-launch = []
+atrium-damage = []
+atrium-busy = []
+atrium-settings = []
+atrium-permission = []
+atrium-keymap = []

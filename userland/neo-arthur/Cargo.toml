@@ -96,6 +96,9 @@ desktop-actions-probe = ["desktop-actions"]
 # OT-88 A1a boot test: the line `open probe app` launches the probe app (a
 # second WM client) through Arthur's LaunchCap.
 atrium-apps-probe = ["desktop-home"]
+# OT-61 L5 boot test: the line `open browser` launches the browser (a WM
+# client on real std, /modules/neo-browser) through Arthur's LaunchCap.
+atrium-apps-browser = ["desktop-home"]
 # PR #15 review item 3 boot test: once the probe app is open, Arthur commits
 # back to back for a while (each commit waits for its reply), so his channel
 # is never quiet; the probe app's turns must still come.
