@@ -9104,14 +9104,20 @@ fn cmd_ot61_crt_build(args: &[String]) -> Result<(), String> {
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
     // Python, allowed by J.c. 2026-10-31 with no network fetch).
-    let (bin, dir) = match args {
-        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
-        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
-        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+    // `--crt`: neo-crt's own smoke and its hardening twin (C3a).
+    let (bin, bins, dir): (&str, &[&str], &str) = match args {
+        [] => (SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR),
+        [a] if a == "--crt" => (
+            CXX_RUNTIME_BIN,
+            &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+            CXX_RUNTIME_DIR,
+        ),
+        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo | --crt]".to_string()),
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(bin, &[bin], dir)?;
+    build_standalone_std_smoke(bin, bins, dir)?;
     let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
@@ -19659,6 +19665,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
             "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
             "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
+            "[ crt-smoke ] ok(30) C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
+            "[ crt-smoke ] ok(31) POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary, thread names",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
