@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Unlicense OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "winapi-util"
+version = "0.1.11"
+edition = "2021"
+license = "Unlicense OR MIT"
+repository = "https://github.com/BurntSushi/winapi-util"
+description = "LogansOS empty stand-in for winapi-util 0.1.11 (never compiled for LogansOS)"
+
+[lib]
+name = "winapi_util"
+path = "src/lib.rs"
+
+[features]

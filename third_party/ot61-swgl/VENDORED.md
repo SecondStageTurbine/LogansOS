@@ -44,7 +44,14 @@ patch is written to apply there.
 aborts there (C3a THINK §6 item 3) rather than invent a time. Nothing reads the value back: `FrameStamp::time` has
 no caller in 0.70.0, and it only has to differ from `UNIX_EPOCH` for a debug check. On
 `target_os = "neoplutarch"`, `frame_time()` records `UNIX_EPOCH` plus the monotonic time since the first frame,
-plus 1 ns. Other targets are unchanged. Diff: `webrender-0.70.0-frame-time.patch`.
+plus 1 ns. Other targets are unchanged.
+
+The same diff also makes `Profiler::update`'s "one second ago" a saturating subtraction (`profiler.rs`). On our
+target `zeitstempel` has no native clock and falls back to `Instant`, counting from its own first call, so `now` is
+under one second for a while. `now - ONE_SECOND_NS` then underflowed, which panics in our debug builds (the
+`layout_smoke` landing run, 43138246513, when WebRender's first frame came within a second of that first call).
+Saturating keeps every timestamp in that window, which is what a release build's wrapped subtraction does in effect.
+Diff: `webrender-0.70.0-frame-time.patch`.
 
 ## Patched and stubbed crates
 

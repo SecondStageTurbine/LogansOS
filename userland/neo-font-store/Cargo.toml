@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 L1: the fonts a LogansOS content process has. Servo's font backends on
+# other systems list fonts from the OS (fontconfig, Core Text, DirectWrite); a
+# content process has no ambient file system, so its fonts are bundled here and
+# named by a path no file system resolves. Used by the patched servo-fonts and
+# servo-fonts-traits on target_os = "neoplutarch".
+[package]
+name = "neo-font-store"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 L1: the bundled fonts Servo's font code sees on LogansOS"
+
+[lib]
+path = "src/lib.rs"

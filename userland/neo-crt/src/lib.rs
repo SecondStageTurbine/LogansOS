@@ -220,6 +220,32 @@ pub unsafe extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, siz
     0
 }
 
+// ── byte order ───────────────────────────────────────────────────────────
+
+/// `<arpa/inet.h>`'s byte-order conversions, which musl keeps under
+/// `src/network` (not part of this runtime). OTS (fontsan) and HarfBuzz call
+/// them as functions to read big-endian font tables. x86-64 is little-endian,
+/// so host-to-network is a byte swap; `to_be`/`from_be` say so portably.
+#[unsafe(no_mangle)]
+pub extern "C" fn htonl(x: u32) -> u32 {
+    x.to_be()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn htons(x: u16) -> u16 {
+    x.to_be()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ntohl(x: u32) -> u32 {
+    u32::from_be(x)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ntohs(x: u16) -> u16 {
+    u16::from_be(x)
+}
+
 // ── entropy ──────────────────────────────────────────────────────────────
 
 /// `arc4random_buf` (BSD; glibc 2.36+): fill `buf` with `n` bytes from the

@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 L2, the host that drives
+# Servo's layout over a static page without script
+# (docs/THINK-2026-11-01-ot61-first-page-layout.md §3, §5). WIP.
+[workspace]
+
+[package]
+name = "neo-static-page"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 L2: one static HTML page laid out by Servo's layout, with no script engine"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+app_units = "=0.7.8"
+content-security-policy = "=0.9.0"
+crossbeam-channel = "0.5"
+malloc_size_of = { package = "servo-malloc-size-of", version = "=0.7.0" }
+malloc_size_of_derive = "0.1"
+parking_lot = "0.12"
+euclid = "=0.22.14"
+fonts = { package = "servo-fonts", version = "=0.7.0" }
+layout = { package = "servo-layout", version = "=0.7.0" }
+layout_api = { package = "servo-layout-api", version = "=0.7.0" }
+neo-layout-dom = { path = "../neo-layout-dom" }
+neo-font-store = { path = "../neo-font-store" }
+embedder_traits = { package = "servo-embedder-traits", version = "=0.7.0" }
+net_traits = { package = "servo-net-traits", version = "=0.7.0" }
+paint_api = { package = "servo-paint-api", version = "=0.7.0" }
+pixels = { package = "servo-pixels", version = "=0.7.0" }
+profile_traits = { package = "servo-profile-traits", version = "=0.7.0" }
+script_traits = { package = "servo-script-traits", version = "=0.7.0" }
+servo_arc = "=0.5.0"
+servo_base = { package = "servo-base", version = "=0.7.0" }
+servo_url = { package = "servo-url", version = "=0.7.0" }
+style = { package = "stylo", version = "=0.22.0" }
+url = "=2.5.8"
+uuid = "1"
+webrender_api = "0.70"
+# As in layout-smoke: servo-constellation-traits needs zeroize's derive;
+# in-process IPC; zlib from source.
+zeroize = { version = "1", features = ["derive"] }
+ipc-channel = { version = "=0.23.1", features = ["force-inprocess"] }
+libz-sys = { version = "1", features = ["static"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+[patch.crates-io]
+libc = { path = "../../third_party/ot61-browser/patched/libc-0.2.191" }
+parking_lot_core = { path = "../../third_party/ot61-browser/patched/parking_lot_core-0.9.12" }
+servo-base = { path = "../../third_party/ot61-browser/patched/servo-base-0.7.0" }
+servo-url = { path = "../../third_party/ot61-browser/patched/servo-url-0.7.0" }
+servo-fonts-traits = { path = "../../third_party/ot61-browser/patched/servo-fonts-traits-0.7.0" }
+servo-fonts = { path = "../../third_party/ot61-browser/patched/servo-fonts-0.7.0" }
+servo-allocator = { path = "../../third_party/ot61-browser/patched/servo-allocator-0.7.0" }
+servo-embedder-traits = { path = "../../third_party/ot61-browser/patched/servo-embedder-traits-0.7.0" }
+servo-layout = { path = "../../third_party/ot61-browser/patched/servo-layout-0.7.0" }
+servo-paint-api = { path = "../../third_party/ot61-browser/patched/servo-paint-api-0.7.0" }
+stylo = { path = "../../third_party/ot61-browser/patched/stylo-0.22.0" }
+hyper-util = { path = "../../third_party/ot61-browser/stubs/hyper-util-0.1.21" }
+windows-sys = { path = "../../third_party/ot61-browser/stubs/windows-sys-0.61.2" }
+# #25's patched copy (byte-identical, same path as on #25).
+wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
