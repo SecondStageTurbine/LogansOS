@@ -562,15 +562,75 @@ impl Scene {
             self.sprite_at = Some(at);
             self.sprite_shape = shape;
         }
-        if outline != self.outline {
-            for edge in [self.outline, outline].into_iter().flatten() {
-                damage = damage.union(&edge);
+        // PR #58 re-check: what a drag frame needs presented is the sprite's
+        // rect and the old and the new outline's edges; anything else it
+        // presents is over-presented (the control's box).
+        #[cfg(feature = "desktop-session-boot-test")]
+        let sprite_damage = damage;
+        // F7 (drag smoothness): a drag frame recomposes only the old and
+        // the new outline's edges, each presented on its own, not the
+        // bounding box of the two frames (two whole windows' area per
+        // pointer report). Control (`drag-union-damage-control`): the old
+        // bounding-box damage.
+        let mut edges = [Rect::default(); 8];
+        let drag_frame = outline != self.outline;
+        #[cfg(feature = "desktop-session-boot-test")]
+        let outline_before = self.outline;
+        if drag_frame {
+            if cfg!(feature = "drag-union-damage-control") {
+                for frame in [self.outline, outline].into_iter().flatten() {
+                    damage = damage.union(&frame);
+                }
+            } else {
+                for (i, frame) in [self.outline, outline].into_iter().enumerate() {
+                    if let Some(frame) = frame {
+                        edges[i * 4..i * 4 + 4].copy_from_slice(&pointer::outline_edges(frame));
+                    }
+                }
             }
             self.outline = outline;
         }
-        if !damage.is_empty() {
-            self.present(true, damage).map_err(|c| 100 + c)?;
+        #[cfg(feature = "desktop-session-boot-test")]
+        let started = drag_perf::now();
+        let mut presented = 0u64;
+        // The sprite's and each edge's rect are composed, then each is
+        // committed and presented exactly as itself (PR #58 review: no box
+        // around them, so nothing unchanged is presented), with one fence
+        // wait for the frame, on the last present.
+        let mut written = [Rect::default(); 9];
+        for (slot, rect) in written
+            .iter_mut()
+            .zip(core::iter::once(damage).chain(edges))
+        {
+            let rect = rect.intersect(&screen);
+            if !rect.is_empty() {
+                presented += rect.w as u64 * rect.h as u64;
+                *slot = self.compose(true, rect).map_err(|c| 100 + c)?;
+            }
         }
+        self.commit_present_rects(&written).map_err(|c| 100 + c)?;
+        #[cfg(feature = "desktop-session-boot-test")]
+        if drag_frame {
+            let ended = drag_perf::now();
+            let mut needed = [Rect::default(); 9];
+            needed[0] = sprite_damage;
+            for (frame, slot) in [self.outline, outline_before]
+                .into_iter()
+                .zip(needed[1..].chunks_mut(4))
+            {
+                if let Some(frame) = frame {
+                    slot.copy_from_slice(&pointer::outline_edges(frame));
+                }
+            }
+            drag_perf::frame(
+                started,
+                ended,
+                presented,
+                drag_perf::outside(&written, &needed),
+            );
+        }
+        #[cfg(not(feature = "desktop-session-boot-test"))]
+        let _ = presented;
         let action = press.or_else(|| pointer::take_sak(!*escaped)).or_else(|| {
             if *escaped {
                 pointer::escaped_keys(wm_focus.events)
@@ -594,6 +654,8 @@ impl Scene {
     /// both with the drag outline erased.
     #[cfg(feature = "desktop-pointer")]
     fn move_window(&mut self, dx: i32, dy: i32) -> Result<(), i32> {
+        #[cfg(feature = "desktop-session-boot-test")]
+        let started = drag_perf::now();
         let l = self.chrome.layout;
         let (x, y) = l.clamp_frame(l.frame.x as i64 + dx as i64, l.frame.y as i64 + dy as i64);
         let old = self.reach();
@@ -606,9 +668,13 @@ impl Scene {
         if !damage.is_empty() {
             self.present(true, damage).map_err(|c| 100 + c)?;
         }
+        #[cfg(feature = "desktop-session-boot-test")]
+        drag_perf::released(started);
         // After the present: the witness reads what was shown.
         if moved {
             glass::log_move(self, (l.frame.x, l.frame.y), old);
+            #[cfg(feature = "drag-cross-witness")]
+            drag_perf::witness(self).map_err(|c| 100 + c)?;
         }
         Ok(())
     }
@@ -763,16 +829,33 @@ impl Scene {
         debug_assert!(self.home.is_none(), "a frame change painted over Home");
         let stride = self.geo.screen.w;
         let mut damage = Rect::default();
-        for region in old.into_iter().chain(self.reach()) {
+        // F7 (drag smoothness): each pixel is painted once. The new reach
+        // first, then whatever of the old reach (and of the new reach's
+        // second rect) lies outside what is already painted; a short move's
+        // old and new frames overlap almost entirely. Painting is per pixel
+        // and deterministic, so the base is the same as painting all four.
+        let mut painted: alloc::vec::Vec<Rect> = alloc::vec::Vec::new();
+        for region in self.reach().into_iter().chain(old) {
             if region.is_empty() {
                 continue;
             }
-            self.chrome.paint_rect(
-                self.base.slice_mut(),
-                stride,
-                self.focused,
-                atrium_rect(region),
-            );
+            let mut pieces = alloc::vec![region];
+            for done in &painted {
+                pieces = pieces
+                    .iter()
+                    .flat_map(|piece| piece.minus(done))
+                    .filter(|piece| !piece.is_empty())
+                    .collect();
+            }
+            for piece in &pieces {
+                self.chrome.paint_rect(
+                    self.base.slice_mut(),
+                    stride,
+                    self.focused,
+                    atrium_rect(*piece),
+                );
+            }
+            painted.push(region);
             damage = damage.union(&region);
         }
         damage
@@ -1059,24 +1142,41 @@ impl Scene {
     /// Commit exactly `written` of the output plane and present it; wait
     /// for the present's fence.
     fn commit_present(&self, written: Rect) -> Result<(), i32> {
+        self.commit_present_rects(&[written])
+    }
+
+    /// [`Self::commit_present`] for several rects: each committed and
+    /// presented exactly as itself (no box around them), then one fence wait,
+    /// on the last present. Presents complete in order and a fence is
+    /// satisfied by its own epoch or a later one (`fence_satisfied`), so the
+    /// last epoch's fence covers every rect before it (F7: a drag frame's
+    /// strips, one fence per frame).
+    fn commit_present_rects(&self, rects: &[Rect]) -> Result<(), i32> {
         // OT-66 L2: and only the lock's own frame reaches the screen.
         #[cfg(feature = "login")]
         if lock::locked() && !self.lock.painting {
             return Ok(());
         }
-        let rect = encode_damage_rect(
-            written.x as u16,
-            written.y as u16,
-            written.w as u16,
-            written.h as u16,
-        );
-        if sys_buffer_commit_damage(self.output, &rect) != 0 {
-            return Err(41);
+        let mut last = None;
+        for written in rects.iter().filter(|r| !r.is_empty()) {
+            let rect = encode_damage_rect(
+                written.x as u16,
+                written.y as u16,
+                written.w as u16,
+                written.h as u16,
+            );
+            if sys_buffer_commit_damage(self.output, &rect) != 0 {
+                return Err(41);
+            }
+            let epoch = sys_fb_present(self.output, 0, 0);
+            if epoch < 1 {
+                return Err(42);
+            }
+            last = Some(epoch);
         }
-        let epoch = sys_fb_present(self.output, 0, 0);
-        if epoch < 1 {
-            return Err(42);
-        }
+        let Some(epoch) = last else {
+            return Ok(());
+        };
         let mut result = [0u8; PRESENT_RESULT_V1_LEN];
         if sys_present_fence_wait(self.output, epoch as u64, &mut result, 1000) != 0
             || u32::from_le_bytes([result[8], result[9], result[10], result[11]]) != 1
@@ -4781,6 +4881,137 @@ mod perf {
     }
 }
 
+/// F7 (drag smoothness) measurement, boot tests only: per title-band drag,
+/// how many drag frames the WM presented, how long each took (the outline's
+/// recompose and present, from the pointer report's poll), how many pixels
+/// each recomposed, and how long the release's move took. One line per
+/// completed drag, at its release.
+#[cfg(all(feature = "desktop-pointer", feature = "desktop-session-boot-test"))]
+mod drag_perf {
+    use super::{Line, Rect};
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+    static MAX_NS: AtomicU64 = AtomicU64::new(0);
+    static PIXELS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn now() -> u64 {
+        libneo::sys_clock_gettime(libneo::CLOCK_MONOTONIC).unwrap_or(0)
+    }
+
+    static OUTSIDE: AtomicU64 = AtomicU64::new(0);
+
+    /// One drag frame, from `started` to `ended`, recomposed and presented
+    /// `pixels`, `outside` of them where nothing changed (see [`outside`]).
+    pub fn frame(started: u64, ended: u64, pixels: u64, outside: u64) {
+        let ns = ended.saturating_sub(started);
+        FRAMES.fetch_add(1, Relaxed);
+        TOTAL_NS.fetch_add(ns, Relaxed);
+        MAX_NS.fetch_max(ns, Relaxed);
+        PIXELS.fetch_add(pixels, Relaxed);
+        OUTSIDE.fetch_add(outside, Relaxed);
+    }
+
+    /// PR #58 re-check: the pixels of the `presented` rects outside every
+    /// `needed` rect (a drag frame needs the sprite's rect and the old and the
+    /// new outline's edges: nothing else on screen changes while the button
+    /// is held), a rect presented twice counting twice.
+    pub fn outside(presented: &[Rect], needed: &[Rect]) -> u64 {
+        presented.iter().map(|r| r.uncovered_px(needed)).sum()
+    }
+
+    /// Row bands of [`witness`]'s digest (each `h / BANDS` rows, the last
+    /// to the bottom), so a mismatch says where it is.
+    #[cfg(feature = "drag-cross-witness")]
+    const BANDS: usize = 8;
+
+    /// PR #58 re-check, the capture oracle's other half: once the release's
+    /// move is presented, recompose the whole screen from the scene (no
+    /// damage tracking involved) and log its digest, `DESKTOP drag cross
+    /// witness w=W h=H bands=8 fnv=H0,H1,..`: per band of rows, FNV-1a over
+    /// each pixel's `0x00RRGGBB` as four little-endian bytes (the oracles'
+    /// `masked_fnv`, nothing masked). The harness captures the screen at this
+    /// line and digests the capture the same way: a pixel the drag or the
+    /// move left stale on screen differs. Nothing is presented here, and a
+    /// pending sprite erase is kept for the next present.
+    #[cfg(feature = "drag-cross-witness")]
+    pub fn witness(scene: &mut super::Scene) -> Result<(), i32> {
+        let screen = scene.geo.screen;
+        let pending = core::mem::take(&mut scene.extra_damage);
+        let composed = scene.compose(true, screen);
+        scene.extra_damage = pending;
+        if composed? != screen {
+            return Err(180);
+        }
+        let (w, h) = (screen.w, screen.h);
+        let out = scene.out.slice();
+        let mut line = Line::new()
+            .s(b"DESKTOP drag cross witness w=")
+            .n(w as u64)
+            .s(b" h=")
+            .n(h as u64)
+            .s(b" bands=")
+            .n(BANDS as u64)
+            .s(b" fnv=");
+        for band in 0..BANDS {
+            let (y0, y1) = (
+                band * (h / BANDS),
+                if band + 1 == BANDS {
+                    h
+                } else {
+                    (band + 1) * (h / BANDS)
+                },
+            );
+            let mut hash = 0xcbf2_9ce4_8422_2325u64;
+            for &px in &out[y0 * w..y1 * w] {
+                for b in (px & 0x00FF_FFFF).to_le_bytes() {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+            let mut hex = [0u8; 17];
+            for (i, d) in hex[..16].iter_mut().enumerate() {
+                let nibble = (hash >> (60 - 4 * i)) & 0xF;
+                *d = b"0123456789abcdef"[nibble as usize];
+            }
+            hex[16] = if band + 1 == BANDS { b'\n' } else { b',' };
+            line = line.s(&hex);
+        }
+        line.emit();
+        Ok(())
+    }
+
+    /// The drag ended in a move that started at `started`: log and reset.
+    pub fn released(started: u64) {
+        let move_ns = now().saturating_sub(started);
+        let frames = FRAMES.swap(0, Relaxed);
+        let total = TOTAL_NS.swap(0, Relaxed);
+        let max = MAX_NS.swap(0, Relaxed);
+        let pixels = PIXELS.swap(0, Relaxed);
+        let outside = OUTSIDE.swap(0, Relaxed);
+        Line::new()
+            .s(b"DESKTOP drag perf frames=")
+            .n(frames)
+            .s(b" frame_us_mean=")
+            .n(total.checked_div(frames).unwrap_or(0) / 1000)
+            .s(b" frame_us_max=")
+            .n(max / 1000)
+            .s(b" frame_px_mean=")
+            .n(pixels.checked_div(frames).unwrap_or(0))
+            .s(b" release_move_us=")
+            .n(move_ns / 1000)
+            .s(b" outside_px=")
+            .n(outside)
+            .s(if cfg!(feature = "drag-union-damage-control") {
+                b" damage=union\n"
+            } else {
+                b" damage=edges\n"
+            })
+            .emit();
+    }
+}
+
 /// DM-1 motion: every view, Lens and focus-light change of the window
 /// manager plays as a short transition over its own damage rects
 /// (`neo_atrium::motion`, spec v1.7), ending on the change's ordinary
@@ -6838,7 +7069,20 @@ mod pointer {
     /// DI-1b: the drag outline (where the frame would land), only inside
     /// `clip`.
     pub fn draw_outline(out: &mut [u32], stride: usize, frame: Rect, clip: Rect) {
-        let edges = [
+        for edge in outline_edges(frame) {
+            let r = edge.intersect(&clip);
+            for y in r.y..r.y + r.h {
+                for x in r.x..r.x + r.w {
+                    out[y * stride + x] = DRAG_OUTLINE;
+                }
+            }
+        }
+    }
+
+    /// The outline's four edges (top, bottom, left, right): the only pixels
+    /// it covers, so the only ones a drag frame must recompose (F7).
+    pub fn outline_edges(frame: Rect) -> [Rect; 4] {
+        [
             Rect::new(frame.x, frame.y, frame.w, DRAG_OUTLINE_W),
             Rect::new(
                 frame.x,
@@ -6853,15 +7097,7 @@ mod pointer {
                 DRAG_OUTLINE_W,
                 frame.h,
             ),
-        ];
-        for edge in edges {
-            let r = edge.intersect(&clip);
-            for y in r.y..r.y + r.h {
-                for x in r.x..r.x + r.w {
-                    out[y * stride + x] = DRAG_OUTLINE;
-                }
-            }
-        }
+        ]
     }
 
     /// Apply an escape or refocus: the keyboard moves between Arthur and

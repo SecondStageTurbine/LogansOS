@@ -191,6 +191,17 @@ const DESKTOP_SESSION_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_session_
 const DESKTOP_GLASS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_boot.ppm";
 const DESKTOP_GLASS_RT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_rt_boot.ppm";
 const DESKTOP_HOME_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_home_boot.ppm";
+const DESKTOP_DRAG_PERF_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_drag_perf_boot.ppm";
+const DESKTOP_DRAG_PERF_CONTROL_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_drag_perf_control_boot.ppm";
+/// PR #58 re-check: the drag over the probe app, captured at the WM's witness
+/// line (mid) and at the session's end.
+const DESKTOP_DRAG_CROSS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_drag_cross_boot.ppm";
+const DESKTOP_DRAG_CROSS_BOOT_MID_REL: &str = "target/neo-test/desktop_drag_cross_boot_mid.ppm";
+const DESKTOP_DRAG_CROSS_CONTROL_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_drag_cross_control_boot.ppm";
+const DESKTOP_DRAG_CROSS_CONTROL_BOOT_MID_REL: &str =
+    "target/neo-test/desktop_drag_cross_control_boot_mid.ppm";
 const DESKTOP_ICONS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_icons_boot.ppm";
 const DESKTOP_BUSY_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_busy_boot.ppm";
 const DESKTOP_SCROLL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_scroll_boot.ppm";
@@ -366,6 +377,15 @@ const SPINE_CLICK: SerialScriptStep =
 const REFOCUS_CLICK: SerialScriptStep = step(
     b"DESKTOP pointer focus client=arthur via=click",
     b"\x03\x04",
+);
+/// F7 (drag smoothness): onto the title band as `TITLE_DRAG` does, press,
+/// then 16 moves (8 × `mouse_move 30 15`, 8 × `mouse_move -30 15`: the frame
+/// goes right and back while it goes down, 674,337 → 674,577) and release.
+/// Each HMP move is its own monitor command, so most reach the guest as their
+/// own report: a drag frame each.
+const LONG_TITLE_DRAG: SerialScriptStep = step(
+    b"DESKTOP arthur pointer buttons=0 phase=3",
+    b"\x1c\x1c\x1c\x16\x03\x13\x13\x13\x13\x13\x13\x13\x13\x1d\x1d\x1d\x1d\x1d\x1d\x1d\x1d\x04",
 );
 const TITLE_DRAG: SerialScriptStep = step(
     b"DESKTOP arthur pointer buttons=0 phase=3",
@@ -569,6 +589,45 @@ const DESKTOP_POINTER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     CHIP1_TAB,
     CHIP0_AGAIN,
     AGAIN_ENTER,
+];
+/// F7: desktop_pointer_boot's script up to the refocus, then
+/// [`LONG_TITLE_DRAG`]; once the move is presented, Esc and DS-1's ending.
+const DESKTOP_DRAG_PERF_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    PROOF_SAK,
+    SPINE_ENTER,
+    ROUND1_SAK,
+    SPINE_CLICK,
+    REFOCUS_CLICK,
+    LONG_TITLE_DRAG,
+    step(b"DESKTOP pointer move from=", b"\x1b"),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+/// PR #58 re-check: the WM's digest of the whole screen recomposed after the
+/// drag's move (`drag_perf::witness`); the mid capture is taken at it.
+const DESKTOP_DRAG_CROSS_WITNESS_PROMPT: &[u8] = b"DESKTOP drag cross witness w=";
+/// PR #58 re-check (Jarvis, relay 312): a drag over a second client's
+/// pixels. `open probe app` puts the probe app (A1a) in the window; the
+/// window is then dragged by [`LONG_TITLE_DRAG`] over the probe app's own
+/// client area and released. At the WM's witness line the screen is captured;
+/// Super+Tab gives the front back to Arthur, and `again` ends the session.
+const DESKTOP_DRAG_CROSS_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(
+        b"DESKTOP apps front client=1 via=launch",
+        LONG_TITLE_DRAG.command,
+    ),
+    step(DESKTOP_DRAG_CROSS_WITNESS_PROMPT, &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
 ];
 /// OT-88 A1a: the probe app as a second client. After Arthur's first answer
 /// the line `open probe app` launches it through his LaunchCap and the WM
@@ -868,7 +927,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 40] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -966,6 +1025,45 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
         DESKTOP_HOME_BOOT_CAPTURE_REL,
         b"\n",
     ),
+    // F7: the drag measured, with the fix and with the control.
+    desktop(
+        "desktop_drag_perf_boot",
+        DESKTOP_DRAG_PERF_BOOT_HID_STEPS,
+        DESKTOP_DRAG_PERF_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    desktop(
+        "desktop_drag_perf_control_boot",
+        DESKTOP_DRAG_PERF_BOOT_HID_STEPS,
+        DESKTOP_DRAG_PERF_CONTROL_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // PR #58 re-check: the drag over the probe app, with the fix and the
+    // control; the mid capture is the screen after the move.
+    DesktopScenario {
+        mid: Some((
+            DESKTOP_DRAG_CROSS_WITNESS_PROMPT,
+            DESKTOP_DRAG_CROSS_BOOT_MID_REL,
+        )),
+        ..desktop(
+            "desktop_drag_cross_boot",
+            DESKTOP_DRAG_CROSS_BOOT_HID_STEPS,
+            DESKTOP_DRAG_CROSS_BOOT_CAPTURE_REL,
+            b"again\n",
+        )
+    },
+    DesktopScenario {
+        mid: Some((
+            DESKTOP_DRAG_CROSS_WITNESS_PROMPT,
+            DESKTOP_DRAG_CROSS_CONTROL_BOOT_MID_REL,
+        )),
+        ..desktop(
+            "desktop_drag_cross_control_boot",
+            DESKTOP_DRAG_CROSS_BOOT_HID_STEPS,
+            DESKTOP_DRAG_CROSS_CONTROL_BOOT_CAPTURE_REL,
+            b"again\n",
+        )
+    },
     // OT-88 A1a: the probe app as a second client, and its fault.
     desktop(
         "desktop_apps_boot",
@@ -3464,6 +3562,43 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_pointer_boot",
         feature: "neo-test-desktop-pointer-boot",
         user_feature: Some("desktop-pointer-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F7 (drag smoothness): a 16-report title-band drag; the WM logs each
+        // drag frame's time and recomposed pixels, and the release's move.
+        name: "desktop_drag_perf_boot",
+        feature: "neo-test-desktop-drag-perf-boot",
+        user_feature: Some("desktop-drag-perf-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F7 control: the same drag with the old bounding-box damage.
+        name: "desktop_drag_perf_control_boot",
+        feature: "neo-test-desktop-drag-perf-control-boot",
+        user_feature: Some("desktop-drag-perf-control-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #58 re-check: the window, showing the probe app, dragged over
+        // that client's pixels and released; the screen is captured and held
+        // to the WM's recomposed digest, and the drag frames present nothing
+        // outside the sprite and the two outlines' edges.
+        name: "desktop_drag_cross_boot",
+        feature: "neo-test-desktop-drag-cross-boot",
+        user_feature: Some("desktop-drag-cross-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Its control: the old bounding-box damage, which the over-present
+        // count must catch.
+        name: "desktop_drag_cross_control_boot",
+        feature: "neo-test-desktop-drag-cross-control-boot",
+        user_feature: Some("desktop-drag-cross-control-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -7621,6 +7756,25 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "atrium-settings-store",
         ],
         Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
+        // F7: the pointer session, with the fix or the control's old damage.
+        Some("desktop-drag-perf-boot-test") => vec!["desktop-pointer-boot-test"],
+        Some("desktop-drag-perf-control-boot-test") => {
+            vec!["desktop-pointer-boot-test", "drag-union-damage-control"]
+        }
+        // PR #58 re-check: A1a's WM (the probe app), with the witness.
+        Some("desktop-drag-cross-boot-test") => {
+            vec![
+                "atrium-apps",
+                "desktop-home-boot-test",
+                "drag-cross-witness",
+            ]
+        }
+        Some("desktop-drag-cross-control-boot-test") => vec![
+            "atrium-apps",
+            "desktop-home-boot-test",
+            "drag-cross-witness",
+            "drag-union-damage-control",
+        ],
         // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
         // stay off the locked screen).
         Some("lock-spawn-test") => vec!["lock-spawn-test", "desktop-busy"],
@@ -7792,6 +7946,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-wheel-boot-test")
         | Some("desktop-pointer")
         | Some("desktop-pointer-boot-test")
+        | Some("desktop-drag-perf-boot-test")
+        | Some("desktop-drag-perf-control-boot-test")
         | Some("desktop-resize")
         | Some("desktop-resize-boot-test")
         | Some("desktop-park")
@@ -7800,7 +7956,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | None => Vec::new(),
         // OT-88 A1a: the worker is the probe app (with no handles, DS-1b's
         // probe, as the Lens is).
-        Some("desktop-apps-boot-test") => vec!["probe-app"],
+        Some("desktop-apps-boot-test")
+        | Some("desktop-drag-cross-boot-test")
+        | Some("desktop-drag-cross-control-boot-test") => vec!["probe-app"],
         Some("desktop-apps-fault-boot-test") => vec!["probe-app-exit-after-key"],
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
@@ -7958,7 +8116,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-drop-boot-test")
         | Some("desktop-apps-handoff-death-boot-test")
         | Some("desktop-apps-reuse-boot-test")
-        | Some("desktop-apps-grab-boot-test") => vec![
+        | Some("desktop-apps-grab-boot-test")
+        | Some("desktop-drag-cross-boot-test")
+        | Some("desktop-drag-cross-control-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-probe",
@@ -8064,7 +8224,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-scrollback",
             "arthur-scroll-seed-test",
         ],
-        Some("desktop-pointer-boot-test") => vec![
+        Some("desktop-pointer-boot-test")
+        | Some("desktop-drag-perf-boot-test")
+        | Some("desktop-drag-perf-control-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-pointer-probe",
@@ -19395,6 +19557,139 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     if scenario.name == "desktop_idle_parks" || scenario.name == "desktop_idle_spins" {
         require_desktop_idle_window(scenario, observed)?;
     }
+    // F7 (drag smoothness): the drag was measured, with the damage the
+    // build says, and it was a real drag (several frames, one move).
+    if scenario.name == "desktop_drag_perf_boot"
+        || scenario.name == "desktop_drag_perf_control_boot"
+    {
+        let damage = if scenario.name == "desktop_drag_perf_boot" {
+            " damage=edges\n"
+        } else {
+            " damage=union\n"
+        };
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP pointer focus client=arthur via=click",
+                "DESKTOP drag perf frames=",
+                damage,
+                "DESKTOP pointer move from=",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "F7: the title-band drag is measured and the window moves once",
+        )?;
+        let serial = read_serial(observed)?;
+        let line = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag perf frames="))
+            .unwrap_or_default();
+        let field = |name: &str| {
+            line.split(name)
+                .nth(1)
+                .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let frames = field("frames=");
+        // Non-vacuity: most of the 16 reports were their own drag frame.
+        if frames < 4 {
+            return Err(format!(
+                "`{}`: the drag presented only {frames} frames (want >= 4): {line}",
+                scenario.name
+            ));
+        }
+        eprintln!("[xtask] {}: {line}", scenario.name);
+        require_drag_outside(scenario, line, scenario.name == "desktop_drag_perf_boot")?;
+        // The budget (TCG, GitHub-hosted runners). With the fixes, gates
+        // 41480459303 and 41498408639 measured frames 30-44 ms mean, 40-60 ms
+        // max, and the release's move 1.40 s and 3.08 s on the same code (the
+        // runners differ by about 2.2x). Before any fix: 122 ms mean / 160 ms
+        // max, the move 2.3-5.7 s. The frame budget keeps about 2x over the
+        // worst fixed run; the move's catches a return of the old blur and
+        // repaint on a fast runner without failing the slow one.
+        if scenario.name == "desktop_drag_perf_boot" {
+            const FRAME_US_MAX: u64 = 100_000;
+            const RELEASE_MOVE_US_MAX: u64 = 6_000_000;
+            let (frame_max, release) = (field("frame_us_max="), field("release_move_us="));
+            if frame_max > FRAME_US_MAX || release > RELEASE_MOVE_US_MAX {
+                return Err(format!(
+                    "`{}`: over the drag budget (frame max {frame_max} us <= {FRAME_US_MAX}, \
+                     release move {release} us <= {RELEASE_MOVE_US_MAX}): {line}",
+                    scenario.name
+                ));
+            }
+        }
+    }
+    // PR #58 re-check (Jarvis, relay 312): the window, showing the probe
+    // app, dragged over that client's pixels and released.
+    if scenario.name == "desktop_drag_cross_boot"
+        || scenario.name == "desktop_drag_cross_control_boot"
+    {
+        let fix = scenario.name == "desktop_drag_cross_boot";
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP drag perf frames=",
+                if fix {
+                    " damage=edges\n"
+                } else {
+                    " damage=union\n"
+                },
+                "DESKTOP pointer move from=",
+                // The existing witness: the base where the frame was and is.
+                " residue_pixels=0",
+                "DESKTOP drag cross witness w=",
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #58 re-check: the probe app's window is dragged, moved once and captured",
+        )?;
+        let serial = read_serial(observed)?;
+        let perf = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag perf frames="))
+            .unwrap_or_default();
+        let frames = perf
+            .split("frames=")
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        if frames < 4 {
+            return Err(format!(
+                "`{}`: the drag presented only {frames} frames (want >= 4): {perf}",
+                scenario.name
+            ));
+        }
+        eprintln!("[xtask] {}: {perf}", scenario.name);
+        require_drag_outside(scenario, perf, fix)?;
+        let witness = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag cross witness w="))
+            .unwrap_or_default();
+        let (_, mid) = desktop_scenario(scenario.name)
+            .and_then(|d| d.mid)
+            .ok_or_else(|| format!("`{}` has no mid capture", scenario.name))?;
+        let (capture, raster) = load_capture(
+            scenario,
+            mid,
+            ("drag capture", "drag capture", ", not 1920x1080"),
+        )?;
+        check_drag_witness(witness, &raster)
+            .map_err(|e| format!("`{}` {e}; capture={}", scenario.name, capture.display()))?;
+        eprintln!(
+            "[xtask] {}: the capture after the move matches the WM's recomposed screen in every band",
+            scenario.name
+        );
+        require_framebuffer_capture(
+            scenario,
+            desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
+        )?;
+    }
     if scenario.name == "desktop_pointer_boot" || scenario.name == "desktop_resize_boot" {
         require_serial_sequence(
             scenario,
@@ -22001,6 +22296,101 @@ const CAPTURE_H: usize = 1080;
 /// A desktop screendump (`rel`): its path and its 1920x1080 RGB raster. The
 /// errors name it as each caller always has: `what` on a read failure, `tag`
 /// for the format and size, `size_note` after the size.
+/// PR #58 re-check: a drag frame presents the sprite's rect and the old and
+/// the new outline's edges, nothing else (`outside_px=0`, summed over the
+/// drag's frames). The control's bounding box presents the pixels between the
+/// outlines too, so with the control this oracle must fail (`outside_px` > 0).
+fn require_drag_outside(scenario: TestScenario, line: &str, fix: bool) -> Result<(), String> {
+    let outside = line
+        .split(" outside_px=")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .ok_or_else(|| {
+            format!(
+                "`{}`: no outside_px in the drag line: {line}",
+                scenario.name
+            )
+        })?;
+    if fix && outside != 0 {
+        return Err(format!(
+            "`{}`: the drag presented {outside} px outside the sprite and the outlines' edges: {line}",
+            scenario.name
+        ));
+    }
+    if !fix && outside == 0 {
+        return Err(format!(
+            "`{}`: the control's box damage presented nothing outside the edges, so the \
+             over-present oracle has no teeth: {line}",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// PR #58 re-check, the capture oracle: the WM's `DESKTOP drag cross witness
+/// w=W h=H bands=B fnv=H0,..` (the whole screen recomposed from the scene
+/// after the move, `drag_perf::witness`) against the capture taken at that
+/// line. Per band of rows (each `h / B` rows, the last to the bottom),
+/// FNV-1a over each pixel's `0x00RRGGBB` as four little-endian bytes.
+fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
+    let field = |name: &str| {
+        line.split(name)
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .ok_or_else(|| format!("no `{name}` in the witness line: {line:?}"))
+    };
+    let parse = |name: &str| {
+        field(name)?
+            .parse::<usize>()
+            .map_err(|e| format!("bad `{name}` in the witness line ({e}): {line:?}"))
+    };
+    let (w, h, bands) = (parse(" w=")?, parse(" h=")?, parse(" bands=")?);
+    if (w, h) != (CAPTURE_W, CAPTURE_H) || raster.len() != w * h * 3 {
+        return Err(format!(
+            "the witness is {w}x{h}, the capture {CAPTURE_W}x{CAPTURE_H}"
+        ));
+    }
+    let want: Vec<&str> = field(" fnv=")?.trim_end().split(',').collect();
+    if bands == 0 || want.len() != bands {
+        return Err(format!(
+            "the witness has {} digests for {bands} bands: {line:?}",
+            want.len()
+        ));
+    }
+    let mut differ = Vec::new();
+    for (band, want) in want.iter().enumerate() {
+        let y0 = band * (h / bands);
+        let y1 = if band + 1 == bands {
+            h
+        } else {
+            (band + 1) * (h / bands)
+        };
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for y in y0..y1 {
+            for x in 0..w {
+                for b in rgb(raster, x, y).to_le_bytes() {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        if format!("{hash:016x}") != *want {
+            differ.push(format!(
+                "band {band} (rows {y0}..{y1}) 0x{hash:016x} != 0x{want}"
+            ));
+        }
+    }
+    if differ.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the capture after the drag's move differs from the recomposed screen (stale pixels): {}",
+            differ.join("; ")
+        ))
+    }
+}
+
 fn load_capture(
     scenario: TestScenario,
     rel: &str,
@@ -24302,6 +24692,71 @@ fn check_arthur_boot_module_serial(
 
 #[cfg(test)]
 mod tests {
+    /// PR #58 re-check: the witness line for a raster, digested as the WM's
+    /// `drag_perf::witness` does (over `0x00RRGGBB` words).
+    fn drag_witness_line(raster: &[u8], bands: usize) -> String {
+        let (w, h) = (CAPTURE_W, CAPTURE_H);
+        let digests: Vec<String> = (0..bands)
+            .map(|band| {
+                let y0 = band * (h / bands);
+                let y1 = if band + 1 == bands {
+                    h
+                } else {
+                    (band + 1) * (h / bands)
+                };
+                let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                for p in raster[y0 * w * 3..y1 * w * 3].chunks(3) {
+                    let word = (u32::from(p[0]) << 16) | (u32::from(p[1]) << 8) | u32::from(p[2]);
+                    for b in word.to_le_bytes() {
+                        hash ^= u64::from(b);
+                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                }
+                format!("{hash:016x}")
+            })
+            .collect();
+        format!(
+            "[t] DESKTOP drag cross witness w={w} h={h} bands={bands} fnv={}",
+            digests.join(",")
+        )
+    }
+
+    #[test]
+    fn drag_witness_matches_its_capture_and_names_a_stale_band() {
+        let mut raster: Vec<u8> = (0..CAPTURE_W * CAPTURE_H * 3)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect();
+        let line = drag_witness_line(&raster, 8);
+        check_drag_witness(&line, &raster).unwrap();
+        // One stale pixel, in band 5 (rows 675..810): only that band differs.
+        raster[(700 * CAPTURE_W + 1000) * 3 + 1] ^= 0x40;
+        let err = check_drag_witness(&line, &raster).unwrap_err();
+        assert!(err.contains("band 5 (rows 675..810)"), "{err}");
+        assert!(!err.contains("band 4") && !err.contains("band 6"), "{err}");
+        // A malformed or mis-sized witness is an error, never a pass.
+        assert!(check_drag_witness("DESKTOP drag cross witness w=1920", &raster).is_err());
+        let short = line.replace("bands=8", "bands=9");
+        assert!(check_drag_witness(&short, &raster).is_err());
+    }
+
+    #[test]
+    fn drag_outside_oracle_passes_the_fix_and_fails_the_control() {
+        let scenario = *TEST_SCENARIOS
+            .iter()
+            .find(|s| s.name == "desktop_drag_cross_boot")
+            .unwrap();
+        let fix = "DESKTOP drag perf frames=12 frame_us_mean=1 frame_us_max=2 frame_px_mean=3 release_move_us=4 outside_px=0 damage=edges";
+        let boxed = "DESKTOP drag perf frames=12 frame_us_mean=1 frame_us_max=2 frame_px_mean=3 release_move_us=4 outside_px=3900000 damage=union";
+        require_drag_outside(scenario, fix, true).unwrap();
+        // The fix's oracle fails on the control's box damage...
+        assert!(require_drag_outside(scenario, boxed, true).is_err());
+        // ...which is what the control scenario requires; a control showing
+        // no over-present would mean the oracle can't tell them apart.
+        require_drag_outside(scenario, boxed, false).unwrap();
+        assert!(require_drag_outside(scenario, fix, false).is_err());
+        assert!(require_drag_outside(scenario, "DESKTOP drag perf frames=12", true).is_err());
+    }
+
     /// F7: xtask's module ceiling is the kernel's early-boot extent capacity.
     /// R1-4: the provisioning header goes only to a regular file.
     #[test]
