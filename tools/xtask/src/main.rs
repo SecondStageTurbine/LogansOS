@@ -141,7 +141,8 @@ const NEOFS_LARGE_FILE_BYTES: usize = NEOFS_LARGE_FILE_BLOCKS * NEOFS_LARGE_FILE
 const STAGE_B_NEOM_ENV: &str = "NEO_STAGE_B_NEOM";
 const REAL_NEOM_ENV: &str = "NEO_REAL_NEOM";
 const STAGE_B_GGUF_ENV: &str = "NEO_STAGE_B_GGUF";
-const STAGE_B_05B_NEOM_BYTES: u64 = 485_489_152;
+/// The pinned 0.5B `.neom` (Q8_0, `boot_model_logic::QWEN25_05B`).
+const STAGE_B_05B_NEOM_BYTES: u64 = 669_799_936;
 const STAGE_B_15B_NEOM_BYTES: u64 = 1_111_411_200;
 const STAGE_B_15B_VOCAB_BYTES: u64 = 7_990_862;
 const QWEN35_08B_NEOM_BYTES: u64 = 725_171_456;
@@ -18203,7 +18204,7 @@ fn prepare_stage_b_real_brain_model() -> Result<PathBuf, String> {
                 output_dir.display()
             )
         })?;
-        let neom_path = output_dir.join("qwen2.5-0.5b-instruct-q4_k_m.neom");
+        let neom_path = output_dir.join("qwen2.5-0.5b-instruct-q8_0.neom");
         let vocab_path = neom_path.with_extension("vocab");
         if !neom_path.exists() || !vocab_path.exists() {
             let status = Command::new("cargo")
@@ -22091,7 +22092,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         require_serial_contains(
             scenario,
             observed,
-            "boot_model_load_stack blake3 bytes=485489152 depth=",
+            "boot_model_load_stack blake3 bytes=669799936 depth=",
             "the stack depth at the real model's size must be measured",
         )?;
     }
@@ -26025,7 +26026,7 @@ mod tests {
         let err = check_pinned_digest(&fixture, &boot_model_logic::QWEN25_05B.blake3)
             .expect_err("the fixture is not the 0.5B");
         assert!(err.contains("fails its pin"), "{err}");
-        assert!(err.contains("a32e4a1b"), "names the expected digest: {err}");
+        assert!(err.contains("1cfd06dc"), "names the expected digest: {err}");
         assert!(err.contains("6f14b933"), "names the actual digest: {err}");
         assert!(err.contains("no image was written"), "{err}");
     }
@@ -26757,7 +26758,7 @@ mod tests {
         fs::write(&neom, [0u8; 16]).unwrap();
         fs::write(&vocab, [0u8; 16]).unwrap();
         let err = check_product_model_files(&neom, &vocab).unwrap_err();
-        assert!(err.contains("485489152"), "{err}");
+        assert!(err.contains("669799936"), "{err}");
         let _ = fs::remove_dir_all(&dir);
         assert!(check_product_model_files(&dir.join("absent.neom"), &vocab).is_err());
     }
@@ -27263,10 +27264,10 @@ mod tests {
         assert!(!stage_b_real_artifact_selected(Some("  "), Some("")));
         assert!(stage_b_real_artifact_selected(Some("qwen.neom"), None));
         assert!(stage_b_real_artifact_selected(None, Some("qwen.gguf")));
-        assert_eq!(STAGE_B_05B_NEOM_BYTES, 485_489_152);
+        assert_eq!(STAGE_B_05B_NEOM_BYTES, 669_799_936);
         assert_eq!(
-            Path::new("qwen2.5-0.5b-instruct-q4_k_m.neom").with_extension("vocab"),
-            PathBuf::from("qwen2.5-0.5b-instruct-q4_k_m.vocab")
+            Path::new("qwen2.5-0.5b-instruct-q8_0.neom").with_extension("vocab"),
+            PathBuf::from("qwen2.5-0.5b-instruct-q8_0.vocab")
         );
     }
 

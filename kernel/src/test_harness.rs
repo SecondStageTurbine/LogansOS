@@ -45220,9 +45220,9 @@ fn run_real_lm_peak() -> ! {
 fn run_boot_model_load_stack() -> ! {
     use crate::mm::inference_stack as stack;
     // The real 0.5B's size, and the sizes the QEMU scenarios hash.
-    const SIZES: [usize; 5] = [4_144, 382_464, 8 << 20, 64 << 20, 485_489_152];
+    const SIZES: [usize; 5] = [4_144, 382_464, 8 << 20, 64 << 20, 669_799_936];
     const THREAD_STACK: usize = crate::sched::thread::STACK_SIZE;
-    // One heap allocation (the `real-lm` 768 MiB tier), fully written here.
+    // One heap allocation (the `real-lm` 944 MiB tier), fully written here.
     // This function owns it, and no other code has its address, so no
     // interrupt handler or other CPU can write it while a hash borrows it.
     let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();

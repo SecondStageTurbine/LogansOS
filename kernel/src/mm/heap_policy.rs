@@ -8,7 +8,9 @@
 //!
 //! Budgets (selected by the real-brain scenario features):
 //! - default: 4 MiB.
-//! - 0.5B Stage-B real-brain-boot: 768 MiB (the ~485 MB `.neom` staging buffer).
+//! - 0.5B Stage-B real-brain-boot: 944 MiB (the 669,799,936-byte Q8_0 `.neom`
+//!   staging buffer, 639 MiB rounded up, plus the 305 MiB the tier has always
+//!   kept beside it).
 //! - Qwen3.5-0.8B: 1 GiB (725,171,456-byte `.neom`, 18 recurrent GDN
 //!   states, six attention KV caches, 248,320 logits, and forward scratch).
 //! - 1.5B Stage-B real-brain-boot: 1.75 GiB (the ~1.04 GiB `.neom`, loaded once
@@ -23,18 +25,29 @@
 
 /// Default kernel heap: 4 MiB.
 pub const HEAP_SIZE_DEFAULT: usize = 4 * 1024 * 1024;
-/// 0.5B Stage-B real-brain-boot staging buffer: 768 MiB.
-pub const HEAP_SIZE_REAL_BRAIN_05B: usize = 768 * 1024 * 1024;
+/// The pinned 0.5B `.neom`, rounded up to whole MiB: 669,799,936 B (Q8_0,
+/// `boot_model_logic::QWEN25_05B`) is 638.77 MiB, so 639 MiB. It
+/// was 463 MiB for the Q4_K_M's 485,489,152 B.
+pub const REAL_BRAIN_05B_STAGING_MIB: usize = 639;
+/// What the 0.5B tier keeps beside the staging buffer: 305 MiB, the headroom
+/// the 0.5B load has had since B1 (768 MiB - 463 MiB under Q4_K_M).
+pub const REAL_BRAIN_05B_HEADROOM_MIB: usize = 305;
+/// 0.5B Stage-B real-brain-boot: the staging buffer plus the headroom, 639 +
+/// 305 = 944 MiB (was 463 + 305 = 768 MiB under Q4_K_M). Still below the
+/// Qwen3.5-0.8B tier, so the tier order is unchanged.
+pub const HEAP_SIZE_REAL_BRAIN_05B: usize =
+    (REAL_BRAIN_05B_STAGING_MIB + REAL_BRAIN_05B_HEADROOM_MIB) * 1024 * 1024;
 /// B1b: the 0.5B tier when the model arrives as a boot module. There is no
 /// staging `Vec` (the model is built straight from the module's bytes), so
-/// this is the 768 MiB tier minus that buffer (485,489,152 B, rounded up to
-/// 463 MiB): the headroom the 0.5B *load* has always had. The *forward* used
-/// to run with the full 768 MiB once the staging buffer was freed; its kernel
-/// heap use is small (the Q4_K_M weights are never dequantized to f32 buffers;
-/// the KV cache is ~24 KiB per token, ~13 MiB at Arthur's 512+32 tokens;
-/// logits ~0.6 MiB). The census's heap high-water on a real-model run is the
-/// measurement a later tightening (B2) starts from.
-pub const HEAP_SIZE_REAL_BRAIN_05B_BOOT_MODULE: usize = (768 - 463) * 1024 * 1024;
+/// this is the tier minus that buffer: 944 - 639 = 305 MiB, the same headroom
+/// as under Q4_K_M (768 - 463). The forward's kernel heap use doesn't grow
+/// with the quantization: the Q8_0 weights, like the Q4_K_M ones, are never
+/// dequantized to f32 buffers (they live in their own buddy blocks, not the
+/// heap); the KV cache is ~24 KiB per token, ~13 MiB at Arthur's 512+32
+/// tokens; logits ~0.6 MiB. The census's heap high-water on a real-model run
+/// is the measurement a later tightening (B2) starts from.
+pub const HEAP_SIZE_REAL_BRAIN_05B_BOOT_MODULE: usize =
+    HEAP_SIZE_REAL_BRAIN_05B - REAL_BRAIN_05B_STAGING_MIB * 1024 * 1024;
 /// Qwen3.5-0.8B hybrid: the measured 725,171,456-byte model plus recurrent
 /// state, KV cache, 248,320-vocabulary logits, and forward scratch.
 pub const HEAP_SIZE_REAL_BRAIN_QWEN35: usize = 1024 * 1024 * 1024;
