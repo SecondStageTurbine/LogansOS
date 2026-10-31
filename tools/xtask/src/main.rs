@@ -16227,8 +16227,13 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] stdout via musl printf: ok 7",
             "[ crt-smoke ] ok(9) malloc/free from 6 threads at once, contents intact",
             "[ crt-smoke ] ok(15) C++: one function-local static, 6 threads, built once",
+<<<<<<< ours
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
+=======
+            "[ crt-smoke ] ok(19) pthread: keys per thread, destructors at exit",
+            "[ crt-smoke ] ok(24) C++: call_once, shared_mutex, atomic wait/notify",
+>>>>>>> theirs
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {

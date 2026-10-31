@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 //! Compiles neo-crt's C: the musl top half (an explicit file list) plus
+<<<<<<< ours
 //! `c/neo_bottom.c` and neo-crt's always-locked `c/stdout.c` and
 //! `c/stderr.c`, into `libneo_crt_c.a`.
+=======
+//! `c/neo_bottom.c`, into `libneo_crt_c.a`.
+>>>>>>> theirs
 //!
 //! The compiler is clang (`NEO_CRT_CLANG`, default `clang`), driven with no
 //! default flags: every flag that shapes the objects is spelled out below and
@@ -36,9 +40,14 @@ const SKIP: &[&str] = &[
 
 /// Single files from directories that also hold Linux-facing code.
 const FILES: &[&str] = &[
+<<<<<<< ours
     // stdio: formatting and scanning over a buffer. No fopen/fdopen/tmpfile:
     // there is no ambient filesystem. The two standard output streams are
     // neo-crt's copies (c/stdout.c, c/stderr.c), locked always.
+=======
+    // stdio: formatting and scanning over a buffer, and the two standard
+    // output streams. No fopen/fdopen/tmpfile: there is no ambient filesystem.
+>>>>>>> theirs
     "src/stdio/vfprintf.c",
     "src/stdio/vsnprintf.c",
     "src/stdio/snprintf.c",
@@ -62,6 +71,11 @@ const FILES: &[&str] = &[
     "src/stdio/__toread.c",
     "src/stdio/__uflow.c",
     "src/stdio/ofl.c",
+<<<<<<< ours
+=======
+    "src/stdio/stdout.c",
+    "src/stdio/stderr.c",
+>>>>>>> theirs
     // locale: the C locale only.
     "src/locale/c_locale.c",
     "src/locale/__lctrans.c",
@@ -113,8 +127,11 @@ fn main() {
     }
     sources.extend(FILES.iter().map(|f| musl.join(f)));
     sources.push(manifest.join("c/neo_bottom.c"));
+<<<<<<< ours
     sources.push(manifest.join("c/stdout.c"));
     sources.push(manifest.join("c/stderr.c"));
+=======
+>>>>>>> theirs
 
     let clang = std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into());
     let mut build = cc::Build::new();
@@ -201,6 +218,7 @@ fn main() {
 
 /// libc++ 18.1.8 library sources for this configuration (`cxx/__config_site`).
 /// Left out, as libc++'s own CMake leaves them out under the same options:
+<<<<<<< ours
 /// threads (atomic, barrier, condition_variable*, future, mutex*,
 /// shared_mutex, thread), localization and iostreams (fstream, ios*,
 /// iostream, locale, ostream, regex, strstream), random_device (random) and
@@ -208,6 +226,22 @@ fn main() {
 const LIBCXX_SOURCES: &[&str] = &[
     "algorithm.cpp",
     "any.cpp",
+=======
+/// localization and iostreams (fstream, ios*, iostream, locale, ostream,
+/// regex, strstream), random_device (random) and the time-zone database
+/// (tz, tzdb_list).
+const LIBCXX_SOURCES: &[&str] = &[
+    "algorithm.cpp",
+    "any.cpp",
+    "atomic.cpp",
+    "barrier.cpp",
+    "condition_variable.cpp",
+    "condition_variable_destructor.cpp",
+    "mutex.cpp",
+    "mutex_destructor.cpp",
+    "shared_mutex.cpp",
+    "thread.cpp",
+>>>>>>> theirs
     "bind.cpp",
     "call_once.cpp",
     "charconv.cpp",
@@ -215,6 +249,10 @@ const LIBCXX_SOURCES: &[&str] = &[
     "error_category.cpp",
     "exception.cpp",
     "functional.cpp",
+<<<<<<< ours
+=======
+    "future.cpp",
+>>>>>>> theirs
     "hash.cpp",
     "legacy_pointer_safety.cpp",
     "memory.cpp",
