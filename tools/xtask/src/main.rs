@@ -1950,6 +1950,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 4 (SWGL S2): upstream WebRender renders a display list
+        // through SWGL; pixels compared with a hand-derived scene.
+        name: "webrender_smoke",
+        feature: "neo-test-webrender-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 rung 4 (SWGL S1): upstream SWGL clears an asymmetric pattern
         // into a caller-owned padded-stride buffer, byte-compared on-target.
         name: "swgl_smoke",
@@ -6065,7 +6074,7 @@ fn print_help() {
         "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
     );
     println!(
-        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
+        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke, or with --webrender S2 (overlay std, clang, A4 checks)"
     );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
@@ -6480,6 +6489,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "swgl_smoke" => &[SWGL_BIN],
+        "webrender_smoke" => &[WEBRENDER_BIN],
         _ => &[],
     }
 }
@@ -7407,6 +7417,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SWGL_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
         }
+        if std_real_staged_bins().contains(&WEBRENDER_BIN) {
+            build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7444,6 +7457,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
+const WEBRENDER_BIN: &str = "webrender-smoke";
+const WEBRENDER_DIR: &str = "userland/webrender-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`).
@@ -7452,12 +7468,16 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
         SWGL_BIN => Some(SWGL_DIR),
+        WEBRENDER_BIN => Some(WEBRENDER_DIR),
         _ => None,
     }
 }
 
 fn is_standalone_std_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == CXX_RUNTIME_DIR || subdir == SWGL_DIR
+    subdir == SERVO_CLOSURE_DIR
+        || subdir == CXX_RUNTIME_DIR
+        || subdir == SWGL_DIR
+        || subdir == WEBRENDER_DIR
 }
 
 /// SWGL's build script compiles `gl.cc` and its translated shaders with the
@@ -7513,13 +7533,16 @@ fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
 /// smoke, with its A4 checks, without a QEMU run (the CI job that runs SWGL's
 /// build script and shader translator first, per J.c.'s C2.3b ruling).
 fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: cargo xtask ot61-swgl-build".to_string());
-    }
+    // `--webrender`: the S2 smoke (WebRender on SWGL) instead of S1.
+    let (bin, dir) = match args {
+        [] => (SWGL_BIN, SWGL_DIR),
+        [a] if a == "--webrender" => (WEBRENDER_BIN, WEBRENDER_DIR),
+        _ => return Err("usage: cargo xtask ot61-swgl-build [--webrender]".to_string()),
+    };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
-    let elf = std_real_bin_path(SWGL_BIN);
+    build_standalone_std_smoke(bin, &[bin], dir)?;
+    let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
         .len();
@@ -8097,7 +8120,7 @@ fn build_member_at_opt_level(
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if subdir == SWGL_DIR {
+    if subdir == SWGL_DIR || subdir == WEBRENDER_DIR {
         swgl_cc_env(&mut cmd)?;
     }
     if is_standalone_std_dir(subdir) {
@@ -12209,6 +12232,8 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "thread_entry_clean_state"
             // OT-61 C2.0: std's fill_bytes reads the kernel CSPRNG (RDRAND seed).
             | "std_entropy"
+            // OT-61 rung 4 S2: WebRender's HashMaps seed from the same CSPRNG.
+            | "webrender_smoke"
             // OT-61 C2.3b: a CPU with AVX2, so the plain scenario proves the
             // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
             | "servo_closure_smoke"
@@ -16312,6 +16337,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "the real-std smoke must print to stdout+stderr and the panic arm must abort LOUDLY (message, then exit 134)",
+            )?;
+        }
+    }
+    if scenario.name == "webrender_smoke" {
+        for needle in [
+            "[ wr-smoke ] ok(4) solid, clipped, transformed and image pixels == the hand-derived scene",
+            "[ wr-smoke ] ok(5) gradient: black to white, non-decreasing, same on every row",
+            "[ wr-smoke ] ok(6) the font backend maps 'H' and 'i' to the cmap's glyphs 63 and 255",
+            "[ wr-smoke ] ok(7) text: dark pixels inside the run's box, white all around it",
+            "[ wr-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "WebRender on SWGL must render the hand-derived scene",
             )?;
         }
     }
