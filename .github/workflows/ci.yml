@@ -268,7 +268,7 @@ jobs:
       - name: Cache Docker layers
         uses: actions/cache@v4
         with:
-          path: /tmp/.buildx-cache-${{ runner.name }}
+          path: /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
           key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
           restore-keys: |
             buildx-${{ runner.os }}-
@@ -278,7 +278,7 @@ jobs:
           echo "--- df -h ---"
           df -h
           echo "--- du -sh /tmp/.buildx-cache* ---"
-          du -sh /tmp/.buildx-cache-${{ runner.name }}* 2>/dev/null || true
+          du -sh /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}* 2>/dev/null || true
 
       - name: Build dev container (with buildx cache)
         uses: docker/build-push-action@v5
@@ -287,15 +287,15 @@ jobs:
           file: ./Dockerfile
           tags: neoplutarch-dev:latest
           load: true
-          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.name }}
-          cache-to: type=local,dest=/tmp/.buildx-cache-new-${{ runner.name }},mode=max
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+          cache-to: type=local,dest=/tmp/.buildx-cache-new-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }},mode=max
 
       - name: Probe disk usage (after build)
         run: |
           echo "--- df -h ---"
           df -h
           echo "--- du -sh /tmp/.buildx-cache* ---"
-          du -sh /tmp/.buildx-cache-${{ runner.name }}* 2>/dev/null || true
+          du -sh /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}* 2>/dev/null || true
           echo "--- docker images ---"
           docker images --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}'
 
@@ -304,8 +304,8 @@ jobs:
       # known cache-overwrite issue.
       - name: Rotate buildx cache
         run: |
-          rm -rf /tmp/.buildx-cache-${{ runner.name }}
-          mv /tmp/.buildx-cache-new-${{ runner.name }} /tmp/.buildx-cache-${{ runner.name }}
+          rm -rf /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+          mv /tmp/.buildx-cache-new-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }} /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
 
       # Per-shard cargo/target cache. Each shard builds a DIFFERENT subset of
       # scenario kernels (distinct feature sets -> distinct target artifacts),
@@ -348,7 +348,7 @@ jobs:
           echo "--- df -h ---"
           df -h
           echo "--- du -sh cached dirs ---"
-          du -sh /tmp/.buildx-cache-${{ runner.name }} 2>/dev/null || true
+          du -sh /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }} 2>/dev/null || true
           du -sh "${{ github.workspace }}/.cargo-home/registry" 2>/dev/null || true
           du -sh "${{ github.workspace }}/.cargo-home/git" 2>/dev/null || true
           du -sh "${{ github.workspace }}/target" 2>/dev/null || true
