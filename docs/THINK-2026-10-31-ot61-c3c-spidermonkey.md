@@ -112,7 +112,7 @@ Each trap names the discriminator that catches it on the C3c-1 gate.
 
 | # | Trap | Where | Guard | Discriminator |
 |---|---|---|---|---|
-| T1 | `PRMJ_Now()` does `MOZ_ALWAYS_TRUE(clock_gettime(CLOCK_REALTIME, …) == 0)`. `neo-crt` returns `EINVAL` for `CLOCK_REALTIME` (C3a known gap 3), so the first `Date` call **crashes the engine**. | `js/src/vm/Time.cpp:30` | Either (i) C3c-1 depends on `rtc-epoch` and `neo-crt` routes `CLOCK_REALTIME` to it, or (ii) `neo-crt` returns a documented boot-relative epoch until it lands. **Decision for the PM (§6).** | The smoke calls `Date.now()` and checks that the value is non-negative and non-decreasing. |
+| T1 | `PRMJ_Now()` does `MOZ_ALWAYS_TRUE(clock_gettime(CLOCK_REALTIME, …) == 0)`. `neo-crt` returns `EINVAL` for `CLOCK_REALTIME` (C3a known gap 3), so the first `Date` call **crashes the engine**. | `js/src/vm/Time.cpp:30` | The kernel already answers `CLOCK_REALTIME` on `browser-runtime` kernels (`sys_clock_gettime_impl`, `kernel/src/arch/x86_64/syscall.rs`): monotonic plus the `rtc-epoch` base, or plus 0 (boot-relative) without it. Only std's overlay refuses it (`SystemTime` is std's `unsupported`). Route std's `SystemTime::now()` to that syscall (already in the A4 manifest, so no new syscall), then `neo-crt`'s `CLOCK_REALTIME` reads `SystemTime`. **Decision for the PM (§6).** | The smoke calls `Date.now()` and checks that the value is non-negative and non-decreasing. |
 | T2 | `mozilla::RandomUint64` on Linux makes a **raw `syscall(SYS_getrandom, …)`**, a syscall site of its own that the A4 backstop must reject. The WASI/BSD branch uses `arc4random_buf`. | `mfbt/RandomNum.cpp:30,95,102` | Build with the `arc4random_buf` branch; `neo-crt` provides `arc4random_buf` over std's entropy (`SYS_GETRANDOM` via the sanctioned trampoline). | A4 backstop: the ELF has only std's syscall sites. Smoke: `Math.random()` gives different values across two boots. |
 | T3 | GC memory alignment. `posix_memalign(SystemPageSize(), len)` must hand back page-aligned chunks; a `malloc` that only promises 16 bytes will trip `MOZ_ASSERT`s or misplace chunk headers. | `js/src/gc/Memory.cpp:245` | `neo-crt`'s `posix_memalign` honours large alignments (KAT on the host and in the smoke). | Smoke allocates past one GC chunk and forces a GC; a debug build runs with `--enable-debug`'s assertions on once. |
 | T4 | **Stack limit.** Linux asks `pthread_getattr_np`, which C3a doesn't have. WASI uses the frame address at startup plus a recursion counter, which relies on `--stack-first` linking. Neither fits us. A wrong limit means runaway recursion **overruns the stack** instead of throwing `InternalError: too much recursion`. | `js/src/util/NativeStack.cpp` | A small `__neoplutarch__` branch: the stack base and size from std's thread record (C1 already tracks stack bounds and guard pages). | The smoke runs unbounded recursion and expects a catchable `InternalError`, not a guard-page fault. |
@@ -136,10 +136,13 @@ bit-for-bit unchanged. JIT stays a cargo feature that **no** build enables; A1 s
 
 ## 6. Decisions
 
-1. **The wall clock (T1).** Should C3c-1 wait on `rtc-epoch` for `CLOCK_REALTIME`, or should `neo-crt` return a
-   boot-relative epoch (1970 + time since boot) until it lands? Recommendation: the boot-relative epoch, documented
-   in `neo-crt`, because a page that reads `Date.now()` must not crash the engine. It's a correctness gap (wrong
-   date), not a safety one, and it closes when `rtc-epoch` is wired. **PM's call, unless it's J.c.'s.**
+1. **The wall clock (T1).** The kernel side is done: `SYS_CLOCK_GETTIME(CLOCK_REALTIME)` already returns
+   boot-relative time without `rtc-epoch` and the RTC's local wall time with it (OT-85). What's left is std's
+   overlay, which keeps `SystemTime::now()` unsupported on purpose (`time_neoplutarch.rs`: realtime is only wall time
+   on `rtc-epoch` kernels). Recommendation: let `SystemTime::now()` read the kernel's realtime, documented as
+   boot-relative unless the kernel has `rtc-epoch`, and have `neo-crt` build `CLOCK_REALTIME` on it. A page that
+   reads `Date.now()` must not crash the engine; a wrong date before `rtc-epoch` is a correctness gap, not a safety
+   one. This changes C1.3's stated std behaviour, so it is the **PM's call** (J.c.'s if the PM wants it).
 2. **The build option (§3.3).** Recommendation (c). PM's call.
 3. **Order against rung 4.** C3c-1 needs only C3a, the same as rung 4 (SWGL, private #262). Both can run once #2
    merges. They don't touch each other's files.
