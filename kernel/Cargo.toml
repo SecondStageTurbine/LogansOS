@@ -448,8 +448,14 @@ neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 <<<<<<< ours
+<<<<<<< ours
 >>>>>>> theirs
 =======
+=======
+# OT-61 rung 4 (SWGL S3a): SWGL renders into a kernel Atrium buffer; the
+# Atrium syscalls are on only under the atrium runtime switch.
+neo-test-swgl-atrium-smoke = ["neo-test", "browser-runtime", "mem-quota", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+>>>>>>> theirs
 # OT-61 rung 4 (SWGL S2): WebRender 0.70 on SWGL, a display list rendered
 # into a caller buffer and compared with a hand-derived scene.
 # kernel-rng: WebRender's HashMaps seed from std's RandomState
