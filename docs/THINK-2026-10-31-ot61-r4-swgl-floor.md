@@ -131,17 +131,30 @@ the compositor from its RO+NX mapping.
   is the kernel's second line. Proving it at runtime needs a raw call, so it belongs with the compositor-side
   scenario, not in the bundle.
 
-**S3b (next): the grant across processes.**
-- The RO handle goes to a separate compositor process over a channel (`SYS_GRANT`, the `neo-worker` pattern).
-- That process maps it, presents it, and the pixels are checked on the framebuffer.
-- It adds the channel send/grant to the manifest, and the stride/size validation in the rendering context (the
-  spike's "negative dimensions/stride fail without overwrite").
+**S3b (branch `claude/ot61-r4d-grant`): the grant across processes.**
+- The A4 change: `SYS_SEND`, `SYS_RECV`, `SYS_GRANT` and `SYS_RECV_GRANT`, through `std::os::neoplutarch::channel`
+  (`send`, `recv`, `grant`, `recv_grant`). A process holds no channel it wasn't given, so these reach only the peers
+  its launcher connected it to.
+- Scenario `swgl_grant_smoke`. The kernel gives two processes one channel's two ends:
+  - `swgl-grant-client` renders S1's pattern into an Atrium buffer with SWGL, commits the damage and grants the
+    buffer offering `USE` and `MAP_READ | QUERY | PRESENT`. The rendezvous orders the render before the
+    compositor's first read.
+  - `swgl-grant-compositor` (no SWGL) asks for every right and must get exactly the offer. Its handle can't map the
+    RW view, commit, derive or grant onwards (all `EPERM`). It byte-compares the page through its RO mapping and
+    sends a one-byte verdict, so its failure fails the client too.
+  - The kernel side checks both exits, and that the global live-frame count returns exactly to its pre-spawn value.
+    The count rises during the run, so it observes these processes.
+- **What it leaves to rung 6.** In the product the compositor is the WM (neo-init's desktop session), and the browser
+  joins as one of its clients (#220's client table and protocol, on #232's bounded try-ops). Presenting, the
+  framebuffer pixels and the scanout refusal are the WM's side of that protocol, so they are proved there, not by a
+  stand-in compositor here. Rung 6 also adds the try-ops to the manifest, and the rendering context's stride/size
+  validation (the spike's "negative dimensions/stride fail without overwrite").
 
 ## 4. Kill-switch and the default build
 
 Every piece is opt-in: standalone crates built only for their scenarios (`swgl_smoke`, `webrender_smoke`,
-`swgl_atrium_smoke`), and test-only kernel features. No new kernel syscall: S3a exposes existing Atrium calls to std
-processes only. The default kernel and image are unchanged.
+`swgl_atrium_smoke`, `swgl_grant_smoke`), and test-only kernel features. No new kernel syscall: S3a and S3b expose
+existing Atrium and channel calls to std processes only. The default kernel and image are unchanged.
 
 ## 5. Decisions (none blocks S1)
 
