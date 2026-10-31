@@ -720,6 +720,62 @@ jobs:
       - name: xtask image-kernel-build (the shipped kernel, opt-level 3, blocking)
         run: cargo run -p xtask -- image-kernel-build
 
+      # L7.2: subtraction as a gate. Two numbers image A must pay for — the
+      # shipped kernel's `.text` and the assembled (model-less) ISO. The
+      # ceilings live in tools/size-budget.toml; crossing one fails here with
+      # the instruction to raise it in the SAME PR, with a reason.
+      #
+      # xorriso is not installed on the self-hosted runners, and sudo there
+      # wants a password. So extract xorriso and its libburnia libraries into
+      # a runner-local prefix with `apt-get download` + `dpkg-deb -x` (neither
+      # needs root); Limine is the pinned binary release, as in the Dockerfile.
+      - name: Size budgets — image A .text + ISO (blocking)
+        run: |
+          if ! command -v xorriso >/dev/null 2>&1; then
+            PREFIX="$RUNNER_TEMP/xorriso"
+            rm -rf "$PREFIX"
+            mkdir -p "$PREFIX/debs" "$PREFIX/root"
+            (
+              cd "$PREFIX/debs"
+              if ! apt-get download xorriso; then
+                echo "::error::size-budget: apt-get download xorriso failed"
+                exit 1
+              fi
+              apt-cache depends --recurse --no-recommends --no-suggests \
+                --no-conflicts --no-breaks --no-replaces --no-enhances xorriso \
+                | grep -E '^[A-Za-z0-9]' | sort -u | while read -r pkg; do
+                  if dpkg -s "$pkg" >/dev/null 2>&1; then
+                    continue
+                  fi
+                  if ! apt-get download "$pkg"; then
+                    echo "::error::size-budget: apt-get download $pkg failed (xorriso dependency)"
+                    exit 1
+                  fi
+                done
+              for d in *.deb; do dpkg-deb -x "$d" "$PREFIX/root"; done
+            )
+            export PATH="$PREFIX/root/usr/bin:$PATH"
+            export LD_LIBRARY_PATH="$PREFIX/root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
+          if [ -z "${LIMINE_DIR:-}" ] || [ ! -d "${LIMINE_DIR:-}" ]; then
+            export LIMINE_DIR="$RUNNER_TEMP/limine"
+            rm -rf "$LIMINE_DIR"
+            if ! git clone --depth 1 --branch v8.6.0-binary \
+              https://github.com/limine-bootloader/limine.git "$LIMINE_DIR"; then
+              echo "::error::size-budget: Limine v8.6.0-binary clone failed"
+              exit 1
+            fi
+            if ! make -C "$LIMINE_DIR"; then
+              echo "::error::size-budget: Limine v8.6.0-binary build failed"
+              exit 1
+            fi
+          fi
+          if ! xorriso --version; then
+            echo "::error::size-budget: xorriso is not runnable after the download extract"
+            exit 1
+          fi
+          cargo run -p xtask -- size-budget
+
       # The FXSAVE build. `inference-preemptible` (in both `default` and
       # `product`) pulls `xsave-fpu`, and every other kernel build in this
       # workflow starts from default features, so the
