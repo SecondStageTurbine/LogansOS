@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "miniz-oxide-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dev-dependencies]
+# The vendored crate under test (Lane 2a). Path-only: this crate is the
+# consumer that keeps the vendored copy compiled by the host workspace.
+miniz_oxide = { path = "../../third_party/miniz_oxide" }
