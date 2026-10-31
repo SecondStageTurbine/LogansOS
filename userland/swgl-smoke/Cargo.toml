@@ -28,6 +28,20 @@ path = "src/atrium.rs"
 test = false
 bench = false
 
+# S3b: the client renders and grants a separate compositor process a
+# read-only view over a channel; the compositor checks it.
+[[bin]]
+name = "swgl-grant-client"
+path = "src/grant_client.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "swgl-grant-compositor"
+path = "src/grant_compositor.rs"
+test = false
+bench = false
+
 [dependencies]
 neo-std-pal = { path = "../neo-std-pal" }
 neo-crt = { path = "../neo-crt" }

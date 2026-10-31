@@ -32,29 +32,13 @@ use std::os::neoplutarch::atrium::{self, BufferDesc, META_USE, Role, rights};
 use gleam::gl::{self, Gl};
 use neo_std_pal::SyscallHeap;
 
+mod pattern;
+use pattern::{FILL, H, PAGE, STRIDE, W};
+
 #[global_allocator]
 static HEAP: SyscallHeap = SyscallHeap::new();
 
 const TAG: &str = "[ swgl-atrium-smoke ]";
-
-const W: usize = 7;
-const H: usize = 5;
-const STRIDE: usize = W * 4 + 8;
-const PAGE: usize = 4096;
-const FILL: u8 = 0xCD;
-
-/// The same pattern as S1 (`main.rs`), row 0 (GL y = 0) first.
-const PATTERN: [&str; H] = ["RRRRRGG", "RBBBRGG", "RBBBRGG", "RRRRRGG", "RRRRRGG"];
-
-/// SWGL's BGRA memory order, written out by hand.
-fn bgra(c: u8) -> [u8; 4] {
-    match c {
-        b'R' => [0x00, 0x00, 0xFF, 0xFF],
-        b'B' => [0xFF, 0x00, 0x00, 0xFF],
-        b'G' => [0x00, 0xFF, 0x00, 0x00],
-        _ => unreachable!(),
-    }
-}
 
 fn check(n: i32, what: &str, ok: bool) {
     if ok {
@@ -178,31 +162,9 @@ pub extern "C" fn _start() -> ! {
         atrium::commit_damage(client, 0, 0, W as u16, H as u16),
     );
 
-    let mut want = vec![FILL; PAGE];
-    for (y, row) in PATTERN.iter().enumerate() {
-        for (x, c) in row.bytes().enumerate() {
-            let at = y * STRIDE + x * 4;
-            want[at..at + 4].copy_from_slice(&bgra(c));
-        }
-    }
     // SAFETY: the compositor view covers the same page, mapped readable.
     let seen = unsafe { std::slice::from_raw_parts(ro, PAGE) };
-    let first_bad = seen.iter().zip(&want).position(|(a, b)| a != b);
-    if let Some(i) = first_bad {
-        println!(
-            "{TAG} first wrong byte at {i} (row {}, byte {} of the row): got {:#04x} want {:#04x}",
-            i / STRIDE,
-            i % STRIDE,
-            seen[i],
-            want[i]
-        );
-        for y in 0..H {
-            println!(
-                "{TAG} row {y}: {:02x?}",
-                &seen[y * STRIDE..(y + 1) * STRIDE]
-            );
-        }
-    }
+    let first_bad = pattern::first_wrong(TAG, seen);
     check(
         13,
         "the compositor view == the hand-laid pattern (BGRA, no flip, padding and the rest of the page untouched)",
