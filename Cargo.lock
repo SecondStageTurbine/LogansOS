@@ -2623,6 +2623,7 @@ dependencies = [
  "blake3",
  "fatfs",
  "settings-core",
+ "sha2",
 ]
 
 [[package]]
