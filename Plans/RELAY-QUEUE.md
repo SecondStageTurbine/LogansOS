@@ -43,3 +43,4 @@ RELAY 221 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-10-31-rechecks-21
 RELAY 222 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-10-31-rechecks-215-218.md | Section 217 (re-queued: 217 never returned; RETURN `Plans/RETURN-2026-10-31-l71-boot-time-recheck-jarvis.md`)
 RELAY 223 | dexter | DeepSeek | high | Plans/DISPATCH-2026-10-31-rechecks-215-218.md | Section 218 (re-queued: 218 never returned; #247 is now 272bc85a and #253 23a8d98a; RETURN `Plans/RETURN-2026-10-31-k1b-l21-recheck-dexter.md`)
 RELAY 224 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-10-31-m910q-setup-chad.md | Section 224
+RELAY 226 | dexter | DeepSeek | high | Plans/DISPATCH-2026-10-31-seats-resume-on-public.md | Section "Relay 226" (Lane 2a, miniz_oxide; RETURN `Plans/RETURN-2026-10-31-l2a-miniz-oxide-dexter.md`)
