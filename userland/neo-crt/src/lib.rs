@@ -11,6 +11,8 @@
 //!   `aligned_alloc`, `posix_memalign`, `memalign`) on std's global allocator;
 //! - `errno`, one per thread;
 //! - `clock_gettime` (`CLOCK_MONOTONIC` only; there is no wall clock);
+//! - `arc4random_buf`, on std's entropy source (OT-61 C3c-1: SpiderMonkey's
+//!   `mozilla::RandomUint64` takes this path instead of a raw `getrandom`);
 //! - writes to fds 1 and 2, the stdout/stderr stream locks (`__lockfile`),
 //!   `abort`, process exit;
 //! - `getenv` (the bundle has no environment), `__lock`/`__unlock` for the few
@@ -23,11 +25,13 @@
 //! nothing else runs the static constructors.
 
 #![allow(clippy::missing_safety_doc)]
+#![feature(random)]
 
 use core::ffi::{c_char, c_int, c_long, c_void};
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
 use std::cell::Cell;
 use std::io::Write;
+use std::random::{DefaultRandomSource, RandomSource};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Instant;
@@ -209,6 +213,22 @@ pub unsafe extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, siz
     }
     unsafe { out.write(p) };
     0
+}
+
+// ── entropy ──────────────────────────────────────────────────────────────
+
+/// `arc4random_buf` (BSD; glibc 2.36+): fill `buf` with `n` bytes from the
+/// kernel CSPRNG through std's own entropy source, so it adds no syscall site
+/// (the A4 backstop still sees only std's trampolines). Like std's, it never
+/// returns weaker bytes: with no entropy (a kernel without `kernel-rng`) std
+/// panics by name and the process exits 134.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn arc4random_buf(buf: *mut c_void, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let bytes = unsafe { core::slice::from_raw_parts_mut(buf.cast::<u8>(), n) };
+    DefaultRandomSource.fill_bytes(bytes);
 }
 
 // ── time ─────────────────────────────────────────────────────────────────

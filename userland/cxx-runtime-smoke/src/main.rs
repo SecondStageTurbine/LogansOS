@@ -37,6 +37,7 @@ unsafe extern "C" {
     fn crt_check_alloc() -> i32;
     fn crt_check_clock() -> i32;
     fn crt_check_stdout() -> i32;
+    fn crt_check_entropy() -> i32;
     fn crt_errno_probe(id: i32) -> i32;
     fn crt_malloc_stress(id: i32) -> i32;
     fn cxx_check_globals() -> i32;
@@ -176,6 +177,11 @@ pub extern "C" fn _start() -> ! {
     let ran = on_threads(crt_stdio_hammer);
     unsafe { crt_stdio_end_runs() };
     check(17, "6 threads print 600-byte runs to stdout at once", ran);
+    c_check(
+        18,
+        "arc4random_buf and page-aligned posix_memalign (C3c-1 prerequisites)",
+        crt_check_entropy,
+    );
     println!("{TAG} PASS");
     std::process::exit(0)
 }
