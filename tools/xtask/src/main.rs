@@ -1702,6 +1702,13 @@ fn scenario_timeout(name: &str) -> Duration {
         // OT-90 P2: two boots in one QEMU process, then S5.
         "ot90_restart_second_boot" | "ot90_restart_fallback_i8042" => Duration::from_secs(300),
         "accel_residency_daemon" => Duration::from_secs(540),
+        // NFS-W1: a 9 MiB write, then four more full mounts that each
+        // re-validate the volume (the 9 MiB file's content hash included).
+        // GitHub-hosted 4-vCPU TCG runners: 158.2 s at a0ae0f7 (run
+        // 41230352536), then 180 s timeouts on every attempt at 76a1f03
+        // (run 41244601019) with the same kernel code, each stopped after
+        // step 3. Headroom only; the oracle is unchanged.
+        "neofs_large_write" => Duration::from_secs(300),
         // DM-1: every view/Lens/focus change is a paced transition, each
         // frame a full TCG recompose of its rects (~0.1 s); desktop_motion_boot
         // ran 147 s of the old 180 s locally. Headroom, not a hang budget.
