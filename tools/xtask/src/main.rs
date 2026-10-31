@@ -5026,6 +5026,30 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L3a-2: what rust-fatfs (`fat-fs`) adds over the native driver (a FAT16
+    // volume), the T4/T5 no-write proof on a dirty volume, and the
+    // kill-switch control (the native driver reads the fixture, as before).
+    TestScenario {
+        name: "phase3_fat32_fat16_read",
+        feature: "neo-test-phase3-fat32-fat16-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_readonly_no_write",
+        feature: "neo-test-phase3-fat32-readonly-no-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_native_control",
+        feature: "neo-test-phase3-fat32-native-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // Phase 3 BUILD-4D: ext4 read-only foreign filesystem.
     TestScenario {
         name: "phase3_ext4_mount_readonly",
@@ -13782,6 +13806,12 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         // L3a (G7): the same volume inside an MBR partition at LBA 2048.
         let device1 = if scenario_uses_fat32_mbr_disk(scenario_name) {
             prepare_fat32_mbr_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_fat16_read" {
+            // L3a-2: the same fixture on a FAT16 volume.
+            prepare_fat16_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_readonly_no_write" {
+            // L3a-2 (T4/T5): the FAT32 fixture, marked dirty.
+            prepare_fat32_dirty_storage_disk(&device1)?
         } else {
             prepare_fat32_storage_disk(&device1)?
         };
@@ -15592,6 +15622,67 @@ fn model_vocab_sidecar(
 }
 
 fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, FAT32_DISK_SIZE, &["-F", "-v", "NEOFAT32"])
+}
+
+/// L3a-2: the fixture on a 32 MiB volume `mformat` makes FAT16 (one-sector
+/// clusters, 65020 of them, under FAT16's 65525). The native driver refuses
+/// it; rust-fatfs reads it.
+fn prepare_fat16_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, 32 * 1024 * 1024, &["-v", "NEOFAT16"])?;
+    let mut boot = [0u8; 62];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut boot))
+        .map_err(|e| format!("read FAT16 boot sector {}: {e}", path.display()))?;
+    if &boot[54..62] != b"FAT16   " {
+        return Err(format!(
+            "mformat did not make FAT16 for {} (type field {:?})",
+            path.display(),
+            String::from_utf8_lossy(&boot[54..62])
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// L3a-2 (traps T4/T5): the FAT32 fixture, left as a stick pulled without
+/// unmounting: the BPB's status byte (0x41 on FAT32) has its dirty bit set,
+/// and FSInfo's free-cluster count (sector 1, byte 488) is out of range, so
+/// the mount's FSInfo check runs. A read-only mount must change neither.
+fn prepare_fat32_dirty_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("open FAT32 disk {}: {e}", path.display()))?;
+    let mut lead = [0u8; 4];
+    file.seek(SeekFrom::Start(512))
+        .and_then(|_| file.read_exact(&mut lead))
+        .map_err(|e| format!("read FSInfo {}: {e}", path.display()))?;
+    if &lead != b"RRaA" {
+        return Err(format!("{}: FSInfo is not at sector 1", path.display()));
+    }
+    let mut flags = [0u8; 1];
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.read_exact(&mut flags))
+        .map_err(|e| format!("read FAT32 status byte {}: {e}", path.display()))?;
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.write_all(&[flags[0] | 1]))
+        .and_then(|_| file.seek(SeekFrom::Start(512 + 488)))
+        .and_then(|_| file.write_all(&0xffff_fff0u32.to_le_bytes()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("mark FAT32 disk dirty {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// A blank `size`-byte image formatted by `mformat <format_args>`, holding
+/// the FAT fixture tree (hello, readme, subdir/nested, an LFN file, a
+/// `.neom` that must import as Regular).
+fn prepare_fat_fixture_disk(
+    path: &Path,
+    size: u64,
+    format_args: &[&str],
+) -> Result<PathBuf, String> {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -15600,14 +15691,17 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
 
     let file =
         fs::File::create(path).map_err(|e| format!("create FAT32 disk {}: {e}", path.display()))?;
-    file.set_len(FAT32_DISK_SIZE)
+    file.set_len(size)
         .map_err(|e| format!("size FAT32 disk {}: {e}", path.display()))?;
     file.sync_all()
         .map_err(|e| format!("sync empty FAT32 disk {}: {e}", path.display()))?;
     drop(file);
 
     let image = path.display().to_string();
-    run_mtools("mformat", &["-i", &image, "-F", "-v", "NEOFAT32", "::"])?;
+    let mut args = vec!["-i", image.as_str()];
+    args.extend_from_slice(format_args);
+    args.push("::");
+    run_mtools("mformat", &args)?;
 
     let fixture_dir = workspace_root()
         .join(TEST_OUTPUT_REL)

@@ -10,6 +10,11 @@
 extern crate alloc;
 
 pub mod ext4;
+// L3a-2: FAT12/16/32 read-only through the vendored rust-fatfs. Off (the
+// kill-switch): the native FAT32 driver, as before, and no rust-fatfs code.
+#[cfg(feature = "fat-fs")]
+pub mod fat;
+#[cfg(not(feature = "fat-fs"))]
 pub mod fat32;
 pub mod neofs;
 
@@ -1302,8 +1307,12 @@ fn vfs_mount_at_parent(
         }
         3 => {
             let device = fat_source_device(source)?;
-            let fat32 = fat32::Fat32::mount_readonly(device).map_err(|_| VfsError::NotFound)?;
-            let fs: Arc<dyn MountedFs> = Arc::new(fat32);
+            #[cfg(feature = "fat-fs")]
+            let fs: Arc<dyn MountedFs> =
+                Arc::new(fat::Fat::mount_readonly(device).map_err(|_| VfsError::NotFound)?);
+            #[cfg(not(feature = "fat-fs"))]
+            let fs: Arc<dyn MountedFs> =
+                Arc::new(fat32::Fat32::mount_readonly(device).map_err(|_| VfsError::NotFound)?);
             let denied = if flags.0 & MOUNT_FLAG_EXEC_ALLOWED != 0 {
                 FileRights::WRITE
             } else {
