@@ -461,6 +461,12 @@ neo-test-swgl-atrium-smoke = ["neo-test", "browser-runtime", "mem-quota", "atriu
 # OT-61 rung 4 (SWGL S3b): the same, across two processes: the client
 # grants a separate compositor process a read-only view over a channel.
 neo-test-swgl-grant-smoke = ["neo-test", "browser-runtime", "mem-quota", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+<<<<<<< ours
+>>>>>>> theirs
+=======
+# OT-61 rung 6: the std surface a window's loop runs on (channel try_recv,
+# input focus create/mint/recv), two std processes joined by one channel.
+neo-test-browser-io-smoke = ["neo-test", "browser-runtime", "mem-quota", "atrium-compositor-g1", "neo-test-atrium-runtime", "atrium-input-routing", "atrium-pointer-forward"]
 >>>>>>> theirs
 # OT-61 rung 4 (SWGL S2): WebRender 0.70 on SWGL, a display list rendered
 # into a caller buffer and compared with a hand-derived scene.

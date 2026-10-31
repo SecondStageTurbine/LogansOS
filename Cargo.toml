@@ -89,6 +89,11 @@ exclude = [
 =======
     # OT-61 rung 4 S2: WebRender on SWGL, standalone for the target only.
     "userland/webrender-smoke",
+<<<<<<< ours
+>>>>>>> theirs
+=======
+    # OT-61 rung 6: the browser app, standalone for the target only.
+    "userland/browser-app",
 >>>>>>> theirs
     # OT-86 Fix 1: vendored rust-osdev `acpi` 6.1.1 (upstream MIT/Apache-2.0
     # licence and formatting). A path dependency of tools/acpi-aml-grade only;
