@@ -163,6 +163,8 @@ const SCENARIO: &str = "servo_host_smoke";
     not(feature = "neo-test-servo-closure-smoke-avx")
 ))]
 const SCENARIO: &str = "servo_closure_smoke";
+#[cfg(feature = "neo-test-stylo-smoke")]
+const SCENARIO: &str = "stylo_smoke";
 #[cfg(feature = "neo-test-servo-closure-smoke-avx")]
 const SCENARIO: &str = "servo_closure_smoke_avx";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
@@ -1217,6 +1219,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-std-sealed-ambient",
     feature = "neo-test-servo-host-smoke",
     feature = "neo-test-servo-closure-smoke",
+    feature = "neo-test-stylo-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -2636,6 +2639,65 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "servo_host_smoke=ran smoke_exit=0 oom_twin_exit=134 smoke_alive_at_oom=1 threads=ok tls=ok condvar=wake+timeout heap=ok sealed=read refusals=3 frames_returned=1 html5ever_stylo=c2.3b",
+        );
+    }
+
+    // OT-61 C2.4: stylo-smoke, upstream Stylo (vendored) styling an
+    // html5ever document with one sequential traversal; every computed value
+    // is checked against a hand-derived one, and it exits 0 only on a match.
+    // Its frames must all come back (the global live-frame count, as S3b).
+    #[cfg(feature = "neo-test-stylo-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 256 * 256; // 256 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=stylo_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let frames_before = crate::mm::frame::frames_in_use();
+        let smoke = process::spawn_user_by_name_budgeted("stylo-smoke", &handles, SMOKE_FRAMES)
+            .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!("[ kernel ] proc: stylo-smoke pid={} (256 MiB)", smoke.0);
+        let mut frames_peak = frames_before;
+        while process::any_user_process() {
+            frames_peak = frames_peak.max(crate::mm::frame::frames_in_use());
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let frames_after = crate::mm::frame::frames_in_use();
+        serial_println!(
+            "[ kernel ] proc: stylo-smoke exit {}, frames in use {} (before {}, peak {})",
+            code,
+            frames_after,
+            frames_before,
+            frames_peak
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if frames_peak <= frames_before {
+            fail_with(
+                "frames_not_observed",
+                frames_peak as i64,
+                frames_before as i64,
+            );
+        }
+        if frames_after != frames_before {
+            fail_with("frames_leaked", frames_after as i64, frames_before as i64);
+        }
+        pass(
+            "stylo_smoke=ran exit=0 stylo=0.22.0 traversal=sequential cascade=exact frames_returned=1",
         );
     }
 
