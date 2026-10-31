@@ -55,6 +55,7 @@ members = [
     "tools/handle-info-logic-tests",
     "tools/install-ui-abi-tests",
     "tools/limine-file-logic-tests",
+    "tools/miniz-oxide-logic-tests",
     "tools/cap-graph-logic-tests",
     "tools/mem-account-logic-tests",
     "tools/net-rx-logic-tests",
@@ -83,6 +84,10 @@ exclude = [
     # dependency of tools/xtask only (the host ESP-template builder); the
     # kernel never links it.
     "third_party/fatfs",
+    # Lane 2a: vendored Frommi/miniz_oxide (MIT OR Zlib OR Apache-2.0; used
+    # under MIT) at 7fc2dd45. A path dependency of tools/miniz-oxide-logic-tests
+    # only (the host KATs); the kernel does not link it yet.
+    "third_party/miniz_oxide",
     # Reserved for future phases:
     # "services/neo-inference",
     # "services/neo-models",
