@@ -173,7 +173,7 @@ macro_rules! set_error_code_entry {
 /// Off (`user-copy-fixup` not built, or the `neo-test-user-copy-fault-control`
 /// revert-check): the comparison is skipped, and every fault takes that path.
 #[unsafe(naked)]
-extern "C" fn page_fault_shim() {
+pub(crate) extern "C" fn page_fault_shim() {
     core::arch::naked_asm!(
         "pushfq",
         "and qword ptr [rsp], -263169", // ~(AC (1<<18) | DF (1<<10))

@@ -41488,6 +41488,10 @@ fn run_exception_entry_flags() -> ! {
     // Error-code vectors continue with `mov rdi, rsp; and rsp, -16; call`, so
     // their body runs on a SysV-aligned stack (CP-46).
     const REALIGN: [u8; 8] = [0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8];
+    // The page fault's shim (`idt::page_fault_shim`) is longer: 88 bytes,
+    // padded to 96, with its Rust path at 0x49. If it grows past this window
+    // the check fails closed (no match).
+    const PF_SCAN: usize = 96;
     // #DF, #TS, #NP, #SS, #GP, #PF, #AC, and #CP, #VC, #SX should they ever
     // be installed (not-present gates are skipped below).
     const ERROR_CODE_VECTORS: u32 = (1 << 8)
@@ -41661,15 +41665,32 @@ fn run_exception_entry_flags() -> ! {
             unmasked |= 1 << vector;
         }
         if ERROR_CODE_VECTORS & (1 << vector) != 0 {
-            // SAFETY: as above; the shim is longer than MASK + REALIGN.
-            let tail = unsafe {
-                core::slice::from_raw_parts(
-                    (handler as usize + MASK.len()) as *const u8,
-                    REALIGN.len(),
-                )
-            };
-            if tail != REALIGN {
-                unaligned |= 1 << vector;
+            let page_fault_shim = crate::arch::x86_64::idt::page_fault_shim as *const () as u64;
+            if vector == 14 && handler == page_fault_shim {
+                // CP-99: the page fault's shim checks for a user-copy fault
+                // between the mask and the realignment, so its Rust path
+                // (`pop rax`, then the realignment and the call) comes later.
+                // It must appear exactly once in the shim.
+                // SAFETY: as above; PF_SCAN bytes from the shim are kernel text.
+                let body = unsafe { core::slice::from_raw_parts(handler as *const u8, PF_SCAN) };
+                let hits = body[MASK.len()..]
+                    .windows(1 + REALIGN.len())
+                    .filter(|w| w[0] == 0x58 && w[1..] == REALIGN)
+                    .count();
+                if hits != 1 {
+                    unaligned |= 1 << vector;
+                }
+            } else {
+                // SAFETY: as above; the shim is longer than MASK + REALIGN.
+                let tail = unsafe {
+                    core::slice::from_raw_parts(
+                        (handler as usize + MASK.len()) as *const u8,
+                        REALIGN.len(),
+                    )
+                };
+                if tail != REALIGN {
+                    unaligned |= 1 << vector;
+                }
             }
         }
         // Installing a shim resets the gate options, so the IST slots that
