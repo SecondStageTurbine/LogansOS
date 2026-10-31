@@ -5832,6 +5832,14 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
+    TestScenario {
+        name: "ot90_cap",
+        feature: "neo-test-ot90-cap",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
     // then S5.
     TestScenario {
@@ -9671,7 +9679,8 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stuck_sink_off"
         | "ot90_stop_cpus"
         | "ot90_stop_holdout"
-        | "ot90_quiesce" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_quiesce"
+        | "ot90_cap" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -9777,6 +9786,21 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             ));
         }
+    }
+    // OT-90 P4: the refusals held, the cap carries no DERIVE or GRANT, and
+    // one SYS_POWER started the shutdown (a second was EBUSY).
+    if scenario.name == "ot90_cap" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "stage=power_off_requested",
+                "[ power ] shutdown: started kind=PowerOff",
+                "cap=no_derive_no_grant refusals=ok started=0 second=-16",
+                "[ power ] K4 targets=",
+                "power: S5 PM1a=",
+            ],
+        )?;
     }
     // OT-90 P3b-2: K6 stopped disk 0 (armed by this boot's write), cleared
     // the bus masters, then S5.

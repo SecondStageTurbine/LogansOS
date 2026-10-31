@@ -106,16 +106,22 @@ fn ticks() -> u64 {
     crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed)
 }
 
+/// Whether a shutdown has started.
+#[allow(dead_code)] // `SYS_POWER`'s EBUSY (`power-cap`)
+pub fn running() -> bool {
+    KIND.load(Ordering::Acquire) != 0
+}
+
 /// Start the shutdown in its own kernel thread, sparing `keep` in K1. The
 /// thread ends in S5 or a reset; the caller carries on until K1 reaches it
-/// (or forever, when it is the spared one). A second call while one runs
-/// does nothing.
-pub fn start(kind: Kind, keep: Option<ProcessId>) {
+/// (or forever, when it is the spared one). Returns whether this call
+/// started it: a second call while one runs does nothing and returns false.
+pub fn start(kind: Kind, keep: Option<ProcessId>) -> bool {
     if KIND
         .compare_exchange(0, kind as u8, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return;
+        return false;
     }
     KEEP.store(keep.map_or(0, |p| p.0), Ordering::Release);
     let id = crate::sched::kthread::spawn_detached("power-shutdown", |_stop| run());
@@ -125,6 +131,7 @@ pub fn start(kind: Kind, keep: Option<ProcessId>) {
         KEEP.load(Ordering::Acquire),
         id.slot()
     );
+    true
 }
 
 fn run() -> ! {

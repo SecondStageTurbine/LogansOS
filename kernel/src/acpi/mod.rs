@@ -381,6 +381,10 @@ pub mod rtc_fadt_logic;
 /// P2 mechanism that runs it.
 #[cfg(feature = "power-control")]
 pub mod power;
+/// OT-90 P4: the `SYS_POWER` numbers and decision (pure, shared with libneo).
+#[cfg(feature = "power-cap")]
+#[path = "power_abi.rs"]
+pub mod power_abi;
 #[cfg(feature = "power-control")]
 #[path = "power_logic.rs"]
 pub mod power_logic;

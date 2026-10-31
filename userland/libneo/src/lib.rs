@@ -53,6 +53,10 @@ pub mod mem_info;
 pub mod nsync;
 pub mod nthread;
 pub mod ntls;
+/// OT-90 P4: `SYS_POWER`'s numbers and decision, one source with the kernel.
+#[path = "../../../kernel/src/acpi/power_abi.rs"]
+#[allow(dead_code)]
+pub mod power_abi;
 pub mod tls;
 pub mod wait_abi;
 
@@ -1395,6 +1399,15 @@ pub fn sys_mem_info_v2() -> Result<mem_info::MemInfoV2, i64> {
         return Err(r);
     }
     mem_info::decode_v2(&rec).ok_or(EINVAL)
+}
+
+/// OT-90 P4: power off ([`power_abi::ACTION_POWER_OFF`]) or restart
+/// ([`power_abi::ACTION_RESTART`]). 0 once the clean shutdown has started;
+/// `EPERM` without the session root's `PowerControl` cap, `EBUSY` while one
+/// runs, `ENOSYS` on a kernel without `power-cap`.
+pub fn sys_power(action: u64) -> i64 {
+    // SAFETY: SYS_POWER takes two scalars and touches no user memory.
+    unsafe { raw3(power_abi::SYS_POWER, action, 0, 0) }
 }
 
 /// OT-61 C2.2: the caller's memory account. A `mem-quota` kernel only.

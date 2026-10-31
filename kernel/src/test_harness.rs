@@ -1031,6 +1031,8 @@ const SCENARIO: &str = "ot90_stop_cpus";
 const SCENARIO: &str = "ot90_stop_holdout";
 #[cfg(feature = "neo-test-ot90-quiesce")]
 const SCENARIO: &str = "ot90_quiesce";
+#[cfg(feature = "neo-test-ot90-cap")]
+const SCENARIO: &str = "ot90_cap";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1587,6 +1589,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-straggler-forced",
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-cap",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -4834,6 +4837,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ot90-quiesce")]
     run_ot90_quiesce();
+
+    #[cfg(feature = "neo-test-ot90-cap")]
+    run_ot90_cap();
 
     #[cfg(feature = "neo-test-sys-getrandom")]
     {
@@ -39656,6 +39662,64 @@ fn run_ot90_straggler_forced() -> ! {
 fn run_ot90_stop_cpus() -> ! {
     frame("INFO", "stage=power_off_requested");
     crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// OT-90 P4 `ot90_cap`: `SYS_POWER`'s refusals, the minted cap's rights,
+/// then a power-off through the syscall's path (and `EBUSY` for a second
+/// call while it runs). The harness runs in a kernel thread with no handle
+/// table, so it passes the rights the syscall would read from the caller's.
+/// xtask judges it by QMP and the result line.
+#[cfg(feature = "neo-test-ot90-cap")]
+fn run_ot90_cap() -> ! {
+    use crate::acpi::power_abi::{ACTION_POWER_OFF, ACTION_RESTART};
+    use crate::arch::x86_64::syscall::debug_sys_power_for_test as sys_power;
+    use crate::errno::{EBUSY, EINVAL, EPERM};
+    use crate::sched::process::{self, Handle, meta_rights};
+    let rights = match process::root_power_control_cap() {
+        Handle::PowerControl { rights, .. } => rights,
+        _ => fail("reason=cap_wrong_kind"),
+    };
+    if !rights.has_meta(meta_rights::USE)
+        || rights.has_meta(meta_rights::DERIVE)
+        || rights.has_meta(meta_rights::GRANT)
+    {
+        fail("reason=cap_meta_rights");
+    }
+    let held = rights.semantic;
+    let checks = [
+        ("no_cap_off", sys_power(ACTION_POWER_OFF, 0, 0), EPERM),
+        ("no_cap_restart", sys_power(ACTION_RESTART, 0, 0), EPERM),
+        ("bad_action", sys_power(3, 0, held), EINVAL),
+        ("bad_flags", sys_power(ACTION_POWER_OFF, 1, held), EINVAL),
+    ];
+    for (name, got, want) in checks {
+        if got != want {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=refusal_{} got={} want={}",
+                SCENARIO,
+                name,
+                got,
+                want
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
+    frame("INFO", "stage=power_off_requested");
+    let started = sys_power(ACTION_POWER_OFF, 0, held);
+    let second = sys_power(ACTION_POWER_OFF, 0, held);
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} cap=no_derive_no_grant refusals=ok started={} second={}",
+        SCENARIO,
+        started,
+        second
+    );
+    if started != 0 || second != EBUSY {
+        fail("reason=power_off_not_started_once");
+    }
     loop {
         crate::sched::yield_now();
         crate::sched::reap();
