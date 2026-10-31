@@ -398,6 +398,11 @@ kernel-observability = []
 model-boot-module = []
 framebuffer-console = []
 usb-hid = ["usb-host"]
+# L3u-2 (THINK-2026-10-31-l3u-usb-mass-storage): a USB mass-storage device
+# (Bulk-Only Transport, SCSI transparent) becomes a read-only block device;
+# FAT on it mounts as `deviceN` or `deviceN:pM` (L3a). Off: the device
+# enumerates and stays unclaimed, as before (the kill-switch).
+usb-storage = ["usb-host"]
 # OT (Milestone-A input): the USB HID boot-protocol MOUSE (the GUI pointer),
 # mirroring the keyboard on the same xHCI arena-fenced stack. Independent
 # kill-switch: off ⇒ hid_mouse + its init are absent ⇒ keyboard-only, bit-for-bit.
@@ -1929,6 +1934,10 @@ neo-test-tick-sleep-control = ["neo-test-usb-hotplug"]
 neo-test-tick-sleep-early-control = ["neo-test-usb-hotplug"]
 neo-test-tick-sleep-no-wake-control = ["neo-test-usb-hotplug"]
 neo-test-usb-enumerate = ["neo-test", "usb-host"]
+# L3u-2: a QEMU usb-storage stick holding the FAT32 fixture binds, mounts and
+# reads back; `-off` (no `usb-storage`) is the kill-switch.
+neo-test-usb-storage-read = ["neo-test-phase3-fat32", "usb-storage"]
+neo-test-usb-storage-off = ["neo-test", "usb-host"]
 neo-test-usb-storm = ["neo-test", "usb-host", "accel-sim"]
 neo-test-usb-baremetal-probe = ["neo-test", "usb-host"]
 neo-test-usb-ethernet = ["neo-test", "usb-host"]

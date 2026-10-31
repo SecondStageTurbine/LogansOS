@@ -1056,7 +1056,7 @@ fn submit_command(trb: Trb) -> Option<Trb> {
 /// CB-2: outcome of an endpoint-recovery attempt — the EP state observed before
 /// recovery, and whether each command stage completed (completion code 1).
 /// `recovered()` is the gate the mt7601u scan reports as `recovered_after_wedge`.
-#[cfg(feature = "mt7601u")]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct EndpointRecovery {
     /// EP State (xHCI §6.2.3, `ring::EP_STATE_*`) read before recovery — the
@@ -1069,7 +1069,7 @@ pub struct EndpointRecovery {
     pub set_dequeue_ok: bool,
 }
 
-#[cfg(feature = "mt7601u")]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 impl EndpointRecovery {
     /// Host-side recovery completed: the EP is Stopped at a clean dequeue and
     /// the next `submit()` resumes it Running.
@@ -1078,7 +1078,7 @@ impl EndpointRecovery {
     }
 }
 
-#[cfg(feature = "mt7601u")]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 /// CB-2: Reset Endpoint Command (xHCI §4.6.8) — Halted → Stopped. Returns the
 /// completion code (1 = success; 19 = Context State Error ⇒ the EP was not
 /// Halted), or `None` if no completion arrived within `submit_command`'s budget.
@@ -1086,13 +1086,13 @@ fn cmd_reset_endpoint(slot_id: u8, dci: u8) -> Option<u32> {
     submit_command(ring::reset_endpoint_trb(slot_id, dci)).map(|e| e.completion_code())
 }
 
-#[cfg(feature = "mt7601u")]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 /// CB-2: Stop Endpoint Command (xHCI §4.6.9) — any state → Stopped.
 fn cmd_stop_endpoint(slot_id: u8, dci: u8) -> Option<u32> {
     submit_command(ring::stop_endpoint_trb(slot_id, dci, false)).map(|e| e.completion_code())
 }
 
-#[cfg(feature = "mt7601u")]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 /// CB-2: Set TR Dequeue Pointer Command (xHCI §4.6.10) — repoint the transfer
 /// ring's dequeue + Dequeue Cycle State after a Reset/Stop.
 fn cmd_set_tr_dequeue(slot_id: u8, dci: u8, deq_ptr: u64, dcs: bool) -> Option<u32> {
@@ -1758,7 +1758,7 @@ fn read_dma_u16(buf: &DmaBuffer, offset: usize) -> u16 {
     u16::from_le_bytes([read_dma_u8(buf, offset), read_dma_u8(buf, offset + 1)])
 }
 
-#[cfg(feature = "mt7601u")]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 fn read_dma_u32(buf: &DmaBuffer, offset: usize) -> u32 {
     u32::from_le_bytes([
         read_dma_u8(buf, offset),
@@ -1984,7 +1984,7 @@ impl ClaimedDevice {
     /// discriminator (capture-before-you-need-it): `EP_STATE_HALTED` ⇒ a
     /// transaction error halted the pipe host-side; any other state ⇒
     /// stuck-but-not-halted.
-    #[cfg(feature = "mt7601u")]
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
     pub fn endpoint_state(&self, dci: u8) -> u8 {
         let off = (dci as usize) * ctx_stride(self.csz64);
         ring::ep_state(read_dma_u32(&self.out_ctx, off))
@@ -2005,7 +2005,7 @@ impl ClaimedDevice {
     /// (`CONTROLLER.lock` = `IrqSafeMutex`, no governance lock); the transfer
     /// ring is already a `FencedDmaAddr` so Set-TR-Dequeue adds no unfenced DMA;
     /// every command wait is bounded by `submit_command`'s budget.
-    #[cfg(feature = "mt7601u")]
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
     pub fn recover_endpoint(&self, pipe: &mut EndpointPipe, enabled: bool) -> EndpointRecovery {
         let state_before = self.endpoint_state(pipe.dci);
         let reset_or_stop_ok = match ring::recovery_action(enabled, state_before) {
@@ -2047,7 +2047,7 @@ impl ClaimedDevice {
     /// a command-response timeout. `dci` is the endpoint's Device Context Index
     /// (DCI = 2·ep_num + dir_in), so the USB endpoint address is
     /// `ep_num | (dir_in << 7)`.
-    #[cfg(feature = "mt7601u")]
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
     pub fn clear_endpoint_halt(&mut self, dci: u8) -> Result<(), &'static str> {
         let ep_addr = (u16::from(dci) >> 1) | (u16::from(dci & 1) << 7);
         // bmRequestType=0x02 (host→device | standard | endpoint),

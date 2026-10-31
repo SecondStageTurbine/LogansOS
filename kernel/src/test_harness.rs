@@ -910,6 +910,10 @@ const SCENARIO: &str = "dma_arena_fence";
 const SCENARIO: &str = "vtd_fence";
 #[cfg(feature = "neo-test-graphics-vtd-domain")]
 const SCENARIO: &str = "graphics_vtd_domain";
+#[cfg(feature = "neo-test-usb-storage-read")]
+const SCENARIO: &str = "usb_storage_read";
+#[cfg(feature = "neo-test-usb-storage-off")]
+const SCENARIO: &str = "usb_storage_off";
 #[cfg(feature = "neo-test-usb-enumerate")]
 const SCENARIO: &str = "usb_enumerate";
 #[cfg(feature = "neo-test-usb-storm")]
@@ -1532,6 +1536,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-vtd-fence",
     feature = "neo-test-graphics-vtd-domain",
     feature = "neo-test-usb-enumerate",
+    feature = "neo-test-usb-storage-read",
+    feature = "neo-test-usb-storage-off",
     feature = "neo-test-usb-storm",
     feature = "neo-test-usb-baremetal-probe",
     feature = "neo-test-usb-ethernet",
@@ -1869,6 +1875,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-vtd-fence",
         feature = "neo-test-graphics-vtd-domain",
         feature = "neo-test-usb-enumerate",
+        feature = "neo-test-usb-storage-read",
+        feature = "neo-test-usb-storage-off",
         feature = "neo-test-usb-storm",
         feature = "neo-test-usb-baremetal-probe",
         feature = "neo-test-usb-ethernet",
@@ -4681,6 +4689,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-usb-enumerate")]
     run_usb_enumerate();
+
+    #[cfg(feature = "neo-test-usb-storage-read")]
+    run_usb_storage_read();
+
+    #[cfg(feature = "neo-test-usb-storage-off")]
+    run_usb_storage_off();
 
     #[cfg(feature = "neo-test-usb-storm")]
     run_usb_storm();
@@ -16561,6 +16575,83 @@ fn run_graphics_vtd_domain() -> ! {
 /// address fenced (admits > 0, refusals == 0 — the driver never even
 /// ATTEMPTED an out-of-arena address), the F4 command counters balanced,
 /// and MSI delivery observed (the F6 counted side).
+/// L3u-2: QEMU's `usb-storage` (Bulk-Only, 46f4:0001) holds the FAT32
+/// fixture. The driver binds it, its capacity is the image's, and FAT on it
+/// mounts as `deviceN` and reads back byte-exact (file, subdirectory, LFN);
+/// a write open is refused.
+#[cfg(feature = "neo-test-usb-storage-read")]
+fn run_usb_storage_read() -> ! {
+    let Some((index, device)) = crate::drivers::block::find_device_by_driver("usb-storage") else {
+        fail("reason=usb_storage_not_registered");
+    };
+    let g = device.geometry();
+    if g.logical_block_size != 512 || g.block_count != USB_STORAGE_FIXTURE_BLOCKS {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_storage_capacity block_len={} blocks={}",
+            SCENARIO,
+            g.logical_block_size,
+            g.block_count
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let source = alloc::format!("device{index}");
+    let req = mount4b_build_request_v1(3, &source, "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=usb_storage_mount_rc", rc as u64);
+    }
+    let entries = fat32_collect_dirents("/fat32");
+    fat32_expect_dirent(&entries, "hello.txt", 2);
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    fat32_expect_file_bytes("/fat32/long filename with spaces.txt", b"LFN test\n");
+    match crate::fs::open_root_temporary(
+        "/fat32/hello.txt",
+        crate::fs::OPEN_ROOT_TEMPORARY,
+        crate::fs::FileRights::WRITE,
+    ) {
+        Err(crate::fs::VfsError::InsufficientRights) => {}
+        Err(err) => neofs_2c_fail_vfs("usb_storage_write_open_wrong_error", err),
+        Ok(_) => fail("reason=usb_storage_write_open_allowed"),
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} device_index={} blocks={} block_len=512 source={} entries={} hello=match nested=match lfn=match write=refused",
+        SCENARIO,
+        index,
+        g.block_count,
+        source,
+        entries.len()
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// The FAT32 fixture image's size in 512-byte blocks (xtask's 64 MiB).
+#[cfg(feature = "neo-test-usb-storage-read")]
+const USB_STORAGE_FIXTURE_BLOCKS: u64 = 64 * 1024 * 1024 / 512;
+
+/// L3u-2 kill-switch: built without `usb-storage`, the same stick enumerates
+/// (46f4:0001, interface class 8) and no block device is registered for it.
+#[cfg(feature = "neo-test-usb-storage-off")]
+fn run_usb_storage_off() -> ! {
+    let devices = crate::drivers::usb::devices();
+    if !devices
+        .iter()
+        .any(|d| (d.vendor_id, d.product_id) == (0x46f4, 0x0001))
+    {
+        fail("reason=usb_storage_off_stick_not_enumerated");
+    }
+    if crate::drivers::block::find_device_by_driver("usb-storage").is_some() {
+        fail("reason=usb_storage_off_bound");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} usb_storage=off stick_enumerated=1 block_device=none",
+        SCENARIO
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 #[cfg(feature = "neo-test-usb-enumerate")]
 fn run_usb_enumerate() -> ! {
     use crate::drivers::dma_arena;

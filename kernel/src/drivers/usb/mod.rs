@@ -45,6 +45,11 @@ pub mod hid_keyboard;
 pub mod hid_logic;
 #[cfg(feature = "usb-hid-mouse")]
 pub mod hid_mouse;
+// L3u: USB mass storage (Bulk-Only Transport + SCSI), read-only.
+#[cfg(feature = "usb-storage")]
+pub mod msc;
+#[cfg(feature = "usb-storage")]
+pub mod msc_logic;
 #[cfg(feature = "mt7601u")]
 pub mod mt7601u;
 #[cfg(feature = "mt7601u")]
@@ -256,6 +261,11 @@ pub fn init() {
     #[cfg(feature = "usb-hid-mouse")]
     hid_mouse::init();
     register_class_driver(Arc::new(cdc_ecm::CdcEcmDriver));
+    // L3u-2: USB sticks as read-only block devices. Off (the kill-switch):
+    // not registered, so a mass-storage device enumerates and is left
+    // unclaimed, as before.
+    #[cfg(feature = "usb-storage")]
+    msc::init();
     // Phase 7.5 BUILD-W1: the MT7601U WiFi scan driver (feature-gated; off ⇒
     // not registered ⇒ the offer path is BUILD-A/B exactly).
     #[cfg(feature = "mt7601u")]

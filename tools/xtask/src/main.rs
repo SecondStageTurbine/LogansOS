@@ -4501,6 +4501,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L3u-2: a usb-storage stick with the FAT32 fixture binds, mounts and
+    // reads back; `usb_storage_off` is the kill-switch (it enumerates and
+    // stays unclaimed).
+    TestScenario {
+        name: "usb_storage_read",
+        feature: "neo-test-usb-storage-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_storage_off",
+        feature: "neo-test-usb-storage-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     TestScenario {
         name: "usb_storm",
         feature: "neo-test-usb-storm",
@@ -12434,6 +12451,23 @@ fn run_qemu_test_invocation(
         }
         qemu.arg("-device").arg("qemu-xhci,id=xhci0");
         qemu.arg("-device").arg("usb-kbd,bus=xhci0.0");
+        qemu.arg("-drive").arg(format!(
+            "if=none,id=usbstick,format=raw,file={}",
+            stick.display()
+        ));
+        qemu.arg("-device")
+            .arg("usb-storage,drive=usbstick,bus=xhci0.0");
+    }
+
+    if scenario.name == "usb_storage_read" || scenario.name == "usb_storage_off" {
+        // L3u-2: QEMU's Bulk-Only usb-storage (46f4:0001) on qemu-xhci,
+        // holding the FAT32 fixture volume (the same image the phase3_fat32_*
+        // scenarios mount from virtio).
+        let stick = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join(format!("{}-usbstick.raw", scenario.name));
+        let stick = prepare_fat32_storage_disk(&stick)?;
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
         qemu.arg("-drive").arg(format!(
             "if=none,id=usbstick,format=raw,file={}",
             stick.display()
