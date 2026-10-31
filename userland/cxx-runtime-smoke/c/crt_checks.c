@@ -285,7 +285,11 @@ int crt_check_entropy(void)
 	return 0;
 }
 
-/* clock_gettime: a monotonic clock, and no wall clock. */
+/* clock_gettime: a monotonic clock, and a realtime clock with the same
+ * process-relative count read from 1970 (no real date; C3c THINK T1). The
+ * oracle: realtime read after a monotonic read is not behind it, this
+ * process has run for under an hour so its "date" is in 1970's first hour,
+ * and an unknown clock id is still refused. */
 int crt_check_clock(void)
 {
 	struct timespec a, b;
@@ -295,9 +299,15 @@ int crt_check_clock(void)
 	CHECK(62, "monotonic does not go back",
 	      b.tv_sec > a.tv_sec || (b.tv_sec == a.tv_sec && b.tv_nsec >= a.tv_nsec));
 	CHECK(63, "tv_nsec in range", b.tv_nsec >= 0 && b.tv_nsec < 1000000000);
+	struct timespec r;
+	CHECK(64, "CLOCK_REALTIME", clock_gettime(CLOCK_REALTIME, &r) == 0);
+	CHECK(65, "realtime is not behind an earlier monotonic read",
+	      r.tv_sec > b.tv_sec || (r.tv_sec == b.tv_sec && r.tv_nsec >= b.tv_nsec));
+	CHECK(66, "realtime reads as 1970's first hour, never a real date",
+	      r.tv_sec >= 0 && r.tv_sec < 3600 && r.tv_nsec >= 0 && r.tv_nsec < 1000000000);
 	errno = 0;
-	CHECK(64, "CLOCK_REALTIME refused (EINVAL)",
-	      clock_gettime(CLOCK_REALTIME, &a) == -1 && errno == EINVAL);
+	CHECK(68, "an unknown clock id is refused (EINVAL)",
+	      clock_gettime(2, &a) == -1 && errno == EINVAL);
 	return 0;
 }
 
