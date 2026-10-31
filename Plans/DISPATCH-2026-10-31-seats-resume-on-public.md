@@ -18,9 +18,8 @@ Read this file with `git fetch origin && git show origin/main:Plans/DISPATCH-202
    `CI` workflow, `workflow_dispatch`, ref = your branch. A 4-shard run takes about 25 minutes. Keep at most two of
    your own gates in flight. A scenario that only fails here on time is a timeout to raise (with the elapsed time in
    the commit), not a code fault; `desktop_home_cycle` was the first (main `76a1f03`).
-3. **Reading the private archive:** if your PR's history is there, attach `SecondStageTurbine/LogansOS-private` read-only
-   (`add_repo`, access "read") and fetch your branch from it. Never push to it, and never push its branches here
-   unchanged: rebase your PR's own change onto this repo's `main`, run the scan in rule 1, then push.
+3. **Don't attach the private archive** (it stops you on a prompt only J.c. can answer). Everything you need from it
+   is already here: carried-over PRs #1-#8 and the `import/pr<N>` branches below.
 4. Everything else in `CLAUDE.md` holds: the close-gate ritual, verify-before-merge, the AAG, cross-family reviews,
    no model names in commits or PR text, and a `PM:` comment on the PR with the gated head SHA when it's ready.
 
@@ -37,10 +36,14 @@ Read this file with `git fetch origin && git show origin/main:Plans/DISPATCH-202
 | #256 | #7 (on #6) | `claude/ot90-p3b-quiesce` | gate after #6 merges |
 | #257 | #8 (on #7) | `claude/ot90-p4-power-cap` | gate after #7 merges |
 
-## Still in the archive: each needs a rebase onto this repo's `main` by its seat
+## Imported, with conflicts to resolve: each needs its seat
 
 These conflicted with current `main` (they had fallen behind on the private repo too), or their parent moved after
-they were cut.
+they were cut. **The PM has imported each one here as `import/pr<N>`** (J.c. approved, 2026-10-31): the PR's net
+change applied three-way onto its public base, conflict markers committed as they fell, scanned. Do NOT attach the
+private archive. Start your branch from the import, resolve the markers (`git grep -n '^<<<<<<<'`), gate, and open
+the PR from your own branch name. The import commit message lists the conflicted files. Stacked imports were applied
+on the previous import, so resolve them in order.
 
 | Private PR | Branch @ head | Seat |
 |---|---|---|
