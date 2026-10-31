@@ -48,6 +48,15 @@ const SYS_THREAD_SET_TLS: u64 = 0x4F;
 const SYS_PROCESS_SELF: u64 = 0x50;
 const SYS_HANDLE_INFO: u64 = 0x51;
 const SYS_GETRANDOM: u64 = 0x190;
+// OT-61 rung 4 S3: the Atrium shared-pixel-buffer calls, for
+// `std::os::neoplutarch::atrium` (a browser content process renders into its
+// own buffer and hands the compositor a read-only, derived handle).
+const SYS_DERIVE: u64 = 8;
+const SYS_BUFFER_CREATE: u64 = 0x1A0;
+const SYS_BUFFER_MAP: u64 = 0x1A1;
+const SYS_BUFFER_QUERY: u64 = 0x1A2;
+const SYS_BUFFER_COMMIT_DAMAGE: u64 = 0x1AD;
+const SYS_BUFFER_UNMAP: u64 = 0x1B6;
 
 /// `SYS_CLOCK_GETTIME`'s monotonic clock id.
 const CLOCK_MONOTONIC: u64 = 1;
@@ -264,6 +273,50 @@ pub fn process_self() -> i64 {
 pub fn handle_info(idx: u32, out: &mut [u8; 16]) -> i64 {
     // SAFETY: `out` is a live 16-byte local; the kernel validates ptr+len.
     unsafe { syscall4(SYS_HANDLE_INFO, idx as u64, out.as_mut_ptr() as u64, 16, 0) }
+}
+
+/// S3: `SYS_BUFFER_CREATE(desc, 24)`: a new shared pixel buffer from a
+/// `BufferDescV1`; the root handle (full buffer rights) or -errno (`ENOSYS`
+/// on a kernel without the Atrium runtime). Needs no capability: the buffer is
+/// the caller's own memory, charged to its account.
+pub fn buffer_create(desc: &[u8; 24]) -> i64 {
+    // SAFETY: `desc` is a live 24-byte value; the kernel copies it in.
+    unsafe { syscall4(SYS_BUFFER_CREATE, desc.as_ptr() as u64, 24, 0, 0) }
+}
+
+/// S3: `SYS_BUFFER_MAP(handle, role)`: map the buffer; role 0 is RW+NX
+/// (needs MAP_WRITE), role 1 is RO+NX (needs MAP_READ). The base address, or
+/// -errno.
+pub fn buffer_map(handle: u32, role: u32) -> i64 {
+    // SAFETY: two scalars; the kernel picks the address.
+    unsafe { syscall4(SYS_BUFFER_MAP, handle as u64, role as u64, 0, 0) }
+}
+
+/// S3: `SYS_BUFFER_UNMAP(base)`: remove a mapping made by [`buffer_map`].
+pub fn buffer_unmap(base: u64) -> i64 {
+    // SAFETY: the kernel only removes a buffer mapping that starts at `base`.
+    unsafe { syscall4(SYS_BUFFER_UNMAP, base, 0, 0, 0) }
+}
+
+/// S3: `SYS_BUFFER_QUERY(handle, out, 24)`: the buffer's `BufferDescV1`.
+pub fn buffer_query(handle: u32, out: &mut [u8; 24]) -> i64 {
+    // SAFETY: `out` is a live 24-byte local; the kernel validates ptr+len.
+    unsafe { syscall4(SYS_BUFFER_QUERY, handle as u64, out.as_mut_ptr() as u64, 24, 0) }
+}
+
+/// S3: `SYS_BUFFER_COMMIT_DAMAGE(handle, rect, 8)`: publish one damage
+/// rectangle (`DamageRectV1`) for the compositor.
+pub fn buffer_commit_damage(handle: u32, rect: &[u8; 8]) -> i64 {
+    // SAFETY: `rect` is a live 8-byte value; the kernel copies it in.
+    unsafe { syscall4(SYS_BUFFER_COMMIT_DAMAGE, handle as u64, rect.as_ptr() as u64, 8, 0) }
+}
+
+/// S3: `SYS_DERIVE(handle, meta, semantic)`: a new handle to the same object
+/// with at most the given rights (attenuation only; the kernel refuses
+/// anything wider than `handle`'s). The new index, or -errno.
+pub fn derive(handle: u32, meta: u8, semantic: u8) -> i64 {
+    // SAFETY: three scalars.
+    unsafe { syscall4(SYS_DERIVE, handle as u64, meta as u64, semantic as u64, 0) }
 }
 
 /// C2.1b: the handle-table slots [`handle_info`] scans (the kernel's tables
