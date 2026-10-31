@@ -181,6 +181,10 @@ pub mod atrium {
 
     /// The `USE` meta right a derived handle needs to be used at all.
     pub const META_USE: u8 = 1 << 0;
+    /// The meta right to derive narrower handles from this one.
+    pub const META_DERIVE: u8 = 1 << 1;
+    /// The meta right to grant this handle over a channel.
+    pub const META_GRANT: u8 = 1 << 2;
 
     /// `BufferDescV1`: the buffer's geometry (24 bytes on the wire).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,5 +279,49 @@ pub mod atrium {
     /// rights (the kernel refuses anything wider than `handle`'s own).
     pub fn derive(handle: RawHandle, meta: u8, semantic: u8) -> io::Result<RawHandle> {
         check(rt::derive(handle, meta, semantic)).map(|h| h as RawHandle)
+    }
+}
+
+/// OT-61 rung 4 S3b: the rendezvous channels a launcher hands a process, so
+/// a browser process can give the compositor its read-only buffer view.
+///
+/// Every call parks until the peer meets it (the kernel's rendezvous IPC).
+/// A process holds no channel unless it was given one: these reach only the
+/// peers its launcher connected it to.
+#[unstable(feature = "neoplutarch_ext", issue = "none")]
+pub mod channel {
+    use super::io::RawHandle;
+    use super::rt;
+    use crate::io;
+
+    fn check(r: i64) -> io::Result<i64> {
+        if r < 0 { Err(io::Error::from_raw_os_error((-r) as i32)) } else { Ok(r) }
+    }
+
+    fn pack(meta: u8, semantic: u8) -> u16 {
+        (meta as u16) << 8 | semantic as u16
+    }
+
+    /// Send `msg` (not empty) to the peer; returns once the peer has it.
+    pub fn send(channel: RawHandle, msg: &[u8]) -> io::Result<usize> {
+        check(rt::send(channel, msg)).map(|n| n as usize)
+    }
+
+    /// Receive one message into `buf` (not empty); returns its length. A
+    /// longer message is cut to `buf.len()`.
+    pub fn recv(channel: RawHandle, buf: &mut [u8]) -> io::Result<usize> {
+        check(rt::recv(channel, buf)).map(|n| n as usize)
+    }
+
+    /// Give the peer a copy of `handle` with at most `meta`/`semantic`
+    /// rights. `handle` needs the `GRANT` meta right; the peer gets the
+    /// intersection of these, `handle`'s own, and what it asked for.
+    pub fn grant(channel: RawHandle, handle: RawHandle, meta: u8, semantic: u8) -> io::Result<()> {
+        check(rt::grant(channel, handle, pack(meta, semantic))).map(|_| ())
+    }
+
+    /// Receive a granted handle, keeping at most `meta`/`semantic` rights.
+    pub fn recv_grant(channel: RawHandle, meta: u8, semantic: u8) -> io::Result<RawHandle> {
+        check(rt::recv_grant(channel, pack(meta, semantic))).map(|h| h as RawHandle)
     }
 }
