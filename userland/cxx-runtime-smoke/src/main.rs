@@ -6,12 +6,8 @@
 //! The C checks live in `c/crt_checks.c`, each against an independent
 //! oracle (see that file's header), and the C++ ones in `c/cxx_checks.cpp`.
 //! This binary runs them in order, then runs three on several threads at
-<<<<<<< ours
-//! once: `errno` must be per thread, the allocator must hold up under
-=======
 //! once (and, from C3b, the pthread and libc++ thread checks in
 //! `c/pthread_checks.c` and `c/cxx_thread_checks.cpp`): `errno` must be per thread, the allocator must hold up under
->>>>>>> theirs
 //! concurrent use, and a function-local static must be built exactly once
 //! while every thread waits for it.
 //!
@@ -20,15 +16,11 @@
 
 #![no_main]
 
-<<<<<<< ours
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-=======
-use std::thread;
->>>>>>> theirs
 
 use neo_std_pal::SyscallHeap;
 
@@ -55,7 +47,6 @@ unsafe extern "C" {
     fn cxx_check_clock() -> i32;
     fn cxx_static_guard_probe(id: i32) -> i32;
     fn cxx_static_guard_builds() -> i32;
-<<<<<<< ours
     fn crt_stdout_marker() -> i32;
     fn crt_stdio_hammer(id: i32) -> i32;
     fn crt_stdio_end_runs();
@@ -63,7 +54,6 @@ unsafe extern "C" {
     static stdout: *mut c_void;
     fn __lockfile(f: *mut c_void) -> i32;
     fn __unlockfile(f: *mut c_void);
-=======
     fn pt_check_threads() -> i32;
     fn pt_check_mutex_kinds() -> i32;
     fn pt_check_condvar() -> i32;
@@ -73,7 +63,6 @@ unsafe extern "C" {
     fn cxx_check_threads() -> i32;
     fn cxx_check_condition_variable() -> i32;
     fn cxx_check_sync() -> i32;
->>>>>>> theirs
 }
 
 fn check(n: i32, what: &str, ok: bool) {
@@ -101,7 +90,6 @@ fn on_threads(probe: unsafe extern "C" fn(i32) -> i32) -> bool {
     handles.into_iter().all(|h| h.join().unwrap_or(false))
 }
 
-<<<<<<< ours
 /// CP-100: while this thread holds stdout's lock, a second thread's `fputs`
 /// to stdout must wait, and must finish once the lock is let go; and the
 /// holder taking it again is the nested case (0, nothing to release).
@@ -126,8 +114,6 @@ fn stdout_lock_excludes() -> bool {
     nested && waited && wrote && done.load(Ordering::Acquire)
 }
 
-=======
->>>>>>> theirs
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // The C and C++ static constructors, before any C or C++ runs.
@@ -192,7 +178,6 @@ pub extern "C" fn _start() -> ! {
         "C++: one function-local static, 6 threads, built once",
         on_threads(cxx_static_guard_probe) && unsafe { cxx_static_guard_builds() } == 1,
     );
-<<<<<<< ours
     check(
         16,
         "stdout's lock holds a second thread's fputs until it's let go",
@@ -201,45 +186,43 @@ pub extern "C" fn _start() -> ! {
     let ran = on_threads(crt_stdio_hammer);
     unsafe { crt_stdio_end_runs() };
     check(17, "6 threads print 600-byte runs to stdout at once", ran);
-=======
     c_check(
-        16,
+        19,
         "pthread: create/join, a mutex that excludes, self/equal",
         pt_check_threads,
     );
     c_check(
-        17,
+        20,
         "pthread: recursive, error-checking and normal mutexes",
         pt_check_mutex_kinds,
     );
     c_check(
-        18,
+        21,
         "pthread: cond wake, monotonic timeout, realtime refused",
         pt_check_condvar,
     );
     c_check(
-        19,
+        22,
         "pthread: keys per thread, destructors at exit",
         pt_check_keys,
     );
-    c_check(20, "pthread: once under 6 threads", pt_check_once);
-    c_check(21, "pthread: rwlock", pt_check_rwlock);
+    c_check(23, "pthread: once under 6 threads", pt_check_once);
+    c_check(24, "pthread: rwlock", pt_check_rwlock);
     c_check(
-        22,
+        25,
         "C++: std::thread + std::mutex, hardware_concurrency",
         cxx_check_threads,
     );
     c_check(
-        23,
+        26,
         "C++: condition_variable wait_for timeout and wake",
         cxx_check_condition_variable,
     );
     c_check(
-        24,
+        27,
         "C++: call_once, shared_mutex, atomic wait/notify",
         cxx_check_sync,
     );
->>>>>>> theirs
     println!("{TAG} PASS");
     std::process::exit(0)
 }

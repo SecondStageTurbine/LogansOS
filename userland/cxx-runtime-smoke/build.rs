@@ -3,7 +3,6 @@
 //! target flags neo-crt uses: `c/crt_checks.c` (musl) and `c/cxx_checks.cpp`
 //! (libc++, no exceptions, no RTTI).
 
-<<<<<<< ours
 /// Third-party headers (musl, libc++) go in with `-isystem`, not `-I`, so a
 /// newer clang's warnings in them can't fail this crate's `-Werror`; only the
 /// smoke's own code is held to it. The order is kept: libc++, then the C
@@ -24,12 +23,6 @@ fn main() {
     ];
     let mut c = cc::Build::new();
     c.compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
-=======
-fn main() {
-    let inc = |k: &str| std::env::var(format!("DEP_NEO_CRT_C_{k}")).unwrap();
-    cc::Build::new()
-        .compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
->>>>>>> theirs
         .no_default_flags(true)
         .flag("--target=x86_64-unknown-none-elf")
         .flag("-mno-red-zone")
@@ -42,24 +35,13 @@ fn main() {
         .flag("-nostdinc")
         .flag("-Wall")
         .flag("-Werror")
-<<<<<<< ours
         .define("_XOPEN_SOURCE", "700");
     system_includes(&mut c, &c_headers);
-    c.file("c/crt_checks.c").compile("crt_checks");
-    let mut cxx = cc::Build::new();
-    cxx.compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
-=======
-        .define("_XOPEN_SOURCE", "700")
-        .include(inc("INCLUDE_GENERATED"))
-        .include(inc("INCLUDE_ARCH"))
-        .include(inc("INCLUDE_ARCH_GENERIC"))
-        .include(inc("INCLUDE"))
-        .file("c/crt_checks.c")
+    c.file("c/crt_checks.c")
         .file("c/pthread_checks.c")
         .compile("crt_checks");
-    cc::Build::new()
-        .compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
->>>>>>> theirs
+    let mut cxx = cc::Build::new();
+    cxx.compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
         .no_default_flags(true)
         .cpp(true)
         .cpp_link_stdlib(None)
@@ -77,27 +59,13 @@ fn main() {
         .flag("-fno-rtti")
         .flag("-Wall")
         .flag("-Werror")
-<<<<<<< ours
         .define("_XOPEN_SOURCE", "700");
     system_includes(&mut cxx, &[inc("INCLUDE_CXX_CONFIG"), inc("INCLUDE_CXX")]);
     system_includes(&mut cxx, &c_headers);
     system_includes(&mut cxx, &[inc("INCLUDE_BUILTIN")]);
-    cxx.file("c/cxx_checks.cpp").compile("cxx_checks");
-=======
-        .define("_XOPEN_SOURCE", "700")
-        // libc++ first, then the C library, then clang's own headers.
-        .include(inc("INCLUDE_CXX_CONFIG"))
-        .include(inc("INCLUDE_CXX"))
-        .include(inc("INCLUDE_GENERATED"))
-        .include(inc("INCLUDE_ARCH"))
-        .include(inc("INCLUDE_ARCH_GENERIC"))
-        .include(inc("INCLUDE"))
-        .flag("-isystem")
-        .flag(inc("INCLUDE_BUILTIN"))
-        .file("c/cxx_checks.cpp")
+    cxx.file("c/cxx_checks.cpp")
         .file("c/cxx_thread_checks.cpp")
         .compile("cxx_checks");
->>>>>>> theirs
     // libc++'s configuration decides code that inlines into this crate's
     // C++ (the hardening checks), so a change to it must rebuild that too.
     println!(

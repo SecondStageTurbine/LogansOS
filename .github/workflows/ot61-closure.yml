@@ -89,7 +89,6 @@ jobs:
       - name: xtask ot61-closure-build (overlay std + closure + A4 checks)
         run: cargo run -p xtask -- ot61-closure-build
 
-<<<<<<< ours
   # On the hosted runner, with clang installed in the job: the same LLVM
   # major the Dockerfile pins for the QEMU gate (NEO_CRT_CLANG_MAJOR), and the
   # job fails if apt resolves another major, so the compiler can't move
@@ -105,17 +104,6 @@ jobs:
       RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
       CARGO_HOME: ${{ github.workspace }}/.cargo-home
       NEO_CRT_CLANG_MAJOR: "19"
-=======
-  crt-build:
-    name: neo-crt C/C++ runtime (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 45
-
-    # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
-    env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
-      CARGO_HOME: ${{ github.workspace }}/.cargo-home
->>>>>>> theirs
 
     steps:
       - name: Checkout
@@ -139,7 +127,6 @@ jobs:
           components: rust-src,llvm-tools-preview
           targets: x86_64-unknown-none
 
-<<<<<<< ours
       # The Dockerfile's pin and this one must agree.
       - name: Install clang (the Dockerfile's pinned major)
         run: |
@@ -153,24 +140,6 @@ jobs:
           "clang-${NEO_CRT_CLANG_MAJOR}" --version | head -1
           test "$("clang-${NEO_CRT_CLANG_MAJOR}" -dumpversion | cut -d. -f1)" = "${NEO_CRT_CLANG_MAJOR}"
           echo "NEO_CRT_CLANG=clang-${NEO_CRT_CLANG_MAJOR}" >> "$GITHUB_ENV"
-=======
-      # OT-61 C3a: neo-crt compiles musl and libc++ with clang (>= 18, to
-      # match the vendored libc++ 18.1.8). Fail with a clear message, not a
-      # cc-rs error, when a runner doesn't have it.
-      - name: clang is present
-        run: |
-          set -e
-          if ! command -v clang >/dev/null 2>&1; then
-            echo "ERROR: ${RUNNER_NAME:-runner} has no clang; neo-crt needs clang >= 18 (docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md §7)"
-            exit 1
-          fi
-          clang --version | head -1
-          major=$(clang -dumpversion | cut -d. -f1)
-          if [ "$major" -lt 18 ]; then
-            echo "ERROR: clang $major is older than 18"
-            exit 1
-          fi
->>>>>>> theirs
 
       - name: xtask ot61-crt-build (overlay std + neo-crt + smoke + A4 checks)
         run: cargo run -p xtask -- ot61-crt-build

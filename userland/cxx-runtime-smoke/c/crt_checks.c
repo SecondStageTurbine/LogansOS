@@ -221,7 +221,6 @@ int crt_check_alloc(void)
 	      a64 && a4k && ((uintptr_t)a64 & 63) == 0 && ((uintptr_t)a4k & 4095) == 0);
 	free(a64);
 	free(a4k);
-<<<<<<< ours
 	/* Chad #219: alignment 0 and a non-power-of-two alignment are refused
 	 * (NULL, EINVAL); a size that isn't a multiple of the alignment is
 	 * accepted (C17/C23), aligned and writable to its last byte. errno read
@@ -241,8 +240,6 @@ int crt_check_alloc(void)
 	memset(odd, 0x5A, 33);
 	CHECK(60, "aligned_alloc(32, 33): all 33 bytes usable", odd[0] == 0x5A && odd[32] == 0x5A);
 	free(odd);
-=======
->>>>>>> theirs
 	void *pm = 0;
 	CHECK(56, "posix_memalign", posix_memalign(&pm, 256, 10) == 0 && ((uintptr_t)pm & 255) == 0);
 	free(pm);
@@ -276,7 +273,6 @@ int crt_check_stdout(void)
 	return 0;
 }
 
-<<<<<<< ours
 /* CP-100: called from a second thread while the first holds stdout's lock
  * (from Rust, through neo-crt's __lockfile); it must not return before the
  * lock is released. */
@@ -308,8 +304,6 @@ void crt_stdio_end_runs(void)
 	fflush(stdout);
 }
 
-=======
->>>>>>> theirs
 /* Run on several threads at once (from Rust): errno must be per thread. */
 int crt_errno_probe(int id)
 {
