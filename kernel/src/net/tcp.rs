@@ -1087,7 +1087,18 @@ pub fn pump_loopback_egress() {
                 break;
             };
             if is_loopback(&segment.dst) {
-                let _ = inject_segment(segment.src, segment.dst, &segment.segment);
+                // A loopback segment that fails here is lost for good (nothing
+                // retransmits without `net-tick`); say so instead of dropping
+                // it silently.
+                if let Err(e) = inject_segment(segment.src, segment.dst, &segment.segment) {
+                    crate::serial_println!(
+                        "[ kernel ] tcp: loopback segment dropped {:?} {}->{} len={}",
+                        e,
+                        segment.src.port,
+                        segment.dst.port,
+                        segment.segment.len()
+                    );
+                }
                 delivered = true;
             } else {
                 retained.push_back(segment);

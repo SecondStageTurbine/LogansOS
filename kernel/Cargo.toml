@@ -239,6 +239,10 @@ desktop = [
 # SYS_NET_DIAL. OFF by default leaves the original three-argument ambient dial
 # implementation compiled unchanged (the Rule-1 kill-switch).
 net-dial-cap = []
+# OT-61 rung 5b: a NetDial cap without the NON_PUBLIC right reaches only public
+# addresses (checked after the kernel's own resolution). Root caps carry the
+# right, so every existing holder dials as with plain net-dial-cap.
+net-dial-public-only = ["net-dial-cap"]
 ai-generate = []
 # OT-40: re-enable interrupts around long in-kernel inference compute windows.
 # OFF restores the previous syscall-body IF=0 behavior for the kill switch.
@@ -1821,6 +1825,13 @@ neo-test-interface-cap-derive-revoke = ["neo-test", "interface-identity", "file-
 # named "gets an IP" gate CB-1 lacked.
 neo-test-dhcp-rx-real-lease = ["neo-test"]
 neo-test-phase4-https-fetch = ["neo-test", "net-dial-cap"]
+# OT-61 rung 5b: phase4's checks on a net-dial-public-only kernel, plus a cap
+# narrowed without NON_PUBLIC that must not reach the loopback fixture.
+neo-test-net-dial-public-only = ["neo-test", "net-dial-public-only"]
+# OT-61 rung 5c: the fetch broker serves a content process over a channel:
+# HTTPS through a user-space TLS session, policy refusals, and a name that
+# resolves to loopback refused by the kernel through the broker's narrowed cap.
+neo-test-fetch-broker = ["neo-test", "net-dial-public-only", "browser-runtime"]
 # Equality gate: deliberately does NOT enable net-dial-cap and proves the
 # original ambient HTTPS path still succeeds.
 neo-test-net-dial-cap-kill-switch = ["neo-test"]

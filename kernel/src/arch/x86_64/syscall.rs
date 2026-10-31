@@ -2154,6 +2154,7 @@ fn dial_errno(e: DialError) -> i64 {
         DialError::Resolve => EAGAIN,
         DialError::NoCandidates => ENOENT,
         DialError::AllFailed => EAGAIN,
+        DialError::NonPublic => EACCES,
     }
 }
 
@@ -5390,7 +5391,7 @@ fn sys_net_dial_impl(name_ptr: *const u8, name_len: usize, port: u16, cap_h: u32
     // Snapshot the immutable scope under the established per-process handle
     // lock, then drop it before DNS/TCP work (CP-1: no new nested lock order).
     let scope = crate::arch::x86_64::without_interrupts(|| proc.handles.lock().get(cap_h));
-    let (scope_host, scope_port) = match scope {
+    let (scope_host, scope_port, scope_rights) = match scope {
         Some(Handle::NetDial {
             host,
             port: scope_port,
@@ -5399,7 +5400,7 @@ fn sys_net_dial_impl(name_ptr: *const u8, name_len: usize, port: u16, cap_h: u32
         }) if rights.has_meta(meta_rights::USE)
             && rights.has_semantic(process::net_dial_rights::DIAL) =>
         {
-            (host, scope_port)
+            (host, scope_port, rights)
         }
         _ => {
             serial_println!(
@@ -5423,9 +5424,32 @@ fn sys_net_dial_impl(name_ptr: *const u8, name_len: usize, port: u16, cap_h: u32
         return EACCES;
     }
 
-    let socket = match happy_eyeballs::dial_name(proc.pid, name, port) {
+    #[cfg(not(feature = "net-dial-public-only"))]
+    let dialed = {
+        let _ = scope_rights;
+        happy_eyeballs::dial_name(proc.pid, name, port)
+    };
+    // OT-61 rung 5b: a cap without NON_PUBLIC reaches only public addresses.
+    #[cfg(feature = "net-dial-public-only")]
+    let dialed = if scope_rights.has_semantic(process::net_dial_rights::NON_PUBLIC) {
+        happy_eyeballs::dial_name(proc.pid, name, port)
+    } else {
+        happy_eyeballs::dial_name_public(proc.pid, name, port)
+    };
+    let socket = match dialed {
         Ok(socket) => socket,
-        Err(e) => return dial_errno(e),
+        Err(e) => {
+            #[cfg(feature = "net-dial-public-only")]
+            if e == happy_eyeballs::DialError::NonPublic {
+                serial_println!(
+                    "[ kernel ] net_dial denied reason=non_public pid={} host={} port={}",
+                    proc.pid.0,
+                    name,
+                    port
+                );
+            }
+            return dial_errno(e);
+        }
     };
     tcp::pump_loopback_egress();
     let tuple = socket.tuple();
