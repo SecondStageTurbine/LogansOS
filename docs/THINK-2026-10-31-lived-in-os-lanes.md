@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # THINK: three lanes to make LogansOS feel lived-in (2026-10-31)
 
-**Status:** proposed, for dispatch when the seats resume after the move to the public repo.
+**Status:** decided (J.c., 2026-10-31); ready to dispatch when the seats resume after the move to the public repo.
 **Asked by:** J.c., after a GitHub survey of Rust projects that could round out the OS.
 **Prior-art rule:** CLAUDE.md, "Unfamiliar features: survey open source before writing from scratch". The table in
 section 2 is the survey; each lane's dispatch repeats the rows it uses and re-checks them on the day it starts.
@@ -29,7 +29,7 @@ it when it starts.
 |---|---|---|---|---|
 | ilai-deutel/kibi (editor, ≤1024 lines) | `d42f6e3` 2026-10-27 | MIT OR Apache-2.0 | std plus a raw-mode terminal; tiny, so the port is mostly the terminal layer. Needs Rust 1.99 / edition 2024 (check our toolchain). | The code, vendored. |
 | redox-os/sodium (vi-like editor) | `43feb13` 2024-12-03 | MIT | Designed for a Rust OS, but almost two years quiet: borderline-abandoned by the rule. | Read for design; vendor only with a named maintainer. |
-| redox-os/ion (shell) | `e9b3ca4` 2026-09-07 | MIT | std, plus git dependencies on gitlab.redox-os.org (`calc`, `liner`, `small`) and termion. A real port, not a drop-in. | The code, vendored with its git deps pinned. |
+| redox-os/ion (shell) | `e9b3ca4` 2026-09-07 | MIT | std, plus git dependencies on gitlab.redox-os.org (`calc`, `liner`, `small`) and termion. Not ported (J.c.). | The design: parser, expansion, pipelines, history, completion; small pieces vendored with licence and SHA where cleaner. |
 | redox-os/termion (terminal) | `c784cec` 2025-11-21 | MIT | The raw-mode/ANSI layer under Ion and sodium; its Unix backend expects termios. | A LogansOS backend for it, or our own small equivalent. |
 | uutils/coreutils | `cac8be1` 2026-10-31 | MIT | std-heavy (fs, process, env); per-utility crates, so we can take a few at a time. | The code, per utility, as our std PAL covers what each one needs. |
 | Frommi/miniz_oxide (DEFLATE) | `7fc2dd4` 2026-10-29 | MIT (crate `Cargo.toml`) | `no_std` + `alloc`. Drop-in. | The code. |
@@ -54,9 +54,14 @@ escapes, window size. LogansOS has a window manager, not a tty. So the lane is:
    subset we support. Kill-switch: the terminal app is a separate client; the WM is unchanged without it.
 2. **L1b, kibi** on that terminal, vendored under `third_party/kibi` (license files kept, upstream SHA recorded).
    First real editor. Check the toolchain against its Rust 1.99 / edition 2024 requirement first.
-3. **L1c, a shell:** decide between porting Ion (git deps pinned and vendored, termion on L1a) and growing
-   `neo-shell`, with a short spike on each. Ion gets us scripting, pipelines and history; neo-shell keeps the
-   capability model first-class. The decision goes to J.c. with the spike results.
+3. **L1c, grow `neo-shell` (J.c., 2026-10-31).** We keep our own shell, so the capability model stays first-class,
+   and borrow Ion's best practices by design, not by copying its code wholesale. Read Ion (MIT) for: its parser and
+   expansion rules (variables, quoting, globbing, command substitution), pipelines and redirection, `&&`/`||` and
+   control flow, a typed variable model (strings vs arrays), history and line editing (redox `liner`), tab
+   completion, and helpful error messages. Small pieces may be vendored with Ion's licence and SHA recorded when that's
+   cleaner than rewriting. Each feature lands as its own small build with a test; the order is line editing and
+   history, then pipelines and redirection, then variables and quoting, then control flow and scripts, then
+   completion. neo-shell runs inside the L1a terminal window.
 4. **L1d, coreutils:** individual uutils crates (`ls`, `cat`, `cp`, `mv`, `mkdir`, `rm`, `echo`, `wc`, `head`,
    `tail` first), each gated on our std PAL supporting what it calls. Unsupported calls are listed, not stubbed
    silently.
@@ -99,15 +104,14 @@ Linux `vfat` driver warns about (read for principle only, never copied).
 Three independent lanes, so all three can start when seats are free:
 - **Lane 2** first or in parallel: it's host-only, so it doesn't compete for QEMU gate slots.
 - **Lane 1** is the most visible and the deepest: L1a is a real design and build (new client protocol, gate
-  scenarios, cross-family review); L1b follows quickly; L1c starts with two spikes and a decision; L1d is many small
+  scenarios, cross-family review); L1b follows quickly; L1c grows neo-shell feature by feature; L1d is many small
   builds.
 - **Lane 3** is one to two gated builds on code we already vendor.
 
 Seats: Lane 1 to a main-tier seat (the WM experience suggests seat B, who built the permission prompt and lock
 paths); Lane 2 to Prometheus or Dexter; Lane 3 to seat C (NeoFS and the block layer).
 
-## 7. Decisions for J.c.
+## 7. Decisions (J.c., 2026-10-31)
 
-1. Shell: port Ion, or grow `neo-shell`? Proposed: spike both in L1c, then decide.
-2. Is a terminal window the intended direction for the desktop's command line, or should the shell live inside
-   Arthur's surface? This THINK assumes a separate terminal app.
+1. **Shell:** grow our own `neo-shell`, using Ion's best practices (section 3, L1c). No Ion port and no spike.
+2. **Command line:** a **separate terminal window** on the WM (L1a), not inside Arthur's surface.
