@@ -137,12 +137,15 @@ bit-for-bit unchanged. JIT stays a cargo feature that **no** build enables; A1 s
 ## 6. Decisions
 
 1. **The wall clock (T1).** The kernel side is done: `SYS_CLOCK_GETTIME(CLOCK_REALTIME)` already returns
-   boot-relative time without `rtc-epoch` and the RTC's local wall time with it (OT-85). What's left is std's
-   overlay, which keeps `SystemTime::now()` unsupported on purpose (`time_neoplutarch.rs`: realtime is only wall time
-   on `rtc-epoch` kernels). Recommendation: let `SystemTime::now()` read the kernel's realtime, documented as
-   boot-relative unless the kernel has `rtc-epoch`, and have `neo-crt` build `CLOCK_REALTIME` on it. A page that
-   reads `Date.now()` must not crash the engine; a wrong date before `rtc-epoch` is a correctness gap, not a safety
-   one. This changes C1.3's stated std behaviour, so it is the **PM's call** (J.c.'s if the PM wants it).
+   boot-relative time without `rtc-epoch` and the RTC's local wall time with it (OT-85). std's overlay keeps
+   `SystemTime::now()` unsupported on purpose (`time_neoplutarch.rs`: a process can't tell which of the two it got).
+   Two ways to stop `PRMJ_Now` aborting:
+   - **(i) contained, recommended (#21):** `neo-crt`'s `CLOCK_REALTIME` returns its process-relative count, read
+     from 1970. Time advances, and every date reads as 1970, never a wrong "real" one. std is untouched.
+   - **(ii) std:** let `SystemTime::now()` read the kernel's realtime, documented as boot-relative unless the
+     kernel has `rtc-epoch`. This changes C1.3's stated std behaviour.
+
+   Either way, real dates wait until the bundle can trust `rtc-epoch`. **PM's call** (J.c.'s if the PM wants it).
 2. **The build option (§3.3).** Recommendation (c). PM's call.
 3. **Order against rung 4.** C3c-1 needs only C3a, the same as rung 4 (SWGL, private #262). Both can run once #2
    merges. They don't touch each other's files.
@@ -152,5 +155,5 @@ bit-for-bit unchanged. JIT stays a cargo feature that **no** build enables; A1 s
 1. The PM reads this THINK (PR).
 2. Vendor `mozjs` at a pinned commit under `third_party/ot61-mozjs/` with the §2.1 licence table. Write the generator
    job (option c) and commit its first outputs.
-3. Build `neo-crt` additions: `arc4random_buf`, large-alignment `posix_memalign`, and the T1 clock decision.
+3. `neo-crt` additions: `arc4random_buf` and the page-aligned `posix_memalign` check (#11), and the T1 clock (#21).
 4. `spidermonkey_smoke` and its gate (§3.2).
