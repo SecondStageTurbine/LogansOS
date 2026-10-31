@@ -27,6 +27,9 @@ use crate::serial_println;
 pub const RESCHEDULE_IPI_VECTOR: u8 = 0xfd;
 pub const TLB_SHOOTDOWN_IPI_VECTOR: u8 = 0xfc;
 pub const SPURIOUS_VECTOR: u8 = 0xff;
+/// OT-90 P3b: the shutdown's STOP IPI (`cpu_stop`).
+#[cfg(feature = "power-stop-cpus")]
+pub const STOP_IPI_VECTOR: u8 = 0xfb;
 
 const INVALID_LAPIC_ID: u32 = u32::MAX;
 const APIC_BASE_MSR_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -198,7 +201,47 @@ pub fn send_tlb_shootdown_ipi(target_cpu: u32) {
     send_fixed_ipi(target_cpu, TLB_SHOOTDOWN_IPI_VECTOR);
 }
 
+/// OT-90 P3b: the STOP IPI to `target_cpu` (`cpu_stop`).
+#[cfg(feature = "power-stop-cpus")]
+pub fn send_stop_ipi(target_cpu: u32) {
+    send_fixed_ipi(target_cpu, STOP_IPI_VECTOR);
+}
+
+/// OT-90 P3b: an NMI to `target_cpu`, for a CPU that never took the STOP
+/// IPI (interrupts off too long). ICR delivery mode 100b; the vector field
+/// is ignored.
+#[cfg(feature = "power-stop-cpus")]
+pub fn send_nmi_ipi(target_cpu: u32) {
+    const ICR_DELIVERY_NMI: u32 = 0b100 << 8;
+    send_ipi_low(target_cpu, ICR_LEVEL_ASSERT | ICR_DELIVERY_NMI);
+}
+
+/// Whether `cpu_id` has a registered local APIC (it was started).
+#[cfg(feature = "power-stop-cpus")]
+pub fn cpu_registered(cpu_id: u32) -> bool {
+    (cpu_id as usize) < per_cpu::MAX_CPUS && lapic_id_for_cpu(cpu_id) != INVALID_LAPIC_ID
+}
+
+/// OT-90 P3b: this CPU's index, found from its own local APIC ID rather than
+/// GS (a STOP IPI or NMI can land in ring 3, with the user's GS). `None` if
+/// no registered CPU has this ID.
+#[cfg(feature = "power-stop-cpus")]
+pub fn cpu_from_own_lapic_id() -> Option<u32> {
+    const APIC_ID: u64 = 0x020;
+    let raw = read_reg(APIC_ID);
+    let own = if mode() == ApicMode::X2Apic {
+        raw
+    } else {
+        raw >> 24
+    };
+    (0..per_cpu::MAX_CPUS as u32).find(|&cpu| lapic_id_for_cpu(cpu) == own)
+}
+
 fn send_fixed_ipi(target_cpu: u32, vector: u8) {
+    send_ipi_low(target_cpu, ICR_LEVEL_ASSERT | vector as u32);
+}
+
+fn send_ipi_low(target_cpu: u32, icr_low: u32) {
     let target = lapic_id_for_cpu(target_cpu);
     debug_assert_ne!(
         target, INVALID_LAPIC_ID,
@@ -208,7 +251,6 @@ fn send_fixed_ipi(target_cpu: u32, vector: u8) {
         return;
     }
 
-    let icr_low = ICR_LEVEL_ASSERT | vector as u32;
     if mode() == ApicMode::X2Apic {
         // A WRMSR to the x2APIC ICR is not serializing, unlike the xAPIC
         // ICR's uncached MMIO store: without a fence the target can take the
@@ -333,7 +375,11 @@ pub fn spurious_vector_register() -> u32 {
 }
 
 /// The local APIC ID registered for `cpu_id` (`INVALID_LAPIC_ID` if none).
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 pub fn lapic_id_of(cpu_id: u32) -> u32 {
     lapic_id_for_cpu(cpu_id)
 }

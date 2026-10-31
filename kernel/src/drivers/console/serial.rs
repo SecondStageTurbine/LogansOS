@@ -11,7 +11,7 @@
 //! Linux keeps `dmesg` going forever.
 
 use core::fmt::{self, Write};
-#[cfg(feature = "fb-progress-console")]
+#[cfg(any(feature = "fb-progress-console", feature = "power-stop-cpus"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use uart_16550::SerialPort;
@@ -23,6 +23,31 @@ const COM1: u16 = 0x3F8;
 /// we can call `serial_println!` from anywhere — including interrupt
 /// handlers — without tearing.
 static SERIAL: Mutex<Option<SerialPort>> = Mutex::new(None);
+
+/// OT-90 P3b: set once K4 has stopped the other CPUs. Printing then goes to
+/// the UART (and the fb console, which only tries its locks) and never to
+/// the log sink, whose lock a parked CPU may hold.
+#[cfg(feature = "power-stop-cpus")]
+static STOPPED_WORLD: AtomicBool = AtomicBool::new(false);
+
+/// OT-90 P3b: after K4. `nmi_parked`: a CPU was parked by NMI, so it may
+/// hold the UART lock too; the lock is then forced (its holder never runs
+/// again).
+#[cfg(feature = "power-stop-cpus")]
+pub fn enter_stopped_world(nmi_parked: bool) {
+    STOPPED_WORLD.store(true, Ordering::Release);
+    if nmi_parked && SERIAL.is_locked() {
+        // SAFETY: the holder is a CPU halted for good (K4's NMI park); no
+        // other CPU runs.
+        unsafe { SERIAL.force_unlock() };
+    }
+}
+
+/// Whether K4 has stopped the other CPUs (`log::flush` skips the sink then).
+#[cfg(feature = "power-stop-cpus")]
+pub fn stopped_world() -> bool {
+    STOPPED_WORLD.load(Ordering::Acquire)
+}
 
 /// Set by the panic handler (`enter_panic`): from then on `_print` never
 /// waits for `SERIAL`.
@@ -110,6 +135,17 @@ pub fn _print(args: fmt::Arguments) {
     #[cfg(feature = "fb-progress-console")]
     if PANICKING.load(Ordering::Acquire) {
         print_panicking(args);
+        return;
+    }
+    #[cfg(feature = "power-stop-cpus")]
+    if STOPPED_WORLD.load(Ordering::Acquire) {
+        crate::arch::x86_64::without_interrupts(|| {
+            if let Some(port) = SERIAL.lock().as_mut() {
+                let _ = port.write_fmt(args);
+            }
+        });
+        #[cfg(feature = "fb-progress-console")]
+        crate::drivers::fb::progress::write_fmt(args);
         return;
     }
     crate::arch::x86_64::without_interrupts(|| {

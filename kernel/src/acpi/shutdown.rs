@@ -17,6 +17,16 @@
 //! - **K3:** flush the log sink.
 //! - **K7:** P2's S5 write or reset chain (`acpi::power`).
 //!
+//! - **K4** (`power-stop-cpus`, P3b): stop every other CPU (`cpu_stop`): the
+//!   STOP IPI, then an NMI for any that didn't park in 100 ms. From here the
+//!   kernel prints to the UART only and takes no shared lock.
+//! - **K5** (`power-stop-cpus`): stop this CPU's LAPIC tick and mask every
+//!   I/O APIC entry (prepared before K4: no mapping after it).
+//!
+//! K6 (quiesce DMA, then the IOMMU) is P3b's second part. Without
+//! `power-stop-cpus`, P2's paths run with the other CPUs live, as they
+//! already do.
+//!
 //! **The whole of K1-K3 is bounded too** (Chad #199 item 2). K2's bound is
 //! checked between drain passes, so a block request whose completion never
 //! comes (a device that accepts a write and goes quiet) would hold K2 in its
@@ -24,9 +34,10 @@
 //! the drain lock in such a wait, or K3's sink lock and its write. So K1-K3
 //! run in their own kernel thread (`power-clean`), and the shutdown thread
 //! waits for it for at most [`DEADLINE_TICKS`]. Past that it abandons the
-//! work where it stands and logs the step it was in. The abandoned thread
-//! keeps whatever locks it holds; nothing after the deadline takes one of
-//! them.
+//! work where it stands, logs the step it was in, and goes on to K4 (or
+//! straight to K7 without `power-stop-cpus`). The abandoned thread keeps
+//! whatever locks it holds; nothing after the deadline takes one of them,
+//! and K4 parks its CPU if it runs.
 //!
 //! **After K1-K3, done or abandoned, the log sink is closed**
 //! (`log::close_sink`) before the power path runs: K3 was its last flush,
@@ -34,9 +45,6 @@
 //! and restart print and call `log::flush()` themselves, with no deadline of
 //! their own; a sink disk that stopped answering after K3 would otherwise
 //! hold them for good (#267, Chad 3b). The UART still gets every line.
-//!
-//! K4-K6 (stop the other CPUs, mask interrupt sources, quiesce DMA) are P3b;
-//! until then P2's paths run with the other CPUs live, as they already do.
 //!
 //! **Lock discipline.** No step here holds a lock across another: K1 calls
 //! `terminate` and `reap` one process at a time, K2 releases the mount table
@@ -162,6 +170,8 @@ fn run() -> ! {
             ticks().saturating_sub(start)
         );
     }
+    #[cfg(feature = "power-stop-cpus")]
+    stop_world();
     match kind {
         Kind::PowerOff => super::power::power_off(),
         Kind::Restart => super::power::restart(),
@@ -212,6 +222,41 @@ fn clean(kind: Kind, keep: Option<ProcessId>) {
     crate::log::flush();
     crate::serial_println!("[ power ] K3 log flushed");
     STEP.store(Step::Done as u8, Ordering::Release);
+}
+
+/// K4 and K5. Everything they need is read and mapped first, while the other
+/// CPUs still run; from the STOP IPI on, interrupts stay off on this CPU
+/// until K7, nothing is allocated or mapped, and nothing waits on a lock a
+/// parked CPU could hold.
+#[cfg(feature = "power-stop-cpus")]
+fn stop_world() {
+    use crate::arch::x86_64::cpu_stop;
+    let timer = super::power::stop_timer();
+    let ioapics =
+        super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
+    crate::serial_println!("[ power ] K4 start");
+    x86_64::instructions::interrupts::disable();
+    let report = cpu_stop::stop_others(|us, done| super::power::spin_us(timer.as_ref(), us, done));
+    crate::drivers::console::serial::enter_stopped_world(report.parked_by_nmi != 0);
+    crate::serial_println!(
+        "[ power ] K4 targets={:#x} parked_by_ipi={:#x} parked_by_nmi={:#x} holdouts={:#x}",
+        report.targets,
+        report.parked_by_ipi,
+        report.parked_by_nmi,
+        report.holdouts
+    );
+    #[cfg(feature = "lapic-timer")]
+    crate::arch::x86_64::lapic_timer::disarm_for_shutdown();
+    let masked = ioapics.map(|plan| plan.mask_all());
+    crate::serial_println!(
+        "[ power ] K5 lapic_timer={} ioapic_entries_masked={}",
+        if cfg!(feature = "lapic-timer") {
+            "disarmed"
+        } else {
+            "none"
+        },
+        masked.map_or(-1, |n| n as i64)
+    );
 }
 
 /// K1: terminate every user process but `keep`, reaping as they go, for at
