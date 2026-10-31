@@ -10,7 +10,8 @@
 //! - the allocator family (`malloc`, `calloc`, `realloc`, `free`,
 //!   `aligned_alloc`, `posix_memalign`, `memalign`) on std's global allocator;
 //! - `errno`, one per thread;
-//! - `clock_gettime` (`CLOCK_MONOTONIC` only; there is no wall clock);
+//! - `clock_gettime` (`CLOCK_MONOTONIC`, and a 1970-based `CLOCK_REALTIME`
+//!   that never claims the real date);
 //! - `arc4random_buf`, on std's entropy source (OT-61 C3c-1: SpiderMonkey's
 //!   `mozilla::RandomUint64` takes this path instead of a raw `getrandom`);
 //! - writes to fds 1 and 2, the stdout/stderr stream locks (`__lockfile`),
@@ -251,15 +252,26 @@ pub(crate) fn monotonic_epoch() -> Instant {
     *EPOCH.get_or_init(Instant::now)
 }
 
+const CLOCK_REALTIME: c_int = 0;
 const CLOCK_MONOTONIC: c_int = 1;
 
-/// `CLOCK_MONOTONIC` counts from the first call in this process (POSIX leaves
-/// the epoch unspecified). `CLOCK_REALTIME` and every other clock are
-/// `EINVAL`: the bundle has no wall clock (std's `SystemTime` is unsupported
-/// for the same reason).
+/// Both clocks count from the first clock read in this process.
+///
+/// - `CLOCK_MONOTONIC`: POSIX leaves its epoch unspecified.
+/// - `CLOCK_REALTIME` (OT-61 C3c-1, THINK trap T1): the **same** value, read
+///   as seconds since 1970-01-01. It is never the real date: the date is 1970
+///   plus the time since this process started reading clocks. The bundle has
+///   no trustworthy wall clock (the kernel's realtime is wall time only on
+///   `rtc-epoch` kernels, and a process can't tell which; std's `SystemTime`
+///   stays unsupported for that reason). It exists so that callers which
+///   *require* a realtime clock, such as SpiderMonkey's `PRMJ_Now` (it aborts
+///   if the call fails) and `std::chrono::system_clock`, keep running and see
+///   time advance; dates they show read as 1970.
+///
+/// Every other clock is `EINVAL`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clock_gettime(clock: c_int, ts: *mut Timespec) -> c_int {
-    if clock != CLOCK_MONOTONIC || ts.is_null() {
+    if (clock != CLOCK_MONOTONIC && clock != CLOCK_REALTIME) || ts.is_null() {
         set_errno(EINVAL);
         return -1;
     }
