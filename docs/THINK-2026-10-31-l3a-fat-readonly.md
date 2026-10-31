@@ -40,7 +40,7 @@ Found by reading `fat32.rs`, `fs/mod.rs` and `drivers/block/` at `07d7f6e`.
 G7 and G8 are not FAT work. G8 is a whole driver (USB Bulk-Only Transport + SCSI) and needs its own trap-mining and
 I-14 analysis. L3a can be proven on virtio-blk and AHCI images in the gate, and on the Zenbook's internal SD reader
 only if that reader is PCIe SDHCI or a USB reader (it would need its own driver either way). **"Read an ordinary USB
-stick" is L3a + MBR (G7) + USB MSC (G8).** I propose G8 as its own lane (§7) and not as part of L3a.
+stick" is L3a + MBR (G7) + USB MSC (G8).** G8 is its own lane (§7, PM decision); G7 is in L3a (§6a).
 
 ## 3. Prior-art survey (checked 2026-10-31)
 
@@ -127,26 +127,50 @@ Pieces:
 
 - Host KATs (push-CI) for T1–T8, T10, T12, on images made by the vendored `fatfs` and, for T3/T4, patched by hand
   (the patched bytes are the byte oracle, written out in the test).
-- The nine existing gate scenarios, unchanged, plus two new ones: `fat_fat16_mount_read` (a FAT16 image reads back
-  byte-exact) and `fat_readonly_no_write` (the T4/T5 sector-hash check on a dirty-marked volume).
+- Host KATs for the MBR view (G7, now part of L3a, §6a): a hand-laid MBR sector written out byte by byte in the test
+  (the byte oracle, independent of the parser), plus the T11 superfloppy cases.
+- The nine existing gate scenarios, unchanged, plus three new ones: `fat_fat16_mount_read` (a FAT16 image reads back
+  byte-exact), `fat_readonly_no_write` (the T4/T5 sector-hash check on a dirty-marked volume) and `fat_mbr_mount_read`
+  (an MBR-partitioned virtio disk, FAT32 partition at LBA 2048, mounted as `"deviceN:p1"`, reads back byte-exact).
+- Where the volume comes from: until USB mass storage lands (§7), L3a mounts from the block devices that exist today
+  (virtio-blk in the gate, AHCI/NVMe on hardware). No USB in L3a.
 - Kernel-touching, so the 4-shard gate and an AAG. Not SMP-core, so no cross-family concurrency lens is required; the
   cross-family review is a contained-code review.
 - Size: one dependency step (the adapter) and one swap. Uncertainty is low on the FAT side (upstream does the hard
   part); the likely iteration is the adapter's locking and cache, and the `RefCell`/`Arc<dyn Inode>` lifetime shape.
 
+### 6a. MBR partitions (G7), in L3a
+
+PM decision (2026-10-31): MBR parsing belongs in the FAT lane, because a USB stick or SD card is MBR-partitioned. It
+ships in L3a, read-only:
+
+- A read-only MBR partition view next to the GPT one in `drivers/block/partition.rs`: the four primary entries only
+  (no extended/logical chains yet), FAT types `0x01`, `0x04`, `0x06`, `0x0B`, `0x0C`, `0x0E`. A protective MBR
+  (`0xEE`) defers to the GPT path, as today.
+- The T11 superfloppy rule: sector 0 is a FAT boot sector, not an MBR, when its BPB is sane (bytes per sector a power
+  of two 512..4096, sectors per cluster a power of two, reserved sectors non-zero, FAT count 1 or 2). Then the whole
+  device is the volume.
+- Entries are checked before use: start LBA non-zero, `start + count` inside the device, no overlap between entries;
+  a bad entry is skipped and logged, never mounted.
+- Source string `"deviceN:pM"` (M = 1..4); `"deviceN"` keeps today's whole-device meaning.
+- Byte oracle: a hand-laid 512-byte MBR (boot code zeroed, one `0x0C` entry at LBA 2048, `0x55AA`) written out as a
+  literal array in the host test, asserted against the parser; plus a superfloppy sector and a bad-entry sector.
+
 ## 7. After L3a
 
-1. **L3a-2, MBR partitions (G7):** a read-only MBR partition view next to the GPT one, primary partitions only at
-   first (types `0x01`, `0x04`, `0x06`, `0x0B`, `0x0C`, `0x0E`), with the T11 superfloppy rule. Source string
-   `"deviceN:pM"`. Small, host-KAT heavy.
-2. **USB mass storage (G8), its own lane:** Bulk-Only Transport and the SCSI subset (INQUIRY, READ CAPACITY(10/16),
-   READ(10), TEST UNIT READY, REQUEST SENSE), on the existing xHCI host. Needs driver trap-mining (stall recovery,
-   CSW tag and residue checks, devices that lie in READ CAPACITY, the "last LBA vs block count" off-by-one) and an
-   I-14 analysis. Only after this does "read an ordinary USB stick" become true.
-3. **L3b, read-write** through `GuardedDevice`, as the lanes THINK says. The T4 dirty-bit rule turns into: set both
+1. **USB mass storage (G8), its own lane, mine after L3a (PM, 2026-10-31):** Bulk-Only Transport and the SCSI subset
+   (INQUIRY, READ CAPACITY(10/16), READ(10), TEST UNIT READY, REQUEST SENSE), on the existing xHCI host. It starts with
+   its own prior-art survey and driver trap-mining (stall recovery, CSW tag and residue checks, devices that lie in
+   READ CAPACITY, the "last LBA vs block count" off-by-one) and an I-14 analysis, written as its own THINK. Only after
+   this does "read an ordinary USB stick" become true.
+2. **L3b, read-write** through `GuardedDevice`, as the lanes THINK says. The T4 dirty-bit rule turns into: set both
    dirty flags on the first write, clear them on a clean unmount.
 
-## 8. Questions for the PM
+## 8. Decisions (PM, 2026-10-31)
 
-1. Replace `fat32.rs` with rust-fatfs in L3a (recommended above), or extend `fat32.rs` for L3a and switch at L3b?
-2. Take MBR (G7) as L3a-2 in this lane, and open USB mass storage (G8) as a separate lane with its own seat?
+1. MBR (G7) is in L3a (§6a), read-only, with a byte oracle on a hand-laid MBR.
+2. USB mass storage (G8) is its own lane, this seat's after L3a, prior-art survey and trap-mining first. Until then L3a
+   mounts from the existing block devices or a FAT image on virtio.
+3. Replace `fat32.rs` with rust-fatfs (§5): not answered explicitly; the seat goes ahead with the recommendation,
+   since keeping two FAT implementations costs more and L3b needs rust-fatfs anyway. The nine scenarios are the
+   regression oracle for the swap.
