@@ -166,9 +166,20 @@ atrium-app-icons-boot-test = ["atrium-app-icons", "desktop-home-boot-test"]
 # NEOCRED1 (login-core). Without `.system/`, or read-only (Try): straight to
 # Home. Off = today's boot to Home exactly (the kill-switch).
 login = ["desktop-intro", "dep:login-core"]
+<<<<<<< ours
 # OT-66 K1b: with `cap-rooted-open`, as the product's WM (the kernel side is
 # `neo-test-login`'s).
 login-boot-test = ["login", "desktop-session-boot-test", "cap-rooted-open"]
+=======
+# L7.1 (the `--boot-time` evidence image): Home's intro card shows the boot
+# summary as its second row (firmware handoff, model ready, desktop start
+# and Home, from power-on, read once as Home first shows), and the sign-in
+# or first-boot card, when one shows, a row of its own; each is logged as
+# `BOOT-TIME` (`SYS_BOOT_TIMES` on a `boot-time` kernel). Off: no rows, as
+# before.
+boot-time = ["desktop-intro"]
+login-boot-test = ["login", "desktop-session-boot-test"]
+>>>>>>> theirs
 # OT-88 S1: the settings store (`.system/settings.a`/`.b`, NEOSET1), with the
 # WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
 # time come from it and are set live by OP_SETTING. Off => the presence

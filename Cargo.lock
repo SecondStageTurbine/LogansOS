@@ -285,6 +285,10 @@ name = "boot-eth0-logic-tests"
 version = "0.0.1"
 
 [[package]]
+name = "boot-time-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
