@@ -66,8 +66,6 @@ use super::gdt::{
     kernel_code_selector, kernel_data_selector, user_code_64_selector, user_data_selector,
 };
 use super::per_cpu;
-#[cfg(any(feature = "kernel-rng", feature = "browser-runtime"))]
-use super::with_user_access;
 
 #[cfg(feature = "neo-test-arthur-real-brain-boot-qwen35")]
 mod qwen35_llama_cpp_golden {
@@ -4929,7 +4927,9 @@ fn sys_generate_impl(
                 n_written * core::mem::size_of::<u32>(),
             )
         };
-        copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes);
+        if let Err(errno) = copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes) {
+            return errno;
+        }
     }
     n_written as i64
 }
