@@ -43,6 +43,7 @@ pub const KIND_BROWSER_RUNTIME: u32 = 15;
 pub const KIND_INSTALLER: u32 = 16;
 pub const KIND_SYSTEM_STORE: u32 = 17;
 pub const KIND_MOUNT_AUTHORITY: u32 = 18;
+pub const KIND_POWER_CONTROL: u32 = 19;
 
 /// `flags` bit: a `File` handle on the VFS root, a RootDirCap (OT-66 K1a).
 pub const FLAG_ROOT_DIR: u8 = 1 << 0;

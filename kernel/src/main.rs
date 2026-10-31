@@ -532,6 +532,13 @@ fn spawn_neo_init() -> i32 {
             handle: process::root_mount_authority_cap(),
             parent: None,
         });
+        // OT-90 P4: Shut down and Restart, neo-init's alone. Last, after the
+        // mount authority, so every cap above keeps its index.
+        #[cfg(feature = "power-cap")]
+        caps.push(process::InheritedHandle {
+            handle: process::root_power_control_cap(),
+            parent: None,
+        });
         caps
     };
     #[cfg(feature = "neo-test-gpu-glass-slice6")]

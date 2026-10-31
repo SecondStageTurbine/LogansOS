@@ -416,6 +416,10 @@ power-stop-cpus = ["power-clean"]
 # clear every PCI function's Bus Master Enable, then turn the IOMMU off.
 # Registers only, planned before K4. Off: K4 and K5 only, as before.
 power-quiesce = ["power-stop-cpus"]
+# OT-90 P4: the `PowerControl` cap (USE + POWER_OFF + RESTART; no DERIVE
+# or GRANT), minted into neo-init alone, and `SYS_POWER` (25), which starts
+# the clean shutdown (K1-K7) for a holder. Off: no cap, and 25 is ENOSYS.
+power-cap = ["power-quiesce"]
 # Aggregate-only kernel status syscall for neo-shell `status`. OFF by default;
 # when disabled SYS_SYSSTAT returns ENOSYS and exposes no observability surface.
 kernel-sysstat = []
@@ -2115,6 +2119,8 @@ neo-test-ot90-stop-shootdown = ["neo-test", "power-stop-cpus"]
 neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
 # OT-90 P3b-2: power-off with K6 on a NeoFS disk written this boot.
 neo-test-ot90-quiesce = ["neo-test", "power-quiesce"]
+# OT-90 P4: SYS_POWER's refusals, then a power-off through it.
+neo-test-ot90-cap = ["neo-test", "power-cap"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]
