@@ -679,8 +679,11 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 25] = [
         )
     },
     // Chad #177 item 4: Home's script, after the WM's silent cycle rounds.
+    // long_timeout: the cycle rounds plus Home's script ran past 180 s on
+    // GitHub-hosted 4-vCPU TCG runners (twice on 2026-10-31); headroom only.
     DesktopScenario {
         band: Some(true),
+        long_timeout: true,
         ..desktop(
             "desktop_home_cycle",
             DESKTOP_HOME_BOOT_HID_STEPS,
