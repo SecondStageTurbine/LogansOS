@@ -166,9 +166,19 @@ atrium-app-icons-boot-test = ["atrium-app-icons", "desktop-home-boot-test"]
 # NEOCRED1 (login-core). Without `.system/`, or read-only (Try): straight to
 # Home. Off = today's boot to Home exactly (the kill-switch).
 login = ["desktop-intro", "dep:login-core"]
+<<<<<<< ours
 # OT-66 K1b: with `cap-rooted-open`, as the product's WM (the kernel side is
 # `neo-test-login`'s).
 login-boot-test = ["login", "desktop-session-boot-test", "cap-rooted-open"]
+=======
+# OT-90 P5 (L1.4): `shut down` or `restart` typed at Home opens a confirm
+# card (the WM's, as `help`); going ahead calls SYS_POWER, which the
+# kernel's `power-cap` allows neo-init alone. Off: those lines go to Arthur,
+# as before.
+power-menu = ["desktop-intro"]
+power-menu-boot-test = ["power-menu", "desktop-intro-boot-test"]
+login-boot-test = ["login", "desktop-session-boot-test"]
+>>>>>>> theirs
 # OT-88 S1: the settings store (`.system/settings.a`/`.b`, NEOSET1), with the
 # WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
 # time come from it and are set live by OP_SETTING. Off => the presence

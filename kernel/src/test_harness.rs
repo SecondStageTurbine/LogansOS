@@ -550,9 +550,14 @@ const SCENARIO: &str = "desktop_full_boot";
 /// Home end view with the hint).
 #[cfg(all(
     feature = "neo-test-desktop-intro-boot",
-    not(feature = "neo-test-desktop-clock-boot")
+    not(feature = "neo-test-desktop-clock-boot"),
+    not(feature = "neo-test-ot90-power-menu")
 ))]
 const SCENARIO: &str = "desktop_intro_boot";
+/// OT-90 P5: the intro desktop, powered off from Home's confirm card (judged
+/// by QMP: the session never ends on its own).
+#[cfg(feature = "neo-test-ot90-power-menu")]
+const SCENARIO: &str = "ot90_power_menu";
 /// OT-85: the intro session with the wall clock on a pinned RTC (the Home
 /// end view with the hint and the readout).
 #[cfg(feature = "neo-test-desktop-clock-boot")]
