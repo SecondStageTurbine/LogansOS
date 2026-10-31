@@ -101,6 +101,11 @@ desktop-park = ["desktop-home"]
 # Arthur's reply commit ends it. Needs the WM's `desktop-busy`. Off =
 # "Thinking..." exactly as before (the kill-switch). Not with the legacy grid.
 arthur-busy-emblem = ["desktop-session", "libneo/atrium-busy"]
+# L7.1: once the model is loaded (or found missing), Arthur writes one line
+# into its transcript, the boot summary from power-on (firmware handoff,
+# desktop start, Arthur ready; `SYS_BOOT_TIMES` on a `boot-time` kernel), and
+# logs it as `BOOT-TIME`. Off: no line, as before.
+arthur-boot-time = ["desktop-session"]
 # A9-D test only (desktop_busy_boot, Janus #96): before the first emblem,
 # Arthur sends a valid OP_BUSY, one past the surface's right edge and one on
 # the wrong channel, and logs the WM's reply statuses.

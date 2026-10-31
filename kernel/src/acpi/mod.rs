@@ -433,6 +433,29 @@ pub fn definition_blocks(rsdp_phys: u64) -> Option<alloc::vec::Vec<&'static [u8]
     Some(blocks)
 }
 
+/// L7.1: the firmware's boot timestamps, FPDT → FBPT → its boot record
+/// (`boot_time_logic`). The FBPT is firmware memory the HHDM may not map;
+/// `phys_slice` maps what it touches. Its length is checked (at most
+/// `FBPT_MAX_LEN`) before the whole of it is read.
+#[cfg(feature = "boot-time")]
+pub fn firmware_boot_times(
+    rsdp_phys: u64,
+) -> Result<crate::boot_time_logic::FirmwareBoot, crate::boot_time_logic::FpdtError> {
+    use crate::boot_time_logic::{FBPT_HEADER_LEN, FpdtError, fbpt_address, fbpt_len, parse_fbpt};
+    if rsdp_phys == 0 {
+        return Err(FpdtError::NoFpdt);
+    }
+    let (root_phys, is_xsdt) = locate_root_table(rsdp_phys).ok_or(FpdtError::NoFpdt)?;
+    let fpdt = read_table(root_phys, is_xsdt, b"FPDT").ok_or(FpdtError::NoFpdt)?;
+    // CPUID 0x8000_0008 EAX[7:0]: the physical address width.
+    let phys_bits = core::arch::x86_64::__cpuid(0x8000_0008).eax & 0xff;
+    let fbpt = fbpt_address(fpdt, phys_bits)?;
+    // SAFETY: an address the firmware named, inside the CPU's physical
+    // width; only read.
+    let len = fbpt_len(unsafe { phys_slice(fbpt, FBPT_HEADER_LEN) })?;
+    parse_fbpt(unsafe { phys_slice(fbpt, len) })
+}
+
 /// OT-90: the FADT, whole and checksum-valid.
 #[cfg(feature = "power-control")]
 pub fn fadt(rsdp_phys: u64) -> Option<&'static [u8]> {

@@ -704,6 +704,14 @@ fn neofs_vocab_ok(module: &str) -> bool {
     !pinned || (ok && !bad)
 }
 
+/// L7.1: whether `preload` built at least one model.
+#[cfg(all(feature = "boot-model-preload", feature = "boot-time"))]
+pub fn any_model_built() -> bool {
+    PRELOADED
+        .get()
+        .is_some_and(|done| done.iter().any(|p| p.result.is_ok()))
+}
+
 /// The preloaded result for a `/boot/models/` path, if that model was
 /// preloaded. `None`: not preloaded (absent, or its vocab failed), and the
 /// caller falls back to [`load_model`].
