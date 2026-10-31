@@ -45,7 +45,11 @@
         feature = "user-copy-bounds-test",
         feature = "socket-teardown-test",
         feature = "exit-codes-test",
+<<<<<<< ours
         feature = "mount-authority-test",
+=======
+        feature = "user-copy-fault-test",
+>>>>>>> theirs
         feature = "interface-cap-derive-revoke",
         feature = "arthur-grant-revoke",
         feature = "atrium-slice1",
@@ -240,9 +244,15 @@ fn run_selected_scenario() -> i32 {
     exit_codes_tests::run()
 }
 
+<<<<<<< ours
 #[cfg(feature = "mount-authority-test")]
 fn run_selected_scenario() -> i32 {
     mount_authority_tests::run()
+=======
+#[cfg(feature = "user-copy-fault-test")]
+fn run_selected_scenario() -> i32 {
+    user_copy_fault_tests::run()
+>>>>>>> theirs
 }
 
 #[cfg(feature = "vault-phase-b")]
@@ -2152,7 +2162,11 @@ mod gpu_glass_slice6_tests {
     feature = "user-copy-bounds-test",
     feature = "socket-teardown-test",
     feature = "exit-codes-test",
+<<<<<<< ours
     feature = "mount-authority-test",
+=======
+    feature = "user-copy-fault-test",
+>>>>>>> theirs
     feature = "interface-cap-derive-revoke",
     feature = "arthur-grant-revoke",
     feature = "atrium-slice1",
@@ -9966,6 +9980,7 @@ mod exit_codes_tests {
     }
 }
 
+<<<<<<< ours
 /// Dexter #187 item 3a, the `mount_authority` scenario. A worker with no
 /// caps opens `/` asking for `MOUNT`; its `SYS_UMOUNT` of `neofs` and its
 /// `SYS_MOUNT` of device 0 are both `EPERM`, and `neofs` is still mounted
@@ -9979,10 +9994,32 @@ mod mount_authority_tests {
         sys_chan_create, sys_close, sys_mount, sys_open, sys_spawn, sys_umount, sys_wait,
     };
 
+=======
+/// user-copy-fixup, the `user_copy_fault` scenario: syscalls whose user
+/// buffer faults return EFAULT instead of halting the kernel. Three buffers:
+/// a page that was mapped and then unmapped (`hole`), one that starts 8 bytes
+/// before it in a mapped page (`crossing`), and a read-only page (`ro`, for
+/// the kernel's writes). Output paths: SYS_HANDLE_INFO's record, SYS_READDIR's
+/// entry and its cursor. Input path: SYS_WRITE to stdout. Each must be
+/// EFAULT; then a well-formed call still works. Returns 0, or the first
+/// failed step.
+#[cfg(feature = "user-copy-fault-test")]
+mod user_copy_fault_tests {
+    use super::*;
+    use libneo::{
+        EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_HANDLE_INFO,
+        SYS_READDIR, SYS_WRITE, raw3, raw4, sys_chan_create, sys_open, sys_vm_map, sys_vm_protect,
+        sys_vm_unmap,
+    };
+
+    const PAGE: usize = 4096;
+
+>>>>>>> theirs
     fn say(line: &[u8]) {
         sys_write(1, line.as_ptr(), line.len());
     }
 
+<<<<<<< ours
     /// `/neofs` opens as a directory (the volume is mounted).
     fn neofs_mounted() -> bool {
         match sys_open(
@@ -10039,17 +10076,98 @@ mod mount_authority_tests {
             return Err(11);
         }
         say(b"[ mount-authority ] the holder unmounted and mounted neofs\n");
+=======
+    fn expect_efault(r: i64, step: i32) -> Result<(), i32> {
+        if r == EFAULT { Ok(()) } else { Err(step) }
+    }
+
+    fn steps() -> Result<(), i32> {
+        let rw = PROT_READ | PROT_WRITE;
+        let base = sys_vm_map(2 * PAGE, rw, false).map_err(|_| 1)?;
+        let hole = base.wrapping_add(PAGE);
+        sys_vm_unmap(hole, PAGE).map_err(|_| 2)?;
+        let crossing = hole.wrapping_sub(8);
+        let ro = sys_vm_map(PAGE, rw, false).map_err(|_| 3)?;
+        sys_vm_protect(ro, PAGE, PROT_READ).map_err(|_| 4)?;
+        let (chan, _peer) = sys_chan_create().map_err(|_| 5)?;
+        let dir = sys_open(
+            "/",
+            OPEN_ROOT_TEMPORARY,
+            FileRights::LOOKUP.union(FileRights::READDIR),
+        )
+        .map_err(|_| 6)?;
+
+        // Output: SYS_HANDLE_INFO's 16-byte record.
+        for (i, buf) in [hole, crossing, ro].into_iter().enumerate() {
+            let r = unsafe { raw3(SYS_HANDLE_INFO, chan.0 as u64, buf as u64, 16) };
+            expect_efault(r, 10 + i as i32)?;
+        }
+        say(b"[ user-copy ] handle_info: unmapped, crossing, read-only -> EFAULT\n");
+        // Output: SYS_READDIR's entry, then its cursor.
+        let mut cursor = 0u64;
+        for (i, buf) in [hole, crossing, ro].into_iter().enumerate() {
+            let r = unsafe {
+                raw4(
+                    SYS_READDIR,
+                    dir.0 as u64,
+                    buf as u64,
+                    256,
+                    &mut cursor as *mut u64 as u64,
+                )
+            };
+            expect_efault(r, 20 + i as i32)?;
+        }
+        let mut entry = [0u8; 256];
+        let r = unsafe {
+            raw4(
+                SYS_READDIR,
+                dir.0 as u64,
+                entry.as_mut_ptr() as u64,
+                entry.len() as u64,
+                hole as u64,
+            )
+        };
+        expect_efault(r, 23)?;
+        say(b"[ user-copy ] readdir: entry and cursor -> EFAULT\n");
+        // Input: SYS_WRITE to stdout.
+        for (i, buf) in [hole, crossing].into_iter().enumerate() {
+            let r = unsafe { raw3(SYS_WRITE, 1, buf as u64, 16) };
+            expect_efault(r, 30 + i as i32)?;
+        }
+        say(b"[ user-copy ] write: unmapped, crossing -> EFAULT\n");
+        // Still serving: a well-formed call works.
+        let mut record = [0u8; 16];
+        let r = unsafe {
+            raw3(
+                SYS_HANDLE_INFO,
+                chan.0 as u64,
+                record.as_mut_ptr() as u64,
+                16,
+            )
+        };
+        if r != 0 {
+            return Err(40);
+        }
+>>>>>>> theirs
         Ok(())
     }
 
     pub fn run() -> i32 {
         match steps() {
             Ok(()) => {
+<<<<<<< ours
                 say(b"[ mount-authority ] PASS\n");
                 0
             }
             Err(code) => {
                 say(b"[ mount-authority ] FAIL\n");
+=======
+                say(b"[ user-copy ] PASS: every faulting copy returned EFAULT\n");
+                0
+            }
+            Err(code) => {
+                say(b"[ user-copy ] FAIL\n");
+>>>>>>> theirs
                 code
             }
         }

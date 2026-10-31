@@ -142,6 +142,7 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-96 | **An authority checked only by a right the holder can mint itself** (found 2026-10-29, the L2 pre-merge AAG, F1). Moving the keyboard route needed only `ACTIVATE` on a focus handle, and any process could create a focus and mint itself an `ACTIVATE` sibling (meant to be granted to the WM) ⇒ any client could take the route and read every key typed: an intent, a sign-in or lock password | Input routing / capabilities | **Was EXPOSED on main → fixed:** `SYS_INPUT_FOCUS_ACTIVATE` also requires the caller to hold `InputSystem` (non-delegable, kernel-minted into the session root); the root holds it wherever the focus syscalls exist | **Yes (`desktop_pointer_boot`: Arthur creates, mints and self-activates, and gets `EPERM`)** |
 | CP-97 | **A security mode held only in a user-space server's own state** (found 2026-10-29, the L2 pre-merge AAG). The session lock was the WM's: on Super+L the WM swapped the keyboard route to its own focus. A WM parked in a synchronous send (CP-57: a reply to a client that never receives it) runs no code ⇒ the chord sits in the latch, the route stays the client's, and keys typed after Super+L reach the client | Input routing / lock (OT-66 L2b) | **Guarded (kernel `sak-lock-route`):** the lock is a kernel route state. The WM registers its focus as the lock focus; Super+L sets the locked bit in the latch itself (lock-free, before any WM code runs); while it is set every route read is the lock focus, so a client receive that starts after it gets nothing. A receive already past its check re-checks after its pop, and nothing a client's queue held across a lock survives the unlock (the lock epoch). Only the input-system holder releases it | **Yes (`login_lock_park`: the WM parked in a reply, Super+L, then `x`; Arthur never gets it. Falsified: without the kernel half, Arthur gets `x`. `lock_route_races`: Super+L forced between each route check and its effect (Jarvis #160 items 1, 6, 7); each leg falsified by reverting its fix)** |
 | CP-98 | **A kill that assumes its target is Ready or parked** (found 2026-10-29, S1 in A1a; OT-98). A force-kill claims the process and then looks for its thread in the scans it knows (ready queues, channel and token parks), asserting it found one ⇒ a target in a state no scan covers trips the assertion, which the product kernel keeps on: the kernel panics. States on main: a thread that called `sys_exit` and waits unreaped in a zombie ring (the natural exit claimed `exit_state` only at the reap), a thread parked in `sys_wait` (in the *waited-on* process's queue, which may be in `DYING`: FAIL-A), a waiter in transit from that queue to Ready (FAIL-B, Janus #174 F2), and a target running on another CPU (S1's SMP=4 panic). With the assertion off, the first loses the exit code and the second leaves a killed thread parked until its target exits. Also: a losing exit producer overwrote the winner's exit code (Janus #174 F1) | Thread lifecycle / kill (`terminate`) | **Was EXPOSED on main → fixed (OT-98):** `record_exit_code` claims `EXITING_NATURAL` at the commit point and only the winner stores the code; `terminate` extracts a `sys_wait`-parked target from `PROCESSES` and `DYING`; the completion wakes under the `waiters` lock; after its scans `terminate` recounts survivors and finds a thread that left the kernel meanwhile (zombie ring, the reaper's mark, the thread count); `close_peer` wakes under the endpoint guard; the kill completes by thread count (#204), and a thread no scan finds is a counted diagnostic, not a panic; the waiter parks owning nothing (CP-30); last `Arc`s under `SYS_KILL`'s IF-off go to the deferred drop (CP-91). A running target is #204's survivor (CP-95) | **Yes (`kill_at_exit`: legs E, C, exited, wait, D, A, B, F, G, F1, race; E, F and G kill from an AP; controls `-a`…`-d`, `-f`, `-g` fail `kae_kill_unlocated` in their legs, `-e` hangs leg E's wait, `-control` fails `kae_kill_of_exited_not_esrch`, `-f1` fails `kae_f1_loser_changed_code`)** |
+| CP-99 | **A kernel copy to or from user memory with no fault recovery** (found 2026-10-31, the PM on main). `validate_user_buf` checks only that a range is in the user half; the copy then ran as a plain `copy_nonoverlapping` inside the SMAP window. A page that is unmapped, read-only, or unmapped by another thread of the process between the check and the copy faults in ring 0, and the page-fault handler halts on every kernel-mode fault ⇒ any process stops the machine with one syscall and a bad pointer | Syscall user copies / page-fault entry | **Was EXPOSED on main → fixed (`user-copy-fixup`):** every syscall user copy goes through `arch::x86_64::user_copy`, one `rep movsb` at a known RIP. The page-fault shim, for a ring-0 fault at that RIP on a user-half CR2, rewrites the saved RIP to the fixup and `iretq`s, and the copy returns EFAULT. Any other kernel-mode fault still halts. A concurrent unmap is the same case: the TLB shootdown completes before `vm_unmap` returns, so the copying CPU faults and recovers. Left for later: futex's 32-bit compare (an aligned load, not a `rep movsb`) and a test-only hook | **Yes (`user_copy_fault`: SYS_HANDLE_INFO, SYS_READDIR's entry and cursor, and SYS_WRITE with an unmapped, a page-crossing and a read-only buffer all return EFAULT; control `neo-test-user-copy-fault-control` halts on the first)** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
 prevents it and there is (or should be) a discriminator; *N-A* = the construct doesn't exist in our kernel
@@ -4506,3 +4507,46 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   exit becomes irrevocable, and must know every place a live thread can be, including the moves between
   places; an assertion over a list of places is only as good as the list. The payload of a claim is written
   by its winner only.
+
+### CP-99 — A kernel copy to or from user memory with no fault recovery
+
+- **Shape.**
+  - A syscall checks that a user range is in the user half (`validate_user_buf`), then copies with an
+    ordinary load or store inside `with_user_access`.
+  - The check says nothing about whether the pages are mapped or writable. The kernel can't make it say
+    that: another thread of the same process can `vm_unmap` or `vm_protect` the page between the check and
+    the copy.
+  - The resulting ring-0 page fault reaches the handler's kernel-mode branch, which halts. So one syscall
+    from any process stops the machine.
+- **Why translating first is not a guard.** A walk of the page tables before the copy only moves the
+  window (check-then-use). The fault itself has to be survivable.
+- **Guard (`user-copy-fixup`).**
+  - The kernel touches user memory through one routine, `arch::x86_64::user_copy::copy`: a `rep movsb`
+    at the symbol `neo_user_copy_insn`, followed by a fixup that returns RCX (the bytes left).
+  - The page fault's entry shim checks before it calls into Rust. For a CPL-0 fault whose saved RIP is
+    that instruction and whose CR2 is below 2^47, it rewrites the saved RIP to `neo_user_copy_fixup`, drops
+    the error code and `iretq`s.
+  - The shim saves and restores the one register it uses. The CPU frame restores the copy's RFLAGS (AC=1
+    in its SMAP window, its IF). At CPL 0 there is no GS to swap (CP-44).
+  - Every other fault takes the old path, so a kernel bug still halts. That includes a fault in the
+    routine on a kernel-half address.
+  - Prior art, read for principle only: Linux's exception table (`__ex_table`, GPL), FreeBSD's
+    `pcb_onfault`, and Redox's `arch_copy_to_user` RIP range (MIT).
+- **SMP.**
+  - Thread A copies while thread B unmaps the page. B's `vm_unmap` clears the PTE and shoots down the TLB
+    on every CPU running the address space before it returns.
+  - So A either completes the copy before the shootdown, with the old translation, or faults after it and
+    gets EFAULT.
+  - The copy runs with the SMAP window open, never across a switch (CP-49), and holds no lock the fault
+    path takes. The fixup path takes none.
+- **Discriminator.**
+  - `user_copy_fault` drives SYS_HANDLE_INFO, SYS_READDIR (its entry and its cursor) and SYS_WRITE with
+    an unmapped, a page-crossing and a read-only buffer. Each must return EFAULT, and then a well-formed
+    call must work.
+  - Its control, `neo-test-user-copy-fault-control`, turns off the shim's recovery. Its first leg then
+    halts (`unexpected_trap trap=page_fault`, CR2 the unmapped page).
+- **Open.** Two sites are left for later:
+  - Futex's compare-before-park reads a 32-bit word with an aligned load, after translating the address.
+    Only a concurrent unmap can fault it, and it needs a second registered instruction.
+  - `tail_hold_for_test` (a test hook) writes a flag the scenario mapped.
+

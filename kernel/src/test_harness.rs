@@ -338,6 +338,8 @@ const SCENARIO: &str = "net_tick_retransmit";
 const SCENARIO: &str = "tcp_listen_bounds";
 #[cfg(feature = "neo-test-exit-codes-bounded")]
 const SCENARIO: &str = "exit_codes_bounded";
+#[cfg(feature = "neo-test-user-copy-fault")]
+const SCENARIO: &str = "user_copy_fault";
 #[cfg(feature = "neo-test-file-cap-derive-grant")]
 const SCENARIO: &str = "file_cap_derive_grant";
 #[cfg(feature = "neo-test-vault-phase-b")]
@@ -1290,7 +1292,11 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-net-tick-retransmit",
     feature = "neo-test-tcp-listen-bounds",
     feature = "neo-test-exit-codes-bounded",
+<<<<<<< ours
     feature = "neo-test-mount-authority",
+=======
+    feature = "neo-test-user-copy-fault",
+>>>>>>> theirs
     feature = "neo-test-vault-phase-b",
     feature = "neo-test-arthur-grant-revoke",
     feature = "neo-test-sys-wait-blocking",
@@ -3163,6 +3169,25 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
             exit_code,
             frames_before,
             frames_after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+
+    // user-copy-fixup: neo-init's syscalls with unmapped, page-crossing and
+    // read-only buffers each return EFAULT; reaching here at all means none
+    // of their faults halted the kernel.
+    #[cfg(feature = "neo-test-user-copy-fault")]
+    {
+        let exit_code = _ipc_smoke();
+        if exit_code == 0 {
+            pass(
+                "user_copy_fault=ok unmapped=efault crossing=efault read_only=efault kernel_alive=1",
+            );
+        }
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=user_copy_fault code={}",
+            SCENARIO,
+            exit_code
         );
         debug_exit(EXIT_FAILURE);
     }
