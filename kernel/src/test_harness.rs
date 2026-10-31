@@ -175,6 +175,8 @@ const SCENARIO: &str = "webrender_smoke";
 const SCENARIO: &str = "swgl_atrium_smoke";
 #[cfg(feature = "neo-test-swgl-grant-smoke")]
 const SCENARIO: &str = "swgl_grant_smoke";
+#[cfg(feature = "neo-test-browser-io-smoke")]
+const SCENARIO: &str = "browser_io_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -1224,6 +1226,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-webrender-smoke",
     feature = "neo-test-swgl-atrium-smoke",
     feature = "neo-test-swgl-grant-smoke",
+    feature = "neo-test-browser-io-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -3022,6 +3025,91 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "swgl_grant_smoke=ran exit=0,0 swgl=0.70.0 buffer=atrium grant=channel rights=use+map_read+query+present pattern=exact attenuation=checked frames_returned=1",
+        );
+    }
+
+    // OT-61 rung 6: browser-io-smoke checks the std surface a window's loop
+    // runs on (try_recv, input focus) against browser-io-peer over one
+    // channel. Both must exit 0, and every frame must come back.
+    #[cfg(feature = "neo-test-browser-io-smoke")]
+    {
+        use crate::ipc::{Channel, EndpointSide};
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 16 * 256; // 16 MiB each
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=browser_io_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let channel = Channel::new();
+        let handles = |side| {
+            [
+                process::InheritedHandle {
+                    handle: process::root_browser_runtime_cap(),
+                    parent: None,
+                },
+                process::InheritedHandle {
+                    handle: process::Handle::Channel {
+                        channel: channel.clone(),
+                        side,
+                        cap_id: process::alloc_cap_id(),
+                        rights: process::full_channel_rights(),
+                    },
+                    parent: None,
+                },
+            ]
+        };
+        let frames_before = crate::mm::frame::frames_in_use();
+        let peer = process::spawn_user_by_name_budgeted(
+            "browser-io-peer",
+            &handles(EndpointSide::B),
+            SMOKE_FRAMES,
+        )
+        .unwrap_or_else(|_| fail_with("spawn_peer", 0, 0));
+        let smoke = process::spawn_user_by_name_budgeted(
+            "browser-io-smoke",
+            &handles(EndpointSide::A),
+            SMOKE_FRAMES,
+        )
+        .unwrap_or_else(|_| fail_with("spawn_smoke", 0, 0));
+        drop(channel);
+        let mut frames_peak = frames_before;
+        while process::any_user_process() {
+            frames_peak = frames_peak.max(crate::mm::frame::frames_in_use());
+            sched::yield_now();
+            sched::reap();
+        }
+        let smoke_code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let peer_code = process::take_spawned_exit_code(peer).unwrap_or(255);
+        let frames_after = crate::mm::frame::frames_in_use();
+        serial_println!(
+            "[ kernel ] proc: browser-io-smoke exit {}, browser-io-peer exit {}, frames in use {} (before {}, peak {})",
+            smoke_code,
+            peer_code,
+            frames_after,
+            frames_before,
+            frames_peak
+        );
+        if smoke_code != 0 || peer_code != 0 {
+            fail_with("exit", smoke_code as i64, peer_code as i64);
+        }
+        if frames_peak <= frames_before {
+            fail_with(
+                "frames_not_observed",
+                frames_peak as i64,
+                frames_before as i64,
+            );
+        }
+        if frames_after != frames_before {
+            fail_with("frames_leaked", frames_after as i64, frames_before as i64);
+        }
+        pass(
+            "browser_io_smoke=ran exit=0,0 try_recv=wouldblock+taken focus=receive_only activator=activate_only frames_returned=1",
         );
     }
 
