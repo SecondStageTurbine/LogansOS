@@ -25,7 +25,10 @@ pub mod nvme;
 // The NVMe events the install claim needs (Muse's R4.1 review, item 4).
 #[cfg(feature = "installer")]
 pub mod nvme_event_logic;
-#[cfg(feature = "neofs-partition")]
+// L3a (G7): the read-only MBR reader (`deviceN:pM` mount sources).
+#[cfg(feature = "mbr-partitions")]
+pub mod mbr_logic;
+#[cfg(any(feature = "neofs-partition", feature = "mbr-partitions"))]
 pub mod partition;
 pub mod virtio_barrier;
 pub mod virtio_blk;
@@ -710,6 +713,57 @@ pub fn read_count(index: usize) -> Option<u64> {
 #[cfg(feature = "neofs-partition")]
 pub fn read_gpt(device: &dyn BlockDevice) -> Option<gpt_logic::Gpt> {
     gpt_logic::read(&GuardReader(device))
+}
+
+/// L3a (G7): MBR partition `index` (1..=4) of `device`, as a
+/// [`partition::PartitionDevice`] over it (the registered, guarded device),
+/// when sector 0 is an MBR whose entry `index` is a believed FAT partition
+/// ([`mbr_logic::partition`]). A rejected entry is logged with its reason.
+#[cfg(feature = "mbr-partitions")]
+pub fn mbr_partition(
+    device: Arc<dyn BlockDevice>,
+    index: u32,
+) -> Option<partition::PartitionDevice> {
+    use write_guard_logic::Disk;
+    let geometry = device.geometry();
+    let block = geometry.logical_block_size as usize;
+    if block < 512 {
+        return None;
+    }
+    let mut sector = alloc::vec![0u8; block];
+    if !GuardReader(device.as_ref()).read(0, &mut sector) {
+        return None;
+    }
+    match mbr_logic::classify(&sector, geometry.block_count) {
+        mbr_logic::Sector0::Table(slots) => match slots.get(index.checked_sub(1)? as usize)? {
+            Some(Ok(entry)) => partition::PartitionDevice::from_mbr(device.clone(), entry),
+            Some(Err((entry, why))) => {
+                serial_println!(
+                    "[ kernel ] block: MBR partition rejected partition={} type={:#04x} first_lba={} lba_count={} reason={:?}",
+                    entry.index,
+                    entry.part_type,
+                    entry.first_lba,
+                    entry.lba_count,
+                    why
+                );
+                None
+            }
+            None => None,
+        },
+        other => {
+            serial_println!(
+                "[ kernel ] block: no MBR partition {} (sector 0 is {})",
+                index,
+                match other {
+                    mbr_logic::Sector0::Blank => "blank",
+                    mbr_logic::Sector0::Superfloppy => "a FAT boot sector",
+                    mbr_logic::Sector0::Protective => "a protective MBR",
+                    mbr_logic::Sector0::Table(_) => "a table",
+                }
+            );
+            None
+        }
+    }
 }
 
 /// The guard-off marker (`write_guard_logic::GUARD_OFF_MARKER`), in the
