@@ -2539,6 +2539,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 6: the std surface a window's loop runs on (channel
+        // try_recv, input focus create/mint/recv), on-target.
+        name: "browser_io_smoke",
+        feature: "neo-test-browser-io-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 rung 4 (SWGL S3b): the client grants a separate compositor
         // process a read-only view of its Atrium buffer over a channel.
         name: "swgl_grant_smoke",
@@ -8064,6 +8073,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "webrender_smoke" => &[WEBRENDER_BIN],
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
         "swgl_grant_smoke" => &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
+        "browser_io_smoke" => &[BROWSER_IO_BIN, BROWSER_IO_PEER_BIN],
         _ => &[],
     }
 }
@@ -9181,6 +9191,13 @@ fn build_user_members(
         if std_real_staged_bins().contains(&WEBRENDER_BIN) {
             build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
         }
+        if std_real_staged_bins().contains(&BROWSER_IO_BIN) {
+            build_standalone_std_smoke(
+                "browser-app",
+                &[BROWSER_IO_BIN, BROWSER_IO_PEER_BIN],
+                BROWSER_APP_DIR,
+            )?;
+        }
         if std_real_staged_bins().contains(&SWGL_ATRIUM_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_ATRIUM_BIN], SWGL_DIR)?;
         }
@@ -9224,6 +9241,11 @@ const SWGL_GRANT_COMPOSITOR_BIN: &str = "swgl-grant-compositor";
 /// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
 const WEBRENDER_BIN: &str = "webrender-smoke";
 const WEBRENDER_DIR: &str = "userland/webrender-smoke";
+/// OT-61 rung 6: the browser app's crate; its first bins check the std
+/// surface a window's loop runs on.
+const BROWSER_APP_DIR: &str = "userland/browser-app";
+const BROWSER_IO_BIN: &str = "browser-io-smoke";
+const BROWSER_IO_PEER_BIN: &str = "browser-io-peer";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -9237,6 +9259,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
             Some(SWGL_DIR)
         }
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
+        BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
         _ => None,
     }
 }
@@ -9247,6 +9270,7 @@ fn is_standalone_std_dir(subdir: &str) -> bool {
         || subdir == CXX_RUNTIME_DIR
         || subdir == SWGL_DIR
         || subdir == WEBRENDER_DIR
+        || subdir == BROWSER_APP_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -19963,6 +19987,23 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "WebRender on SWGL must render the hand-derived scene",
+            )?;
+        }
+    }
+    if scenario.name == "browser_io_smoke" {
+        for needle in [
+            "[ browser-io-smoke ] ok(2) try_recv before the peer sends is WouldBlock",
+            "[ browser-io-smoke ] ok(4) try_recv takes the peer's W",
+            "[ browser-io-smoke ] ok(6) recv on a focus no WM made live is PermissionDenied",
+            "[ browser-io-smoke ] ok(7) the activator is ACTIVATE only, USE|GRANT, no DERIVE",
+            "[ browser-io-smoke ] PASS",
+            "[ browser-io-peer ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "std must poll a channel and an input focus without parking",
             )?;
         }
     }

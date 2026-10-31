@@ -324,4 +324,54 @@ pub mod channel {
     pub fn recv_grant(channel: RawHandle, meta: u8, semantic: u8) -> io::Result<RawHandle> {
         check(rt::recv_grant(channel, pack(meta, semantic))).map(|h| h as RawHandle)
     }
+
+    /// [`recv`] that never parks: `WouldBlock` when no message waits.
+    pub fn try_recv(channel: RawHandle, buf: &mut [u8]) -> io::Result<usize> {
+        check(rt::try_recv(channel, buf)).map(|n| n as usize)
+    }
+}
+
+/// OT-61 rung 6: keyboard and pointer input for a window, through an input
+/// focus the process creates and the compositor routes.
+///
+/// The process keeps the receiving handle and hands the compositor an
+/// activate-only sibling ([`mint_activator`]); only the compositor decides
+/// which focus is live. Receiving never parks.
+#[unstable(feature = "neoplutarch_ext", issue = "none")]
+pub mod input {
+    use super::io::RawHandle;
+    use super::rt;
+    use crate::io;
+
+    /// One input event on the wire (`INPUT_EVENT_V1_LEN`).
+    pub const EVENT_LEN: usize = 8;
+    /// `event[0]` of a key event.
+    pub const EVENT_KEY: u8 = 1;
+    /// `event[0]` of a pointer event.
+    pub const EVENT_POINTER: u8 = 2;
+    /// The rights: `RECEIVE` on the process's handle, `ACTIVATE` on the
+    /// compositor's.
+    pub const ACTIVATE: u8 = 1 << 0;
+    pub const RECEIVE: u8 = 1 << 1;
+
+    fn check(r: i64) -> io::Result<i64> {
+        if r < 0 { Err(io::Error::from_raw_os_error((-r) as i32)) } else { Ok(r) }
+    }
+
+    /// A new focus of this process's; the handle receives, never activates.
+    pub fn create() -> io::Result<RawHandle> {
+        check(rt::input_focus_create()).map(|h| h as RawHandle)
+    }
+
+    /// The activate-only sibling of `focus`, to grant the compositor.
+    pub fn mint_activator(focus: RawHandle) -> io::Result<RawHandle> {
+        check(rt::input_focus_mint_activator(focus)).map(|h| h as RawHandle)
+    }
+
+    /// The next event, without parking: `WouldBlock` when none is queued,
+    /// `PermissionDenied` while the focus isn't the live route.
+    pub fn recv(focus: RawHandle) -> io::Result<[u8; EVENT_LEN]> {
+        let mut event = [0u8; EVENT_LEN];
+        check(rt::input_focus_recv(focus, &mut event)).map(|_| event)
+    }
 }

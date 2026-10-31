@@ -61,6 +61,10 @@ const SYS_SEND: u64 = 4;
 const SYS_RECV: u64 = 5;
 const SYS_GRANT: u64 = 10;
 const SYS_RECV_GRANT: u64 = 11;
+const SYS_TRY_RECV: u64 = 0x1B4;
+const SYS_INPUT_FOCUS_CREATE: u64 = 0x1A6;
+const SYS_INPUT_FOCUS_RECV: u64 = 0x1AA;
+const SYS_INPUT_FOCUS_MINT_ACTIVATOR: u64 = 0x1AB;
 
 /// `SYS_CLOCK_GETTIME`'s monotonic clock id.
 const CLOCK_MONOTONIC: u64 = 1;
@@ -350,6 +354,35 @@ pub fn grant(channel: u32, handle: u32, offered: u16) -> i64 {
 pub fn recv_grant(channel: u32, max: u16) -> i64 {
     // SAFETY: two scalars.
     unsafe { syscall4(SYS_RECV_GRANT, channel as u64, max as u64, 0, 0) }
+}
+
+/// Rung 6: `SYS_TRY_RECV(channel, buf, max)`: [`recv`] that never parks
+/// (-EAGAIN when no sender waits).
+pub fn try_recv(channel: u32, buf: &mut [u8]) -> i64 {
+    // SAFETY: `buf` is a live, writable slice; the kernel validates the range.
+    unsafe { syscall4(SYS_TRY_RECV, channel as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0) }
+}
+
+/// Rung 6: `SYS_INPUT_FOCUS_CREATE()`: a new input focus of the caller's;
+/// the returned handle can receive, never activate. The index, or -errno.
+pub fn input_focus_create() -> i64 {
+    // SAFETY: no arguments.
+    unsafe { syscall4(SYS_INPUT_FOCUS_CREATE, 0, 0, 0, 0) }
+}
+
+/// Rung 6: `SYS_INPUT_FOCUS_MINT_ACTIVATOR(focus)`: the focus's
+/// activate-only sibling, for the compositor. The index, or -errno.
+pub fn input_focus_mint_activator(focus: u32) -> i64 {
+    // SAFETY: one scalar.
+    unsafe { syscall4(SYS_INPUT_FOCUS_MINT_ACTIVATOR, focus as u64, 0, 0, 0) }
+}
+
+/// Rung 6: `SYS_INPUT_FOCUS_RECV(focus, out, 8)`: dequeue one input event
+/// without parking (-EAGAIN when none; -EPERM when the focus isn't the
+/// active route).
+pub fn input_focus_recv(focus: u32, out: &mut [u8; 8]) -> i64 {
+    // SAFETY: `out` is a live, writable 8-byte array.
+    unsafe { syscall4(SYS_INPUT_FOCUS_RECV, focus as u64, out.as_mut_ptr() as u64, 8, 0) }
 }
 
 /// C2.1b: the handle-table slots [`handle_info`] scans (the kernel's tables
