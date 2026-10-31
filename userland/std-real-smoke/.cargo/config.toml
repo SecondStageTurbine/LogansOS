@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C0.5: build a REAL std-linked binary for x86_64-unknown-neoplutarch.
+# build-std=std,panic_abort compiles std from the rust-src overlaid by
+# userland/neoplutarch-std-overlay/apply-overlay.sh, which xtask applies to a
+# per-build copy of rust-src and points build-std at (__CARGO_TESTS_ONLY_SRC_ROOT).
+# Static, no dynamic linker (the LogansOS loader ABI); panic=abort (A1: no
+# unwinder needing executable memory).
+[build]
+target = "../x86_64-unknown-neoplutarch.json"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-neoplutarch]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]

@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "arthur-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+# Real AEAD crate, mirrored from neo-arthur's M2 dep, so the direct-function
+# byte-oracle binds the SAME crypto the binary ships (not a re-implementation).
+chacha20poly1305 = { version = "0.10", default-features = false }
+# Desktop S2: the mounted showcase_text.rs renders through the real engine.
+neo-text = { path = "../../userland/neo-text", features = ["inter", "plex-mono"] }
+
+[features]
+# A9-C: the mounted showcase_text.rs's scrollback is on, so its KATs run.
+default = ["arthur-scrollback"]
+arthur-scrollback = []
+arthur-act = []
+agentic-actions = ["arthur-act"]
+agentic-actions-a2 = ["agentic-actions"]
+agentic-actions-a3 = ["agentic-actions-a2"]
+arthur-reversibility = ["agentic-actions-a2"]
+arthur-reversibility-stakes = ["arthur-reversibility"]
+# Declared (never enabled here) so mounted conversation_logic.rs's
+# agentic real-vocab cfg is known under check-cfg.
+arthur-real-vocab = []
+# Declared (never enabled here) so the mounted memory_logic.rs's
+# `#[cfg(feature = "arthur-memory-encryption")]` is a known cfg under check-cfg.
+arthur-memory-encryption = []
+# Declared (never enabled here) so the mounted memory_logic.rs's M3 delegation
+# cfg is known under check-cfg, matching neo-arthur's feature implication.
+arthur-memory-delegation = ["arthur-memory-encryption"]
+# Declared (never enabled here) so the mounted memory_logic.rs's M4 forgetting
+# cfg is known under check-cfg, matching neo-arthur's feature implication.
+arthur-memory-forgetting = ["arthur-memory-delegation"]
+# Declared (never enabled here) so the mounted conversation_logic.rs's
+# Stage-B breadcrumbs are known cfgs under check-cfg.
+arthur-real-brain-boot = []
+# Declared for parity with neo-arthur; the mounted pure showcase policy has no
+# libneo dependency and is exercised directly by the kill-switch KATs.
+arthur-compositor = []
+arthur-compositor-baremetal = ["arthur-compositor"]
+# Declared (never enabled here) so the mounted showcase_text.rs's A9-D
+# busy-emblem cfg is known under check-cfg; its reserve_busy is tested directly.
+arthur-busy-emblem = []
+# Declared (never enabled here) so the mounted showcase_logic.rs /
+# showcase_text.rs DI-1b `desktop-resize` cfgs are known under check-cfg; the
+# host KATs drive the sized TextSurface directly.
+desktop-resize = []
+# Declared (never enabled here) so the mounted conversation_logic.rs's desktop
+# reply budget is a known cfg under check-cfg.
+desktop-session = []
+# Declared (never enabled here) so the mounted showcase_text.rs's kill-switch
+# cfg is known under check-cfg; both renderers are always host-tested.
+arthur-legacy-5x7-font = ["arthur-compositor"]

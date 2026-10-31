@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "swgl-atrium-oracle"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+# OT-61 browser C0, A5(b): the host-only SWGL↔Atrium byte-contract oracle.
+# Hand-laid XRGB8888_LE bytes (ADR-028 byte-oracle discipline) proving the
+# render seam — SWGL's caller-owned framebuffer → Atrium SharedPixelBuffer —
+# BEFORE any kernel/target work. Pure host crate; `cargo test` is the gate.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "file-cap-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+# Mirror of the kernel `file-caps` feature so the mounted module's
+# `cfg!(feature = "file-caps")` is a *known* cfg on the host (silences
+# `unexpected_cfgs` under `-D warnings`). Default-off; the KATs pass the
+# `enabled` toggle explicitly and never depend on this feature being set.
+[features]
+file-caps = []

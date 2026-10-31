@@ -1,0 +1,51 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Phase 7.5 BUILD-V — VT-d / IOMMU (arm I-14(c2), the hardware DMA fence) → Jarvis
+
+**Date:** 2026-06-13
+**From:** PM/Cerebro
+**To:** Jarvis (branch `codex/phase-7.5-build-V-vtd-iommu-jarvis`, **cut off `origin/main` AFTER the 7.5-K consolidation merges** — see §Sequencing)
+**Status:** DISPATCHED (design-ratified; lands post-K). **QEMU `intel-iommu` first, then OptiPlex blind. Both standing rules apply — the blind-hardware failure-mode section AND the I-14 fault-containment analysis are below. Mechanism build → Rule-1 kill-switch required.**
+**Ratified design:** `Plans/THINK-2026-06-13-phase-7.5-build-V-vtd-iommu.md` (the arena-as-hardware-fence design; identity domains for the proven substrate; DMA-remapping-only; identity-first no-regression order).
+**Builds on:** ADR-045 (the fenced arena = the (c1) guard this hardware-enforces), the silicon-proven substrate (GPU/NVMe/AHCI/virtio), I-14.
+
+## 0. The decision this build makes
+The arena (7.5-0) restricts connectivity DMA to one physical region by **software** ((c1), against our own bad descriptor). VT-d makes that **same restriction hardware-enforced against the device itself** ((c2), against errant firmware): each connectivity device goes into a VT-d translating domain whose second-level tables map **only the arena's physical range** — a misbehaving device physically cannot reach memory outside the arena; the IOMMU faults. The proven substrate goes into **identity domains** (GPA==HPA) + their **RMRRs**, so it keeps working unchanged. **This build arms I-14(c2) — the last open vector.** *(WiFi-target amendment 2026-06-13: the WiFi target is now MediaTek MT7601U, a **USB** dongle — its DMA rides the xHCI controller, already arena-fenced (7.5-0), so VT-d hardens it but is **no longer a hard prerequisite** for the radio. VT-d stands on its own merit as the I-14(c2) build for the USB controller + all connectivity devices.)*
+
+## 1. Scope
+- **ISC-1 — DMAR/ACPI parse.** Parse the DMAR ACPI table: DRHD units (register base per remapping unit) + RMRR entries (base/limit/source-id). Log DRHD count + every RMRR (V1/V2 discriminators). Read each unit's CAP/ECAP (SAGAW/MGAW address width — V7).
+- **ISC-2 — Second-level translation tables + Root/Context.** Build the Root table (by bus) → Context table (by dev/func) → second-level page tables (the EPT-style PML4/PDPT/PD/PT). Two domain builders: **identity** (map GPA==HPA across the host address width, + RMRR regions) and **fence** (map only the arena's physical range).
+- **ISC-3 — Identity-domain the proven substrate FIRST (the no-regression order).** Place GPU/NVMe/AHCI/virtio + everything-not-connectivity into identity domains with their RMRRs; **enable translation; verify the full family + the Phase-6 GPU scenarios are byte-identical to VT-d-off.** Only then narrow connectivity devices to fence domains. (§5 of the THINK — this order is mandatory.)
+- **ISC-4 — Fence-domain the connectivity devices.** The USB controller + USB-Ethernet (and the future WiFi (MT7601U) slot) → translating domains bounded to the arena's physical range. IOTLB/context invalidation after every domain change (V6).
+- **ISC-5 — Fault reporting (the (c2) discriminator + the live guard).** Wire the DMAR fault-recording registers: on a fault, capture faulting address + source-id; bounded fault-record processing per ISR (I-14(b)); log conclusively. A connectivity device's out-of-arena DMA MUST raise a fault (V5).
+- **ISC-6 — Kill-switch (Rule 1).** VT-d disabled (feature-off / translation never enabled) ⇒ every device does physical DMA exactly as today ⇒ the proven substrate + full family bit-for-bit unchanged. Prove it (the regression family under VT-d-off ≡ pre-VT-d).
+- **ISC-7 — Standards.** SPDX; new `unsafe` confined to the MMIO/table idiom (justify each); `cargo fmt`; `clippy -D warnings`; host suite (the table-builder/DMAR-parse arithmetic in the pure tier under truth tables — base/limit math, AGAW selection, context-entry layout with a **byte oracle** for the on-hardware structures per the format-ABI standing rule); `shard-coverage`; builds on+off. **Extend ANSPEC §10.6 (DMA isolation, renumbered from §10.4 by BUILD-K)** to (c2)-hardware-enforced (post-K numbering) + **ADR-050** (the IOMMU design, identity-vs-fence domains, the arena-as-hardware-fence rationale). **Update the I-14 ledger row: (c2) mandated-not-yet-proven → PROVEN.**
+
+## 2. I-14 governance fault-containment analysis (standing rule — this build IS the (c2) guard)
+- **(a):** the DMAR fault ISR acquires **no** AI-governance lock; new VT-d lock(s) enter `sync::lock_order` (grep + runtime assertion). **Lock-ceiling constraint (from the BUILD-K lock census, ADR-048):** the ordered lockdep band is at its `1..=31` ceiling (`USB_CORE = 31`). A VT-d lock must therefore be a **leaf (unordered)** lock — if it genuinely needs an *ordered* position, the lockdep domain must be widened *first* as its own prerequisite change (BLOCKER-to-PM), never silently exceeded. Prefer leaf: the DMAR fault path and table-setup paths should be self-contained and not nest under the AI-governance ordered band.
+- **(b):** fault-record processing capped per ISR + deferred — a fault storm degrades VT-d handling, never governance (the I-2 backstop).
+- **(c2):** hardware-enforced for connectivity devices (fence domains); proven substrate identity-mapped (no regression). **The ledger upgrade is a deliverable (ISC-7):** I-14(c2) → PROVEN on the out-of-arena-faults gate.
+
+## 3. Blind-hardware failure-mode + discriminator section (standing rule — OptiPlex 7080 / Comet Lake Q470)
+QEMU `intel-iommu` green is the entry gate for every bare-metal iteration. Discriminators ship in-build (THINK §3 — capture-before-you-need-it): V1 DMAR-absent (parse+log; "enable in BIOS" verdict — *verify the 7080 exposes VT-d, don't assume*); V2 RMRR-not-honored (log RMRRs, GPU is the canary); V3 translation-not-engaging (read the Global Status TES bit); V4 identity-domain-incomplete (fault-record address+source-id of a proven device's legit DMA); V5 fence-too-permissive (the deliberate out-of-arena DMA MUST fault); V6 stale-IOTLB (invalidation after every change); V7 width-mismatch (CAP SAGAW/MGAW). Every bare-metal run conclusive pass **or** fail per this table.
+
+## 4. Gate (two-stage)
+- **Stage A (QEMU `intel-iommu`):** DMAR parse; identity domains + RMRRs; **the full family + Phase-6 GPU scenarios byte-identical under VT-d-on** (the no-regression oracle, ISC-3); fence domains; **the deliberate out-of-arena connectivity DMA raises a DMAR fault and governance memory is untouched** (the (c2) proof, ISC-5); the kill-switch equivalence (VT-d-off ≡ today); the byte-oracle table tests.
+- **Stage B (OptiPlex, blind):** real DMAR table parsed (V1); identity domains keep the GPU/NVMe/AHCI/virtio green on real silicon (V2/V4 — the substrate is the regression oracle); the connectivity fence domain contains a real out-of-arena DMA (V5, the (c2) silicon proof); all V1–V7 breadcrumbs captured. Iterate per the Phase-6 loop; each iteration conclusive.
+
+## 5. Scope guard
+DMA remapping only. **No interrupt remapping** (its own future concern). **No** new drivers, no WiFi driver (7.5-W consumes this), no AI-subsystem changes. Identity-domain the proven substrate before narrowing connectivity (ISC-3 order is mandatory — never enable translation with a proven device un-domained). Do NOT regress the substrate: any fault from a proven device's legit DMA is a BLOCKER, not a "tune later." If the OptiPlex doesn't expose VT-d (V1), BLOCKER-to-PM (the BIOS may need VT-d enabled, or a fallback decision) — but note the WiFi target (MT7601U, USB) is already arena-contained, so this no longer gates the radio.
+
+## Sequencing (REQUIRED)
+- **Land after 7.5-K** (the consolidation; one digest before the next feature, Rule-4 cadence). **Cut the branch off `origin/main` AFTER K merges**, so the base is current and the **§-references use the post-K renumbering** (K renumbers the §10.x block — V touches §10.6, was §10.4 pre-K). If K hasn't merged, do not cut the branch yet; PM will confirm the post-K base SHA.
+- 7.5-V is **no longer a hard prerequisite for the WiFi build** (Article 24.1 amendment 2026-06-13): the WiFi target is now MT7601U (USB), whose DMA is already arena-fenced via the xHCI controller. VT-d hardens it but doesn't gate it. The two builds are now independent; either order works.
+
+## Merge (PM, on Stage-B PASS)
+Close-gate: rebase onto current `main`, re-run Stage-A + the no-regression family, push. PM `pm-merge-check` → `--ff-only`. **I-14 is then fully proven** ((a)/(b)/(c1) silicon-proven at A/B; (c2) hardware-proven here) — the pre-mandate discharged. Then the WiFi build (MT7601U, 7.5-W) opens on a hardware-contained footing.
+
+---
+
+## Relay — what to tell Jarvis
+- **Dispatch (authoritative, on `main`):** `Plans/DISPATCH-2026-06-13-phase-7.5-build-V-vtd-iommu-jarvis.md`
+- **THINK (ratified design + research + failure modes):** `Plans/THINK-2026-06-13-phase-7.5-build-V-vtd-iommu.md`
+- **Branch:** `codex/phase-7.5-build-V-vtd-iommu-jarvis` — **cut off post-K `origin/main`** (PM confirms the base SHA after 7.5-K merges; do not start before K lands).
+- **One-line:** VT-d arms I-14(c2): the arena and the IOMMU become one fence (software then hardware). DMAR/ACPI parse (DRHD + RMRR + CAP width) → Root/Context/second-level tables → **identity-domain the proven substrate (GPU/NVMe/AHCI/virtio) + RMRRs FIRST and prove the family + Phase-6 GPU green under VT-d-on (the no-regression oracle)**, then narrow connectivity devices to **fence domains bounded to the arena's physical range**; fault-recording registers capture out-of-arena DMA (the (c2) discriminator + live guard). DMA-remapping only (no IR). Kill-switch: VT-d-off ≡ today bit-for-bit. Both standing rules: I-14 analysis (this IS the (c2) guard) + blind-bank V1–V7 in-build (DMAR-absent, RMRR, TES bit, identity-incomplete, fence-too-permissive, stale-IOTLB, width). Byte-oracle the on-hardware table structures. Gate: QEMU `intel-iommu` (no-regression + out-of-arena-faults) then OptiPlex blind. Extend §10.6 + ADR-050 + upgrade I-14(c2)→PROVEN. **Lands after 7.5-K; prerequisite for iwlwifi.**

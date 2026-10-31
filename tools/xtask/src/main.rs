@@ -1,0 +1,22292 @@
+// SPDX-License-Identifier: MPL-2.0
+//! Build orchestration for NeoPlutarch.
+//!
+//! This is the `cargo xtask` pattern: a tiny CLI that knows how to do
+//! the multi-step things that aren't natural to express as a Cargo
+//! build script. We have three subcommands today:
+//!
+//!   xtask build   - cargo build the kernel for the bare-metal target
+//!   xtask iso     - build the kernel, then assemble a bootable Limine ISO
+//!   xtask run     - build the iso, then launch QEMU
+//!
+//! Run via the workspace alias: `cargo xtask run` (see .cargo/config.toml).
+
+use std::env;
+use std::fs;
+use std::io::{self, Read as _, Seek, SeekFrom, Write};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitCode, ExitStatus, Output, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+/// OT-87 R3: the GPT writer the one-disk VM image is built from, and the
+/// reader the guard uses, one source of truth with the kernel.
+#[path = "../../../kernel/src/drivers/block/gpt_logic.rs"]
+#[allow(dead_code)]
+mod gpt_logic;
+/// Zenbook lane: the block write guard's sealed markers (scratch sector, log
+/// sink header), one source of truth with the kernel.
+#[path = "../../../kernel/src/drivers/block/write_guard_logic.rs"]
+#[allow(dead_code)]
+mod write_guard_logic;
+
+/// B1c (F8): the kernel's boot-model pins, one source of truth.
+#[path = "../../../kernel/src/boot_model_logic.rs"]
+#[allow(dead_code)]
+mod boot_model_logic;
+
+/// The binary vocab (`NEOVOCB1`): its converter runs at image build, over
+/// Arthur's own text-sidecar parser and the one format module.
+#[path = "../../../kernel/src/ai/tokenizer_logic.rs"]
+mod tokenizer_logic;
+#[path = "../../../kernel/src/ai/vocab_bin_logic.rs"]
+mod vocab_bin_logic;
+#[path = "../../../userland/neo-arthur/src/vocab_sidecar.rs"]
+#[allow(dead_code)]
+mod vocab_sidecar;
+
+/// OT-61 A4: the PAL manifest gate's checker (one source of truth with
+/// `neo-std-pal/build.rs`), used here for the post-apply overlay scan.
+#[path = "../../../userland/neo-std-pal/a4_gate.rs"]
+#[allow(dead_code)]
+mod a4_gate;
+
+/// OT-87 R1: the VM image layout, its firmware and its QEMU disks.
+mod vm_image;
+// OT-90 P2: QMP, QEMU's own report of why it stopped (power scenarios).
+mod qmp;
+// OT-66 L1: the sign-in scenarios on the VM layout.
+mod login_scenarios;
+
+mod esp_template;
+#[cfg(test)]
+mod esp_template_tests;
+mod install_bundle;
+/// OT-87 R4.2: the install bundle (`NEOINST1`), one source of truth with the
+/// kernel's reader, its ESP templates (vendored `fatfs`), and its pin.
+#[path = "../../../kernel/src/install_bundle_logic.rs"]
+#[allow(dead_code)]
+mod install_bundle_logic;
+
+#[cfg(test)]
+mod build_id_tests;
+#[cfg(test)]
+mod ci_memory_floor_tests;
+#[cfg(test)]
+mod i8042_tests;
+#[cfg(test)]
+mod ot61_c05_tests;
+mod ot61_tls_gate;
+#[cfg(test)]
+mod ot83_tests;
+
+mod qwen35_llama_cpp_golden {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/qwen35_llama_cpp_hello_golden.rs"
+    ));
+}
+
+const KERNEL_PACKAGE: &str = "neoplutarch-kernel";
+const KERNEL_BIN: &str = "kernel";
+const KERNEL_TARGET: &str = "x86_64-neoplutarch";
+
+// Phase 1.4: userspace ELF built as a separate workspace member with its
+// own custom target spec. Phase 1.5 adds neo-worker (a second user binary
+// the kernel loads from the same Limine modules dir; neo-init spawns it
+// via sys_spawn).
+const USER_PACKAGE: &str = "neo-init";
+const USER_BIN: &str = "neo-init";
+const USER_TARGET: &str = "x86_64-neoplutarch-user";
+const WORKER_PACKAGE: &str = "neo-worker";
+const WORKER_BIN: &str = "neo-worker";
+const SHELL_PACKAGE: &str = "neo-shell";
+const SHELL_BIN: &str = "neo-shell";
+const ARTHUR_PACKAGE: &str = "neo-arthur";
+const ARTHUR_BIN: &str = "neo-arthur";
+
+const ISO_OUTPUT_REL: &str = "boot/neoplutarch.iso";
+const ISO_STAGING_REL: &str = "target/iso-root";
+/// Licence texts staged into every boot image's `/licenses/` (OFL §2 for the
+/// fonts compiled into neo-arthur): (repository path, staged name).
+const LICENSE_FILES: [(&str, &str); 3] = [
+    ("assets/fonts/OFL-Inter.txt", "OFL-Inter.txt"),
+    ("assets/fonts/OFL-IBM-Plex.txt", "OFL-IBM-Plex.txt"),
+    ("NOTICE", "NOTICE"),
+];
+/// B1b: licence texts staged into `/licenses/` of images that carry a model
+/// boot module (the weights keep their upstream licence; NOTICE lists them).
+const MODEL_LICENSE_FILES: [(&str, &str); 1] =
+    [("assets/licenses/Apache-2.0.txt", "Apache-2.0.txt")];
+const TEST_OUTPUT_REL: &str = "target/neo-test";
+const VMWARE_TEST_OUTPUT_REL: &str = "target/neo-test/vmware";
+const STORAGE_DISK_SIZE: u64 = 16 * 1024 * 1024;
+const FAT32_DISK_SIZE: u64 = 64 * 1024 * 1024;
+const EXT4_DISK_SIZE: u64 = 64 * 1024 * 1024;
+const NEOFS_LARGE_FILE_NAME: &str = "large-double.bin";
+const NEOFS_LARGE_FILE_BLOCK_SIZE: usize = 4096;
+const NEOFS_LARGE_FILE_BLOCKS: usize = 8 + 512 + 3;
+const NEOFS_LARGE_FILE_BYTES: usize = NEOFS_LARGE_FILE_BLOCKS * NEOFS_LARGE_FILE_BLOCK_SIZE + 137;
+const STAGE_B_NEOM_ENV: &str = "NEO_STAGE_B_NEOM";
+const REAL_NEOM_ENV: &str = "NEO_REAL_NEOM";
+const STAGE_B_GGUF_ENV: &str = "NEO_STAGE_B_GGUF";
+const STAGE_B_05B_NEOM_BYTES: u64 = 485_489_152;
+const STAGE_B_15B_NEOM_BYTES: u64 = 1_111_411_200;
+const STAGE_B_15B_VOCAB_BYTES: u64 = 7_990_862;
+const QWEN35_08B_NEOM_BYTES: u64 = 725_171_456;
+const QWEN35_08B_VOCAB_BYTES: u64 = 15_690_043;
+// OT-38: the Qwen2.5-3B Q4_K_M import (435 tensors: f32=181, q4_K=217, q6_K=37).
+// The `.neom` is 46 MiB under the 2 GiB NEOM_MAX_FILE_SIZE; the vocab is the same
+// shared Qwen2.5 tokenizer as the 0.5B/1.5B (byte-identical sidecar).
+const STAGE_B_3B_NEOM_BYTES: u64 = 2_099_030_016;
+const STAGE_B_3B_VOCAB_BYTES: u64 = 7_990_862;
+const STAGE_B_VOCAB_SIZE: usize = 151_936;
+const STAGE_B_SPECIAL_TOKEN_ID: usize = 151_644;
+const AHCI_DEVICE_INDEX: usize = 3;
+const NVME_DEVICE_INDEX: usize = 4;
+const BARE_METAL_LOG_REGION_OFFSET: u64 = 0x1000_0000;
+const BARE_METAL_LOG_REGION_SIZE: u64 = 16 * 1024 * 1024;
+const BARE_METAL_LOG_DISK_SIZE: u64 =
+    BARE_METAL_LOG_REGION_OFFSET + BARE_METAL_LOG_REGION_SIZE + 16 * 1024 * 1024;
+const BARE_METAL_LOG_MAGIC: &[u8; 11] = b"NEO_LOG_v1\0";
+const BARE_METAL_LOG_HEADER_SIZE: usize = 4096;
+const BARE_METAL_LOG_OFFSET_REGION_SIZE: usize = 0x010;
+const BARE_METAL_LOG_OFFSET_WRITE_CURSOR: usize = 0x018;
+const BARE_METAL_LOG_OFFSET_BUILD_ID: usize = 0x020;
+const BARE_METAL_LOG_BUILD_ID_LEN: usize = 32;
+const BARE_METAL_LOG_OFFSET_SCENARIO_NAME: usize = 0x040;
+const BARE_METAL_LOG_SCENARIO_NAME_LEN: usize = 64;
+const BARE_METAL_LOG_OFFSET_DEGRADATION_REASON: usize = 0x08c;
+
+const LIMINE_DIR_ENV: &str = "LIMINE_DIR";
+const LIMINE_DIR_DEFAULT: &str = "/home/neo/limine";
+const NEO_SMP_ENV: &str = "NEO_SMP";
+const NEO_QEMU_GDB_PORT_ENV: &str = "NEO_QEMU_GDB_PORT";
+const NEO_QEMU_MONITOR_PORT_ENV: &str = "NEO_QEMU_MONITOR_PORT";
+const NEO_QEMU_TIMEOUT_DUMP_ENV: &str = "NEO_QEMU_TIMEOUT_DUMP";
+const NEO_TEST_ATTEMPTS_ENV: &str = "NEO_TEST_ATTEMPTS";
+/// Extra kernel cargo features to append to a `neo-test` scenario build (comma-
+/// or whitespace-separated). Exists to arm compile-time kill-switch witnesses
+/// like OT-59 #2's `virtio-blk-io-gate-off` — e.g.
+/// `NEO_TEST_EXTRA_FEATURES=virtio-blk-io-gate-off cargo neo-test arthur_memory`
+/// boots the same scenario with the device I/O gate compiled OUT, so the fix's
+/// falsifiable delta (gate-off hangs / gate-on passes) is one repeatable command.
+const NEO_TEST_EXTRA_FEATURES_ENV: &str = "NEO_TEST_EXTRA_FEATURES";
+
+const TEST_FRAME_PREFIX: &str = "NEO_TEST/1";
+const TEST_EXIT_SUCCESS: u32 = 0x10;
+const TEST_EXIT_FAILURE: u32 = 0x11;
+const INPUT_PATH_CONSOLE_CAPTURE_REL: &str = "target/neo-test/input_path_console.ppm";
+const ARTHUR_CONSOLE_CAPTURE_REL: &str = "target/neo-test/arthur_console.ppm";
+const ARTHUR_COMPOSITOR_CAPTURE_REL: &str = "target/neo-test/arthur_compositor.ppm";
+const DESKTOP_SESSION_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_session_boot.ppm";
+const DESKTOP_GLASS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_boot.ppm";
+const DESKTOP_GLASS_RT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_rt_boot.ppm";
+const DESKTOP_HOME_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_home_boot.ppm";
+const DESKTOP_ICONS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_icons_boot.ppm";
+const DESKTOP_BUSY_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_busy_boot.ppm";
+const DESKTOP_SCROLL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_scroll_boot.ppm";
+const DESKTOP_WHEEL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_wheel_boot.ppm";
+const DESKTOP_LENS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_lens_boot.ppm";
+const DESKTOP_LENS_POINTER_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_lens_pointer_boot.ppm";
+const DESKTOP_LENS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_lens_fault_boot.ppm";
+const DESKTOP_FULL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_full_boot.ppm";
+const DESKTOP_MOTION_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_motion_boot.ppm";
+const DESKTOP_MOTION_RM_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_motion_rm_boot.ppm";
+/// DM-1: the first hold, captured at its mid frame.
+const DESKTOP_MOTION_BOOT_MID_REL: &str = "target/neo-test/desktop_motion_boot_mid.ppm";
+const DESKTOP_MOTION_RM_BOOT_MID_REL: &str = "target/neo-test/desktop_motion_rm_boot_mid.ppm";
+/// The first-boot intro: the help card (end capture) and the intro card
+/// (mid capture, at session start).
+const DESKTOP_INTRO_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_intro_boot.ppm";
+const DESKTOP_INTRO_BOOT_MID_REL: &str = "target/neo-test/desktop_intro_boot_mid.ppm";
+/// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
+const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
+const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
+const INSTALL_ATRIUM_NO_BUNDLE_MID_REL: &str = "target/neo-test/install_atrium_no_bundle_mid.ppm";
+const INSTALL_ATRIUM_NO_BUNDLE_CAPTURE_REL: &str = "target/neo-test/install_atrium_no_bundle.ppm";
+const INSTALL_ATRIUM_BAD_PIN_MID_REL: &str = "target/neo-test/install_atrium_bad_pin_mid.ppm";
+const INSTALL_ATRIUM_BAD_PIN_CAPTURE_REL: &str = "target/neo-test/install_atrium_bad_pin.ppm";
+const DESKTOP_CLOCK_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_clock_boot.ppm";
+const DESKTOP_CLOCK_BOOT_MID_REL: &str = "target/neo-test/desktop_clock_boot_mid.ppm";
+const V1_CONSOLE_LIVENESS_CAPTURE_REL: &str = "target/neo-test/v1_console_liveness.ppm";
+
+const TEST_TIMEOUT: Duration = Duration::from_secs(180);
+const NEO_SHELL_REPL_PROMPT: &[u8] = b"neo> ";
+const ARTHUR_PROMPT: &[u8] = b"arthur> ";
+const NEO_SHELL_REPL_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"spawn worker\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const NEO_SHELL_BUILTINS_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"pwd\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"help\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"status\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"ls /neofs\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"cat /neofs/hello.txt\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"cd /neofs\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"pwd\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"ls .\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"cat ./missing.txt\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const INPUT_PATH_CONSOLE_HID_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
+    prompt: NEO_SHELL_REPL_PROMPT,
+    command: b"exit\n",
+}];
+const ARTHUR_CONSOLE_HID_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const V1_CONSOLE_LIVENESS_HID_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_COMPOSITOR_SLICE_A_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
+    prompt: b"SHOWCASE slice=A greeting=composited qemu_gate=ready",
+    // Empty is a harness-only synchronization command: capture immediately
+    // while Arthur is still resident, without injecting input into Slice A.
+    command: b"",
+}];
+/// One step of a desktop HID script (the prompt to wait for, then the
+/// command to send).
+const fn step(prompt: &'static [u8], command: &'static [u8]) -> SerialScriptStep {
+    SerialScriptStep { prompt, command }
+}
+
+// The steps several desktop scripts share (DS-1's Home round, DI-1a's
+// pointer session, DS-1c's Lens round).
+const HOME_READY_TYPE: SerialScriptStep = step(b"DESKTOP home ready", b"hello desktop");
+const HOME_TYPED_ENTER: SerialScriptStep = step(b"DESKTOP home keystroke ascii=112\n", b"\n");
+const ROUND1_ESC: SerialScriptStep = step(b"DESKTOP arthur answer composited round=1", b"\x1b");
+const HOLD_TAB: SerialScriptStep = step(b"DESKTOP home hold client=arthur", b"\t");
+const CHIP1_TAB: SerialScriptStep = step(b"DESKTOP home chip selected=1", b"\t");
+const CHIP0_AGAIN: SerialScriptStep = step(b"DESKTOP home chip selected=0", b"again");
+const AGAIN_ENTER: SerialScriptStep = step(b"DESKTOP home keystroke ascii=110\n", b"\n");
+const HOLD_LIST: SerialScriptStep = step(b"DESKTOP home hold client=arthur", b"list /");
+const PROOF_SAK: SerialScriptStep = step(b"DESKTOP launchcap awaiting-proof module=2", b"\x02");
+const SPINE_ENTER: SerialScriptStep = step(b"DESKTOP pointer escape focus=spine via=sak", b"\n");
+const ROUND1_SAK: SerialScriptStep = step(b"DESKTOP arthur answer composited round=1", b"\x02");
+const SPINE_CLICK: SerialScriptStep =
+    step(b"DESKTOP pointer escape focus=spine via=sak", b"\x03\x04");
+const REFOCUS_CLICK: SerialScriptStep = step(
+    b"DESKTOP pointer focus client=arthur via=click",
+    b"\x03\x04",
+);
+const TITLE_DRAG: SerialScriptStep = step(
+    b"DESKTOP arthur pointer buttons=0 phase=3",
+    b"\x1c\x1c\x1c\x16\x03\x1d\x1d\x1d\x1d\x04",
+);
+const CLIENT_CLICK: SerialScriptStep = step(b"DESKTOP pointer move from=", b"\x0f\x03\x04");
+const CLAMPED_DRAG: SerialScriptStep = step(
+    b"DESKTOP arthur pointer buttons=0 phase=3 local=278,31",
+    b"\x03\x0e\x0e\x0e\x0e\x04",
+);
+const LENS_VIEW_TAB: SerialScriptStep = step(b"DESKTOP lens view shown selected=lens", b"\t");
+const RESUMED_QUIT: SerialScriptStep = step(b"DESKTOP view switch=resume residue_pixels=0", b"q");
+const CHIP2_ENTER: SerialScriptStep = step(b"DESKTOP home chip selected=2", b"\n");
+const LIST_ENTER_CAPTURE: SerialScriptStep = step(b"DESKTOP home keystroke ascii=47\n", b"\r");
+const LIST_ANSWER_ESC: SerialScriptStep =
+    step(b"DESKTOP arthur answer composited serial=", b"\x1b");
+const LIST_ENTER: SerialScriptStep = step(b"DESKTOP home keystroke ascii=47\n", b"\n");
+
+/// Desktop S1: type on the real usb-kbd once the session reports ready, wait
+/// until Arthur has echoed the last character (`p` = 112, unique in the line),
+/// capture the live desktop, then press Enter.
+const DESKTOP_SESSION_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP session ready", b"hello desktop"),
+    step(b"DESKTOP arthur keystroke ascii=112\n", b"\n"),
+];
+
+/// OT-22: DS-1's script with a quiet gap of 3 s (three
+/// [`HMP_PAUSE_1S`]) after Arthur's first answer, before the Esc that yields
+/// back to Home: the idle window the WM measures between the answer and the
+/// yield request.
+const DESKTOP_IDLE_HID_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: b"DESKTOP home ready",
+        command: b"hello desktop",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP home keystroke ascii=112\n",
+        command: b"\n",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP view switch=window residue_pixels=0",
+        command: b"x\x08",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP arthur answer composited round=1",
+        command: b"\x80\x80\x80\x1bzz\x08\x08",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP home hold client=arthur",
+        command: b"\t",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP home chip selected=1",
+        command: b"\t",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP home chip selected=0",
+        command: b"again",
+    },
+    SerialScriptStep {
+        prompt: b"DESKTOP home keystroke ascii=110\n",
+        command: b"\n",
+    },
+];
+
+/// DS-1: type the intent into Home's field (the WM's own focus) and press
+/// Enter; Arthur answers it. Esc hands the keyboard back (OP_YIELD_FOCUS):
+/// Home holds Arthur. Tab moves the keyboard to the Spine chip and back; a
+/// second intent then resumes the SAME held Arthur, which answers and ends.
+/// Home is captured with the second intent typed (Arthur held) before Enter.
+/// Chad DS-1a F1: `zz` and two backspaces follow Esc at once, typed during
+/// the hold handoff; whichever owner they reach, none may be replayed into
+/// Arthur after it resumes (the two backspaces erase them if Home got them).
+/// Chad DS-1ab F1 (re-check): `x` and a backspace are typed the moment the
+/// launch's window view is presented; they must reach Arthur (its route was
+/// live before the view showed), not Home's queue to be discarded.
+/// A9-C: DS-1's script with the transcript scrolled once Arthur's first
+/// answer is on screen (20 seed lines put it past the 12 rows): a page up, a
+/// line up (the input line is empty), then two pages down, the second back
+/// to following the newest text. Then DS-1 goes on (Esc to Home, ...).
+const DESKTOP_SCROLL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP view switch=window residue_pixels=0", b"x\x08"),
+    step(b"DESKTOP arthur answer composited round=1", &[HMP_PGUP]),
+    step(b"DESKTOP arthur scroll key=pgup view_top=", &[HMP_UP]),
+    step(b"DESKTOP arthur scroll key=up view_top=", &[HMP_PGDN]),
+    step(b"DESKTOP arthur scroll key=pgdn view_top=", &[HMP_PGDN]),
+    step(
+        b"DESKTOP arthur scroll key=pgdn view=follow",
+        b"\x1bzz\x08\x08",
+    ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+
+/// A9-C2: DS-1's script with the wheel turned over Arthur's client once his
+/// first answer is on screen (the cursor starts at the screen centre, in the
+/// client): one notch toward older text, then one back to the newest. Then
+/// DS-1 goes on.
+const DESKTOP_WHEEL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP view switch=window residue_pixels=0", b"x\x08"),
+    step(b"DESKTOP arthur answer composited round=1", &[HMP_WHEEL_A]),
+    step(b"DESKTOP arthur scroll key=wheel view_top=", &[HMP_WHEEL_B]),
+    step(
+        b"DESKTOP arthur scroll key=wheel view=follow",
+        b"\x1bzz\x08\x08",
+    ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+
+const DESKTOP_HOME_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP view switch=window residue_pixels=0", b"x\x08"),
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"\x1bzz\x08\x08",
+    ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+
+/// DI-1a: DS-1's script with the pointer exercised while Arthur holds the
+/// keyboard after its first answer: Super+Escape (the SAK) moves the keyboard
+/// to the Spine; a click on the window (the cursor starts at the screen
+/// centre, inside Arthur's client) refocuses it and is consumed; a second
+/// click is forwarded to Arthur, which logs it. DI-1b: the cursor goes up
+/// onto the title band (3 × `mouse_move 0 -50`, `mouse_move 0 -38`: 960,540
+/// → 960,352, mid-band: y ∈ [337, 371), clear of the resize build's top-edge
+/// rows [337, 341)), drags it by (−120, +60) (4 × `mouse_move -30 15`) and
+/// releases: the frame moves 674,337 → 554,397 (client 682,371 → 562,431).
+/// The cursor then drops into the client (`mouse_move 0 50`: → 840,462) and
+/// clicks: Arthur gets local 278,31 — the same x as before the move, since
+/// all it ever sees is window-relative. A second press there is dragged 4 ×
+/// `mouse_move -127 0` (to x 332, left of the client at 562): the release
+/// reaches Arthur clamped to local 0,31. Then DS-1 resumes (Esc).
+const DESKTOP_POINTER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    // Janus DS-1b: Arthur withholds a LaunchCap proof; while the broker
+    // waits for it, Super+Escape must still be honoured, and Enter (on the
+    // WM's own focus) gives the keyboard back.
+    PROOF_SAK,
+    SPINE_ENTER,
+    ROUND1_SAK,
+    SPINE_CLICK,
+    REFOCUS_CLICK,
+    TITLE_DRAG,
+    CLIENT_CLICK,
+    CLAMPED_DRAG,
+    step(
+        b"DESKTOP arthur pointer buttons=0 phase=3 local=0,31",
+        b"\x1b",
+    ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+/// DI-1b resize: desktop_pointer_boot's script, then (after the clamped
+/// grab, the cursor at 332,462) to the moved frame's bottom-right corner
+/// handle: 7 × `mouse_move 124 0`, 3 × `mouse_move 0 124`, `mouse_move 6 0`
+/// → 1206,834 (frame 554,397 656×442: right border x ≥ 1202, corner
+/// y ≥ 823, bottom border y ≥ 831). Press, drag 4 × `mouse_move 30 15`
+/// (+120, +60), release: the client goes 640×400 → 760×460, the frame stays
+/// at 554,397. Once Arthur has acked, the cursor goes to 1262,462
+/// (4 × `mouse_move 0 -108`, `mouse_move -64 0`) and clicks: Arthur gets
+/// local 700,31 — past the old 640 width, so the clamp follows the new size.
+/// Then the left edge (5 × `mouse_move -125 0`, `mouse_move -80 0` → 557,462:
+/// left border x ∈ [554, 562)) is dragged 2 × `mouse_move -30 0`: the client
+/// goes 760 → 820 wide and the frame's origin moves 554 → 494, the right
+/// edge anchored.
+const DESKTOP_RESIZE_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    // Janus DS-1b: Arthur withholds a LaunchCap proof; while the broker
+    // waits for it, Super+Escape must still be honoured, and Enter (on the
+    // WM's own focus) gives the keyboard back.
+    PROOF_SAK,
+    SPINE_ENTER,
+    ROUND1_SAK,
+    SPINE_CLICK,
+    REFOCUS_CLICK,
+    TITLE_DRAG,
+    CLIENT_CLICK,
+    CLAMPED_DRAG,
+    step(
+        b"DESKTOP arthur pointer buttons=0 phase=3 local=0,31",
+        b"\x10\x10\x10\x10\x10\x10\x10\x11\x11\x11\x12\x03\x13\x13\x13\x13\x04",
+    ),
+    step(
+        b"DESKTOP arthur configure size=760x460",
+        b"\x14\x14\x14\x14\x15\x03\x04",
+    ),
+    step(
+        b"DESKTOP arthur pointer buttons=0 phase=3 local=700,31",
+        b"\x17\x17\x17\x17\x17\x18\x03\x19\x19\x04",
+    ),
+    step(b"DESKTOP arthur configure size=820x460", b"\x1b"),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+
+/// DS-1c, keyboard only: DS-1's round, then the resume intent `list /`:
+/// Arthur blooms the Lens and answers; the two-surface scene is captured
+/// (Arthur focused). Esc holds Arthur; Tab, Tab puts the keyboard on the
+/// Lens chip; Enter switches to the Lens (the window view, Arthur unfocused,
+/// the Lens chip lit); Tab switches back to Arthur, and `q` ends it.
+const DESKTOP_LENS_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_LIST,
+    // `\r` (also Enter) marks the step the capture follows.
+    LIST_ENTER_CAPTURE,
+    LIST_ANSWER_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP2_ENTER,
+    LENS_VIEW_TAB,
+    // Logged once Arthur has discarded its queue and the view is up (#47):
+    // the `q` cannot be discarded as a pre-resume key.
+    RESUMED_QUIT,
+];
+
+/// DM-1: desktop_lens_boot's session with motion. The first Esc's hold stops
+/// at its mid frame (`DESKTOP motion hold`): the harness captures it, then
+/// `m` (consumed by the WM, never Home's input) lets it finish.
+const DESKTOP_MOTION_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    step(DESKTOP_MOTION_HOLD_PROMPT, b"m"),
+    HOLD_LIST,
+    // `\r` (also Enter) marks the step the end capture follows.
+    LIST_ENTER_CAPTURE,
+    LIST_ANSWER_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP2_ENTER,
+    LENS_VIEW_TAB,
+    RESUMED_QUIT,
+];
+
+/// DM-1: the WM's line at the mid frame it holds (the mid capture's step).
+const DESKTOP_MOTION_HOLD_PROMPT: &[u8] = b"DESKTOP motion hold kind=view";
+
+/// The desktop gate scenarios (S1 through DM-1): the HID script each one
+/// drives, its end capture (taken after `capture_after`, the command whose
+/// next prompt it waits for), its mid-transition capture (DM-1), and what the
+/// harness gives it. One row per scenario; the lists below are derived.
+struct DesktopScenario {
+    name: &'static str,
+    steps: &'static [SerialScriptStep],
+    capture: &'static str,
+    capture_after: &'static [u8],
+    /// A capture before the end one: taken when the step with this prompt is
+    /// reached, before its command (DM-1: the first hold's mid frame; the
+    /// intro: the intro card at session start).
+    mid: Option<(&'static [u8], &'static str)>,
+    /// DM-1: paced transitions under TCG; 300 s instead of the default.
+    long_timeout: bool,
+    /// S2-F2's damage-band check: `Some(home_flow)` (Home's first commit is
+    /// the intent's whole answer, a few lines, not one keystroke's line).
+    band: Option<bool>,
+}
+
+const fn desktop(
+    name: &'static str,
+    steps: &'static [SerialScriptStep],
+    capture: &'static str,
+    capture_after: &'static [u8],
+) -> DesktopScenario {
+    DesktopScenario {
+        name,
+        steps,
+        capture,
+        capture_after,
+        mid: None,
+        long_timeout: false,
+        band: None,
+    }
+}
+
+const DESKTOP_SCENARIOS: [DesktopScenario; 25] = [
+    DesktopScenario {
+        band: Some(false),
+        ..desktop(
+            "desktop_session_boot",
+            DESKTOP_SESSION_BOOT_HID_STEPS,
+            DESKTOP_SESSION_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    DesktopScenario {
+        band: Some(false),
+        ..desktop(
+            "desktop_glass_boot",
+            DESKTOP_SESSION_BOOT_HID_STEPS,
+            DESKTOP_GLASS_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    DesktopScenario {
+        band: Some(false),
+        ..desktop(
+            "desktop_glass_rt_boot",
+            DESKTOP_SESSION_BOOT_HID_STEPS,
+            DESKTOP_GLASS_RT_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    DesktopScenario {
+        band: Some(true),
+        ..desktop(
+            "desktop_home_boot",
+            DESKTOP_HOME_BOOT_HID_STEPS,
+            DESKTOP_HOME_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    // Chad #177 item 4: Home's script, after the WM's silent cycle rounds.
+    DesktopScenario {
+        band: Some(true),
+        ..desktop(
+            "desktop_home_cycle",
+            DESKTOP_HOME_BOOT_HID_STEPS,
+            DESKTOP_HOME_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    // OT-66 K1b: Home's script, Arthur holding only his scopes.
+    DesktopScenario {
+        band: Some(true),
+        ..desktop(
+            "desktop_arthur_scope",
+            DESKTOP_HOME_BOOT_HID_STEPS,
+            DESKTOP_HOME_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    // `atrium-app-icons`: Home's script, the chips drawing their icons.
+    DesktopScenario {
+        band: Some(true),
+        ..desktop(
+            "desktop_icons_boot",
+            DESKTOP_HOME_BOOT_HID_STEPS,
+            DESKTOP_ICONS_BOOT_CAPTURE_REL,
+            b"\n",
+        )
+    },
+    // A9-D: Home's script; the answers come from the model.
+    desktop(
+        "desktop_busy_boot",
+        DESKTOP_HOME_BOOT_HID_STEPS,
+        DESKTOP_BUSY_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // A9-C2: the same, scrolled with the wheel.
+    desktop(
+        "desktop_wheel_boot",
+        DESKTOP_WHEEL_BOOT_HID_STEPS,
+        DESKTOP_WHEEL_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // A9-C: Home's session with the transcript scrolled.
+    desktop(
+        "desktop_scroll_boot",
+        DESKTOP_SCROLL_BOOT_HID_STEPS,
+        DESKTOP_SCROLL_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // The pointer and resize sessions end where Home's does: the same capture.
+    desktop(
+        "desktop_pointer_boot",
+        DESKTOP_POINTER_BOOT_HID_STEPS,
+        DESKTOP_HOME_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // DS-1c: captured once the answer (and the Lens) is composited.
+    DesktopScenario {
+        band: Some(true),
+        ..desktop(
+            "desktop_lens_boot",
+            DESKTOP_LENS_BOOT_HID_STEPS,
+            DESKTOP_LENS_BOOT_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    // The same session as desktop_lens_boot (the bloom retried inside
+    // Arthur's one `list /`), captured at the same point.
+    desktop(
+        "desktop_lens_fault_boot",
+        DESKTOP_LENS_BOOT_HID_STEPS,
+        DESKTOP_LENS_FAULT_BOOT_CAPTURE_REL,
+        b"\r",
+    ),
+    // Captured once the click switched to the Lens.
+    desktop(
+        "desktop_lens_pointer_boot",
+        DESKTOP_LENS_POINTER_BOOT_HID_STEPS,
+        DESKTOP_LENS_POINTER_BOOT_CAPTURE_REL,
+        b"\x06\x03\x04",
+    ),
+    desktop(
+        "desktop_resize_boot",
+        DESKTOP_RESIZE_BOOT_HID_STEPS,
+        DESKTOP_HOME_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // Captured once the click in the resized client reached Arthur.
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "desktop_full_boot",
+            DESKTOP_FULL_BOOT_HID_STEPS,
+            DESKTOP_FULL_BOOT_CAPTURE_REL,
+            b"\x1a\x1a\x03\x04",
+        )
+    },
+    // DM-1: the end capture where desktop_lens_boot's is; the mid capture at
+    // the first hold.
+    DesktopScenario {
+        mid: Some((DESKTOP_MOTION_HOLD_PROMPT, DESKTOP_MOTION_BOOT_MID_REL)),
+        long_timeout: true,
+        band: Some(true),
+        ..desktop(
+            "desktop_motion_boot",
+            DESKTOP_MOTION_BOOT_HID_STEPS,
+            DESKTOP_MOTION_BOOT_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        mid: Some((DESKTOP_MOTION_HOLD_PROMPT, DESKTOP_MOTION_RM_BOOT_MID_REL)),
+        long_timeout: true,
+        band: Some(true),
+        ..desktop(
+            "desktop_motion_rm_boot",
+            DESKTOP_MOTION_BOOT_HID_STEPS,
+            DESKTOP_MOTION_RM_BOOT_CAPTURE_REL,
+            b"\r",
+        )
+    }, // OT-22: the Home flow with a quiet gap (the idle window); the parked build
+    // and its spinning control end where Home does.
+    desktop(
+        "desktop_idle_parks",
+        DESKTOP_IDLE_HID_STEPS,
+        DESKTOP_HOME_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    desktop(
+        "desktop_idle_spins",
+        DESKTOP_IDLE_HID_STEPS,
+        DESKTOP_HOME_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // The first-boot intro: the intro card captured at session start, the
+    // help card once `help` is typed (`\r`, Enter, marks the step); paced
+    // transitions (desktop-full carries motion).
+    DesktopScenario {
+        mid: Some((DESKTOP_INTRO_SHOWN_PROMPT, DESKTOP_INTRO_BOOT_MID_REL)),
+        long_timeout: true,
+        ..desktop(
+            "desktop_intro_boot",
+            DESKTOP_INTRO_BOOT_HID_STEPS,
+            DESKTOP_INTRO_BOOT_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    // OT-87 R4.4: the Atrium installer in the intro session, booted as an
+    // install scenario (`run_install_scenario`): the list captured as it
+    // shows, the confirmation after Enter (`\r`).
+    DesktopScenario {
+        mid: Some((
+            b"DESKTOP installer list shown rows=3",
+            INSTALL_ATRIUM_LIST_REL,
+        )),
+        long_timeout: true,
+        ..desktop(
+            INSTALL_ATRIUM_SCENARIO,
+            INSTALL_ATRIUM_HID_STEPS,
+            INSTALL_ATRIUM_CONFIRM_REL,
+            b"\r",
+        )
+    },
+    // OT-87 R4.4b: the intro session on images that can't install (no
+    // bundle; a wrong pin): no Install chip; the intro's own round.
+    DesktopScenario {
+        mid: Some((DESKTOP_INTRO_SHOWN_PROMPT, INSTALL_ATRIUM_NO_BUNDLE_MID_REL)),
+        long_timeout: true,
+        ..desktop(
+            INSTALL_ATRIUM_NO_BUNDLE_SCENARIO,
+            DESKTOP_INTRO_BOOT_HID_STEPS,
+            INSTALL_ATRIUM_NO_BUNDLE_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        mid: Some((DESKTOP_INTRO_SHOWN_PROMPT, INSTALL_ATRIUM_BAD_PIN_MID_REL)),
+        long_timeout: true,
+        ..desktop(
+            INSTALL_ATRIUM_BAD_PIN_SCENARIO,
+            DESKTOP_INTRO_BOOT_HID_STEPS,
+            INSTALL_ATRIUM_BAD_PIN_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    // OT-85: the intro session with the wall clock: the same round, the card
+    // one row longer (the greeting-and-time row, then the name).
+    DesktopScenario {
+        mid: Some((DESKTOP_CLOCK_SHOWN_PROMPT, DESKTOP_CLOCK_BOOT_MID_REL)),
+        long_timeout: true,
+        ..desktop(
+            "desktop_clock_boot",
+            DESKTOP_CLOCK_BOOT_HID_STEPS,
+            DESKTOP_CLOCK_BOOT_CAPTURE_REL,
+            b"\r",
+        )
+    },
+];
+
+/// OT-85: the clock intro's start line (eight rows: QEMU has no NeoFS).
+const DESKTOP_CLOCK_SHOWN_PROMPT: &[u8] =
+    b"DESKTOP intro shown variant=ready usb=1 rows=8 persistent=0";
+
+/// `DESKTOP_INTRO_BOOT_HID_STEPS` with the clock intro's start line.
+const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    step(DESKTOP_CLOCK_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// The intro's start line on a machine without NeoFS (QEMU: no disk).
+const DESKTOP_INTRO_SHOWN_PROMPT: &[u8] =
+    b"DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0";
+
+/// The first-boot intro (neo-init `desktop-intro`): the intro card shows at
+/// session start (captured); typing `help` ends it at the first key, and
+/// Enter shows the help card (captured) — the WM's, Arthur is never spawned
+/// for it. Esc closes it; the cursor goes from the screen centre onto the
+/// hint (`0x81`: 960,540 → 960,520, inside the hint box (664, 509, 676,
+/// 24)) and clicks: the help card again. Typing then ends it and DS-1's
+/// round follows (`q` ends the Lens build's Arthur); the session ends on
+/// Home with the hint.
+/// OT-87 R4.4: `install_atrium`. `install` + Enter (`\n`) at Home opens the
+/// installer card; Down keeps the one disk that can be chosen; Enter (`\r`,
+/// the capture's mark) shows the confirmation; Esc goes back to the list and
+/// Esc again to Home; then DS-1's round, so the session ends as the intro's.
+const INSTALL_ATRIUM_HID_STEPS: &[SerialScriptStep] = &[
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"install"),
+    step(b"DESKTOP home keystroke ascii=108\n", b"\n"),
+    step(
+        b"DESKTOP installer list shown rows=3 offered=1 selected=2",
+        &[HMP_DOWN],
+    ),
+    step(b"DESKTOP installer selected row=2 via=key", b"\r"),
+    step(
+        b"DESKTOP installer confirm shown row=2 action=Install",
+        b"\x1b",
+    ),
+    step(b"DESKTOP installer back to=list", b"\x1b"),
+    // The pointer: `install` again, then click the boot disk (refused, not
+    // selected), the target, Choose, Back on the confirmation, Back.
+    step(b"DESKTOP installer back to=home via=esc", b"install"),
+    step(b"DESKTOP home keystroke ascii=108\n", b"\n"),
+    step(
+        b"DESKTOP installer list shown rows=3 offered=1 selected=2",
+        &[HMP_TO_BOOT_ROW, 0x03, 0x04],
+    ),
+    step(
+        b"DESKTOP installer refused row=0 not selectable",
+        &[HMP_DOWN_TWO_ROWS, 0x03, 0x04],
+    ),
+    step(
+        b"DESKTOP installer selected row=2 via=click",
+        &[HMP_DOWN_ONE_ROW, 0x03, 0x04],
+    ),
+    // #148 F1: each Back click is on the drawn label's centre.
+    step(
+        b"DESKTOP installer confirm shown row=2 action=Install",
+        &[HMP_TO_CONFIRM_BACK, 0x03, 0x04],
+    ),
+    step(
+        b"DESKTOP installer back to=list",
+        &[HMP_TO_LIST_BACK, 0x03, 0x04],
+    ),
+    // R4.4b, the Install chip: Tab to Arthur's chip, Tab to the Install
+    // chip (no Lens yet), Enter opens the list, Esc back to Home, Esc to the
+    // field; then a click on the chip opens it, and Back.
+    step(b"DESKTOP installer back to=home via=click", b"\t"),
+    step(b"DESKTOP home chip selected=1", b"\t"),
+    step(b"DESKTOP home chip selected=3", b"\n"),
+    step(
+        b"DESKTOP installer list shown rows=3 offered=1 selected=2",
+        b"\x1b",
+    ),
+    step(b"DESKTOP installer back to=home via=esc", b"\x1b"),
+    step(
+        b"DESKTOP home chip selected=0",
+        &[HMP_TO_INSTALL_CHIP, 0x03, 0x04],
+    ),
+    step(
+        b"DESKTOP installer list shown rows=3 offered=1 selected=2",
+        &[HMP_FROM_INSTALL_CHIP, 0x03, 0x04],
+    ),
+    step(
+        b"DESKTOP installer back to=home via=click",
+        b"hello desktop",
+    ),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    // With the Install chip shown, Tab from Arthur's chip goes to it (no
+    // Lens in this build), and one more Tab to the field.
+    step(b"DESKTOP home chip selected=3", b"\t"),
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+const DESKTOP_INTRO_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    // The Lens build's Arthur (DS-1c) ends on `q` once it has answered.
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// OT-85: the RTC every scenario boots with (pinned for hermeticity), and its
+/// Unix seconds (2026-10-21T17:48:00 = day 20_747 * 86_400 + 17 * 3_600 + 48
+/// * 60, as worked in tools/rtc-logic-tests; `civil_oracle` re-derives it).
+const WALLCLOCK_RTC_BASE: &str = "2026-10-21T17:48:00";
+const WALLCLOCK_RTC_UNIX_S: u64 = 1_792_604_880;
+
+fn desktop_scenario(name: &str) -> Option<&'static DesktopScenario> {
+    DESKTOP_SCENARIOS.iter().find(|d| d.name == name)
+}
+
+/// DS-1c with the pointer: the same bloom, then a click on the Lens's Spine
+/// chip switches to the Lens (captured, the sprite on the chip) and a click
+/// on Arthur's chip switches back; `q` ends the session. The cursor moves
+/// onto each chip's centre first (`0x06` Lens, `0x07` Arthur).
+const DESKTOP_LENS_POINTER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_LIST,
+    LIST_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"\x06\x03\x04"),
+    step(
+        b"DESKTOP pointer select target=lens via=click",
+        b"\x07\x03\x04",
+    ),
+    step(b"DESKTOP pointer focus client=arthur via=click", b"q"),
+];
+
+/// DL-1, every desktop feature on: the Lens docked to a window that moves
+/// and resizes. From the screen centre (960,540) up onto the title band
+/// (3 × `0x1c`, `0x16` → 960,352) and a drag of +300,+60 (4 × `mouse_move
+/// 75 15`): the window, no Lens yet, moves 674,337 → 974,397. Esc, then the
+/// intent `list /`: the bloom finds no room beside the window and slides it
+/// to 826,397 (the group clamp, `scene_oracle.py` BLOOM_ORIGINS), the Lens
+/// docked at 1514,397. The cursor (1260,412) is on the slid title band: a
+/// drag of −200,−40 (4 × `mouse_move -50 -10`) moves the docked group to
+/// 626,357, the Lens to 1314,357. Then to the frame's bottom-right corner
+/// handle (2 × `mouse_move 109 0`, 3 × `mouse_move 0 141` → 1278,795: right
+/// border x ≥ 1274, bottom y ≥ 791) and a +120,+60 drag (4 × `0x13`): the
+/// client goes 640x400 → 760x460 and the Lens follows the right edge to
+/// 1434,357, its height unchanged. Into Arthur's client (2 × `mouse_move
+/// -100 -100` → 1198,655 = local 564,264), a click (the capture), and `q`.
+const DESKTOP_FULL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"\x1c\x1c\x1c\x16\x03\x1e\x1e\x1e\x1e\x04",
+    ),
+    step(b"DESKTOP pointer move from=674,337", b"\x1b"),
+    HOLD_LIST,
+    LIST_ENTER,
+    step(
+        b"DESKTOP arthur answer composited serial=",
+        b"\x03\x0b\x0b\x0b\x0b\x04",
+    ),
+    step(
+        b"DESKTOP pointer move from=826,397",
+        b"\x0c\x0c\x1f\x1f\x1f\x03\x13\x13\x13\x13\x04",
+    ),
+    step(
+        b"DESKTOP arthur configure size=760x460",
+        b"\x1a\x1a\x03\x04",
+    ),
+    step(
+        b"DESKTOP arthur pointer buttons=0 phase=3 local=564,264",
+        b"q",
+    ),
+];
+
+/// Key-eviction discriminator: each character is preceded by a `mouse_move`
+/// burst (`HMP_MOUSE_BURST`), so ~40 pointer reports separate every keystroke.
+/// S1-F1: typed while a kthread holds DELIVERY. Must equal the kernel's
+/// `TYPED` in `run_hid_contention`.
+/// Then a Super+Escape chord (0x02) and a left-button press/release
+/// (0x03/0x04), all while DELIVERY is held.
+/// Jarvis F1 (#44 RETURN): then one key ('z') while DELIVERY is held for
+/// focus A; the harness activates B before anything flushes.
+/// i8042 lane: typed into QEMU's PS/2 keyboard once the kernel is ready.
+/// Must match the kernel's `run_ps2_keyboard` EXPECTED list.
+const PS2_KEYBOARD_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
+    prompt: b"PS2KBD ready",
+    command: b"a1\x82\x83\x84\x85\n",
+}];
+/// Key auto-repeat: Backspace held 1.5 s, then Escape held 1.5 s, then 'x'
+/// (the end marker), 2 s apart (`HMP_PAUSE_1S`) so no two holds overlap:
+/// `sendkey` with a hold time returns at once. Must match the kernel's
+/// `run_ps2_key_repeat`.
+const PS2_KEY_REPEAT_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
+    prompt: b"PS2REP ready",
+    command: &[
+        HMP_HOLD_BACKSPACE,
+        HMP_PAUSE_1S,
+        HMP_PAUSE_1S,
+        HMP_HOLD_ESCAPE,
+        HMP_PAUSE_1S,
+        HMP_PAUSE_1S,
+        b'x',
+    ],
+}];
+const HID_CONTENTION_HID_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: b"HIDCONTEND ready",
+        command: b"abcdefghij\x02\x03\x04",
+    },
+    SerialScriptStep {
+        prompt: b"HIDCONTEND handoff armed focus=A",
+        command: b"z",
+    },
+];
+/// DI-1a B-ref: a move, a press, a release; then one move after the reclaim
+/// and one after the route is released.
+const DI1_FORWARD_HID_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: b"DI1FWD ready",
+        command: b"\x05\x03\x04",
+    },
+    SerialScriptStep {
+        prompt: b"DI1FWD reclaimed",
+        command: b"\x05",
+    },
+    SerialScriptStep {
+        prompt: b"DI1FWD released",
+        command: b"\x05",
+    },
+];
+/// Must equal the kernel's `TYPED` in `run_input_queue_flood`.
+const INPUT_QUEUE_FLOOD_HID_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
+    prompt: b"INPUTFLOOD ready",
+    command: b"\x01t\x01h\x01e\x01q\x01u\x01i\x01c\x01k\x01b\x01r\x01o\x01w\x01n\x01f\x01o\x01x\x010\x011\x012\x013\x014\x015\x016\x017\x018\x019\x01",
+}];
+const ARTHUR_CONVERSE_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_BOOTS_THINKING_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/model 0.5b\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_ACT_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /hello.txt\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_AGENTIC_ACTIONS_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    // === Yolo segment (the SHIPPED DEFAULT — no /posture set beforehand) ===
+    // Reversible R/T actions execute with no per-action confirmation; the
+    // missing-cap denial and the L/X gates are proven with confirmation
+    // skipped. Every yolo-path reply carries the ` posture=yolo` marker so
+    // the needles are segment-unambiguous.
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /scratch!\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /forbidden\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"delete /scratch #\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"kill 4242 @\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"send external ?\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm\n",
+    },
+    // === Cautious segment: the pre-yolo A2/A3 transcript, byte-preserved ===
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture cautious\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read hello\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"list /\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"status s\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"cd / c\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"inspect choices i\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read missing\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /scratch!\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /forbidden\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"delete /scratch #\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm wrong phrase 8\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm trash /scratch 1\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"move /scratch /trash/scratch $\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm move /scratch /trash/scratch 2\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"delete /scratch #\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"kill 4242 @\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm trash /scratch 9\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm kill 4242 3\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"kill 4243 %\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm kill 4243 4\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"send external ?\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm send api.example.com:443 5\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"spawn worker inherit 99 &\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm spawn worker 99 6\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"load model ^\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm typed confirm model /models/a3.neom 7\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"remove /.arthur/grants *\n",
+    },
+    // === Off segment: the agentic layer is inert (no decode, no execute) ===
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture off\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"delete /scratch #\n",
+    },
+    // Recovery: switching back re-enables the layer (read executes again).
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture yolo\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read hello\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_REVERSIBILITY_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /scratch!\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /forbidden\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /neofs/danger.key k\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture off\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /scratch!\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture yolo\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_MULTISTEP_AGENTIC_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"multi clean scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"confirm\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"undo now\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"multi runaway\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/posture off\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"multi clean scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+const ARTHUR_GRANTS_PERSIST_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /hello.txt\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"write /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"/grant-probe write /scratch\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"read /missing.txt\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+const ARTHUR_REAL_VOCAB_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello world\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    // Exit the shell itself so neo-init's `sys_wait` returns 0 and `_ipc_smoke`
+    // reaches the PASS gate. Without this the shell loops back to `neo> ` and the
+    // scenario hangs to the 180s timeout — mirror the arthur_converse/arthur_act
+    // tail, which both close with a shell-level `exit`.
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+const ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"hello world\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+/// OT-87 R4.4: `install_console`'s install boot. A number no row has first
+/// (refused rows have none, so they can't be chosen), then the one offered
+/// disk, then the confirmation.
+const INSTALL_CONSOLE_PICK_PROMPT: &[u8] = b"press Enter to go back: ";
+const INSTALL_CONSOLE_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"install\n",
+    },
+    SerialScriptStep {
+        prompt: INSTALL_CONSOLE_PICK_PROMPT,
+        command: b"9\n",
+    },
+    SerialScriptStep {
+        prompt: INSTALL_CONSOLE_PICK_PROMPT,
+        command: b"1\n",
+    },
+    SerialScriptStep {
+        prompt: b"anything else to go back: ",
+        command: b"y\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+/// OT-87 R4.4: `install_console`'s list-only boot: list, go back, exit.
+const INSTALL_CONSOLE_LIST_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"install\n",
+    },
+    SerialScriptStep {
+        prompt: INSTALL_CONSOLE_PICK_PROMPT,
+        command: b"\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+const ARTHUR_REAL_BRAIN_BOOT_15B_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+// OT-38: identical shell drive to the 1.5B smoke (spawn arthur, exit before the
+// TCG-hostile forward, exit the shell) — the load ladder differs only in the
+// staged model, not the interaction.
+const ARTHUR_REAL_BRAIN_BOOT_3B_SERIAL_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"arthur\n",
+    },
+    SerialScriptStep {
+        prompt: ARTHUR_PROMPT,
+        command: b"exit\n",
+    },
+    SerialScriptStep {
+        prompt: NEO_SHELL_REPL_PROMPT,
+        command: b"exit\n",
+    },
+];
+
+/// Per-scenario timeout override (name-keyed, like the storage-disk and
+/// neofs-variant switches). The BUILD-P4b daemon gate runs 60 multi-phase
+/// iterations (two forward passes + daemon drain + prefetch + rollback each).
+/// CI run 27485339371 reached iteration 55/60 under the old 420s budget, so
+/// keep the full oracle intact and give this long-running gate deterministic
+/// headroom instead of relying on GitHub runner timing.
+fn scenario_timeout(name: &str) -> Duration {
+    match name {
+        // OT-90 P2: two boots in one QEMU process, then S5.
+        "ot90_restart_second_boot" | "ot90_restart_fallback_i8042" => Duration::from_secs(300),
+        "accel_residency_daemon" => Duration::from_secs(540),
+        // DM-1: every view/Lens/focus change is a paced transition, each
+        // frame a full TCG recompose of its rects (~0.1 s); desktop_motion_boot
+        // ran 147 s of the old 180 s locally. Headroom, not a hang budget.
+        name if desktop_scenario(name).is_some_and(|d| d.long_timeout) => Duration::from_secs(300),
+        "accel_model_residency" => Duration::from_secs(420),
+        // OT-87 R4.3: each install boot writes the 512 MiB ESP and the
+        // deployment through virtio under TCG, and reads it all back.
+        name if is_install_scenario(name) => Duration::from_secs(600),
+        "accel_dedup_movement" => Duration::from_secs(420),
+        // BUILD-B: real DORA + DNS round-trips against slirp under TCG.
+        "usb_ethernet" => Duration::from_secs(420),
+        "usb_ethernet_baremetal" => Duration::from_secs(420),
+        // CB-1b ISC-3: real DORA over the wire against slirp (virtio) under TCG.
+        "dhcp_rx_real_lease" => Duration::from_secs(420),
+        // BUILD-W1: the scan dwells on each of the 14 2.4 GHz channels.
+        "mt7601u_scan_baremetal" => Duration::from_secs(420),
+        // BUILD-W2: scan + auth/assoc/4-way handshake retries.
+        "mt7601u_assoc_baremetal" => Duration::from_secs(420),
+        // CI deflake: run 28602756737 attempt 1 showed four consecutive
+        // 180s timeouts, while attempt 2 passed this same hermetic scenario in
+        // 12.6s. Keep the crypto/storage assertions intact and give the TCG
+        // guest deterministic headroom under runner contention.
+        "arthur_memory_encrypted" | "arthur_memory_delegation" => Duration::from_secs(420),
+        // A2 combines the hermetic masked-decode oracle with OT-19's NeoFS-backed
+        // undo loop; keep the full model-selected transcript proof under TCG.
+        //
+        // DO NOT raise this budget to chase the intermittent arthur_reversibility
+        // failure — that was measured and disproven. The failure is a HANG, not a
+        // slow run: it pins at exactly whatever the budget is (420.0s in run
+        // 30181808389; 600.0s in run 30205834904 after a trial raise), while a
+        // healthy run is 7.7-9.6s (5 consecutive local runs + CI). The distribution
+        // is bimodal — ~8s or never — so no timeout outlasts it, and every extra
+        // second is spent up to TEST_SCENARIO_ATTEMPTS_DEFAULT (4) times per
+        // occurrence. `scenario_shard_weight` includes timeout / 60 as a small
+        // run-cost component, so a raise also perturbs LPT balance for nothing.
+        // 420s is ~44x the worst
+        // observed healthy run; the real defect is the NeoFS-writeback-vs-arthur-I/O
+        // race, tracked separately.
+        "arthur_reversibility" | "arthur_multistep_agentic" => Duration::from_secs(420),
+        // OT-61 C1.1 fix-forward: the threads+futex and guard-fault batteries
+        // both grew (three new AAG discriminators; ~73 retired stacks; three
+        // parked siblings plus a grandchild), and both were given a 420s
+        // override here at one point — DELIBERATELY REVERTED. `scenario_timeout`
+        // contributes to `scenario_shard_weight`, so raising it re-partitions
+        // the CI shards,
+        // and the bump broke `shard_partition_spreads_timeout_heavy_scenarios`
+        // by colliding the encrypted-memory scenario with the real-brain shard.
+        // That test guards runner capacity, which is the project's binding
+        // constraint; it outranks local comfort. Measured on an unloaded box
+        // these run in 21.3s and 8.7s against the 180s default — ample. The
+        // 180s timeouts that motivated the bump came from a foreign 8-hour
+        // 99%-CPU load on the dev box, not from CI, and xtask's own retry
+        // absorbed them. If CI ever shows a REAL flake here, the fix is a
+        // considered shard re-partition, not an ad-hoc budget raise.
+        // OT-17 M4: category key replacement, logical block overwrite, total
+        // wipe, and readback oracle all run in one default-suite scenario. CI
+        // run 28730889078 proved the old 420s shared budget was too tight under
+        // storage contention; keep the oracle intact and isolate the headroom.
+        "arthur_memory_forgetting" => Duration::from_secs(900),
+        "arthur_real_brain_boot" => Duration::from_secs(3600),
+        // A9-D: two 64-token KAT generations under TCG; measured 186 s. (420 s
+        // moved the shard balance enough to pair arthur_memory_encrypted with
+        // arthur_real_brain_boot.)
+        "desktop_busy_boot" => Duration::from_secs(300),
+        "login_kdf_timing" => Duration::from_secs(900),
+        // Each boot of the VM-layout sign-in scenarios.
+        "login_two_boot"
+        | "login_below_floor"
+        | "login_cut_steps"
+        | "login_record_guard"
+        | "login_backoff_reboot"
+        | "login_settings_cut" => Duration::from_secs(600),
+        // OT-66 L2: one boot each (the account, then the locks).
+        "login_lock_session"
+        | "login_lock_idle"
+        | "login_lock_stall"
+        | "login_lock_park"
+        | "login_settings_store"
+        | "login_settings_refused"
+        | "login_arthur_permission" => Duration::from_secs(600),
+        // B1b: the hermetic fixture run measured 132 s locally (most of it the
+        // 5.4 MB vocab parse under TCG); 420 s is headroom. A real 485 MB model
+        // (NEO_STAGE_B_*) gets the real-brain budget: the in-kernel BLAKE3 of
+        // every byte under TCG adds to the load.
+        "arthur_boot_module_answers"
+        | "arthur_boot_module_preload"
+        | "arthur_boot_module_preload_vocab_damaged"
+        | "arthur_boot_module_damaged"
+        | "arthur_boot_module_absent"
+        | "arthur_boot_module_vocab_damaged"
+        | "arthur_model_from_neofs"
+        | "arthur_model_from_neofs_damaged"
+        | "arthur_model_from_neofs_module_wins"
+        | "arthur_model_from_neofs_off" => {
+            if stage_b_real_artifact_selected(
+                env::var(STAGE_B_NEOM_ENV).ok().as_deref(),
+                env::var(STAGE_B_GGUF_ENV).ok().as_deref(),
+            ) {
+                Duration::from_secs(3600)
+            } else {
+                Duration::from_secs(420)
+            }
+        }
+        // OT-78 1c: this timeout is applied independently to each QEMU boot.
+        // Three fresh one-attempt local runs measured boot 1 at 108.4-117.9s
+        // and boot 2 at 39.5-45.0s. CI's slowest completed boot 1 was 139.3s,
+        // after three earlier attempts reached the old 180s ceiling. 420s is
+        // 3.02x that completed cross-environment worst (and 2.33x the censored
+        // ceiling), matching the existing two-boot Arthur capacity tier. This
+        // is capacity headroom for a workload that completes, not permission to
+        // stretch a timeout-pinning hang such as arthur_reversibility.
+        "product_integration" => Duration::from_secs(420),
+        // Item 3a is one physical boot per invocation. Keep the hardware-only
+        // lane in the established long bare-metal tier; this does not alter the
+        // QEMU product budget above or add host-side reboot orchestration.
+        "product_integration_baremetal" => Duration::from_secs(3600),
+        // Slice A stops after the co-resident model-load + greeting proof; the
+        // real forward is intentionally reserved for the Slice-B silicon run.
+        "arthur_compositor" => Duration::from_secs(600),
+        "arthur_compositor_baremetal" => Duration::from_secs(3600),
+        // OT-16 ISC-5: same 0.5B fixture forward, just walker+threaded — fast, so
+        // a modest budget keeps its shard weight low (the OT-38 lesson: a 3600s
+        // weight perturbs the shard-partition balancer).
+        "arthur_real_brain_boot_ot16_walker" => Duration::from_secs(600),
+        "arthur_real_brain_boot_15b" => Duration::from_secs(3600),
+        // OT-38: 3600s, mirroring the 15B. scenario_shard_weight includes a
+        // timeout-derived run component, so a larger value perturbs the CI
+        // shard-partition balance and collides two timeout-heavy scenarios on
+        // one shard (the runner-capacity invariant
+        // asserted by shard_partition_spreads_timeout_heavy_scenarios). Measured: a
+        // quiet-box PASS used 3222.8s (~90%) reading the 2 GB .neom via NeoFS
+        // triple-indirect under pure TCG (model_load_resident ms=2666470 ~ 44min),
+        // so the budget is tight. It only bounds LOCAL runs (the scenario SKIPs in
+        // CI: blob not in git); a slower box that times out should re-run.
+        "arthur_real_brain_boot_3b" => Duration::from_secs(3600),
+        "arthur_real_brain_boot_qwen35" => Duration::from_secs(3600),
+        _ => TEST_TIMEOUT,
+    }
+}
+
+const TEST_SCENARIO_ATTEMPTS_DEFAULT: usize = 4;
+
+const AARCH64_BARRIER_SCENARIO: &str = "phase3_aarch64_virtio_barrier_lane";
+
+#[derive(Clone, Copy)]
+struct TestScenario {
+    name: &'static str,
+    feature: &'static str,
+    user_feature: Option<&'static str>,
+    ignored: bool,
+    limine_kaslr: Option<bool>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum ScenarioBundleMode {
+    Vmware,
+    BareMetal,
+}
+
+impl ScenarioBundleMode {
+    fn is_bare_metal(self) -> bool {
+        matches!(self, ScenarioBundleMode::BareMetal)
+    }
+}
+
+const TEST_SCENARIOS: &[TestScenario] = &[
+    TestScenario {
+        name: "ipc_heap_kill_smoke",
+        feature: "neo-test-ipc-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C0.5: the real-std-linked smoke through the existing loader/spawn.
+        name: "std_real_smoke",
+        feature: "neo-test-std-real-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.1b: std in a sealed process: std::fs only through a
+        // handed-in RootDirCap (three refusals), empty env, process::id.
+        name: "std_sealed",
+        feature: "neo-test-std-sealed",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-93: a kill of a thread Ready inside its send (after the
+        // rendezvous handoff) lets it exit at its syscall return; its pmaps
+        // are not leaked.
+        name: "kill_ready_in_kernel",
+        feature: "neo-test-kill-ready-in-kernel",
+        user_feature: Some("kill-ready-in-kernel-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.2b: kernel-heap object budgets (I-18): a channel loop and a
+        // spawn loop trip at their own limit; the root count comes back.
+        name: "obj_quota",
+        feature: "neo-test-obj-quota",
+        user_feature: Some("obj-quota-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Oversized user copies (copy_user_bytes): the tensor syscalls and two
+        // other copy sites refuse a length past the kernel heap, never panic.
+        name: "user_copy_bounds",
+        feature: "neo-test-user-copy-bounds",
+        user_feature: Some("user-copy-bounds-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.3a: servo-host-smoke without the third-party crates:
+        // threads, TLS, Condvar, heap, a sealed file and three refusals, while
+        // a budgeted sibling's OOM aborts only itself (ADR-078 §3, C2).
+        name: "servo_host_smoke",
+        feature: "neo-test-servo-host-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.3b: upstream html5ever + selectors (the vendored closure,
+        // third_party/ot61-browser) parse and match on-target, the vendored
+        // parking_lot_core parker under contention, and memchr on yielding
+        // threads. `-cpu max` without xsave-fpu: AVX stays hidden (SSE2).
+        name: "servo_closure_smoke",
+        feature: "neo-test-servo-closure-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The same with xsave-fpu: AVX advertised and saved, memchr on AVX2.
+        name: "servo_closure_smoke_avx",
+        feature: "neo-test-servo-closure-smoke-avx",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A socket's last handle leaving (exit, kill, revoke) closes it: the
+        // port is free again and the net tables are back to their baseline.
+        name: "socket_teardown",
+        feature: "neo-test-socket-teardown",
+        user_feature: Some("socket-teardown-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-96 R1+R2: a harness peer on a second virtio-net NIC (one hub)
+        // reaches the stack after boot: ARP, UDP, TCP, ICMP echo, drops.
+        name: "wire_rx_demux",
+        feature: "neo-test-wire-rx-demux",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-95: with `net-tick`, a loopback TCP segment the peer dropped is
+        // retransmitted after boot with no help from the harness.
+        name: "net_tick_retransmit",
+        feature: "neo-test-net-tick-retransmit",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-94: a SYN flood, the handshake timeout, the real loopback path and
+        // a full accept queue leave a listener's connections bounded.
+        name: "tcp_listen_bounds",
+        feature: "neo-test-tcp-listen-bounds",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-91: an exit code is kept only while a process handle or the
+        // spawner can claim it; a parent's unwaited children and revoked
+        // handles leave nothing behind.
+        name: "exit_codes_bounded",
+        feature: "neo-test-exit-codes-bounded",
+        user_feature: Some("exit-codes-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Its twin on a kernel whose root form is ambient (no cap-rooted-open):
+        // std::fs must fail closed on its own.
+        name: "std_sealed_ambient",
+        feature: "neo-test-std-sealed-ambient",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.0: std randomness (HashMap RandomState) over SYS_GETRANDOM.
+        name: "std_entropy",
+        feature: "neo-test-std-entropy",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C1.3: the real-std threads battery (std::thread, futex sync,
+        // thread_local! keys, Instant), without and with the C1 capability.
+        name: "std_threads",
+        feature: "neo-test-std-threads",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-ud`.
+        name: "ring3_fault_ud",
+        feature: "neo-test-ring3-fault-ud",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-de`.
+        name: "ring3_fault_de",
+        feature: "neo-test-ring3-fault-de",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-gp`.
+        name: "ring3_fault_gp",
+        feature: "neo-test-ring3-fault-gp",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-ss`.
+        // IGNORED in the QEMU gate: QEMU TCG does not raise #SS for a non-canonical stack access (8.2 reports #PF, 10.2.3 #GP); real hardware does. Run it with
+        // `--include-ignored` under KVM or on bare metal; the routing is covered
+        // by the host KAT (tools/xtask/src/ot83_tests.rs).
+        name: "ring3_fault_ss",
+        feature: "neo-test-ring3-fault-ss",
+        user_feature: None,
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-db`.
+        name: "ring3_fault_db",
+        feature: "neo-test-ring3-fault-db",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-xm`.
+        // IGNORED in the QEMU gate: QEMU TCG does not deliver unmasked SSE exceptions as #XM (8.2 and 10.2.3); real hardware does. Run it with
+        // `--include-ignored` under KVM or on bare metal; the routing is covered
+        // by the host KAT (tools/xtask/src/ot83_tests.rs).
+        name: "ring3_fault_xm",
+        feature: "neo-test-ring3-fault-xm",
+        user_feature: None,
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83: a ring-3 {v} kills only its process (128 + signal); a second
+        // process then runs. Probe: userland/fault-probe `fault-probe-mf`.
+        name: "ring3_fault_mf",
+        feature: "neo-test-ring3-fault-mf",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83 control: a ring-0 #UD still halts (never the kill path).
+        name: "ring0_fault_halts",
+        feature: "neo-test-ring0-fault-halts",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 browser C1.0: the VM+clock primitive battery (neo-init driver).
+        name: "vm_primitives",
+        feature: "neo-test-vm-primitives",
+        user_feature: Some("vm-primitives"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-85: the wall-clock probe on a QEMU RTC pinned to
+        // 2026-10-21T17:48:00 (`-rtc base=`): the kernel seeds realtime from
+        // the RTC; neo-init formats the boot instant with libneo::civil.
+        name: "wallclock_rtc",
+        feature: "neo-test-wallclock-rtc",
+        user_feature: Some("wallclock-probe"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-85: the same with every CMOS register reading 0xFF: the boot
+        // completes on boot-relative realtime with one fallback line.
+        name: "wallclock_rtc_fallback",
+        feature: "neo-test-wallclock-rtc-fallback",
+        user_feature: Some("wallclock-probe-fallback"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 browser C1.1: the in-process threads+futex concurrency battery
+        // (neo-init driver): create/join/get_info, futex-mutex contention,
+        // condvar, rwlock, absolute-deadline timeout, lost-wakeup, wake-count.
+        name: "threads_futex",
+        feature: "neo-test-threads-futex",
+        user_feature: Some("threads-futex"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 browser C1.2: the TLS battery (neo-init driver): per-thread key
+        // isolation, FS.base across a switch and a cross-CPU futex wake, the
+        // iterated key destructors, SYS_THREAD_SET_TLS EPERM without the cap
+        // (worker child), and the key generation check.
+        name: "threads_tls",
+        feature: "neo-test-threads-tls",
+        user_feature: Some("threads-tls"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C1.3b (CP-86): a process retire reaches a sibling running on
+        // another CPU: SYS_EXIT and a fault with a ring-3 spinner on CPU 2, and
+        // a futex waiter parking after the retire's purge (neo-worker roles).
+        name: "threads_exit_group",
+        feature: "neo-test-threads-exit-group",
+        user_feature: Some("threads-exit-group"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 browser C1.1: cap-confinement EPERM + thread refcount + the
+        // guard-page overflow fault-kill containment proof (worker child ×2),
+        // now draining IPC-parked + process-wait-parked siblings too (AAG-C).
+        name: "threads_guard_fault",
+        feature: "neo-test-threads-guard-fault",
+        user_feature: Some("threads-guard-fault"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-44: the guard-fault battery with kernel-observability on. The
+        // ring-3 #PF's trace write reads gs:[24], so it must run on the
+        // kernel GS and reach the fault-kill instead of recursing into #DF.
+        name: "threads_guard_fault_observability",
+        feature: "neo-test-threads-guard-fault-observability",
+        user_feature: Some("threads-guard-fault"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-46: the guard-fault battery with the futex sibling in a TIMED
+        // wait, so the #PF fault-kill runs `purge_pid` -> `recompute_earliest`
+        // (an aligned SSE stack store) and must not #GP on the handler's stack.
+        name: "threads_guard_fault_timed",
+        feature: "neo-test-threads-guard-fault-timed",
+        user_feature: Some("threads-guard-fault-timed"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 browser C1.1 (AAG blocker A): kernel-level token wake under
+        // ready-ring backpressure — no panic, waiter resumes exactly once.
+        name: "token_wake_ring_pressure",
+        feature: "neo-test-token-wake-ring-pressure",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 browser C1.1 (AAG blocker D): browser-runtime + net-dial-cap
+        // compose — both root caps installed; thread_create + NetDial-derive
+        // both work; no-cap child gets EPERM.
+        name: "threads_cap_compose",
+        feature: "neo-test-threads-cap-compose",
+        user_feature: Some("threads-cap-compose"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Slice-5 Phase 2: the same capstone loop, but the key must arrive
+        // from the production USB HID pump on the Arthur OptiPlex.
+        name: "atrium_interactive_baremetal",
+        feature: "neo-test-atrium-interactive-baremetal",
+        user_feature: Some("atrium-interactive-baremetal"),
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Integrated showcase Slice B: the real USB keyboard -> InputFocus ->
+        // Arthur forward -> composited answer loop. JOINT OptiPlex-only proof.
+        name: "arthur_compositor_baremetal",
+        feature: "neo-test-arthur-compositor-baremetal",
+        user_feature: Some("arthur-compositor-baremetal"),
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smep_catch",
+        feature: "neo-test-smep-catch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smap_catch",
+        feature: "neo-test-smap-catch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smep_policy",
+        feature: "neo-test-smep-policy",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smap_policy",
+        feature: "neo-test-smap-policy",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-49: a nested `with_user_access` must panic on entry instead of letting
+    // its `clac` close the outer window (a SMAP #PF on the outer's next read).
+    TestScenario {
+        name: "user_access_nesting",
+        feature: "neo-test-user-access-nesting",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "kaslr_smoke",
+        feature: "neo-test-kaslr-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: Some(true),
+    },
+    TestScenario {
+        name: "kaslr_heap_contract",
+        feature: "neo-test-kaslr-heap-contract",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "kaslr_heap_synthetic",
+        feature: "neo-test-kaslr-heap-synthetic",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "bare_metal_hhdm_covers_modules",
+        feature: "neo-test-bare-metal-hhdm-covers-modules",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "bare_metal_hhdm_repair_path",
+        feature: "neo-test-bare-metal-hhdm-repair-path",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "expect_pass_but_fail",
+        feature: "neo-test-expect-pass-but-fail",
+        user_feature: None,
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "lock_owner_consistent",
+        feature: "neo-test-lock-owner-consistent",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-43: after a syscall returns, ring 3 must see rcx = return RIP and
+    // r11 = its RFLAGS (what SYSRET would leave), never kernel scratch.
+    TestScenario {
+        name: "syscall_return_clean_regs",
+        feature: "neo-test-syscall-return-clean-regs",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-47: ring 3 sets RFLAGS.NT and makes syscalls (one through a context
+    // switch); the kernel must never run with NT=1, and every iretq must work.
+    TestScenario {
+        name: "syscall_nt_masked",
+        feature: "neo-test-syscall-nt-masked",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-48: ring 3 far-jumps to the old 32-bit code selector 0x1B and must take
+    // #GP(0x18) instead of reaching a compatibility-mode SYSCALL, after `lar`
+    // finds neither an LDT selector nor 0x1B; IA32_CSTAR must be the halt-only
+    // sink, SYSENTER_CS must fault, and no GDT entry ring 3 can enter may be
+    // anything but 64-bit code.
+    TestScenario {
+        name: "compat_mode_unreachable",
+        feature: "neo-test-compat-mode-unreachable",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-50: no interrupt may land between the syscall exit's `swapgs` and
+    // `iretq`. Runs under `-icount` (`scenario_qemu_icount`).
+    TestScenario {
+        name: "syscall_exit_irq_window",
+        feature: "neo-test-syscall-exit-irq-window",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "irqsafe_mutex_if_restore",
+        feature: "neo-test-irqsafe-mutex-if-restore",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "irqsafe_mutex_bench",
+        feature: "neo-test-irqsafe-mutex-bench",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "xsave_ymm_context_switch",
+        feature: "neo-test-xsave-ymm-context-switch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // A stub-level x87/SSE save in `swapgs_irq_entry`: a test-only vector whose
+    // body clobbers xmm0-15 must leave the interrupted context's registers intact.
+    // The same rounds also go through the timer stub; both bodies must see DF=0,
+    // AC=0 and the default MXCSR whatever the caller had (CP-39/CP-40/CP-41).
+    TestScenario {
+        name: "irq_xmm_preserve",
+        feature: "neo-test-irq-xmm-preserve",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Same discriminator on qemu64: the xsave-fpu stub's FXSAVE fallback and
+    // the CP-39 DF leg (the XSAVE branch clears DF by itself under -cpu max).
+    TestScenario {
+        name: "irq_xmm_preserve_fxsave",
+        feature: "neo-test-irq-xmm-preserve-fxsave",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-40 at the exception boundary: every exception gate's shim clears AC|DF
+    // before the handler runs; `int3` with AC=1 proves it live. CP-46: every
+    // error-code gate's shim also realigns the stack for its body.
+    TestScenario {
+        name: "exception_entry_flags",
+        feature: "neo-test-exception-entry-flags",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // BUILD-LO: the §4 hot-path latency oracle (Tier B QEMU cycle harness).
+    TestScenario {
+        name: "ai_latency_oracle",
+        feature: "neo-test-ai-latency-oracle",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase2_perf_proxy_baseline",
+        feature: "neo-test-phase2-perf-proxy-baseline",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q7b_cr3_cache_skip_count",
+        feature: "neo-test-q7b-cr3-cache-skip-count",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q7c_shootdown_synthetic_round_trip",
+        feature: "neo-test-q7c-shootdown-synthetic-round-trip",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-28: armed fast≡slow token-identity KAT for the sys_generate KV-persist
+    // kill-switch. Hermetic (tiny inventory .neom rides in the kernel image via
+    // include_bytes!), no external model file, no userland — always runs in the
+    // 4-shard gate.
+    TestScenario {
+        name: "sys_generate_kv_persist_equivalence",
+        feature: "neo-test-sys-generate-kv-persist-equivalence",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q7c_shootdown_timeout_panic",
+        feature: "neo-test-q7c-shootdown-timeout-panic",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "swapgs_irq_ring3",
+        feature: "neo-test-swapgs-irq-ring3",
+        user_feature: Some("swapgs-irq-ring3"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-41: ring 3 sets a hostile MXCSR/x87 control word, then a syscall runs
+    // kernel float work. Kernel must see the default MXCSR and hand the user's
+    // state back.
+    TestScenario {
+        name: "syscall_mxcsr_entry",
+        feature: "neo-test-syscall-mxcsr-entry",
+        user_feature: Some("syscall-mxcsr-entry"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Same discriminator on qemu64: FXSAVE/FXRSTOR around the syscall instead
+    // of XSAVE/XRSTOR (they restore MXCSR under different rules).
+    TestScenario {
+        name: "syscall_mxcsr_entry_fxsave",
+        feature: "neo-test-syscall-mxcsr-entry-fxsave",
+        user_feature: Some("syscall-mxcsr-entry"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // CP-45: a new ring-3 (and kernel) thread must start from the FPU init
+    // state (and ring 3 from zeroed GP registers), not from the spawner's live
+    // xmm/ymm/MXCSR/x87/GP registers.
+    TestScenario {
+        name: "thread_entry_clean_state",
+        feature: "neo-test-thread-entry-clean-state",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Same discriminator on qemu64: the xsave-fpu FXSAVE fallback path.
+    TestScenario {
+        name: "thread_entry_clean_state_fxsave",
+        feature: "neo-test-thread-entry-clean-state-fxsave",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q7c_concurrent_munmap_smp",
+        feature: "neo-test-q7c-concurrent-munmap-smp",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q7c_process_exit_during_thread_run",
+        feature: "neo-test-q7c-process-exit-during-thread-run",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q7c_missing_shootdown_detection",
+        feature: "neo-test-q7c-missing-shootdown-detection",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8a_concurrent_install_revoke",
+        feature: "neo-test-q8a-concurrent-install-revoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8a_concurrent_install_revoke_negative",
+        feature: "neo-test-q8a-concurrent-install-revoke-negative",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8d_phase_a_coverage",
+        feature: "neo-test-d5-phase-a-coverage",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8b_grant_vs_exit_race",
+        feature: "neo-test-q8b-grant-vs-exit-race",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8b_exit_state_cas",
+        feature: "neo-test-q8b-exit-state-cas",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8c_blocked_kill_walk",
+        feature: "neo-test-q8c-blocked-kill-walk",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8c_blocked_kill_foreign_parked",
+        feature: "neo-test-q8c-blocked-kill-foreign-parked",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "q8c_close_peer_my_side_extract",
+        feature: "neo-test-q8c-close-peer-my-side-extract",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_mint_and_use",
+        feature: "neo-test-cap-mint-and-use",
+        user_feature: Some("cap-mint-and-use"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_derive_subset",
+        feature: "neo-test-cap-derive-subset",
+        user_feature: Some("cap-derive-subset"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_derive_rights_violation",
+        feature: "neo-test-cap-derive-rights-violation",
+        user_feature: Some("cap-derive-rights-violation"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_derive_missing_meta",
+        feature: "neo-test-cap-derive-missing-meta",
+        user_feature: Some("cap-derive-missing-meta"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_grant_basic",
+        feature: "neo-test-cap-grant-basic",
+        user_feature: Some("cap-grant-basic"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_grant_missing_meta",
+        feature: "neo-test-cap-grant-missing-meta",
+        user_feature: Some("cap-grant-missing-meta"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_revoke_local",
+        feature: "neo-test-cap-revoke-local",
+        user_feature: Some("cap-revoke-local"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_revoke_cross_process",
+        feature: "neo-test-cap-revoke-cross-process",
+        user_feature: Some("cap-revoke-cross-process"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_revoke_descendants_walk",
+        feature: "neo-test-cap-revoke-descendants-walk",
+        user_feature: Some("cap-revoke-descendants-walk"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_revoke_spawn_inheritance_descendants",
+        feature: "neo-test-cap-revoke-spawn-inheritance-descendants",
+        user_feature: Some("cap-revoke-spawn-inheritance-descendants"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // K1a-0 (CP-87, CP-88): no cap outlives the revoke of its ancestor:
+        // the revoke-vs-derive race, and laundering by close or by exit.
+        name: "cap_graph_revoke",
+        feature: "neo-test-cap-graph-revoke",
+        user_feature: Some("cap-graph-revoke"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 K1a: the root form of sys_open resolves only through a
+        // RootDirCap (EPERM without, rights within the cap's, opened files
+        // die with the cap).
+        name: "cap_rooted_open",
+        feature: "neo-test-cap-rooted-open",
+        user_feature: Some("cap-rooted-open-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.2 (A2, I-18): a budgeted process's memory trip is local
+        // (ENOMEM / exit 137 in that process only), budgets nest, tensors are
+        // refused, and every account returns to zero.
+        name: "mem_quota",
+        feature: "neo-test-mem-quota",
+        user_feature: Some("mem-quota-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "cap_survive_exit",
+        feature: "neo-test-cap-survive-exit",
+        user_feature: Some("cap-survive-exit"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // File-capability unification (I-15): the live cross-process proof that
+        // `Handle::File` is a first-class cap (derive/attenuate/grant/meta-gate).
+        name: "file_cap_derive_grant",
+        feature: "neo-test-file-cap-derive-grant",
+        user_feature: Some("file-cap-derive-grant"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase-B cap-bounded vault (ADR-075): neo-init spawns the vault
+        // (neo-worker's vault-phase-b role) with only its op channel + NO
+        // network cap, proves no-network containment via SYS_INSPECT
+        // network_handle_count, and drives unlock/store/retrieve(least-rights
+        // grant)/lock + wrong-password/mutated-header/weak-params negatives.
+        name: "vault_phase_b",
+        feature: "neo-test-vault-phase-b",
+        user_feature: Some("vault-phase-b"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-18 E3-revoke: transitive revoke through the file-cap derivation
+        // graph. neo-init-driven (no worker); pass criterion is init exit == 0.
+        name: "arthur_grant_revoke",
+        feature: "neo-test-arthur-grant-revoke",
+        user_feature: Some("arthur-grant-revoke"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // ===== ATRIUM SCENARIOS — BEGIN (append new atrium slices before END) =====
+    // Rule-4 consolidation (2026-07-20): keep every atrium TestScenario inside
+    // this contiguous, marker-delimited block so a new slice appends one
+    // self-contained entry at the END marker — never a mid-table insertion (the
+    // "fused TestScenario struct" co-residence merge artifact). This is the
+    // xtask half of the atrium registration; the kernel half is the
+    // neo-test-atrium[-runtime] umbrella features (see kernel/Cargo.toml).
+    TestScenario {
+        // Atrium G1 slice-1 (Rung 0): shared pixel buffer create/map/commit/
+        // present + epoch fence (bounded wait) + atomic InputFocus transfer.
+        // PASS fires in the #PF handler when the user's final write to its
+        // compositor-role hardware-RO mapping faults (pixel asserts there);
+        // a clean user exit means the RO property is broken => FAIL.
+        name: "atrium_slice1",
+        feature: "neo-test-atrium-slice1",
+        user_feature: Some("atrium-slice1"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-63 Rung 1 Slice 1: kernel-side present() HardwareFlip backend +
+    // synthetic-vblank async fence. Hermetic, no userland, no GPU — runs in the
+    // 4-shard gate.
+    TestScenario {
+        name: "atrium_hw_present",
+        feature: "neo-test-atrium-hw-present",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-63 Rung 1 Slice 2: the scarce GpuSubmit cap gates the HardwareFlip
+    // submit (cap-held ⇒ proceeds, un-capped + enforce-on ⇒ EPERM/no flip,
+    // enforce-off ⇒ kill-switch bypass ≡ Slice-1). Hermetic, no GPU — 4-shard.
+    TestScenario {
+        name: "atrium_gpu_submit_cap",
+        feature: "neo-test-atrium-gpu-submit-cap",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Atrium G1 slice-2: role-typed surface verbs over real IPC channels,
+        // including SurfaceCap + BufferCap grant rendezvous.
+        name: "atrium_surface_protocol",
+        feature: "neo-test-atrium-surface-protocol",
+        user_feature: Some("atrium-surface-protocol"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Atrium G1 slice-4: HID event delivery through the atomic InputFocus
+        // route, no-snoop, handoff, and bounded drop-oldest queue.
+        name: "atrium_input_routing",
+        feature: "neo-test-atrium-input-routing",
+        user_feature: Some("atrium-input-routing"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // G1 Slice 5: userland workfield receives a routed key, rasterizes its
+        // glyph into a shared buffer, commits exactly one 8x16 cell, and the
+        // compositor presents only that damage region.
+        name: "atrium_interactive",
+        feature: "neo-test-atrium-interactive",
+        user_feature: Some("atrium-interactive"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Integrated showcase Slice A: Arthur is a real ADR-073 TEXT client;
+        // its greeting is composited while USB, InputFocus, vocab, and the
+        // inference model remain compiled/resident. Input is not exercised.
+        name: "arthur_compositor",
+        feature: "neo-test-arthur-compositor",
+        user_feature: Some("arthur-compositor"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Desktop S1: boot the `desktop` feature set at the pinned 1920x1080
+        // mode; neo-init is the resident session WM, Arthur its client. The
+        // kernel reads back every framebuffer pixel against the WM's scene
+        // oracle (full-screen, no stale pixels, no phase indicator), and a real
+        // qemu-xhci usb-kbd keystroke (HMP sendkey) must reach Arthur.
+        name: "desktop_session_boot",
+        feature: "neo-test-desktop-session-boot",
+        user_feature: Some("desktop-session-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Desktop S3: the same session with the Atrium glass material. The
+        // kernel reads back the full 1920x1080 frame against an independent
+        // scene oracle (scripts/desktop/scene_oracle.py) and the WM proves
+        // typing never re-blurs. `desktop_session_boot` stays the S1
+        // kill-switch witness (glass compiled out).
+        name: "desktop_glass_boot",
+        feature: "neo-test-desktop-glass-boot",
+        user_feature: Some("desktop-glass-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Desktop S3: Reduce Transparency (the material kill-switch and a11y
+        // floor) — opaque neutral chrome, zero blurs, pinned digest.
+        name: "desktop_glass_rt_boot",
+        feature: "neo-test-desktop-glass-rt-boot",
+        user_feature: Some("desktop-glass-rt-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DS-1: the session boots into Home (the intent field, the WM on its
+        // own input focus); the typed intent launches Arthur, which answers
+        // it and exits, and Home takes the keyboard back. The kernel reads
+        // back the Home view against `scene_oracle.py home-fixture`.
+        name: "desktop_home_boot",
+        feature: "neo-test-desktop-home-boot",
+        user_feature: Some("desktop-home-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Chad #177 item 4: DS-1's session, but before its scripted round the
+        // WM runs `DESKTOP_HOME_CYCLE_ROUNDS` Home -> Arthur -> Home rounds
+        // (a fixed intent; each boot-test Arthur exits after its answer),
+        // with the kernel's borrowed-pin cap cut to 8. Each round maps a new
+        // Arthur buffer into the long-lived WM; unmapped when the round ends,
+        // the session reaches the same Home end view. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-desktop-home-cycle-control (the
+        // unmap keeps the pin, as before: the WM's map fails at the cap).
+        name: "desktop_home_cycle",
+        feature: "neo-test-desktop-home-cycle",
+        user_feature: Some("desktop-home-cycle-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 K1b: DS-1's session on a `cap-rooted-open` kernel. The WM
+        // spawns Arthur with his scopes only (`libneo::ARTHUR_SCOPES`), not a
+        // RootDirCap for `/`; his root-form open of `/neofs` must be EPERM and
+        // of `/neofs/.arthur/memory` must open (the arthur-memory image).
+        // Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-desktop-arthur-scope-control (any
+        // held scope authorizes any path: the open of `/neofs` succeeds).
+        name: "desktop_arthur_scope",
+        feature: "neo-test-desktop-arthur-scope",
+        user_feature: Some("desktop-arthur-scope-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // `atrium-app-icons`: DS-1's Home session with the Spine chips drawing
+        // their app icons. The kernel reads Arthur's icon box back against
+        // scene_oracle.py's digest of the pinned blob over its chip pixels.
+        name: "desktop_icons_boot",
+        feature: "neo-test-desktop-icons-boot",
+        user_feature: Some("atrium-app-icons-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A9-D: DS-1's session (the same script and Home end view) with
+        // Arthur answering from the KAT inventory LM staged as a boot module,
+        // so its two answers are real generations through the product core,
+        // attention forked on every step. The WM turns the busy
+        // emblem meanwhile; its presents must keep pace with its frame clock.
+        name: "desktop_busy_boot",
+        feature: "neo-test-desktop-busy-boot",
+        user_feature: Some("desktop-busy-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L1: the sign-in KDF at the floor, three times, logged and
+        // shown (no disk, no account, no session): the timing boot's QEMU
+        // check. Its real numbers are the Zenbook's and the OptiPlex's.
+        name: "login_kdf_timing",
+        feature: "neo-test-login-kdf-timing",
+        user_feature: Some("login-kdf-timing-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L1 (Dexter #186 item 4): after first boot creates the account,
+        // a process that is not the WM gets EPERM for every `.system/` open
+        // (kernel `system-store`), and the WM still opens its record.
+        name: login_scenarios::LOGIN_RECORD_GUARD_SCENARIO,
+        feature: "neo-test-login-record-guard",
+        user_feature: Some("login-record-guard-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L1 (Dexter #186 item 2, J.c.): four wrong passwords, a
+        // reboot, and the next attempt still waits out their backoff.
+        name: login_scenarios::LOGIN_BACKOFF_REBOOT_SCENARIO,
+        feature: "neo-test-login-backoff-reboot",
+        user_feature: Some("login-backoff-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L1 on the R1 VM layout, four boots of one data disk: the
+        // first-boot account, sign-in through the backoff, the recovery code's
+        // reset, and the old password and code refused (`login_scenarios`).
+        name: login_scenarios::LOGIN_TWO_BOOT_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("login-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L1: a record under the KDF floor is refused (the first-boot
+        // screen shows, never the login screen).
+        name: login_scenarios::LOGIN_BELOW_FLOOR_SCENARIO,
+        feature: "neo-test-login-below-floor",
+        user_feature: Some("login-below-floor-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L1 (THINK §4.3): a power cut after each device write and flush
+        // of a password change leaves exactly the old or the new password, and
+        // the untouched file's bytes (`login_scenarios::cut_steps`).
+        name: LOGIN_CUT_SCENARIO,
+        feature: "neo-test-login-cut",
+        user_feature: Some("login-cut-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-88 S1: the same cut on a settings write. Every cut leaves the
+        // old record or the new one, never neither, and the file the write
+        // doesn't touch byte for byte (`login_scenarios::settings_cut`).
+        name: login_scenarios::SETTINGS_CUT_SCENARIO,
+        feature: "neo-test-settings-cut",
+        user_feature: Some("settings-cut-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L2 (THINK §5.2): Super+L locks Home and Arthur is spawned
+        // under the lock; locked frames don't change while it draws and asks
+        // for its emblem; keys typed while locked reach no client; unlock
+        // returns the focus with no stale key; Super+L locks an Arthur that
+        // holds the focus and never yields (`login_scenarios::lock`).
+        name: login_scenarios::LOGIN_LOCK_SESSION_SCENARIO,
+        feature: "neo-test-lock-session",
+        user_feature: Some("lock-spawn-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L2: the idle lock, at the boot test's 6 s idle time; keys
+        // 3 s apart keep the session unlocked first.
+        name: login_scenarios::LOGIN_LOCK_IDLE_SCENARIO,
+        feature: "neo-test-lock-idle",
+        user_feature: Some("lock-idle-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L2 (AAG F3): Arthur stalls before its 'M'; Super+L locks
+        // during the stall, not after it.
+        name: login_scenarios::LOGIN_LOCK_STALL_SCENARIO,
+        feature: "neo-test-lock-stall",
+        user_feature: Some("lock-stall-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-66 L2b: Arthur never receives the WM's reply (the WM is parked
+        // in its send); Super+L locks the kernel's route, and the key typed
+        // after it never reaches Arthur.
+        name: login_scenarios::LOGIN_LOCK_PARK_SCENARIO,
+        feature: "neo-test-lock-park",
+        user_feature: Some("lock-park-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-88 S1: the settings store over two boots. A test client sets
+        // three settings (each applied live, its store write read back by
+        // digest) and two the WM refuses; the idle lock fires at the chosen
+        // time; after a reboot the store's record is what the WM builds from.
+        name: login_scenarios::SETTINGS_STORE_SCENARIO,
+        feature: "neo-test-settings-store",
+        user_feature: Some("settings-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The PM's #222 bounce: Arthur is not the settings app, so its
+        // OP_SETTING (the idle lock off, Reduce Transparency on) is refused,
+        // nothing is written, and the idle lock fires at the default.
+        // Control: `settings-authority-control` as the user feature (must
+        // FAIL: a write lands).
+        name: login_scenarios::SETTINGS_REFUSED_SCENARIO,
+        feature: "neo-test-settings-refused",
+        user_feature: Some("settings-refused-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1.3a: Arthur's `read`/`list`/`write` lines go through the WM's
+        // permission prompt. Allow once lends a cap the WM revokes after the
+        // action; Deny is remembered for the session; Always is recorded in
+        // `.system/` and lent without a prompt after a reboot; a write is
+        // refused unprompted (read-only by default); the lock during a prompt
+        // denies it. Control: `arthur-actions-revoke-control` as the user
+        // feature (must FAIL: the lent cap still reads after the action).
+        name: login_scenarios::ARTHUR_PERMISSION_SCENARIO,
+        feature: "neo-test-arthur-permission",
+        user_feature: Some("arthur-actions-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A9-C2: the scroll session on the pointer kernel, scrolled with the
+        // usb-mouse wheel over Arthur's client (the WM forwards on hover).
+        name: "desktop_wheel_boot",
+        feature: "neo-test-desktop-wheel-boot",
+        user_feature: Some("desktop-wheel-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A9-C: DS-1's session (same Home end view) with Arthur's scrollback:
+        // PgUp, Up, PgDn, PgDn after the first answer.
+        name: "desktop_scroll_boot",
+        feature: "neo-test-desktop-scroll-boot",
+        user_feature: Some("desktop-scroll-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DI-1a B-ref: DS-1 plus the WM pointer over a real usb-mouse: the
+        // SAK escape, click-to-focus, a forwarded click Arthur receives, and
+        // the client-side EPERM probe of the three DI-1 syscalls.
+        name: "desktop_pointer_boot",
+        feature: "neo-test-desktop-pointer-boot",
+        user_feature: Some("desktop-pointer-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DS-1c: Arthur's `list /` blooms the Lens (a second client, lent `/`
+        // read-only); the two-surface capture matches the scene oracle and
+        // the Lens's text matches the glyph oracle; the keyboard switches to
+        // the Lens through its Spine chip and back.
+        name: "desktop_lens_boot",
+        feature: "neo-test-desktop-lens-boot",
+        user_feature: Some("desktop-lens-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DS-1c with DI-1a's pointer: a click on the Lens chip switches to the
+        // Lens (captured against the oracle's selected view), a click on
+        // Arthur's chip switches back.
+        name: "desktop_lens_pointer_boot",
+        feature: "neo-test-desktop-lens-pointer-boot",
+        user_feature: Some("desktop-lens-pointer-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Chad DS-1c F1: desktop_lens_boot with the WM failing the first two
+        // blooms late (the Lens drew and committed): Arthur asks again, the
+        // third shows the Lens, and before it the WM's handles and mappings
+        // are back at their baseline (probe slots and the mmap cursor).
+        name: "desktop_lens_fault_boot",
+        feature: "neo-test-desktop-lens-fault-boot",
+        user_feature: Some("desktop-lens-fault-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DM-1: desktop_lens_boot with motion: every view, Lens and focus
+        // change a transition over its own damage rects (each logged: frame
+        // count, bounded damage, pacing, end frame = the unchanged present).
+        // The first hold is captured at its mid frame against the oracle;
+        // the end capture is desktop_lens_boot's.
+        name: "desktop_motion_boot",
+        feature: "neo-test-desktop-motion-boot",
+        user_feature: Some("desktop-motion-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DM-1 Reduce Motion: the same session, every transition a 6-frame
+        // cross-fade; the mid capture at the reduced profile's weight.
+        name: "desktop_motion_rm_boot",
+        feature: "neo-test-desktop-motion-rm-boot",
+        user_feature: Some("desktop-motion-rm-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DI-1b resize: desktop_pointer_boot's script plus a real usb-mouse
+        // corner drag: the WM publishes the size in Arthur's configure
+        // mailbox, Arthur lays itself out at 760x460 and acks, the WM shows
+        // it (one blur, no residue, the client's exact picture), and a click
+        // past the old width reaches Arthur unclamped.
+        name: "desktop_resize_boot",
+        feature: "neo-test-desktop-resize-boot",
+        user_feature: Some("desktop-resize-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-22 rung 1: DS-1's session with every WM and Arthur loop parked in
+    // SYS_WAIT_ANY. Across a quiet gap of 3 s the BSP must spend most ticks
+    // in its idle thread. The spins twin is the control: the same kernel
+    // and script with the loops spinning, which must idle almost none.
+    TestScenario {
+        name: "desktop_idle_parks",
+        feature: "neo-test-desktop-idle-parks",
+        user_feature: Some("desktop-park-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "desktop_idle_spins",
+        feature: "neo-test-desktop-idle-spins",
+        user_feature: Some("desktop-spin-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DL-1: every desktop feature on. A window moved before the bloom
+        // is slid so the Lens fits; the docked Lens then moves with a
+        // title-band drag (the group clamped) and follows a corner resize
+        // (its own size fixed); the capture is held to the independent
+        // oracle at the docked place, the Lens's labels and content exact.
+        name: "desktop_full_boot",
+        feature: "neo-test-desktop-full-boot",
+        user_feature: Some("desktop-full-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Arthur's first-boot intro on the 0.1 desktop: the intro card at
+        // session start, `help` typed and the hint clicked (the help card,
+        // the WM's own: Arthur never sees the line), then DS-1's round. Both
+        // cards are held to the independent oracle (digest + exact-area
+        // column patterns of every row); the final Home, with the hint, is
+        // read back by the kernel.
+        name: "desktop_intro_boot",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("desktop-intro-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-85: the intro session with the wall clock on a pinned RTC: the
+        // time-aware greeting and date row, the Home readout (its words held
+        // to an independent civil conversion here), and the final Home read
+        // back by the kernel with the readout box masked: the clock-less
+        // oracle's digest, so it drew nothing outside its box.
+        name: "desktop_clock_boot",
+        feature: "neo-test-desktop-clock-boot",
+        user_feature: Some("desktop-clock-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-78: the actual shipping feature composition. One two-boot QEMU
+        // scenario composes DW-1, typed Arthur inference, QEMU's clean eth0
+        // no-dongle degrade, and byte-checked NeoFS persistence.
+        name: "product_integration",
+        feature: "neo-test-product-integration",
+        user_feature: Some("product-integration"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Item 3a: the same five-rung composition, invoked once per physical
+        // boot. Disk state selects boot 1 vs boot 2; the operator reboots it.
+        name: "product_integration_baremetal",
+        feature: "neo-test-product-integration-baremetal",
+        user_feature: Some("product-integration-baremetal"),
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DW-1: the first desktop rung. Trusted userland WM creates the
+        // Home/Spine root, accepts two ROLE_TEXT clients, composes one ordered
+        // scene buffer, and switches keyboard focus A->B via InputFocus.
+        name: "dw1_desktop_wm",
+        feature: "neo-test-dw1-desktop-wm",
+        user_feature: Some("dw1-desktop-wm"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // DW-2: userland scene policy over DW-1. Focus history, Hold/restore,
+        // dismissal, and OP_CONFIGURE size-only layout stay WM-owned and keep
+        // the kernel/syscall surface unchanged.
+        name: "dw2_scene_policy",
+        feature: "neo-test-dw2-scene-policy",
+        user_feature: Some("dw2-scene-policy"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Atrium G1 slice-3: cross-PROCESS buffer lifetime + the Qubes-C3
+        // relocated-surface proof. neo-init (compositor) imports a read-only
+        // cap the neo-worker (client) grants, then maps/composites from the
+        // client's frames AFTER the client exits (lifetime-across-processes,
+        // no UAF). PASS fires in the #PF handler when the compositor's final
+        // write to its RO import faults (C3: compositor cannot write); a clean
+        // init exit means the RO property is broken => FAIL.
+        name: "atrium_slice3",
+        feature: "neo-test-atrium-slice3",
+        user_feature: Some("atrium-slice3"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Kill-switch equality half A: the no-atrium baseline renders the
+        // deterministic console transcript and emits/asserts the pixel
+        // digest (compositor-off == v1 console, bit-for-bit).
+        name: "atrium_console_digest",
+        feature: "neo-test-atrium-console-digest",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Kill-switch equality half B: atrium COMPILED IN, runtime switch
+        // off — same transcript, same digest, and every atrium syscall is
+        // ENOSYS with zero objects minted.
+        name: "atrium_killswitch_equality",
+        feature: "neo-test-atrium-killswitch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-63 Rung 1 Slice 3: every enabled HardwareFlip target must mint a
+    // FencedDmaAddr; out-of-arena/governance spans degrade to Software.
+    // Keep new atrium scenarios appended at this marker-delimited block end.
+    TestScenario {
+        name: "atrium_scanout_dma_fence",
+        feature: "neo-test-atrium-scanout-dma-fence",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-63 GPU P1 Slice 1: the CPU glass-blur floor on the kernel path — the
+    // literal r=1 8x8 byte oracle + the Rule-1 kill-switch (blur-off == solid
+    // Reduce-Transparency floor, bit-for-bit).
+    TestScenario {
+        name: "atrium_glass_blur",
+        feature: "neo-test-atrium-glass-blur",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-63 GPU P1 Slice 2: the kernel-internal compute service + ABI on the
+    // accel-sim substrate — GPU_COMPUTE_ENABLE kill-switch + submit->fence->wait.
+    TestScenario {
+        name: "accel_gpu_compute",
+        feature: "neo-test-accel-gpu-compute",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "gpu_glass_slice6",
+        feature: "neo-test-gpu-glass-slice6",
+        user_feature: Some("gpu-glass-slice6"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // ===== ATRIUM SCENARIOS — END =====
+    TestScenario {
+        name: "sys_wait_blocking",
+        feature: "neo-test-sys-wait-blocking",
+        user_feature: Some("sys-wait-blocking"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sys_wait_wnohang",
+        feature: "neo-test-sys-wait-wnohang",
+        user_feature: Some("sys-wait-wnohang"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sys_wait_already_exited",
+        feature: "neo-test-sys-wait-already-exited",
+        user_feature: Some("sys-wait-already-exited"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sys_wait_multiple_waiters",
+        feature: "neo-test-sys-wait-multiple-waiters",
+        user_feature: Some("sys-wait-multiple-waiters"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sys_inspect_running",
+        feature: "neo-test-sys-inspect-running",
+        user_feature: Some("sys-inspect-running"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sys_inspect_exited",
+        feature: "neo-test-sys-inspect-exited",
+        user_feature: Some("sys-inspect-exited"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sys_inspect_rights_gate",
+        feature: "neo-test-sys-inspect-rights-gate",
+        user_feature: Some("sys-inspect-rights-gate"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "sched_ready_queue_capacity_pressure",
+        feature: "neo-test-sched-ready-queue-capacity-pressure",
+        user_feature: Some("sched-ready-queue-capacity-pressure"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "kernel_observability",
+        feature: "neo-test-kernel-observability",
+        user_feature: Some("kernel-observability"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "kernel_observability_disabled",
+        feature: "neo-test-kernel-observability-disabled",
+        user_feature: Some("kernel-observability-disabled"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "neo_shell_repl",
+        feature: "neo-test-neo-shell-repl",
+        user_feature: Some("neo-shell-repl"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "neo_shell_builtins",
+        feature: "neo-test-neo-shell-builtins",
+        user_feature: Some("neo-shell-builtins"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "input_path_console",
+        feature: "neo-test-input-path-console",
+        user_feature: Some("neo-shell-repl"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_console",
+        feature: "neo-test-arthur-console",
+        user_feature: Some("arthur-console"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "v1_console_liveness",
+        feature: "neo-test-v1-console-liveness",
+        user_feature: Some("v1-console-liveness"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_action_surface",
+        feature: "neo-test-arthur-action-surface",
+        user_feature: Some("arthur-action-surface"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_converse",
+        feature: "neo-test-arthur-converse",
+        user_feature: Some("arthur-converse"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_boots_thinking",
+        feature: "neo-test-arthur-boots-thinking",
+        user_feature: Some("arthur-boots-thinking"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_act",
+        feature: "neo-test-arthur-act",
+        user_feature: Some("arthur-act"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_agentic_actions",
+        feature: "neo-test-arthur-agentic-actions",
+        user_feature: Some("arthur-agentic-actions"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_reversibility",
+        feature: "neo-test-arthur-reversibility",
+        user_feature: Some("arthur-reversibility"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_multistep_agentic",
+        feature: "neo-test-arthur-multistep-agentic",
+        user_feature: Some("arthur-multistep-agentic"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_grants_persist",
+        feature: "neo-test-arthur-grants-persist",
+        user_feature: Some("arthur-grants"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_memory",
+        feature: "neo-test-arthur-memory",
+        user_feature: Some("arthur-memory"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_neofs_userland_persistence",
+        feature: "neo-test-boot-neofs-userland-persistence",
+        user_feature: Some("boot-neofs-userland-persistence"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R1: the same guest, installed. It boots under OVMF from
+        // `boot.raw` (the ISO's bytes) with `data.raw` as its NeoFS and no
+        // CD, three times: the first writes Arthur's memory file, a control
+        // on a fresh data disk must fail the readback, and the third reads
+        // the first one's file back (`run_vm_installed_scenario`).
+        name: VM_INSTALLED_SCENARIO,
+        feature: "neo-test-boot-neofs-userland-persistence",
+        user_feature: Some("boot-neofs-userland-persistence"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R3: the same guest on ONE disk. `disk.raw` (THINK §4.4: the
+        // ESP and a LogansOS NeoFS partition) boots under OVMF three times:
+        // NeoFS mounts from partition 2 of the boot disk, and the guard arms
+        // only that partition (`run_vm_one_disk_scenario`).
+        name: VM_ONE_DISK_SCENARIO,
+        feature: "neo-test-vm-one-disk",
+        user_feature: Some("boot-neofs-userland-persistence"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3: `vm_one_disk_two_boot` on a 4096-byte logical-sector
+        // disk: its GPT, ESP (4096-byte FAT32 sectors) and NeoFS partition
+        // laid out at S=4096, booted by the firmware and mounted by the
+        // kernel through `virtio-blk-size`.
+        name: VM_ONE_DISK_4K_SCENARIO,
+        feature: "neo-test-vm-one-disk-4k",
+        user_feature: Some("boot-neofs-userland-persistence"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3 (`run_install_scenario`): a fresh install to a blank 2 GiB disk at S=512, then that disk boots alone and Arthur's model loads from its NeoFS.
+        name: INSTALL_FRESH_SCENARIO,
+        feature: "neo-test-install",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3 (`run_install_scenario`): the same at S=4096.
+        name: INSTALL_FRESH_4K_SCENARIO,
+        feature: "neo-test-install",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3 (`run_install_scenario`): `install-stop-after=Wn` at
+        // W2, W5 and W6, each then Finish installing.
+        name: INSTALL_STOP_FINISH_SCENARIO,
+        feature: "neo-test-install",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3: the same at every step, W1..W6 (13 boots, about 30 min
+        // under TCG). IGNORED in the merge gate (runner time); run it with
+        // `--include-ignored`. The write-back-cache KAT
+        // (`tools/install-state-logic-tests`) cuts at every submission and
+        // flush on every push.
+        name: INSTALL_STOP_FINISH_FULL_SCENARIO,
+        feature: "neo-test-install",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: true,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3 (`run_install_scenario`): every target refusal, with no write.
+        name: INSTALL_REFUSALS_SCENARIO,
+        feature: "neo-test-install",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.4b: the intro session on an image without the bundle: no
+        // Install chip, Home's end view as the intro's.
+        name: INSTALL_ATRIUM_NO_BUNDLE_SCENARIO,
+        feature: "neo-test-install-atrium-no-chip",
+        user_feature: Some("install-atrium-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.4b: the same with a kernel pin the bundle doesn't match.
+        name: INSTALL_ATRIUM_BAD_PIN_SCENARIO,
+        feature: "neo-test-install-atrium-no-chip",
+        user_feature: Some("install-atrium-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.4 (`run_install_scenario`): `install` typed at Home opens
+        // the Atrium installer; keys go to the confirmation and back.
+        name: INSTALL_ATRIUM_SCENARIO,
+        feature: "neo-test-install-atrium",
+        user_feature: Some("install-atrium-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.4 (`run_install_scenario`): `install` typed at the shell
+        // installs to a blank disk; then that disk boots alone.
+        name: INSTALL_CONSOLE_SCENARIO,
+        feature: "neo-test-install-console",
+        user_feature: Some("install-console"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_neofs_no_block_device",
+        feature: "neo-test-boot-neofs-no-block-device",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_neofs_no_valid_superblock",
+        feature: "neo-test-boot-neofs-no-valid-superblock",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_neofs_unexpected_error",
+        feature: "neo-test-boot-neofs-unexpected-error",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_memory_encrypted",
+        feature: "neo-test-arthur-memory-encrypted",
+        user_feature: Some("arthur-memory-encryption"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_memory_delegation",
+        feature: "neo-test-arthur-memory-delegation",
+        user_feature: Some("arthur-memory-delegation"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_memory_forgetting",
+        feature: "neo-test-arthur-memory-forgetting",
+        user_feature: Some("arthur-memory-forgetting"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_real_vocab",
+        feature: "neo-test-arthur-real-vocab",
+        user_feature: Some("arthur-real-vocab"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_real_brain_boot",
+        feature: "neo-test-arthur-real-brain-boot",
+        user_feature: Some("arthur-real-brain-boot"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-16 B1: builds the arthur_real_brain_boot 0.5B kernel with the walker
+    // feature ON and boots it at the gate's NEO_SMP=4. HONEST SCOPE (AAG
+    // 2026-07-08 relabel): the hermetic CI path loads the graph *fixture*
+    // (embedding model) -> run_graph_infer, so the walker is COMPILED but NOT
+    // executed here. This scenario therefore proves the walker-ON kernel
+    // BUILDS + BOOTS + KS1 (the non-walker forward is unchanged with the walker
+    // compiled in) — NOT walker parity. The walker's EXECUTION equivalence is
+    // proven by the B1a host KAT (the real walk_qwen2_schedule with DISTINCT
+    // per-layer weights). End-to-end walker execution on a real inventory model
+    // (routed through sys_generate/qwen_inventory) at NEO_SMP=4 is an explicit
+    // B3 gate item.
+    // B1b: the 0.5B and its vocab as boot modules, no NeoFS disk. `-answers`
+    // stages the fixture under the 0.5B name (or the real model when
+    // NEO_STAGE_B_{NEOM,GGUF} is set; the kernel holds that to the real pin);
+    // `-damaged` flips one byte of it; `-absent` stages the vocab only.
+    TestScenario {
+        name: "arthur_boot_module_answers",
+        feature: "neo-test-arthur-boot-module-answers",
+        user_feature: Some("arthur-boot-module"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Zenbook ask-freeze: the answers run with the model built at boot.
+    // NEOVOCB1: the preload pair reads the binary vocab (Arthur's
+    // `arthur-vocab-binary`); the other boot-module scenarios keep the text
+    // sidecar, the kill-switch-off path.
+    TestScenario {
+        name: "arthur_boot_module_preload",
+        feature: "neo-test-arthur-boot-module-preload",
+        user_feature: Some("arthur-boot-module-binary"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_boot_module_preload_vocab_damaged",
+        feature: "neo-test-arthur-boot-module-preload-vocab-damaged",
+        user_feature: Some("arthur-boot-module-binary"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_boot_module_damaged",
+        feature: "neo-test-arthur-boot-module-damaged",
+        user_feature: Some("arthur-boot-module"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_boot_module_absent",
+        feature: "neo-test-arthur-boot-module-absent",
+        user_feature: Some("arthur-boot-module"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-87 R2: Arthur's model from the installed NeoFS volume (the boot
+    // NeoFS disk carries the 0.5B and its NEOVOCB1 vocab). `_from_neofs`
+    // stages no model or vocab module; `_damaged` puts a wrong-byte model on
+    // the disk; `_module_wins` also stages the boot modules (they win over the
+    // disk's damaged model); `_off` is the kill-switch-off control.
+    TestScenario {
+        name: "arthur_model_from_neofs",
+        feature: "neo-test-arthur-model-from-neofs",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_model_from_neofs_damaged",
+        feature: "neo-test-arthur-model-from-neofs-damaged",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_model_from_neofs_module_wins",
+        feature: "neo-test-arthur-model-from-neofs-module-wins",
+        user_feature: Some("arthur-model-from-neofs"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_model_from_neofs_off",
+        feature: "neo-test-arthur-model-from-neofs-off",
+        user_feature: Some("arthur-boot-module-binary"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // B1c: the product real-LM path (no real-brain test feature): the
+    // kv-persist KAT's inventory LM as a pinned boot module, generated through
+    // the product core; plus the SYS_GENERATE bounds.
+    TestScenario {
+        name: "real_lm_generate_boot",
+        feature: "neo-test-real-lm-generate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // A9-B: the same core under the repetition guard (test penalty 1.3); its
+    // tokens must equal the guarded Python oracle, cut short by the loop stop.
+    TestScenario {
+        name: "real_lm_generate_guard",
+        feature: "neo-test-real-lm-generate-guard",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // B1c (PM ask 1): the inference stack's guard page turns an overflow into
+    // a named `#DF` (fail closed), with a deep-but-legal and a canary control.
+    // Zenbook ask-freeze (b): BLAKE3's stack depth at the real model's size,
+    // measured on the guarded inference stack.
+    // Zenbook ask-freeze: CPU 0 ticks and a co-runner runs while the boot
+    // model loads (the preload); the control's IF=0 load stops both.
+    TestScenario {
+        name: "boot_model_load_ticks",
+        feature: "neo-test-boot-model-load-ticks",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_model_load_ticks_control",
+        feature: "neo-test-boot-model-load-ticks-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // A9 freeze class: a long lever-2 generation (attention forked every
+    // step, every CPU) keeps a co-runner live on each CPU; the control's
+    // IF=0 generation starves CPU 0's.
+    TestScenario {
+        name: "generate_corunner_liveness",
+        feature: "neo-test-generate-corunner-liveness",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "generate_corunner_liveness_control",
+        feature: "neo-test-generate-corunner-liveness-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_model_load_stack",
+        feature: "neo-test-boot-model-load-stack",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "inference_stack_overflow",
+        feature: "neo-test-inference-stack-overflow",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // B1c AAG J1 (CP-64): a real TLB shootdown from CPU 1 while the inference
+    // stack's owner is parked on the BSP at syscall-entry IF=0: every IPI
+    // ACKed, the BSP timer live, the owner preempted. Needs NEO_SMP>=2.
+    TestScenario {
+        name: "inference_stack_shootdown",
+        feature: "neo-test-inference-shootdown",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // ...and its control: the pre-fix owner keeps IF=0, so the shootdown
+    // times out and panics (the failure J1 described).
+    TestScenario {
+        name: "inference_stack_shootdown_control",
+        feature: "neo-test-inference-shootdown-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // B1c AAG J3/J4 (CP-65): force-kill of inference participants. Holder A
+    // parks on the stack, waiter B yields; CPU 1 terminates B, then A, each
+    // while Ready. Both cancel and exit at the syscall boundary; the model Arc,
+    // heap and frames come back; the stack serves again. Needs NEO_SMP>=2.
+    TestScenario {
+        name: "inference_stack_kill",
+        feature: "neo-test-inference-kill",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // ...and its control: the pre-J3 kill rule zombifies the waiter, and the
+    // model Arc on its kernel stack leaks.
+    TestScenario {
+        name: "inference_stack_kill_control",
+        feature: "neo-test-inference-kill-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // B1c (F6): the release gate for the 305 MiB tier, OptiPlex only (it needs
+    // NEO_STAGE_B_NEOM naming the pinned 0.5B; the QEMU fixture fails closed).
+    TestScenario {
+        name: "real_lm_peak_baremetal",
+        feature: "neo-test-real-lm-peak",
+        user_feature: None,
+        ignored: true,
+        limine_kaslr: None,
+    },
+    // B1c: the vocab staged with one byte flipped (it fails its pin).
+    TestScenario {
+        name: "arthur_boot_module_vocab_damaged",
+        feature: "neo-test-arthur-boot-module-vocab-damaged",
+        user_feature: Some("arthur-boot-module"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_real_brain_boot_ot16_walker",
+        feature: "neo-test-arthur-real-brain-boot-ot16-walker",
+        user_feature: Some("arthur-real-brain-boot"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_real_brain_boot_15b",
+        feature: "neo-test-arthur-real-brain-boot-15b",
+        user_feature: Some("arthur-real-brain-boot-15b"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_real_brain_boot_3b",
+        feature: "neo-test-arthur-real-brain-boot-3b",
+        user_feature: Some("arthur-real-brain-boot-3b"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "arthur_real_brain_boot_qwen35",
+        feature: "neo-test-arthur-real-brain-boot-qwen35",
+        user_feature: Some("arthur-real-brain-boot-qwen35"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 2 BUILD-2 sub-commit 1: buddy frame allocator scenarios.
+    TestScenario {
+        name: "buddy_split_coalesce",
+        feature: "neo-test-buddy-split-coalesce",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "boot_module_reclaim",
+        feature: "neo-test-boot-module-reclaim",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "buddy_max_order",
+        feature: "neo-test-buddy-max-order",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "expect_pass_but_alloc_fail",
+        feature: "neo-test-expect-pass-but-alloc-fail",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "buddy_alloc_free_alloc_returns_same_frame",
+        feature: "neo-test-buddy-alloc-free-alloc-returns-same",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 2 BUILD-2 sub-commit 2: slab allocator scenarios.
+    TestScenario {
+        name: "slab_local_to_global_promotion",
+        feature: "neo-test-slab-local-to-global-promotion",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "slab_global_to_buddy_overflow",
+        feature: "neo-test-slab-global-to-buddy-overflow",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 2 BUILD-2 sub-commit 3 (Channel migration to slab) was reverted
+    // (Arc::from(Box<T>) routes drop to the global allocator, not the slab's
+    // free path); its ignored `slab_channel_migration` regression pin was
+    // removed with CHANNEL_CACHE itself in OT-8 (2026-07-03) — see ADR-012's
+    // OT-8 amendment.
+    // Phase 2 BUILD-2 sub-commit 4: Thread migration to slab.
+    TestScenario {
+        name: "slab_thread_migration",
+        feature: "neo-test-slab-thread-migration",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 2 BUILD-3 sub-commit 2: per-CPU scheduler scenarios.
+    TestScenario {
+        name: "smp_per_cpu_scheduler_smoke",
+        feature: "neo-test-smp-per-cpu-scheduler-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_same_cpu_ipc",
+        feature: "neo-test-smp-same-cpu-ipc",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_block_release_smoke",
+        feature: "neo-test-smp-block-release-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_send_blocks_first_then_completes",
+        feature: "neo-test-smp-send-blocks-first-then-completes",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_recv_blocks_first_then_completes",
+        feature: "neo-test-smp-recv-blocks-first-then-completes",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_grant_cross_cpu",
+        feature: "neo-test-smp-grant-cross-cpu",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_cross_cpu_migration_reap",
+        feature: "neo-test-smp-cross-cpu-migration-reap",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_cross_cpu_rendezvous_stress",
+        feature: "neo-test-smp-cross-cpu-rendezvous-stress",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C1.1 (cross-model AAG finding 1): the same cross-CPU rendezvous
+        // migrations the stress scenario drives, but asserting the ready-ring
+        // reservation invariant that was never checked. Needs NEO_SMP>=2 (the
+        // gate runs 4) and fails loudly rather than passing vacuously on 1 CPU,
+        // because src==dst means no migration occurs.
+        name: "smp_c11_migration_reservation",
+        feature: "neo-test-smp-c11-migration-reservation",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "smp_concurrent_reap_after_terminate",
+        feature: "neo-test-smp-concurrent-reap-after-terminate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-34: cross-core threaded-matmul determinism. Drives a real quantized
+    // matmul on real APs at thread_count 1/2/4 and asserts byte-identity at every
+    // count (the CI QEMU gate runs NEO_SMP=4). Safe at any -smp (falls to
+    // single-threaded when only the BSP is online).
+    TestScenario {
+        name: "threaded_matmul_parity",
+        feature: "neo-test-threaded-matmul-parity",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // The same, with image A's `matmul-steal-grace-time` (Chad, relay #52 item
+    // 6): parity at 1/2/4 threads, and one AP slot held so the BSP steals it;
+    // the steal must come no earlier than the grace after the publish.
+    TestScenario {
+        name: "threaded_matmul_parity_grace_time",
+        feature: "neo-test-threaded-matmul-parity-grace-time",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // USB HID boot-protocol MOUSE (the GUI pointer). Boots with a real qemu-xhci +
+    // usb-mouse (see the device gate): proves enumeration → claim → boot-protocol
+    // bind, then injects hand-laid boot mouse reports through the bound driver's
+    // real decode + bounded queue and asserts the pointer events + I-14(b) cap.
+    // Self-driving (no HMP script); the bare-metal plug-in-a-mouse run is the
+    // real-motion close.
+    TestScenario {
+        name: "usb_hid_mouse",
+        feature: "neo-test-usb-hid-mouse",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Zenbook USB input lane: two xHCIs at Intel's device numbers (0x0d, the
+    // Type-C subsystem's, scanned first; 0x14, the south one) with the
+    // keyboard and mouse on the second. The census must choose the second.
+    // Control: `neo-test-usb-xhci-select-control` → FAIL `hid_not_bound`.
+    TestScenario {
+        name: "usb_xhci_select",
+        feature: "neo-test-usb-xhci-select",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Zenbook USB input lane: no device at boot; HMP hot-adds a usb-kbd, types,
+    // removes it, re-adds it and types again. The port service must enumerate
+    // both plugs and the re-plugged keyboard must deliver.
+    // Control: `neo-test-usb-hotplug-control` → FAIL `hotplug_not_bound`.
+    TestScenario {
+        name: "usb_hotplug",
+        feature: "neo-test-usb-hotplug",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // i8042 lane: HMP `sendkey` into QEMU's own PS/2 keyboard (q35's i8042;
+    // no USB keyboard is attached, so the keys reach it) must decode to the
+    // exact HID key events, through IRQ1 on the I/O APIC. Control:
+    // NEO_TEST_EXTRA_FEATURES=neo-test-ps2-keyboard-control (must FAIL
+    // ps2_keyboard_decode_mismatch: translation off, set 2 read as set 1).
+    TestScenario {
+        name: "ps2_keyboard",
+        feature: "neo-test-ps2-keyboard",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Key auto-repeat: Backspace held 1.5 s in QEMU's PS/2 keyboard repeats
+    // in software (none before 500 ms, none after the release); Escape held
+    // as long does not. Control:
+    // NEO_TEST_EXTRA_FEATURES=neo-test-ps2-key-repeat-control (must FAIL
+    // key_repeat_none: nothing ever arms).
+    TestScenario {
+        name: "ps2_key_repeat",
+        feature: "neo-test-ps2-key-repeat",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // RTL8125 rung 1: QEMU has no RTL8125. `rtl8125_absent`: the probe
+    // reports absent; a synthetic bind on QEMU's rtl8139 (BME pre-set) with
+    // no IOMMU must leave Bus Master Enable clear. Control:
+    // NEO_TEST_EXTRA_FEATURES=neo-test-rtl8125-absent-control (must FAIL
+    // bus_master_set: the opt-in forced on grants it).
+    TestScenario {
+        name: "rtl8125_absent",
+        feature: "neo-test-rtl8125-absent",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // The VT-d leg: the same stand-in under intel-iommu is fenced, mode
+    // `iommu`, and Bus Master Enable is set only by the post-ring grant.
+    TestScenario {
+        name: "rtl8125_vtd",
+        feature: "neo-test-rtl8125-vtd",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // I2C-HID touchpad lane: the driver on QEMU, which is not the Zenbook:
+    // no quirk match and nothing probed, the no-controller bounded-timeout
+    // proof, and the ISR run under every driver lock (I-14(a)). Control:
+    // NEO_TEST_EXTRA_FEATURES=neo-test-i2c-hid-absent-control (must FAIL
+    // i2c_hid_probed_without_match: the forced match fails closed).
+    TestScenario {
+        name: "i2c_hid_absent",
+        feature: "neo-test-i2c-hid-absent",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Key-eviction discriminator: real qemu-xhci + usb-kbd + usb-mouse driven by
+    // HMP — `sendkey` per character with a `mouse_move` flood between every key —
+    // while the in-kernel focused client is busy. Every keystroke must survive in
+    // order; ADR-074's original drop-oldest queue fails this (the control).
+    TestScenario {
+        name: "input_queue_flood",
+        feature: "neo-test-input-queue-flood",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // S1-F1 discriminator: real usb-kbd typed while a kthread holds DELIVERY on
+    // another CPU. Every press and release must arrive in order; the direct
+    // route (`atrium-input-stage-legacy`, today's main) loses reports.
+    // DI-1a B-ref: kernel-minted consume-once pointer records, forwarded by
+    // an in-kernel stand-in WM, over a real usb-mouse.
+    TestScenario {
+        name: "di1_forward",
+        feature: "neo-test-di1-forward",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-66 L2b (Jarvis #160 items 1, 6, 7): Super+L, forced between each
+    // route check and its effect; nothing from before a lock reaches the
+    // client after it.
+    TestScenario {
+        name: "lock_route_races",
+        feature: "neo-test-lock-route-races",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "hid_contention",
+        feature: "neo-test-hid-contention",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-22 rung 1: SYS_WAIT_ANY's kernel legs: an IPC-only wait woken by a
+    // real channel send (the `wait-multiplex-no-ipc-fire` control must time
+    // out), the CP-14 send-between-check-and-park race, the deadline, and
+    // kill-while-parked.
+    TestScenario {
+        name: "wait_any_core",
+        feature: "neo-test-wait-any-core",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-29: heavy spawn->reap->spawn thread-slab UAF regression. neo-init loops
+    // spawn-heavy-Arthur->exit->reap; the kernel runs with slab-debug-poison so
+    // the SMP exit/reap free-list corruption is caught precisely. Armed forever.
+    TestScenario {
+        name: "sched_spawn_reap_spawn_heavy",
+        feature: "neo-test-sched-spawn-reap-spawn-heavy",
+        user_feature: Some("sched-spawn-reap-spawn-heavy"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ipc_rendezvous_translate_fault",
+        feature: "neo-test-ipc-rendezvous-translate-fault",
+        user_feature: Some("ipc-rendezvous-translate-fault"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-1 sub-commit 1a: raw QEMU disk + modern virtio-blk probe.
+    TestScenario {
+        name: "phase3_pci_virtio_blk_probe_smoke",
+        feature: "neo-test-phase3-pci-virtio-blk-probe-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-1 sub-commit 1B: virtio-blk read/write and abandonment.
+    TestScenario {
+        name: "phase3_virtio_blk_raw_rw_smoke",
+        feature: "neo-test-phase3-virtio-blk-raw-rw-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_virtio_blk_abandoned_io_no_leak",
+        feature: "neo-test-phase3-virtio-blk-abandoned-io-no-leak",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-3 sub-commit 3B: virtio-blk FLUSH negotiation and command.
+    TestScenario {
+        name: "phase3_virtio_blk_flush_negotiated_gate",
+        feature: "neo-test-phase3-virtio-blk-flush-negotiated-gate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_virtio_blk_flush_command_smoke",
+        feature: "neo-test-phase3-virtio-blk-flush-command-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_virtio_net_smoltcp_wrap_smoke",
+        feature: "neo-test-phase4-virtio-net-smoltcp-wrap-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_socket_udp_loopback",
+        feature: "neo-test-phase4-socket-udp-loopback",
+        user_feature: Some("phase4-socket-udp-loopback"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_slaac_udp_ipv6_loopback",
+        feature: "neo-test-phase4-slaac-udp-ipv6-loopback",
+        user_feature: Some("phase4-slaac-udp-ipv6-loopback"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_ndp_ipv6_neighbor",
+        feature: "neo-test-phase4-ndp-ipv6-neighbor",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_dhcpv4_ipv4_udp",
+        feature: "neo-test-phase4-dhcpv4-ipv4-udp",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 CB-1b (P0) ISC-3: the real cold lease — DORA over the wire via
+        // the production demux against slirp in QEMU (real Offer/Ack, no inject_*).
+        name: "dhcp_rx_real_lease",
+        feature: "neo-test-dhcp-rx-real-lease",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_tcp_connect_stream_close",
+        feature: "neo-test-phase4-tcp-connect-stream-close",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 CB-3 (ISC-1/2/3): interface-identity ON over two virtio-net
+        // devices — runtime eth0/eth1 names, registry link-state as the source of
+        // truth, multi-interface select_source (eth0 forced down ⇒ eth1 wins).
+        name: "interface_identity_select",
+        feature: "neo-test-interface-identity-select",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 CB-3 (ISC-4): the interface capability. neo-init opens
+        // /net/if/eth0 (a Handle::File), derives an attenuated read-only cap, then
+        // revokes the parent and asserts the descendant dies — mirroring
+        // file_cap_derive_grant on the interface path. Pass = init exit == 0.
+        name: "interface_cap_derive_revoke",
+        feature: "neo-test-interface-cap-derive-revoke",
+        user_feature: Some("interface-cap-derive-revoke"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase4_https_fetch",
+        feature: "neo-test-phase4-https-fetch",
+        user_feature: Some("phase4-https-fetch"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "net_dial_cap_kill_switch",
+        feature: "neo-test-net-dial-cap-kill-switch",
+        user_feature: Some("net-dial-cap-kill-switch"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "tensor_create_query_drop",
+        feature: "neo-test-tensor-create-query-drop",
+        user_feature: Some("tensor-create-query-drop"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "mount_authority",
+        feature: "neo-test-mount-authority",
+        user_feature: Some("mount-authority-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "model_load_cascade",
+        feature: "neo-test-model-load-cascade",
+        user_feature: Some("model-load-cascade"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "infer_mlp_forward",
+        feature: "neo-test-infer-mlp-forward",
+        user_feature: Some("infer-mlp-forward"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "infer_transformer_forward",
+        feature: "neo-test-infer-transformer-forward",
+        user_feature: Some("infer-transformer-forward"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "inference_preemptible_liveness",
+        feature: "neo-test-inference-preemptible-liveness",
+        user_feature: Some("inference-preemptible-liveness"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "infer_embedding_forward",
+        feature: "neo-test-infer-embedding-forward",
+        user_feature: Some("infer-embedding-forward"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "infer_embedding_oob_rejected",
+        feature: "neo-test-infer-embedding-oob-rejected",
+        user_feature: Some("infer-embedding-oob-rejected"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ai_generate_decode",
+        feature: "neo-test-ai-generate-decode",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "forward_mixed_quant",
+        feature: "neo-test-forward-mixed-quant",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot16_gdn_walker_execution",
+        feature: "neo-test-ot16-gdn-walker-execution",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_cpu_forward_migrate",
+        feature: "neo-test-accel-cpu-forward-migrate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_sim_forward_equiv",
+        feature: "neo-test-accel-sim-forward-equiv",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_placement_residency",
+        feature: "neo-test-accel-placement-residency",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_evict_pressure",
+        feature: "neo-test-accel-evict-pressure",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_residency_retain",
+        feature: "neo-test-accel-residency-retain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_residency_demote",
+        feature: "neo-test-accel-residency-demote",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_migration_reservation",
+        feature: "neo-test-accel-migration-reservation",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_residency_daemon",
+        feature: "neo-test-accel-residency-daemon",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_slot_arena",
+        feature: "neo-test-accel-slot-arena",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_model_residency",
+        feature: "neo-test-accel-model-residency",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_dedup_movement",
+        feature: "neo-test-accel-dedup-movement",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "dma_arena_fence",
+        feature: "neo-test-dma-arena-fence",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "vtd_fence",
+        feature: "neo-test-vtd-fence",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-63 GPU P1 Slice 5: the graphics VT-d domain (I-14(c2) for the iGPU).
+        name: "graphics_vtd_domain",
+        feature: "neo-test-graphics-vtd-domain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_enumerate",
+        feature: "neo-test-usb-enumerate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_storm",
+        feature: "neo-test-usb-storm",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_baremetal_probe",
+        feature: "neo-test-usb-baremetal-probe",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_ethernet",
+        feature: "neo-test-usb-ethernet",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_ethernet_baremetal",
+        feature: "neo-test-usb-ethernet-baremetal",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 BUILD-W1: the MT7601U scan on bare metal (Stage B).
+        // Bare-metal only — no QEMU model for the radio.
+        name: "mt7601u_scan_baremetal",
+        feature: "neo-test-mt7601u-scan-baremetal",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 BUILD-W2: associate to a real AP on bare metal (Stage B).
+        // Bare-metal only — no QEMU model for the radio.
+        name: "mt7601u_assoc_baremetal",
+        feature: "neo-test-mt7601u-assoc-baremetal",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 CB-1 (P0): HERMETIC wlan0 cold-link DORA logic proof. Unlike
+        // the scan/assoc bare-metal scenarios this needs NO radio — it runs in the
+        // aggregate QEMU shard set (not in the bare-metal-only filter below).
+        name: "mt7601u_wlan0_dora",
+        feature: "neo-test-mt7601u-wlan0-dora",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Phase 7.5 CB-5a (ISC-5): the HERMETIC, device-less WPA3-SAE connect gate.
+        // A scripted in-process AP runs the real AP half (a second SAE session +
+        // 4-way/GKH authenticator) while the sae_connect orchestrator drives the
+        // STA half over the seam — no radio, no dongle, no live AP. Runs in the
+        // aggregate QEMU shard set (not the bare-metal-only filter).
+        name: "wpa3_sae",
+        feature: "neo-test-wpa3-sae",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_sim_migrate_roundtrip",
+        feature: "neo-test-accel-sim-migrate-roundtrip",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_sim_async_poll",
+        feature: "neo-test-accel-sim-async-poll",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_accounting",
+        feature: "neo-test-accel-accounting",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_admission",
+        feature: "neo-test-accel-admission",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_admission_livepath",
+        feature: "neo-test-accel-admission-livepath",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-66 (J3-P): graph SYS_INFER_RUN callers force-killed inside the
+        // accelerator admission section — a parked waiter terminated (the
+        // product configuration) — are cancelled, unwind their model/tensor
+        // Arcs and exit at the boundary; the withdrawn request is never
+        // admitted and the next inference is served. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-admission-park-kill-control (must
+        // FAIL: the Arcs leak and the device wedges).
+        name: "admission_park_kill",
+        feature: "neo-test-admission-park-kill",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-66 with `browser-runtime`: also the fault-kill sibling path, and
+        // a holder Ready inside its dispatch, terminated (runs to completion,
+        // completes, exits).
+        name: "admission_park_kill_threaded",
+        feature: "neo-test-admission-park-kill-threaded",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-83 F1 (CP-71): a logger holding the log sink is preempted on
+        // CPU 0; a sibling fault-kills (IF=0, same CPU) a process whose caller
+        // is parked in admission. The kill must progress and every CPU must
+        // then ACK a TLB shootdown. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-admission-park-kill-sink-held-control
+        // (must FAIL: the withdrawal trace waits on the sink at IF=0 and the
+        // CPU wedges — QEMU timeout).
+        name: "admission_park_kill_sink_held",
+        feature: "neo-test-admission-park-kill-sink-held",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Zenbook lane (NOTE §4a): the kernel tick from the LAPIC timer
+        // (periodic on qemu64). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-lapic-timer-control (must FAIL
+        // timer_not_lapic, booting on the PIT fallback).
+        name: "lapic_timer_tick",
+        feature: "neo-test-lapic-timer",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Zenbook lane: kernel log lines mirrored on the framebuffer
+        // (fb-progress-console), and yielding to the first other drawer.
+        name: "fb_progress_console",
+        feature: "neo-test-fb-progress",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The same on -cpu max,+x2apic: x2APIC register path (QEMU >= 9).
+        name: "lapic_timer_tick_x2apic",
+        feature: "neo-test-lapic-timer-x2apic",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A silent first LAPIC mode is disarmed and demoted to the PIT.
+        // Control: NEO_TEST_EXTRA_FEATURES=neo-test-lapic-timer-no-verify
+        // trusts the silent mode (must FAIL no_tick_after_unverified_mode).
+        name: "lapic_timer_demote",
+        feature: "neo-test-lapic-timer-demote",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Janus F4: a panic while this CPU holds the serial lock still lands
+        // on the screen and the UART. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-fb-panic-holding-serial-control
+        // (the blocking acquire: must FAIL by timeout).
+        name: "fb_panic_holding_serial",
+        feature: "neo-test-fb-panic-holding-serial",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Zenbook lane: a disk with no NeoPlutarch marker is never written
+        // (the block guard refuses, the log sink refuses, the bytes stay).
+        // Control: NEO_TEST_EXTRA_FEATURES=neo-test-block-write-guard-control
+        // (must FAIL: unmarked_disk_written).
+        name: "block_write_guard",
+        feature: "neo-test-block-write-guard",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-87 R4.3: `block_write_guard` on 4096-byte logical-sector virtio
+        // disks (`scenario_logical_block_size`): the guard's judgement and the
+        // log sink through a real S=4096 device.
+        name: "block_write_guard_4k",
+        feature: "neo-test-block-write-guard-4k",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-87 R4.1: the install claim on real drivers. Five blank disks: virtio
+    // with `serial=LOGANSOS-R41`, virtio without, NVMe, SATA, and a virtio
+    // twin of the first with one sector different (`classify_vmware_disk`,
+    // `scenario_disk_serial`).
+    TestScenario {
+        name: "install_claim_identity",
+        feature: "neo-test-install-claim",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Muse's R4.1 review, item 4: on QEMU's NVMe, a namespace swap stops
+        // the claim before the next write, a used enumeration is stale, a
+        // controller reset kills the device, and a re-enabled controller's
+        // deleted I/O queue reaches nothing.
+        name: INSTALL_CLAIM_NVME_EVENTS_SCENARIO,
+        feature: "neo-test-install-claim-nvme-events",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-68: boots with the local APICs in x2APIC mode (-cpu max,+x2apic,
+        // needs QEMU >= 9 for TCG x2APIC) and proves reschedule IPIs and
+        // broadcast TLB shootdowns there. Control:
+        // NEO_TEST_EXTRA_FEATURES=xapic-only (must FAIL:
+        // apic_mode_not_x2apic, the pre-CP-68 request leaves it in xAPIC).
+        name: "x2apic_smp_ipi",
+        feature: "neo-test-x2apic-smp",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-67: threads force-killed while parked in IPC (send, recv, grant
+        // with a model source handle, recv_grant) leak no channel or model
+        // count; a rendezvous returns its anchor exactly once. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-ipc-park-kill-control (must FAIL:
+        // ipc_park_kill_arc_leaked).
+        name: "ipc_park_kill",
+        feature: "neo-test-ipc-park-kill",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-98 (CP-98): a kill that races a natural exit (the child's thread
+        // waits unreaped in a zombie ring, or runs inside SYS_EXIT on another
+        // CPU) returns ESRCH or defers to the reap; a kill of a process parked
+        // in sys_wait, or woken from it during the kill, completes; one exit
+        // producer's code wins; legs E, F and G kill from CPU 1 (the PM's
+        // bounce: a survivor reaped before DYING, the reaper's pop-to-free
+        // window, close_peer's transit); 200 kill-at-exit races, no leak.
+        // Controls (NEO_TEST_EXTRA_FEATURES=neo-test-kill-at-exit-control...),
+        // each must FAIL: -control (the kill of an exited child wins and
+        // returns 0), -a, -b, -c, -d, -f, -g (kae_kill_unlocated, a kill finds
+        // no thread, in its own leg), -e (kae_e_wait_hung), -f1
+        // (kae_f1_loser_changed_code).
+        name: "kill_at_exit",
+        feature: "neo-test-kill-at-exit",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_tensor_sharing",
+        feature: "neo-test-accel-tensor-sharing",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "virtio_accel_identity_roundtrip",
+        feature: "neo-test-virtio-accel-identity-roundtrip",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "virtio_accel_forward_equiv",
+        feature: "neo-test-virtio-accel-forward-equiv",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "virtio_accel_migrate_roundtrip",
+        feature: "neo-test-virtio-accel-migrate-roundtrip",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_add_bringup",
+        feature: "neo-test-accel-intel-add-bringup",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_ppgtt_bringup",
+        feature: "neo-test-accel-intel-ppgtt-bringup",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_execlist_bringup",
+        feature: "neo-test-accel-intel-execlist-bringup",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_execlist_data_bringup",
+        feature: "neo-test-accel-intel-execlist-data-bringup",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_execlist_negative_bringup",
+        feature: "neo-test-accel-intel-execlist-negative-bringup",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_blur_silicon",
+        feature: "neo-test-accel-intel-blur-silicon",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "accel_intel_blur_silicon_narrowed",
+        feature: "neo-test-accel-intel-blur-silicon-narrowed",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-1 sub-commit 1B0: scheduler weak wake-token substrate.
+    TestScenario {
+        name: "phase3_sched_wake_token_round_trip",
+        feature: "neo-test-phase3-sched-wake-token-round-trip",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_sched_wake_token_abandon",
+        feature: "neo-test-phase3-sched-wake-token-abandon",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // A process whose thread is token-parked is torn down 60 times over, so
+    // every dead PML4 frame is handed to the next Pmap::new (found by OT-22).
+    TestScenario {
+        name: "token_park_teardown_churn",
+        feature: "neo-test-token-park-teardown-churn",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_sched_wake_token_stale_generation",
+        feature: "neo-test-phase3-sched-wake-token-stale-generation",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-4B: mount table + directory-capability mount syscalls.
+    TestScenario {
+        name: "phase3_mount_neofs_device0_readonly",
+        feature: "neo-test-phase3-mount-neofs-device0-readonly",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_mount_requires_mount_right",
+        feature: "neo-test-phase3-mount-requires-mount-right",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_mount_regular_fd_is_enotdir",
+        feature: "neo-test-phase3-mount-regular-fd-is-enotdir",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_mount_target_exists_is_eexist",
+        feature: "neo-test-phase3-mount-target-exists-is-eexist",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_umount_busy_is_ebusy",
+        feature: "neo-test-phase3-umount-busy-is-ebusy",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_umount_removes_namespace",
+        feature: "neo-test-phase3-umount-removes-namespace",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-37 on MOUNTS: an unmounted NeoFS's state drop (writeback stop +
+        // join) runs after MOUNTS is released; an IF=0 MOUNTS taker on the same
+        // CPU gets the lock while the drop is held. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-mounts-drop-under-lock-control
+        // (must FAIL: hangs to TIMEOUT).
+        name: "phase3_umount_drop_outside_mounts",
+        feature: "neo-test-phase3-umount-drop-outside-mounts",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_mount_request_validation",
+        feature: "neo-test-phase3-mount-request-validation",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-4C: FAT32 read-only foreign filesystem.
+    TestScenario {
+        name: "phase3_fat32_mount_readonly",
+        feature: "neo-test-phase3-fat32-mount-readonly",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_readdir_root",
+        feature: "neo-test-phase3-fat32-readdir-root",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_open_read_regular_file",
+        feature: "neo-test-phase3-fat32-open-read-regular-file",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_lfn_lookup",
+        feature: "neo-test-phase3-fat32-lfn-lookup",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_subdir_walk",
+        feature: "neo-test-phase3-fat32-subdir-walk",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_write_is_rejected",
+        feature: "neo-test-phase3-fat32-write-is-rejected",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_exec_blocked_by_default",
+        feature: "neo-test-phase3-fat32-exec-blocked-by-default",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_exec_with_opt_in",
+        feature: "neo-test-phase3-fat32-exec-with-opt-in",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_type_import_is_regular",
+        feature: "neo-test-phase3-fat32-type-import-is-regular",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-4D: ext4 read-only foreign filesystem.
+    TestScenario {
+        name: "phase3_ext4_mount_readonly",
+        feature: "neo-test-phase3-ext4-mount-readonly",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_readdir_root",
+        feature: "neo-test-phase3-ext4-readdir-root",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_open_read_regular_file",
+        feature: "neo-test-phase3-ext4-open-read-regular-file",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_subdir_walk",
+        feature: "neo-test-phase3-ext4-subdir-walk",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_extent_chain_read",
+        feature: "neo-test-phase3-ext4-extent-chain-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_write_is_rejected",
+        feature: "neo-test-phase3-ext4-write-is-rejected",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_exec_blocked_by_default",
+        feature: "neo-test-phase3-ext4-exec-blocked-by-default",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_exec_with_opt_in",
+        feature: "neo-test-phase3-ext4-exec-with-opt-in",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ext4_type_import_is_regular",
+        feature: "neo-test-phase3-ext4-type-import-is-regular",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-5a-AHCI: AHCI block backend against QEMU ICH9.
+    TestScenario {
+        name: "phase3_ahci_controller_detected",
+        feature: "neo-test-phase3-ahci-controller-detected",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_port_identify",
+        feature: "neo-test-phase3-ahci-port-identify",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_read_sector_pattern",
+        feature: "neo-test-phase3-ahci-read-sector-pattern",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_write_sector_pattern",
+        feature: "neo-test-phase3-ahci-write-sector-pattern",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_multi_sector_io",
+        feature: "neo-test-phase3-ahci-multi-sector-io",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_block_device_registered",
+        feature: "neo-test-phase3-ahci-block-device-registered",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_fat32_mount_and_read",
+        feature: "neo-test-phase3-ahci-fat32-mount-and-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_ahci_neofs_mount_and_readwrite",
+        feature: "neo-test-phase3-ahci-neofs-mount-and-readwrite",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-5a-NVMe: NVMe block backend against QEMU NVMe.
+    TestScenario {
+        name: "phase3_nvme_controller_detected",
+        feature: "neo-test-phase3-nvme-controller-detected",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_namespace_identify",
+        feature: "neo-test-phase3-nvme-namespace-identify",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_read_sector_pattern",
+        feature: "neo-test-phase3-nvme-read-sector-pattern",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_write_sector_pattern",
+        feature: "neo-test-phase3-nvme-write-sector-pattern",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_multi_sector_io",
+        feature: "neo-test-phase3-nvme-multi-sector-io",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_block_device_registered",
+        feature: "neo-test-phase3-nvme-block-device-registered",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_fat32_mount_and_read",
+        feature: "neo-test-phase3-nvme-fat32-mount-and-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_nvme_neofs_mount_and_readwrite",
+        feature: "neo-test-phase3-nvme-neofs-mount-and-readwrite",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-3 sub-commit 3A: scheduler-owned kthread lifecycle.
+    TestScenario {
+        name: "phase3_kthread_spawn_join_smoke",
+        feature: "neo-test-phase3-kthread-spawn-join-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_kthread_stop_join_smoke",
+        feature: "neo-test-phase3-kthread-stop-join-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_kthread_stop_wakes_parked_worker",
+        feature: "neo-test-phase3-kthread-stop-wakes-parked-worker",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_kthread_detached_worker_smoke",
+        feature: "neo-test-phase3-kthread-detached-worker-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_kthread_no_thread_arc_lifetime",
+        feature: "neo-test-phase3-kthread-no-thread-arc-lifetime",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-1 sub-commit 1C: VFS/testfs/file syscall scenarios.
+    TestScenario {
+        name: "phase3_vfs_testfs_open_read_close",
+        feature: "neo-test-phase3-vfs-testfs-open-read-close",
+        user_feature: Some("vfs-testfs-open-read-close"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_testfs_write_readback",
+        feature: "neo-test-phase3-vfs-testfs-write-readback",
+        user_feature: Some("vfs-testfs-write-readback"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_type_vs_rights_errors",
+        feature: "neo-test-phase3-vfs-type-vs-rights-errors",
+        user_feature: Some("vfs-type-vs-rights-errors"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_stdout_compat",
+        feature: "neo-test-phase3-vfs-stdout-compat",
+        user_feature: Some("vfs-stdout-compat"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_readdir_testfs_root",
+        feature: "neo-test-phase3-vfs-readdir-testfs-root",
+        user_feature: Some("vfs-readdir-testfs-root"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_readdir_requires_right",
+        feature: "neo-test-phase3-vfs-readdir-requires-right",
+        user_feature: Some("vfs-readdir-requires-right"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_readdir_regular_is_enotdir",
+        feature: "neo-test-phase3-vfs-readdir-regular-is-enotdir",
+        user_feature: Some("vfs-readdir-regular-is-enotdir"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_vfs_directory_read_is_eisdir",
+        feature: "neo-test-phase3-vfs-directory-read-is-eisdir",
+        user_feature: Some("vfs-directory-read-is-eisdir"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_readdir_cursor_eof_stable",
+        feature: "neo-test-phase3-readdir-cursor-eof-stable",
+        user_feature: Some("readdir-cursor-eof-stable"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_readdir_buffer_too_small",
+        feature: "neo-test-phase3-readdir-buffer-too-small",
+        user_feature: Some("readdir-buffer-too-small"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-1 sub-commit 1D: storage/VFS integration closure.
+    TestScenario {
+        name: "phase3_block_vfs_smoke",
+        feature: "neo-test-phase3-block-vfs-smoke",
+        user_feature: Some("vfs-block-smoke"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_storage_completion_cross_cpu_wake",
+        feature: "neo-test-phase3-storage-completion-cross-cpu-wake",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-59 #2 ISC-5 witness: two kthreads hammer the single in-flight virtio-blk
+    // slot. Gate-ON (default) it serializes and greens; the `virtio-blk-io-gate-off`
+    // kill-switch reds it (deterministic lost-wakeup timeout). Runs at the gate's
+    // NEO_SMP for genuine cross-CPU overlap; no userland, plain raw disk.
+    TestScenario {
+        name: "virtio_blk_io_gate_contention",
+        feature: "neo-test-virtio-blk-io-gate-contention",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot49_idle_entry_wake",
+        feature: "neo-test-ot49-idle-entry-wake",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-31: cross-CPU exit()/reap use-after-free hardening. Places a victim on
+    // an AP that calls exit() while the BSP reaps, and proves the pre-fix
+    // release-before-switch ordering is racy while the release-on-new-stack fix
+    // is clean. Needs NEO_SMP>=2 (the CI QEMU gate runs NEO_SMP=4).
+    TestScenario {
+        name: "ot31_exit_reap_race",
+        feature: "neo-test-ot31-exit-reap-race",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_build1_reboot_persistence_smoke",
+        feature: "neo-test-phase3-build1-reboot-persistence-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-2 sub-commit 2B: NeoFS read-only mount.
+    TestScenario {
+        name: "phase3_neofs_mount_readonly_root",
+        feature: "neo-test-phase3-neofs-mount-readonly-root",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_mount_selects_highest_generation",
+        feature: "neo-test-phase3-neofs-mount-selects-highest-generation",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_mount_rejects_bad_superblock",
+        feature: "neo-test-phase3-neofs-mount-rejects-bad-superblock",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-2 sub-commit 2C: NeoFS create/write/readback.
+    TestScenario {
+        name: "phase3_neofs_create_small_file",
+        feature: "neo-test-phase3-neofs-create-small-file",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_write_readback_same_boot",
+        feature: "neo-test-phase3-neofs-write-readback-same-boot",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-92: the NeoFS cache evicts within its capacity; `-off` is the
+    // kill-switch control (no eviction, the cache grows past it).
+    TestScenario {
+        name: "phase3_neofs_cache_evict",
+        feature: "neo-test-phase3-neofs-cache-evict",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_cache_evict_off",
+        feature: "neo-test-phase3-neofs-cache-evict-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_allocator_reuse_guard",
+        feature: "neo-test-phase3-neofs-allocator-reuse-guard",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_reboot_persistence_small_file",
+        feature: "neo-test-phase3-neofs-reboot-persistence-small-file",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-2 sub-commit 2D: NeoFS CoW/recovery/fsync.
+    TestScenario {
+        name: "phase3_neofs_fsync_noop_write_through",
+        feature: "neo-test-phase3-neofs-fsync-noop-write-through",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_cow_write_after_write",
+        feature: "neo-test-phase3-neofs-cow-write-after-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_crash_mid_overwrite_recovery",
+        feature: "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_superblock_rotation_recovery",
+        feature: "neo-test-phase3-neofs-superblock-rotation-recovery",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_crash_mid_create_recovery",
+        feature: "neo-test-phase3-neofs-crash-mid-create-recovery",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-2 sub-commit 2E: typed inode policy and stale FileCaps.
+    TestScenario {
+        name: "phase3_neofs_typed_inode_exec_refusal",
+        feature: "neo-test-phase3-neofs-typed-inode-exec-refusal",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_regular_exec_policy_stub",
+        feature: "neo-test-phase3-neofs-regular-exec-policy-stub",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_type_vs_rights_policy_errors",
+        feature: "neo-test-phase3-neofs-type-vs-rights-policy-errors",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_filecap_generation_stale",
+        feature: "neo-test-phase3-neofs-filecap-generation-stale",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_reserved_type_refusal",
+        feature: "neo-test-phase3-neofs-reserved-type-refusal",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_filerights_u32_forward_bits",
+        feature: "neo-test-phase3-neofs-filerights-u32-forward-bits",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-3 sub-commit 3C: NeoFS free-space metadata and GC.
+    TestScenario {
+        name: "phase3_neofs_gc_mark_live_set",
+        feature: "neo-test-phase3-neofs-gc-mark-live-set",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_gc_reclaims_orphan_after_overwrite",
+        feature: "neo-test-phase3-neofs-gc-reclaims-orphan-after-overwrite",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_gc_reuses_reclaimed_block",
+        feature: "neo-test-phase3-neofs-gc-reuses-reclaimed-block",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_gc_reboot_persistence",
+        feature: "neo-test-phase3-neofs-gc-reboot-persistence",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_gc_crash_before_publish",
+        feature: "neo-test-phase3-neofs-gc-crash-before-publish",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_gc_corrupt_free_map_rejected",
+        feature: "neo-test-phase3-neofs-gc-corrupt-free-map-rejected",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-3 sub-commit 3D: NeoFS write-back block cache.
+    TestScenario {
+        name: "phase3_neofs_cache_hit_miss_smoke",
+        feature: "neo-test-phase3-neofs-cache-hit-miss-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_writeback_dirty_drain",
+        feature: "neo-test-phase3-neofs-writeback-dirty-drain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_writeback_worker_stop_join",
+        feature: "neo-test-phase3-neofs-writeback-worker-stop-join",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_writeback_reboot_after_drain",
+        feature: "neo-test-phase3-neofs-writeback-reboot-after-drain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_writeback_crash_before_drain",
+        feature: "neo-test-phase3-neofs-writeback-crash-before-drain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_gc_waits_for_clean_cache",
+        feature: "neo-test-phase3-neofs-gc-waits-for-clean-cache",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 3 BUILD-3 sub-commit 3E: durable NeoFS fsync.
+    TestScenario {
+        name: "phase3_neofs_fsync_dirty_persists_after_crash",
+        feature: "neo-test-phase3-neofs-fsync-dirty-persists-after-crash",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_unfsynced_dirty_may_be_lost",
+        feature: "neo-test-phase3-neofs-unfsynced-dirty-may-be-lost",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_fsync_issues_flush",
+        feature: "neo-test-phase3-neofs-fsync-issues-flush",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-56 / CP-82 follow-up: fsync/open/readdir/ftruncate complete while a
+        // yielding kthread holds NeoFS `entries` and the call arrives at IF=0.
+        // Control: NEO_TEST_EXTRA_FEATURES=neo-test-vfs-syscall-if-off-control
+        // (must FAIL: hangs to TIMEOUT).
+        name: "phase3_neofs_syscall_if_on",
+        feature: "neo-test-phase3-neofs-syscall-if-on",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // CP-37 on ARENA: no arena-table acquisition may find interrupts on
+        // inside its section (alloc at IF=1, mint on the inference stack, mint
+        // at IF=0, release). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-arena-mixed-if-control
+        // (must FAIL: arena_held_with_interrupts_on).
+        name: "arena_if_off",
+        feature: "neo-test-arena-if-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_fsync_clean_no_extra_flush",
+        feature: "neo-test-phase3-neofs-fsync-clean-no-extra-flush",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_fsync_coordinates_with_writeback_gc",
+        feature: "neo-test-phase3-neofs-fsync-coordinates-with-writeback-gc",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_fsync_filecap_stale_regression",
+        feature: "neo-test-phase3-neofs-fsync-filecap-stale-regression",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_readdir_root",
+        feature: "neo-test-phase3-neofs-readdir-root",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_readdir_stale_generation",
+        feature: "neo-test-phase3-neofs-readdir-stale-generation",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "neofs_large_file",
+        feature: "neo-test-neofs-large-file",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // NFS-W1: the kernel writes a 9 MiB file (double-indirect) in one
+        // piece, reads it back after a remount, and a second write stopped
+        // before its commit leaves the old tree. The host then reads the
+        // disk with neofs-inspect.py and neofs-mkfs's reader
+        // (`host_check_neofs_large_write`).
+        name: "neofs_large_write",
+        feature: "neo-test-neofs-large-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // #206 AAG C1: mount rejects a newer candidate naming one inode
+        // from two entries, and selects an older copy.
+        name: "neofs_rejects_shared_inode",
+        feature: "neo-test-neofs-rejects-shared-inode",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The same for an inode naming one data block twice.
+        name: "neofs_rejects_doubled_block",
+        feature: "neo-test-neofs-rejects-doubled-block",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // #206 AAG U2: a commit between a read and its re-check gives the
+        // read ESTALE.
+        name: "neofs_read_recheck",
+        feature: "neo-test-neofs-read-recheck",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The write-leak fix: 100 overwrites keep the used-block count
+        // constant; a second boot reads the last version back with it
+        // unchanged (two boots, one disk).
+        name: "neofs_overwrite_frees",
+        feature: "neo-test-neofs-overwrite-frees",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A 65 MiB volume (mkfs's minimum, nearly full) on a 96 MiB disk,
+        // grown in place (the installer's W4) and written past its old end
+        // in the same mount, through an installer claim: a big file, then an
+        // overwrite and a truncate through pre-grow handles, a file in
+        // subdir. Read back there and after a remount; then `neofs-mkfs
+        // verify` reads the disk (`host_check_neofs_grow_write`).
+        name: NEOFS_GROW_WRITE_SCENARIO,
+        feature: "neo-test-neofs-grow-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-67 W1: SYS_FILE_REPLACE. The byte oracle, rights, the cap, a
+        // stale reader, a lost race, free space; a cut before the publish
+        // leaves the old content for the second boot.
+        name: "neofs_file_replace",
+        feature: "neo-test-neofs-file-replace",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "neofs_truncate",
+        feature: "neo-test-neofs-truncate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: AARCH64_BARRIER_SCENARIO,
+        feature: "aarch64-standalone-harness",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 10.1 BUILD-10.1: kernel CSPRNG self-test. Runs the three KATs
+    // (ChaCha20 RFC 8439 + SHA-256 NIST + golden composition) at boot.
+    TestScenario {
+        name: "kernel_rng_selftest",
+        feature: "neo-test-kernel-rng-selftest",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-90 P2: power-off and restart. Judged by QMP (`qmp::judge`), not by
+    // debug-exit; see `run_ot90_power_scenario`.
+    TestScenario {
+        name: "ot90_s5_exits_qemu",
+        feature: "neo-test-ot90-s5-exits-qemu",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_restart_second_boot",
+        feature: "neo-test-ot90-restart-second-boot",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_restart_fallback_i8042",
+        feature: "neo-test-ot90-restart-fallback-i8042",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-90 P3a: a file written with no fsync is on the disk after a clean S5
+    // (two QEMU runs on one disk, each judged by QMP), and a user process
+    // that never exits is terminated within K1's bound before S5.
+    TestScenario {
+        name: "ot90_s5_durability",
+        feature: "neo-test-ot90-s5-durability",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_straggler_forced",
+        feature: "neo-test-ot90-straggler-forced",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Chad #199 item 2: a disk that stops completing requests mid-drain; the
+    // shutdown's deadline still reaches S5.
+    TestScenario {
+        name: "ot90_stuck_disk",
+        feature: "neo-test-ot90-stuck-disk",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // #267 (Chad 3b): an armed log sink whose disk stops answering right
+    // after K3; power-off and restart must still be reached.
+    TestScenario {
+        name: "ot90_stuck_sink_off",
+        feature: "neo-test-ot90-stuck-sink-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stuck_sink_restart",
+        feature: "neo-test-ot90-stuck-sink-restart",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // The kill-switch: built without `power-control`, it passes through
+    // debug-exit as every scenario does, and boot logs no power plan.
+    TestScenario {
+        name: "ot90_kill_switch_off",
+        feature: "neo-test-ot90-kill-switch-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Phase 10.3 BUILD-10.3: SYS_GETRANDOM syscall KAT. Tests deterministic
+    // output from fixed seed, non-triviality (distinct second call), and the
+    // buffer-validation truth table (NULL, kernel-half, overflow, oversize, zero).
+    TestScenario {
+        name: "sys_getrandom",
+        feature: "neo-test-sys-getrandom",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+];
+
+fn main() -> ExitCode {
+    let args: Vec<String> = env::args().skip(1).collect();
+    let cmd = args.first().map(String::as_str).unwrap_or("help");
+
+    let result = match cmd {
+        "build" => cmd_build(&args[1..]),
+        "iso" => cmd_iso(&args[1..]),
+        "run" => cmd_run(&args[1..]),
+        "run-headless" => cmd_run_headless(&args[1..]),
+        "run-vnc" => cmd_run_vnc(&args[1..]),
+        "run-desktop" => cmd_run_desktop(&args[1..]),
+        "vm-image" => cmd_vm_image(&args[1..]),
+        "vm-run" => cmd_vm_run(&args[1..]),
+        "neo-test" => cmd_neo_test(&args[1..]),
+        "product-elf-check" => cmd_product_elf_check(&args[1..]),
+        "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
+        "neo-test-build" => cmd_neo_test_build(&args[1..]),
+        "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
+        "shard-coverage" => cmd_shard_coverage(&args[1..]),
+        "log-sink-header" => cmd_log_sink_header(&args[1..]),
+        "vocab-bin" => cmd_vocab_bin(&args[1..]),
+        "icons" => cmd_icons(&args[1..]),
+        "install-bundle" => install_bundle::cmd(&args[1..]),
+        "help" | "-h" | "--help" => {
+            print_help();
+            Ok(())
+        }
+        other => {
+            eprintln!("xtask: unknown command `{other}`");
+            print_help();
+            return ExitCode::from(2);
+        }
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("xtask: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// `cargo xtask icons [--check]`: rasterise `assets/icons/*.svg` to the
+/// committed straight-alpha RGBA blobs under `userland/neo-atrium/assets/icons/`
+/// (or, with `--check`, fail if any is stale). The rasteriser is the host-only
+/// `tools/icon-raster` crate (resvg), so xtask itself gains no SVG dependency.
+fn cmd_icons(args: &[String]) -> Result<(), String> {
+    let mode = match args {
+        [] => "write",
+        [flag] if flag == "--check" => "check",
+        _ => return Err("usage: cargo xtask icons [--check]".to_string()),
+    };
+    let status = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args(["run", "-q", "-p", "icon-raster", "--", mode])
+        .status()
+        .map_err(|e| format!("run icon-raster: {e}"))?;
+    if !status.success() {
+        return Err(format!("icon-raster {mode} failed: {status}"));
+    }
+    Ok(())
+}
+
+/// `cargo xtask vocab-bin <in.vocab> <out.vocb>`: convert a text sidecar to
+/// `NEOVOCB1` (refusing a source that breaks its preconditions) and print the
+/// result's size and BLAKE3, the numbers its boot-module pin records.
+fn cmd_vocab_bin(args: &[String]) -> Result<(), String> {
+    let [src, out] = args else {
+        return Err("usage: cargo xtask vocab-bin <in.vocab> <out.vocb>".to_string());
+    };
+    let bytes = convert_vocab_sidecar(Path::new(src))?;
+    fs::write(out, &bytes).map_err(|e| format!("write {out}: {e}"))?;
+    println!(
+        "wrote {out}: NEOVOCB1, {} bytes, blake3 {}",
+        bytes.len(),
+        blake3::hash(&bytes).to_hex()
+    );
+    Ok(())
+}
+
+/// The image-build converter: the text sidecar at `src` to `NEOVOCB1` bytes.
+/// Any precondition violation fails the build; nothing is staged.
+fn convert_vocab_sidecar(src: &Path) -> Result<Vec<u8>, String> {
+    let text = fs::read(src).map_err(|e| format!("read vocab {}: {e}", src.display()))?;
+    let bytes = vocab_sidecar::convert_text_to_binary(&text).map_err(|e| {
+        format!(
+            "vocab {} cannot be converted to NEOVOCB1: {e:?}; no image was written",
+            src.display()
+        )
+    })?;
+    // The writer's output must pass the reader Arthur runs.
+    vocab_bin_logic::VocabBin::new(bytes.as_slice()).map_err(|e| {
+        format!(
+            "NEOVOCB1 from {} fails its own validation: {e:?}",
+            src.display()
+        )
+    })?;
+    Ok(bytes)
+}
+
+/// `cargo xtask log-sink-header <out>`: write the sealed log-sink header an
+/// operator provisions on a bare-metal log disk (4096 bytes for a 16 MiB
+/// region at 256 MiB; `docs/runbook-baremetal-arthur-optiplex.md`).
+fn cmd_log_sink_header(args: &[String]) -> Result<(), String> {
+    let usage = || "usage: cargo xtask log-sink-header <out-file> [--force]".to_string();
+    let force = args.iter().any(|a| a == "--force");
+    let paths: Vec<&String> = args.iter().filter(|a| *a != "--force").collect();
+    let [out] = paths.as_slice() else {
+        return Err(usage());
+    };
+    let header = write_guard_logic::provisioning_log_header(BARE_METAL_LOG_REGION_SIZE);
+    write_regular_file(Path::new(out.as_str()), &header, force)?;
+    println!(
+        "wrote {out}: sealed NEO_LOG_v1 v3 header, region 0x{:x} bytes; provision with:\n  sudo dd if={out} of=/dev/<log-disk> bs=4096 seek=$((0x{:x} / 4096)) conv=notrunc,fsync",
+        BARE_METAL_LOG_REGION_SIZE, BARE_METAL_LOG_REGION_OFFSET
+    );
+    Ok(())
+}
+
+/// Write `bytes` to `path` only as a regular file (R1-4): never a device
+/// (`/dev/...`, `\\.\...`: offset 0 of a disk is its partition table), never
+/// any other existing non-regular file, and never over an existing file
+/// without `force`.
+fn write_regular_file(path: &Path, bytes: &[u8], force: bool) -> Result<(), String> {
+    let shown = path.display();
+    let text = path.to_string_lossy().replace('\\', "/");
+    if text.starts_with("/dev/") || text.starts_with("//./") || text.starts_with("//?/") {
+        return Err(format!(
+            "refusing to write {shown}: a device path (this command writes a FILE; dd it onto the disk at the offset printed)"
+        ));
+    }
+    match fs::metadata(path) {
+        Ok(meta) if !meta.is_file() => {
+            return Err(format!(
+                "refusing to write {shown}: it exists and is not a regular file"
+            ));
+        }
+        Ok(_) if !force => {
+            return Err(format!(
+                "refusing to overwrite {shown}: it exists (pass --force)"
+            ));
+        }
+        _ => {}
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true);
+    if force {
+        options.create(true).truncate(true);
+    } else {
+        options.create_new(true);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("open {shown}: {e}"))?;
+    // The path may have changed between the check and the open.
+    let meta = file.metadata().map_err(|e| format!("stat {shown}: {e}"))?;
+    if !meta.is_file() {
+        return Err(format!("refusing to write {shown}: not a regular file"));
+    }
+    file.write_all(bytes)
+        .map_err(|e| format!("write {shown}: {e}"))
+}
+
+fn print_help() {
+    println!("NeoPlutarch build orchestration");
+    println!();
+    println!("USAGE:");
+    println!("    cargo xtask <COMMAND>");
+    println!();
+    println!("COMMANDS:");
+    println!("    build         compile the kernel for {KERNEL_TARGET}");
+    println!("    iso           build the kernel and produce {ISO_OUTPUT_REL}");
+    println!(
+        "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
+    );
+    println!("    image-kernel-build  build exactly the product image's kernel (CI)");
+    println!("    run           build the ISO and launch QEMU with a local GTK window");
+    println!("    run-headless  build the ISO and launch QEMU with serial-only output");
+    println!("    run-vnc       build the ISO and launch QEMU with VNC server on :5901");
+    println!(
+        "    run-desktop   boot the live desktop session (window by default; --vnc / --headless, --resolution WxH; --home, --pointer, --lens, --intro, --reduce-transparency, --classic)"
+    );
+    println!(
+        "    vm-image      write {}/{{{},{}}}: the ISO as a UEFI boot disk and a NeoFS data disk (--with-model <neom>; --fresh-data replaces the data disk)",
+        vm_image::VM_DIR_REL,
+        vm_image::BOOT_DISK,
+        vm_image::DATA_DISK
+    );
+    println!(
+        "    vm-run        boot the vm-image disks under OVMF, no CD (window by default; --vnc / --headless)"
+    );
+    println!(
+        "    install-bundle write {} (the installer's NEOINST1 bundle) and print its BLAKE3 (--check <blake3> refuses a mismatch)",
+        install_bundle::BUNDLE_REL
+    );
+    println!(
+        "    icons         rasterise assets/icons to neo-atrium's RGBA blobs (--check: fail if stale)"
+    );
+    println!("    neo-test      run QEMU integration tests via debug-exit + serial frames");
+    println!("    neo-test-build build one scenario ISO + disk bundle without launching QEMU");
+    println!(
+        "    ot61-closure-build  build the OT-61 C2.3b html5ever/selectors smoke (overlay std, A4 checks)"
+    );
+    println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
+    println!(
+        "    log-sink-header <out> [--force] write the sealed bare-metal log-sink header to a regular file"
+    );
+    println!();
+    println!("ENVIRONMENT:");
+    println!("    build/iso/run options: [--features a,b] [--no-default-features]");
+    println!("    {LIMINE_DIR_ENV}    path to Limine binaries (default: {LIMINE_DIR_DEFAULT})");
+    println!("    {NEO_SMP_ENV}       QEMU CPU count passed via -smp (default: 1)");
+    println!("    {NEO_QEMU_GDB_PORT_ENV}  optional QEMU GDB stub TCP port for investigation runs");
+    println!(
+        "    {NEO_QEMU_MONITOR_PORT_ENV}  optional QEMU monitor TCP port for investigation runs"
+    );
+    println!(
+        "    {NEO_QEMU_TIMEOUT_DUMP_ENV}  when 1, capture QEMU monitor state on timeout (requires {NEO_QEMU_MONITOR_PORT_ENV})"
+    );
+}
+
+// === build ===
+
+#[derive(Default)]
+struct BuildOptions {
+    no_default_features: bool,
+    kernel_features: Vec<String>,
+    /// `Some(level)`: build the kernel at this opt-level (the `dev` profile,
+    /// via `CARGO_PROFILE_DEV_OPT_LEVEL`; overflow checks and debug assertions
+    /// stay on). `None`: the profile's own level, 0.
+    kernel_opt_level: Option<&'static str>,
+    /// Extra rustflags for the kernel target, appended to the config file's
+    /// (`CARGO_TARGET_<TRIPLE>_RUSTFLAGS`). Only the product image sets one.
+    kernel_target_rustflags: Option<&'static str>,
+}
+
+fn cmd_build(args: &[String]) -> Result<(), String> {
+    let options = parse_build_options(args)?;
+    // Phase 1.4 builds two binaries with two different custom targets:
+    //   1. The userspace neo-init (must build FIRST so the kernel ISO
+    //      stage can include it as a Limine module).
+    //   2. The kernel itself.
+    // Each crate has its own .cargo/config.toml selecting the target +
+    // build-std flags. The only CLI flag we need is `-Zjson-target-spec`
+    // (nightly 2026-04-15 gates JSON target specs behind it; cannot be
+    // declared via config.toml).
+    build_user()?;
+    build_kernel_default(&options)?;
+    Ok(())
+}
+
+fn parse_build_options(args: &[String]) -> Result<BuildOptions, String> {
+    let mut options = BuildOptions::default();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--no-default-features" => options.no_default_features = true,
+            "--features" => {
+                let Some(features) = iter.next() else {
+                    return Err("--features requires a comma-separated value".to_string());
+                };
+                options.kernel_features.extend(parse_feature_list(features));
+            }
+            other if other.starts_with("--features=") => {
+                let features = other.trim_start_matches("--features=");
+                options.kernel_features.extend(parse_feature_list(features));
+            }
+            other => return Err(format!("unknown build option `{other}`")),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_feature_list(features: &str) -> impl Iterator<Item = String> + '_ {
+    features
+        .split([',', ' ', '\t'])
+        .filter(|feature| !feature.is_empty())
+        .map(str::to_string)
+}
+
+fn build_kernel_default(options: &BuildOptions) -> Result<(), String> {
+    let features: Vec<&str> = options.kernel_features.iter().map(String::as_str).collect();
+    // OT-87 R4.3: an `installer` kernel is built with the bundle's pin, and
+    // its image carries the bundle.
+    if features.contains(&"installer") {
+        stage_install_bundle()?;
+    } else {
+        set_install_pin(None);
+    }
+    build_member_at_opt_level(
+        "kernel",
+        KERNEL_PACKAGE,
+        KERNEL_BIN,
+        "kernel",
+        KERNEL_TARGET,
+        &features,
+        options.no_default_features,
+        options.kernel_opt_level,
+        options.kernel_target_rustflags,
+    )
+}
+
+/// The product image's kernel features (`iso --with-model`). One list, so
+/// the image and CI's `image-kernel-build` compile the same kernel.
+const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
+    "desktop",
+    // `atrium-pointer-forward`: the intro's desktop takes the pointer.
+    "atrium-pointer-forward",
+    "real-lm",
+    "model-boot-module",
+    // Zenbook ask-freeze: the model is built once at boot, with interrupts
+    // on and on the guarded inference stack.
+    "boot-model-preload",
+    // Zenbook lane: kernel boot log on screen until the desktop, and the
+    // calibrated LAPIC timer tick (CP-69).
+    "fb-progress-console",
+    "lapic-timer",
+    // Zenbook freeze lane: the lock-free corner status overlay. Image only:
+    // the desktop scenarios read back every pixel.
+    "freeze-watchdog",
+    // Software key auto-repeat (every keyboard).
+    "key-autorepeat",
+    // Zenbook touchpad (I2C-HID, rung 1): inert on any machine its quirk
+    // entry does not match.
+    "i2c-hid-touchpad",
+    // Its BAR0 when firmware left it unassigned (image A4).
+    "i2c-hid-bar-assign",
+    // The RTL8125 2.5GbE driver (rung 1) with its no-IOMMU opt-in: PL decision
+    // (J.c., 2026-10-24), so one stick tests the Zenbook (no RTL8125: the probe
+    // prints `absent` and the driver does nothing) and the AMD main PC (MSI
+    // MS-7E57, RTL8125 rev 0C, no VT-d driven: `dma=arena-only`, every DMA
+    // address in the fenced arena, I-14(c1)). A device the VT-d fence domain
+    // holds still takes `dma=iommu`; this image does not build `vtd`.
+    "rtl8125",
+    "rtl8125-dma-without-iommu",
+    // Arthur latency round 2 (PM, 2026-10-25): the answer-latency breakdown on
+    // the overlay (lines 4-6: prefill/decode, the timeline against the WM's
+    // presents, per-CPU partitions and APERF/MPERF clock, HWP state). Relaxed
+    // counters and MSR reads only; logits unchanged.
+    "prefill-perf",
+    // The fork-join steal grace in TSC time (50 us) instead of PAUSE spins.
+    "matmul-steal-grace-time",
+    // Lever 2 (PM, 2026-10-26, from A8's `sw=`/`at=`): the per-element soft
+    // work forked across the same executor, byte-identical at any core count.
+    "par-elementwise",
+    // CP-81: kernel-thread naps (the USB port service, the boot input check,
+    // the touchpad's polled modes) park on a tick deadline instead of
+    // yield-spinning.
+    "tick-sleep",
+    // Not here: `boot-evidence-holds` (the Zenbook bring-up's 5 s USB bind
+    // wait, its 30 s holds and the 6 s input and touchpad checks). Image A
+    // prints the same summary lines and does not wait; a bring-up image adds
+    // the feature back.
+    // HWP on, full range, performance preference, on every CPU that has it
+    // (a CPU without HWP is left alone). Default since the Zenbook A/B of
+    // 2026-10-25: A6 (off) ran CPU 0 at 1071 MHz and answered "What's 2+2?"
+    // in 57 s; A6-hwp ran it at 3287 MHz, prefill 208 ms/token against 642,
+    // decode 304 against 942, about 18 s in all (3.2x).
+    "hwp-performance",
+    // A9-B: greedy decoding kept out of degenerate loops (repetition penalty
+    // plus loop stop); off = today's tokens exactly.
+    "decode-repetition-guard",
+    // A9-C2: the mouse wheel and the touchpad's (when its mouse collection
+    // reports one) reach the window under the pointer; with the WM's
+    // `desktop-wheel`.
+    "atrium-pointer-wheel",
+    // OT-66 L1: sign-in's salts, account id and recovery code come from
+    // SYS_GETRANDOM (the boot-seeded CSPRNG); with the WM's `login`.
+    "kernel-rng",
+    // OT-66 L2: Super+L and the activity bit in the SAK latch, so the
+    // signed-in session locks (on the chord, and when idle).
+    "sak-lock",
+    // OT-66 L2b (#216): the kernel's lock route, so Super+L locks the input
+    // even while the WM is parked in a send (CP-57, CP-97).
+    "sak-lock-route",
+    // OT-66 L1 (Dexter #186 item 4): the sign-in record under `.system/`
+    // opens only for the WM (the kernel's SystemStore cap, the session
+    // root's alone); every other process gets EPERM.
+    "system-store",
+    // Dexter #187 item 3a (J.c., option A): only the session root (the
+    // kernel's MountAuthority) mounts and unmounts, so no other process can
+    // unmount NeoFS or mount a foreign volume under the lock's `.system/`.
+    "mount-authority",
+    // OT-66 K1b (L1.1): a root-form open needs a directory cap whose scope
+    // contains the path. neo-init holds `/`; Arthur only `/neofs/.arthur`
+    // and `/boot`; with the WM's `cap-rooted-open`.
+    "cap-rooted-open",
+];
+
+/// The product image's kernel opt-level (Arthur latency NOTE, fix 1). The
+/// `dev` profile is opt-level 0, which left every inference loop, the AVX2
+/// kernels included, unoptimized: about 25-30x on the forward. The image (and
+/// CI's `image-kernel-build`) builds at 3; scenario kernels stay at the
+/// profile's 0, so their timing is unchanged.
+const PRODUCT_IMAGE_KERNEL_OPT_LEVEL: &str = "3";
+
+/// Accepted for old command lines: `hwp-performance` is in image A now (the
+/// Zenbook A/B, A6 against A6-hwp, 2026-10-25).
+const HWP_PERFORMANCE_FLAG: &str = "--hwp-performance";
+/// Accepted for old command lines: `prefill-perf` is in image A now.
+const PERF_PROBES_FLAG: &str = "--perf-probes";
+
+/// The product image's kernel is built with core's library-UB precondition
+/// checks off (`-Zub-checks=no`); J.c.'s decision, 2026-10-26. Every
+/// `debug_assert!` and the overflow checks stay on. Those checks are inside
+/// core (a second bounds check in every slice range index, pointer and slice
+/// constructor preconditions) and, with debug assertions on, they were about
+/// 74% of the image forward's excess over an assertions-off build (callgrind,
+/// Plans/NOTE-2026-10-25-arthur-lever2-design.md lane). Scenario and host
+/// builds keep them, so CI still exercises our `unsafe` code with them on.
+const PRODUCT_IMAGE_UB_CHECKS_OFF: &str = "-Zub-checks=no";
+/// Kill-switch for a bare-metal A/B: `NEO_IMAGE_UB_CHECKS=on` builds the
+/// image with the UB checks.
+const PRODUCT_IMAGE_UB_CHECKS_ENV: &str = "NEO_IMAGE_UB_CHECKS";
+
+fn product_image_ub_checks_on() -> bool {
+    env::var(PRODUCT_IMAGE_UB_CHECKS_ENV).is_ok_and(|v| v.trim() == "on")
+}
+
+fn build_product_image_kernel() -> Result<(), String> {
+    let kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+    let ub_checks_on = product_image_ub_checks_on();
+    eprintln!(
+        "[xtask] product image kernel: opt-level={} ub-checks={} ({}=on keeps them)",
+        PRODUCT_IMAGE_KERNEL_OPT_LEVEL,
+        if ub_checks_on { "on" } else { "off" },
+        PRODUCT_IMAGE_UB_CHECKS_ENV
+    );
+    build_kernel_default(&BuildOptions {
+        no_default_features: false,
+        kernel_features,
+        kernel_opt_level: Some(PRODUCT_IMAGE_KERNEL_OPT_LEVEL),
+        kernel_target_rustflags: (!ub_checks_on).then_some(PRODUCT_IMAGE_UB_CHECKS_OFF),
+    })
+}
+
+/// `cargo xtask image-kernel-build`: build exactly the kernel
+/// `iso --with-model` ships (features and opt-level), without the model
+/// files. CI's product build runs it, so CI compiles what ships.
+fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
+    parse_image_flags(args, "image-kernel-build")?;
+    build_product_image_kernel()
+}
+
+/// The product-image flags: the old `--hwp-performance` and `--perf-probes`,
+/// both no-ops now (each feature is in image A).
+fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
+    for arg in args {
+        if arg == HWP_PERFORMANCE_FLAG {
+            eprintln!(
+                "[xtask] {command}: {HWP_PERFORMANCE_FLAG} is the default now (hwp-performance is in image A)"
+            );
+        } else if arg == PERF_PROBES_FLAG {
+            eprintln!(
+                "[xtask] {command}: {PERF_PROBES_FLAG} is the default now (prefill-perf is in image A)"
+            );
+        } else {
+            return Err(format!(
+                "{command} takes no options (got {args:?}); it builds the product image"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Scenarios whose kernel must be the FXSAVE build: the default features
+/// without `inference-preemptible`, which is what pulls `xsave-fpu`.
+/// OT-61 C2.3b: `servo_closure_smoke` proves that kernel keeps AVX hidden from
+/// ring 3 on a CPU that has it.
+const FXSAVE_KERNEL_SCENARIOS: &[&str] = &["servo_closure_smoke"];
+
+/// The kernel's default features less `inference-preemptible` (see
+/// `kernel/Cargo.toml`'s `default`).
+const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim"];
+
+fn build_test_kernel(scenario: TestScenario, mode: ScenarioBundleMode) -> Result<(), String> {
+    let mut features = vec!["neo-test", scenario.feature];
+    let fxsave_kernel = FXSAVE_KERNEL_SCENARIOS.contains(&scenario.name);
+    if fxsave_kernel {
+        features.extend_from_slice(FXSAVE_KERNEL_DEFAULTS);
+    }
+    if mode.is_bare_metal() {
+        features.push("neo-test-bare-metal-mode");
+        features.push(bare_metal_log_sink_target_feature(scenario.name)?);
+        // Zenbook lane: the screen carries the log (no serial port there),
+        // and the tick is the calibrated LAPIC timer (CP-69: the 8254 may be
+        // gated), with the verified PIT/PIC fallback behind it.
+        features.push("fb-progress-console");
+        features.push("lapic-timer");
+    }
+    // Append any operator-supplied extra features (kill-switch witnesses; see
+    // NEO_TEST_EXTRA_FEATURES_ENV). Leaking each into a &'static str is fine in
+    // this short-lived build orchestrator.
+    if let Ok(extra) = env::var(NEO_TEST_EXTRA_FEATURES_ENV) {
+        for feat in extra.split([',', ' ', '\t']).filter(|s| !s.is_empty()) {
+            // The guard-off control writes every disk it sees: never in a
+            // bundle that boots on real hardware. (Also refused by the
+            // kernel's own resolved features, and by the image scan in
+            // `refuse_guard_off_image`.)
+            if mode.is_bare_metal() && feature_disables_write_guard(feat) {
+                return Err(
+                    "refusing --bare-metal-mode with neo-test-block-write-guard-control: it disables the block write guard"
+                        .to_string(),
+                );
+            }
+            features.push(Box::leak(feat.to_string().into_boxed_str()));
+        }
+    }
+
+    build_member(
+        scenario.name,
+        KERNEL_PACKAGE,
+        KERNEL_BIN,
+        "kernel",
+        KERNEL_TARGET,
+        &features,
+        fxsave_kernel,
+    )
+}
+
+/// The kernel feature that turns the block write guard off.
+const WRITE_GUARD_CONTROL_FEATURE: &str = "neo-test-block-write-guard-control";
+
+/// Whether a Cargo feature spec names the guard-off control, in any spelling
+/// Cargo accepts: bare, package-qualified (`neoplutarch-kernel/...`), or
+/// with surrounding whitespace (Janus F2).
+fn feature_disables_write_guard(spec: &str) -> bool {
+    spec.trim().rsplit('/').next().map(str::trim) == Some(WRITE_GUARD_CONTROL_FEATURE)
+}
+
+/// Whether `bytes` contain the kernel's guard-off marker.
+fn contains_guard_off_marker(bytes: &[u8]) -> bool {
+    let marker = write_guard_logic::GUARD_OFF_MARKER;
+    bytes.windows(marker.len()).any(|w| w == marker)
+}
+
+/// Refuse a bare-metal image whose kernel was built with the write guard off,
+/// however that build was asked for (Janus F2): the guard-off kernel carries
+/// `GUARD_OFF_MARKER`, and its ELF sits in the ISO uncompressed.
+fn refuse_guard_off_image(image: &Path) -> Result<(), String> {
+    let bytes = fs::read(image).map_err(|e| format!("read {}: {e}", image.display()))?;
+    if contains_guard_off_marker(&bytes) {
+        let _ = fs::remove_file(image);
+        return Err(format!(
+            "refusing bare-metal image {}: its kernel was built with the block write guard OFF ({WRITE_GUARD_CONTROL_FEATURE}); image removed",
+            image.display()
+        ));
+    }
+    Ok(())
+}
+
+fn bare_metal_log_sink_target_feature(scenario_name: &str) -> Result<&'static str, String> {
+    match scenario_name {
+        "phase3_ahci_neofs_mount_and_readwrite" => Ok("neo-test-log-sink-target-nvme"),
+        "phase3_nvme_neofs_mount_and_readwrite" => Ok("neo-test-log-sink-target-ahci"),
+        "infer_transformer_forward" => Ok("neo-test-log-sink-target-nvme"),
+        "accel_intel_add_bringup" => Ok("neo-test-log-sink-target-nvme"),
+        "accel_intel_ppgtt_bringup" => Ok("neo-test-log-sink-target-nvme"),
+        "accel_intel_execlist_bringup" => Ok("neo-test-log-sink-target-nvme"),
+        "accel_intel_execlist_data_bringup" => Ok("neo-test-log-sink-target-nvme"),
+        "accel_intel_execlist_negative_bringup" => Ok("neo-test-log-sink-target-nvme"),
+        "accel_intel_blur_silicon" => Ok("neo-test-log-sink-target-ahci"),
+        "accel_intel_blur_silicon_narrowed" => Ok("neo-test-log-sink-target-ahci"),
+        "usb_baremetal_probe" => Ok("neo-test-log-sink-target-nvme"),
+        "atrium_interactive_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        "arthur_compositor_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        // B1b: the OptiPlex run boots from the USB with the SATA model disk
+        // detached; evidence goes to the boot NVMe at 256 MiB.
+        "arthur_boot_module_answers" => Ok("neo-test-log-sink-target-nvme"),
+        // B1c: the full-cap generate on the OptiPlex logs to the boot NVMe too.
+        "real_lm_peak_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        // NeoFS and the real model live on the physical SATA/AHCI `sda` under
+        // test. Keep evidence on the independent boot NVMe at 256 MiB.
+        "product_integration_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        "usb_ethernet_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        // Phase 7.5 BUILD-W1: the scan run captures into the NVMe sink (the
+        // mt7601u driver touches no disk, so the boot NVMe is free for logging).
+        "mt7601u_scan_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        // BUILD-W2: same — the assoc run captures into the NVMe sink.
+        "mt7601u_assoc_baremetal" => Ok("neo-test-log-sink-target-nvme"),
+        // Phase 7.5 BUILD-V: the (c2) test fences the NVMe (the boot disk,
+        // unused post-boot), so the evidence log-sink lives on the AHCI/SATA.
+        "vtd_fence" => Ok("neo-test-log-sink-target-ahci"),
+        _ => Err(format!(
+            "--bare-metal-mode is only supported for explicitly wired storage/GPU evidence scenarios, got `{scenario_name}`"
+        )),
+    }
+}
+
+/// OT-61 C0.5 (AAG bounce, Finding 2): whether THIS build is the
+/// `std_real_smoke` scenario. Gates the neoplutarch std overlay-apply + the
+/// `build-std=std` real-std smoke build + its ISO module staging behind the
+/// scenario, so a default `xtask build` / production ISO is genuinely untouched
+/// (no shared-toolchain rust-src mutation, no 6.5 MB test ELF bundled). Set by
+/// the two `build_user*` entry points below; read by `build_user_members`,
+/// `assemble_iso_with_limine_kaslr`, and `write_limine_conf`. (xtask is a
+/// single-process CLI; a plain flag suffices — the same shape as `stage_firmware`.)
+static STAGE_STD_REAL_SMOKE: std::sync::Mutex<&'static [&'static str]> = std::sync::Mutex::new(&[]);
+
+/// The real-std ELFs a std scenario spawns (built from `userland/std-real-smoke`
+/// and staged as `/modules/neo-<bin>`). Each scenario stages only its own, so a
+/// scenario stays within the kernel's boot-module ceiling
+/// (`MAX_BOOT_MODULE_EXTENTS`, 8, with neo-init/worker/shell/arthur).
+fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
+    match scenario {
+        "std_real_smoke" => &["std-real-smoke", "std-real-panic", "std-real-entropy"],
+        "std_threads" => &["std-real-threads", "std-real-thread-abort"],
+        "std_entropy" => &["std-real-entropy"],
+        "std_sealed" | "std_sealed_ambient" => &["std-real-sealed"],
+        "servo_host_smoke" => &["servo-host-smoke"],
+        "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
+        _ => &[],
+    }
+}
+
+/// Desktop S1: the framebuffer mode pinned into the staged limine.conf
+/// (`resolution: WxH` inside the boot entry) for desktop builds only. `None`
+/// (every other build and scenario) leaves Limine's automatic choice — and
+/// therefore every existing scenario's framebuffer geometry — untouched.
+static DESKTOP_RESOLUTION: std::sync::Mutex<Option<(u32, u32)>> = std::sync::Mutex::new(None);
+
+fn set_desktop_resolution(resolution: Option<(u32, u32)>) {
+    *DESKTOP_RESOLUTION.lock().expect("desktop resolution lock") = resolution;
+}
+
+fn desktop_resolution() -> Option<(u32, u32)> {
+    *DESKTOP_RESOLUTION.lock().expect("desktop resolution lock")
+}
+
+/// The resolution the desktop session pins by default (`run-desktop`).
+const DESKTOP_DEFAULT_RESOLUTION: (u32, u32) = (1920, 1080);
+
+/// OT-83: the `fault-probe` binary a `ring3_fault_*` scenario stages as
+/// `/modules/neo-fault-probe` (with `fault-probe-ok` as `/modules/neo-fault-probe-ok`).
+/// `None` for every other build, so no default or product ISO carries a probe.
+static FAULT_PROBE_STAGE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// OT-66 L1: the cut scenario (`login_scenarios`).
+const LOGIN_CUT_SCENARIO: &str = "login_cut_steps";
+
+/// OT-66 L1: `login_cut_steps` stages `/modules/login-cut`, whose step
+/// (`LOGINCUT step=NNNN`) xtask patches per boot in the boot disk's copy.
+static STAGE_LOGIN_CUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The step module's bytes as staged; each boot rewrites the four digits.
+const LOGIN_CUT_MODULE: &[u8] = b"LOGINCUT step=0000\n";
+
+fn set_fault_probe_stage(bin: Option<&'static str>) {
+    *FAULT_PROBE_STAGE.lock().expect("fault probe stage lock") = bin;
+}
+
+fn fault_probe_stage() -> Option<&'static str> {
+    *FAULT_PROBE_STAGE.lock().expect("fault probe stage lock")
+}
+
+/// OT-83: the probe binary for a scenario name (`ring3_fault_ud` → `fault-probe-ud`).
+fn fault_probe_for(scenario: &str) -> Option<&'static str> {
+    match scenario {
+        "ring3_fault_ud" => Some("fault-probe-ud"),
+        "ring3_fault_de" => Some("fault-probe-de"),
+        "ring3_fault_gp" => Some("fault-probe-gp"),
+        "ring3_fault_ss" => Some("fault-probe-ss"),
+        "ring3_fault_db" => Some("fault-probe-db"),
+        "ring3_fault_xm" => Some("fault-probe-xm"),
+        "ring3_fault_mf" => Some("fault-probe-mf"),
+        _ => None,
+    }
+}
+
+fn set_stage_std_real_smoke(bins: &'static [&'static str]) {
+    *STAGE_STD_REAL_SMOKE.lock().expect("std-real stage lock") = bins;
+}
+fn std_real_staged_bins() -> &'static [&'static str] {
+    *STAGE_STD_REAL_SMOKE.lock().expect("std-real stage lock")
+}
+fn stage_std_real_smoke() -> bool {
+    !std_real_staged_bins().is_empty()
+}
+
+/// B1a: stage the `/models/reclaim-probe.bin` consumable module (only for the
+/// `boot_module_reclaim` scenario).
+static STAGE_RECLAIM_PROBE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// B1c: stage the kv-persist KAT's tiny inventory LM as the consumable
+/// `/models/kv-persist-kat.neom` (only for `real_lm_generate_boot`).
+static STAGE_KAT_MODEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const KAT_MODEL_SRC: &str = "kernel/src/ai/fixtures/kv_persist_kat.neom";
+const KAT_MODEL_NEOM: &str = "kv-persist-kat.neom";
+
+fn set_stage_kat_model(on: bool) {
+    STAGE_KAT_MODEL.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+fn stage_kat_model() -> bool {
+    STAGE_KAT_MODEL.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+fn set_stage_reclaim_probe(on: bool) {
+    STAGE_RECLAIM_PROBE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+fn stage_reclaim_probe() -> bool {
+    STAGE_RECLAIM_PROBE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The kernel's early-boot module capacity (`MAX_BOOT_MODULE_EXTENTS`,
+/// `kernel/src/main.rs`; a unit test holds the two equal). F7: an image that
+/// stages more modules is refused at build time, before the kernel can panic.
+const MAX_BOOT_MODULES: usize = 8;
+
+/// B1a probe module: deterministic bytes, length deliberately not a page
+/// multiple (the kernel scenario checks the same length and pattern).
+const BOOT_MODULE_RECLAIM_PROBE_LEN: usize = 6 * 1024 * 1024 + 2560;
+const BOOT_MODULE_RECLAIM_PROBE: &str = "reclaim-probe.bin";
+
+fn reclaim_probe_bytes() -> Vec<u8> {
+    (0..BOOT_MODULE_RECLAIM_PROBE_LEN)
+        .map(|i| ((i % 251) as u8) ^ 0x5a)
+        .collect()
+}
+
+/// B1b: the 0.5B `.neom` and its vocab, staged as boot modules.
+#[derive(Clone, Debug)]
+struct BootModelStage {
+    neom: PathBuf,
+    vocab: PathBuf,
+    /// `false`: the vocab only (the "absent" control).
+    stage_model: bool,
+    /// Flip one byte of the staged model (the "damaged" control).
+    flip_byte: bool,
+    /// B1c: flip one byte of the staged vocab (the "vocab damaged" control).
+    flip_vocab: bool,
+    /// Stage the vocab as `NEOVOCB1` (`.vocb`, converted here) instead of
+    /// the text sidecar.
+    binary_vocab: bool,
+}
+
+/// OT-87 R4.3: the BLAKE3 of `target/install/bundle.neoinst` while a build
+/// stages it: the kernel is built with it as its pin, and the ISO carries the
+/// bundle as `/install/bundle`.
+static INSTALL_PIN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn set_install_pin(pin: Option<String>) {
+    *INSTALL_PIN.lock().expect("install pin lock") = pin;
+}
+
+fn install_pin() -> Option<String> {
+    INSTALL_PIN.lock().expect("install pin lock").clone()
+}
+
+/// OT-87 R4.4b: a test image that can't install, for the scenarios showing
+/// the Install chip stays hidden: the bundle left off the image, or the
+/// kernel built with a pin the bundle doesn't match. Set only by
+/// `run_install_scenario`, for its scenario, and cleared after the build.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum InstallMedium {
+    Whole,
+    NoBundle,
+    WrongPin,
+}
+
+static INSTALL_MEDIUM: std::sync::Mutex<InstallMedium> =
+    std::sync::Mutex::new(InstallMedium::Whole);
+
+fn set_install_medium(medium: InstallMedium) {
+    *INSTALL_MEDIUM.lock().expect("install medium lock") = medium;
+}
+
+fn install_medium() -> InstallMedium {
+    *INSTALL_MEDIUM.lock().expect("install medium lock")
+}
+
+/// The pin compiled into the kernel: the bundle's, or under
+/// [`InstallMedium::WrongPin`] the same with its last hex digit changed.
+fn kernel_install_pin(pin: &str) -> String {
+    if install_medium() != InstallMedium::WrongPin {
+        return pin.to_string();
+    }
+    let mut wrong = pin.to_string();
+    let last = if wrong.ends_with('0') { '1' } else { '0' };
+    wrong.pop();
+    wrong.push(last);
+    wrong
+}
+
+/// Build the install bundle and stage it (and its pin) for the next kernel
+/// and ISO.
+fn stage_install_bundle() -> Result<(), String> {
+    let (path, pin) = install_bundle::build_to_target()?;
+    eprintln!(
+        "[xtask] install bundle {} blake3 {pin} (the kernel's {})",
+        path.display(),
+        install_bundle::PIN_ENV
+    );
+    set_install_pin(Some(pin));
+    Ok(())
+}
+
+static BOOT_MODEL_STAGE: std::sync::Mutex<Option<BootModelStage>> = std::sync::Mutex::new(None);
+
+fn set_boot_model_stage(stage: Option<BootModelStage>) {
+    *BOOT_MODEL_STAGE.lock().expect("boot model stage lock") = stage;
+}
+
+fn boot_model_stage() -> Option<BootModelStage> {
+    BOOT_MODEL_STAGE
+        .lock()
+        .expect("boot model stage lock")
+        .clone()
+}
+
+/// The consumable model module and the ordinary vocab module (paths as the
+/// kernel and Arthur name them: `/models/…`, `/vocab/…`).
+const BOOT_MODEL_NEOM: &str = "model-qwen2.5-0.5b.neom";
+const BOOT_MODEL_VOCAB: &str = "model-qwen2.5-0.5b.vocab";
+const BOOT_MODEL_VOCB: &str = "model-qwen2.5-0.5b.vocb";
+/// The byte the "damaged" control flips: inside the fixture (4,144 bytes) and
+/// inside the real model alike.
+const BOOT_MODEL_FLIP_OFFSET: usize = 2048;
+
+fn boot_model_stage_for(name: &str) -> Result<Option<BootModelStage>, String> {
+    let (stage_model, flip_byte, flip_vocab, binary_vocab) = match name {
+        "arthur_boot_module_answers" => (true, false, false, false),
+        "arthur_boot_module_preload" => (true, false, false, true),
+        "arthur_boot_module_preload_vocab_damaged" => (true, false, true, true),
+        "arthur_boot_module_damaged" => (true, true, false, false),
+        "arthur_boot_module_absent" => (false, false, false, false),
+        "arthur_boot_module_vocab_damaged" => (true, false, true, false),
+        // OT-87 R2: the boot modules beside the disk's damaged model.
+        "arthur_model_from_neofs_module_wins" => (true, false, false, true),
+        // OT-87 R4.3: the model and its NEOVOCB1 vocab, for the installer
+        // to write to NeoFS.
+        INSTALL_FRESH_SCENARIO
+        | INSTALL_FRESH_4K_SCENARIO
+        | INSTALL_STOP_FINISH_SCENARIO
+        | INSTALL_STOP_FINISH_FULL_SCENARIO
+        | INSTALL_REFUSALS_SCENARIO
+        | INSTALL_CONSOLE_SCENARIO
+        | INSTALL_ATRIUM_SCENARIO
+        | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
+        | INSTALL_ATRIUM_BAD_PIN_SCENARIO => (true, false, false, true),
+        "real_lm_peak_baremetal" => (true, false, false, false),
+        // A9-D: the vocab only; Arthur's model is the KAT inventory LM.
+        "desktop_busy_boot" => (false, false, false, false),
+        _ => return Ok(None),
+    };
+    // The fixture unless NEO_STAGE_B_{NEOM,GGUF} names the real model; the
+    // vocab sidecar sits beside it either way.
+    let neom = prepare_stage_b_real_brain_model()?;
+    let vocab = neom.with_extension("vocab");
+    Ok(Some(BootModelStage {
+        neom,
+        vocab,
+        stage_model,
+        flip_byte,
+        flip_vocab,
+        binary_vocab,
+    }))
+}
+
+/// Copy the model to the ISO tree, flipping one byte for the damaged control.
+fn stage_boot_model_file(stage: &BootModelStage, dst: &Path) -> Result<(), String> {
+    let mut bytes =
+        fs::read(&stage.neom).map_err(|e| format!("read {}: {e}", stage.neom.display()))?;
+    if stage.flip_byte {
+        let byte = bytes
+            .get_mut(BOOT_MODEL_FLIP_OFFSET)
+            .ok_or_else(|| format!("{} is too short to damage", stage.neom.display()))?;
+        *byte ^= 0x01;
+    }
+    fs::write(dst, bytes).map_err(|e| format!("write {}: {e}", dst.display()))
+}
+
+fn build_user() -> Result<(), String> {
+    // Default / production build: NEVER build or stage the real-std test smoke.
+    set_stage_std_real_smoke(&[]);
+    set_fault_probe_stage(None);
+    set_stage_reclaim_probe(false);
+    set_stage_kat_model(false);
+    set_boot_model_stage(None);
+    build_user_with_feature(None)
+}
+
+fn build_user_for_scenario(scenario: TestScenario) -> Result<(), String> {
+    // Build the real-std ELFs + apply the overlay ONLY for their scenarios.
+    set_stage_std_real_smoke(std_real_bins_for(scenario.name));
+    set_fault_probe_stage(fault_probe_for(scenario.name));
+    STAGE_LOGIN_CUT.store(
+        scenario.name == LOGIN_CUT_SCENARIO
+            || scenario.name == login_scenarios::SETTINGS_CUT_SCENARIO,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    set_stage_reclaim_probe(scenario.name == "boot_module_reclaim");
+    set_stage_kat_model(matches!(
+        scenario.name,
+        "real_lm_generate_boot"
+            | "real_lm_generate_guard"
+            | "boot_model_load_ticks"
+            | "boot_model_load_ticks_control"
+            | "generate_corunner_liveness"
+            | "generate_corunner_liveness_control"
+            | "desktop_busy_boot"
+    ));
+    set_boot_model_stage(boot_model_stage_for(scenario.name)?);
+    build_user_with_feature(scenario.user_feature)
+}
+
+fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
+    let init_features: Vec<&str> = match feature {
+        // B1c: the product image's WM is the full desktop with the first-boot
+        // intro (#75), as `run-desktop --intro` builds it.
+        // A9-D: with Arthur's `arthur-busy-emblem`; A9-C2: with the kernel's
+        // `atrium-pointer-wheel` (each pair is one switch). App icons (J.c.,
+        // 2026-10-29): the Spine chips draw their icons.
+        Some("desktop-with-model") => vec![
+            "desktop-intro",
+            "desktop-clock",
+            "desktop-busy",
+            "desktop-wheel",
+            "atrium-app-icons",
+            // OT-66 L1 (J.c.): the first-boot account screen, then sign-in,
+            // on a volume with `.system/`; with the kernel's `kernel-rng`.
+            "login",
+            // OT-66 K1b (L1.1): the WM spawns Arthur with his scopes only;
+            // with the kernel's `cap-rooted-open`.
+            "cap-rooted-open",
+        ],
+        Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
+        // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
+        // stay off the locked screen).
+        Some("lock-spawn-test") => vec!["lock-spawn-test", "desktop-busy"],
+        Some("lock-stall-test") => vec!["lock-stall-test", "desktop-busy"],
+        Some("lock-park-test") => vec!["lock-park-test", "desktop-busy"],
+        Some("settings-boot-test") => vec!["settings-boot-test", "desktop-busy"],
+        Some("settings-refused-test") => vec!["settings-refused-test", "desktop-busy"],
+        Some("settings-authority-control") => vec!["settings-authority-control", "desktop-busy"],
+        Some("settings-wm-only-control") => vec!["settings-wm-only-control", "desktop-busy"],
+        // #248 bounce F2: the pointer, for Super+Escape's escaped state.
+        Some("arthur-actions-test") => {
+            vec!["arthur-actions-test", "desktop-busy", "desktop-pointer"]
+        }
+        Some("arthur-actions-revoke-control") => vec![
+            "arthur-actions-test",
+            "arthur-actions-revoke-control",
+            "desktop-busy",
+            "desktop-pointer",
+        ],
+        Some("arthur-action-log-chain-control") => vec![
+            "arthur-actions-test",
+            "arthur-action-log-chain-control",
+            "desktop-busy",
+        ],
+        // A9-C: the WM is Home's; the scroll is Arthur's alone.
+        Some("desktop-scroll-boot-test") => vec!["desktop-home-boot-test"],
+        // A9-C2: Home's WM with the pointer and the wheel.
+        Some("desktop-wheel-boot-test") => vec!["desktop-wheel", "desktop-home-boot-test"],
+        // M2: neo-init drives the encrypted scenario, so it needs the marker
+        // feature that selects the falsifiable driver (arthur_memory_encrypted_tests).
+        // Previously this was empty, so the M2 scenario ran the default no-op driver
+        // and exercised NO memory crypto — the hardcoded banner's root cause (B5).
+        Some("arthur-memory-encryption") => vec!["arthur-memory-encryption"],
+        Some("arthur-memory-delegation") => vec!["arthur-memory-delegation"],
+        Some("arthur-memory-forgetting") => vec!["arthur-memory-forgetting"],
+        // F3: `arthur-real-vocab` is a neo-arthur feature; neo-init has no such
+        // feature (the catch-all below would build it with a feature it lacks).
+        // The scenario is serial-driven (shell -> arthur -> query -> exit), so
+        // neo-init just needs to spawn the shell — reuse the clean `arthur-console`
+        // driver (`arthur_console_tests::run`: spawn shell, wait, exit 0).
+        Some("arthur-real-vocab") => vec!["arthur-console"],
+        Some("arthur-real-brain-boot") => vec!["arthur-console"],
+        Some("arthur-boot-module")
+        | Some("arthur-boot-module-binary")
+        | Some("arthur-model-from-neofs") => vec!["arthur-console"],
+        // OT-87 R4.4: the arthur-console driver, handing the shell the
+        // Installer cap. The installed disk runs the same userland.
+        Some("install-console") => vec!["arthur-console", "installer"],
+        Some("install-atrium-boot-test") => vec!["desktop-intro-boot-test", "installer"],
+        Some("arthur-real-brain-boot-15b") => vec!["arthur-console"],
+        Some("arthur-real-brain-boot-3b") => vec!["arthur-console"],
+        Some("arthur-real-brain-boot-qwen35") => vec!["arthur-console"],
+        Some("arthur-agentic-actions")
+        | Some("arthur-reversibility")
+        | Some("arthur-multistep-agentic") => vec!["arthur-act"],
+        Some(f) => vec![f],
+        None => Vec::new(),
+    };
+    let worker_features: Vec<&str> = match feature {
+        Some("arthur-converse")
+        | Some("arthur-boots-thinking")
+        | Some("arthur-act")
+        | Some("arthur-agentic-actions")
+        | Some("arthur-reversibility")
+        | Some("arthur-multistep-agentic")
+        | Some("arthur-grants")
+        | Some("arthur-console")
+        | Some("v1-console-liveness")
+        | Some("arthur-memory")
+        | Some("boot-neofs-userland-persistence")
+        // M2: neo-worker has no arthur-memory-encryption feature (only neo-arthur
+        // does) — route it to the empty arm like arthur-memory, not the catch-all
+        // passthrough below, which would build neo-worker with a feature it lacks.
+        | Some("arthur-memory-encryption")
+        | Some("arthur-memory-delegation")
+        | Some("arthur-memory-forgetting")
+        // OT-29: neo-worker has no sched-spawn-reap-spawn-heavy feature; route it
+        // to the empty arm (neo-init carries the driver, neo-arthur is the heavy
+        // process) — not the catch-all passthrough, which would build neo-worker
+        // with a feature it lacks.
+        | Some("sched-spawn-reap-spawn-heavy")
+        // F3: neo-worker has no arthur-real-vocab feature either — route it to the
+        // empty arm (neo-arthur carries the vocab), not the catch-all passthrough.
+        | Some("arthur-real-vocab")
+        | Some("arthur-real-brain-boot")
+        | Some("arthur-boot-module")
+        | Some("arthur-boot-module-binary")
+        | Some("arthur-model-from-neofs")
+        | Some("arthur-real-brain-boot-15b")
+        | Some("arthur-real-brain-boot-3b")
+        | Some("arthur-real-brain-boot-qwen35")
+        | Some("arthur-compositor")
+        | Some("arthur-compositor-baremetal")
+        | Some("neo-shell-builtins")
+        | Some("inference-preemptible-liveness")
+        // OT-18 E3-revoke is self-contained in neo-init (no worker); neo-worker
+        // has no `arthur-grant-revoke` feature, so route it to the empty arm
+        // (the catch-all below would build neo-worker with a feature it lacks).
+        | Some("arthur-grant-revoke")
+        // CB-3 ISC-4: the interface-cap derive/revoke driver is self-contained in
+        // neo-init (no worker spawn); neo-worker has no `interface-cap-derive-revoke`
+        // feature, so route it to the empty arm too (else the catch-all builds
+        // neo-worker with a feature it lacks).
+        | Some("interface-cap-derive-revoke")
+        // Atrium G1 slice-1 is self-contained in neo-init (no worker spawn).
+        | Some("atrium-slice1")
+        // OT-61 C1.0: the VM battery is self-contained in neo-init (no worker).
+        | Some("vm-primitives")
+        // OT-85: the wall-clock probe is self-contained in neo-init too.
+        | Some("wallclock-probe")
+        | Some("wallclock-probe-fallback")
+        // OT-61 C1.1: the threads+futex battery is self-contained in neo-init
+        // (threads-guard-fault, by contrast, flows through the catch-all so
+        // neo-worker builds its child role with the same feature name).
+        | Some("threads-futex")
+        // CP-41: the MXCSR probe is self-contained in neo-init (no worker).
+        | Some("syscall-mxcsr-entry")
+        // Desktop S1: neo-init is the WM, neo-arthur its client; neo-worker
+        // has no desktop role.
+        | Some("desktop-session")
+        | Some("desktop-session-boot-test")
+        | Some("desktop-glass")
+        | Some("reduce-transparency")
+        | Some("desktop-glass-boot-test")
+        | Some("desktop-glass-rt-boot-test")
+        | Some("desktop-home")
+        | Some("desktop-home-rt")
+        | Some("desktop-home-boot-test")
+        | Some("desktop-home-cycle-test")
+        | Some("desktop-arthur-scope-test")
+        | Some("atrium-app-icons-boot-test")
+        | Some("desktop-busy-boot-test")
+        // OT-66 L1: sign-in is neo-init's; the worker plays no part.
+        | Some("login-boot-test")
+        | Some("login-kdf-timing-boot-test")
+        | Some("login-below-floor-test")
+        | Some("login-cut-test")
+        | Some("login-backoff-test")
+        | Some("login-attempts-per-boot-control")
+        | Some("lock-spawn-test")
+        | Some("lock-idle-test")
+        | Some("lock-stall-test")
+        | Some("lock-park-test")
+        | Some("settings-boot-test")
+        | Some("settings-refused-test")
+        | Some("settings-authority-control")
+        | Some("settings-wm-only-control")
+        | Some("settings-cut-test")
+        | Some("arthur-actions-test")
+        | Some("arthur-actions-revoke-control")
+        | Some("arthur-action-log-chain-control")
+        | Some("desktop-scroll-boot-test")
+        | Some("desktop-wheel-boot-test")
+        | Some("desktop-pointer")
+        | Some("desktop-pointer-boot-test")
+        | Some("desktop-resize")
+        | Some("desktop-resize-boot-test")
+        | Some("desktop-park")
+        | Some("desktop-park-boot-test")
+        | Some("desktop-spin-boot-test")
+        | None => Vec::new(),
+        // DS-1c: the worker is the Lens (and, with no handles, DS-1b's probe).
+        Some("desktop-lens")
+        | Some("desktop-lens-pointer")
+        | Some("desktop-lens-boot-test")
+        | Some("desktop-lens-pointer-boot-test")
+        | Some("desktop-lens-fault-test")
+        | Some("desktop-motion-boot-test")
+        | Some("desktop-motion-rm-boot-test")
+        | Some("desktop-full")
+        | Some("desktop-full-boot-test")
+        | Some("desktop-intro")
+        | Some("desktop-intro-boot-test")
+        | Some("install-atrium-boot-test")
+        | Some("desktop-clock-boot-test")
+        | Some("desktop-with-model") => vec!["desktop-lens"],
+        // OT-78: the product scenario executes the real DW-1 client protocol
+        // before Arthur, so its worker binary needs the same client role.
+        Some("product-integration") | Some("product-integration-baremetal") => {
+            vec!["dw1-desktop-wm"]
+        }
+        // OT-87 R4.4: the worker is the no-cap probe neo-init spawns first.
+        Some("install-console") => vec!["installer-probe"],
+        // OT-66 L1 (Dexter #186 item 4): the no-cap record probe.
+        Some("login-record-guard-test") => vec!["record-guard-probe"],
+        Some("net-dial-cap-kill-switch") => vec!["phase4-https-fetch"],
+        // OT-61 C1.1 (blocker D): the cap-compose scenario's no-cap child is the
+        // guard-fault worker's prober role (thread_create → EPERM → exit 41);
+        // neo-worker has no `threads-cap-compose` feature of its own.
+        Some("threads-cap-compose") => vec!["threads-guard-fault"],
+        Some(feature) => vec![feature],
+    };
+    let shell_features: Vec<&str> = match feature {
+        Some("arthur-console") => vec!["console-interactive"],
+        Some("v1-console-liveness") => vec!["console-interactive", "v1-console-surface"],
+        Some("arthur-memory")
+        | Some("boot-neofs-userland-persistence")
+        | Some("arthur-memory-encryption") => vec!["arthur-memory"],
+        Some("arthur-grants") => vec!["arthur-grants"],
+        Some("arthur-real-brain-boot") => vec!["arthur-real-brain-boot"],
+        Some("arthur-boot-module")
+        | Some("arthur-boot-module-binary")
+        | Some("arthur-model-from-neofs") => vec!["arthur-real-brain-boot"],
+        Some("install-console") => vec!["arthur-real-brain-boot", "installer"],
+        Some("arthur-real-brain-boot-15b") => vec!["arthur-real-brain-boot-15b"],
+        Some("arthur-real-brain-boot-3b") => vec!["arthur-real-brain-boot-3b"],
+        Some("arthur-real-brain-boot-qwen35") => vec!["arthur-real-brain-boot-qwen35"],
+        _ => Vec::new(),
+    };
+    let arthur_features: Vec<&str> = match feature {
+        Some("arthur-converse") => vec!["arthur-real-infer"],
+        Some("arthur-boots-thinking") => vec!["arthur-real-infer"],
+        Some("arthur-act") => vec!["arthur-real-infer", "arthur-act"],
+        Some("arthur-agentic-actions") => {
+            vec![
+                "agentic-actions-a3",
+                "agentic-ipc-frequency",
+                "arthur-real-brain-boot",
+            ]
+        }
+        Some("arthur-reversibility") => {
+            vec![
+                "arthur-reversibility",
+                "agentic-ipc-frequency",
+                "arthur-real-brain-boot",
+            ]
+        }
+        Some("arthur-multistep-agentic") => {
+            vec![
+                "agentic-actions-a3",
+                "arthur-reversibility",
+                "arthur-reversibility-stakes",
+                "agentic-ipc-frequency",
+                "arthur-real-brain-boot",
+            ]
+        }
+        Some("arthur-grants") => vec!["arthur-real-infer", "arthur-grants"],
+        Some("arthur-memory") => vec!["arthur-memory"],
+        Some("boot-neofs-userland-persistence") => vec!["arthur-memory"],
+        Some("arthur-memory-encryption") => vec!["arthur-memory-encryption"],
+        Some("arthur-memory-delegation") => vec!["arthur-memory-delegation"],
+        Some("arthur-memory-forgetting") => vec!["arthur-memory-forgetting"],
+        // OT-29: the regression needs the HEAVY Arthur (ChaCha20 + file writes)
+        // so the exit-time FPU/stack state widens the reap race window.
+        Some("sched-spawn-reap-spawn-heavy") => vec!["arthur-memory-encryption"],
+        // F3: the real-vocab feature lives on neo-arthur (it loads the Qwen2.5
+        // sidecar at startup). This is the feature the catch-alls above were
+        // wrongly routing to neo-init/neo-worker instead of here.
+        Some("arthur-real-vocab") => vec!["arthur-real-vocab"],
+        Some("arthur-real-brain-boot") => vec!["arthur-real-brain-boot"],
+        Some("arthur-boot-module") => vec!["arthur-boot-module"],
+        Some("arthur-boot-module-binary") => vec!["arthur-vocab-binary"],
+        Some("arthur-model-from-neofs") | Some("install-console") => {
+            vec!["arthur-model-from-neofs"]
+        }
+        Some("arthur-real-brain-boot-15b") => vec!["arthur-real-brain-boot-15b"],
+        Some("arthur-real-brain-boot-3b") => vec!["arthur-real-brain-boot-3b"],
+        Some("arthur-real-brain-boot-qwen35") => vec!["arthur-real-brain-boot-qwen35"],
+        Some("arthur-compositor") => vec!["arthur-compositor"],
+        Some("arthur-compositor-baremetal") => vec!["arthur-compositor-baremetal"],
+        Some("product-integration") | Some("product-integration-baremetal") => {
+            vec!["arthur-compositor-product-integration"]
+        }
+        // Arthur is the same client under S1 and S3 (the material is WM-only).
+        Some("desktop-session") | Some("desktop-glass") | Some("reduce-transparency") => {
+            vec!["desktop-session"]
+        }
+        // B1c: the product image's Arthur is the full desktop's (the intro's)
+        // and reads its model from the boot module.
+        Some("desktop-with-model") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-boot-module",
+            "arthur-vocab-binary",
+            "arthur-busy-emblem",
+            // A9-C: PgUp/PgDn and Up/Down scroll the transcript.
+            "arthur-scrollback",
+        ],
+        Some("desktop-session-boot-test")
+        | Some("desktop-glass-boot-test")
+        | Some("desktop-glass-rt-boot-test") => vec!["desktop-session-boot-test"],
+        // DS-1: Arthur takes the Home intent as its first line.
+        Some("desktop-home") | Some("desktop-home-rt") | Some("desktop-pointer") => {
+            vec!["desktop-session", "desktop-home"]
+        }
+        Some("desktop-home-boot-test") | Some("atrium-app-icons-boot-test") => {
+            vec!["desktop-session-boot-test", "desktop-home"]
+        }
+        Some("desktop-home-cycle-test") => vec!["desktop-home-cycle-test"],
+        Some("desktop-arthur-scope-test") => vec!["arthur-scope-probe-test"],
+        // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
+        Some("login-boot-test")
+        | Some("login-kdf-timing-boot-test")
+        | Some("login-below-floor-test")
+        | Some("login-cut-test")
+        | Some("login-record-guard-test")
+        | Some("login-backoff-test")
+        | Some("login-attempts-per-boot-control")
+        | Some("settings-cut-test")
+        | Some("lock-idle-test") => vec!["desktop-session-boot-test", "desktop-home"],
+        // OT-66 L2: the product's Arthur (no model) talking to the full
+        // desktop's WM, with the lock probe's pictures and emblem.
+        Some("lock-spawn-test") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "arthur-lock-probe-test",
+        ],
+        Some("lock-stall-test") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "arthur-lock-stall-test",
+        ],
+        Some("lock-park-test") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "arthur-lock-park-test",
+        ],
+        Some("settings-boot-test") | Some("settings-wm-only-control") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "arthur-setting-test",
+        ],
+        Some("settings-refused-test") | Some("settings-authority-control") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "arthur-setting-refused-test",
+        ],
+        Some("arthur-actions-test")
+        | Some("arthur-actions-revoke-control")
+        | Some("arthur-action-log-chain-control") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "desktop-actions",
+            "desktop-actions-probe",
+        ],
+        // A9-D: Home's Arthur, answering from the boot model, the emblem on.
+        Some("desktop-busy-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "arthur-boot-model-kat",
+            "arthur-busy-emblem",
+            // Janus #96: the refused OP_BUSY probe before the first emblem.
+            "arthur-busy-refusal-test",
+        ],
+        // A9-C: Home's Arthur with its scrollback and seed lines (A9-C2:
+        // the wheel session's too).
+        Some("desktop-scroll-boot-test") | Some("desktop-wheel-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "arthur-scrollback",
+            "arthur-scroll-seed-test",
+        ],
+        Some("desktop-pointer-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-pointer-probe",
+        ],
+        // DS-1c: Arthur blooms the Lens on `list /`.
+        Some("desktop-lens") | Some("desktop-lens-pointer") => {
+            vec!["desktop-session", "desktop-home", "desktop-lens"]
+        }
+        // DM-1: motion is the WM's alone; Arthur is desktop_lens_boot's.
+        Some("desktop-lens-boot-test")
+        | Some("desktop-motion-boot-test")
+        | Some("desktop-motion-rm-boot-test") => {
+            vec!["desktop-session-boot-test", "desktop-home", "desktop-lens"]
+        }
+        Some("desktop-lens-fault-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-lens-fault-test",
+        ],
+        Some("desktop-lens-pointer-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-pointer-probe",
+        ],
+        Some("desktop-resize") => vec!["desktop-session", "desktop-home", "desktop-resize"],
+        Some("desktop-resize-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-pointer-probe",
+            "desktop-resize",
+            // One refused request per client-error arm of the WM's loop.
+            "arthur-refusal-probe-test",
+        ],
+        // DL-1: the Lens and resize together (the intro is the WM's alone).
+        Some("desktop-full") | Some("desktop-intro") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+        ],
+        Some("desktop-full-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-pointer-probe",
+            "desktop-resize",
+        ],
+        // OT-85: the clock is the WM's alone; Arthur is the intro's.
+        Some("desktop-intro-boot-test")
+        | Some("install-atrium-boot-test")
+        | Some("desktop-clock-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+        ],
+        // OT-22: the parked session parks Arthur too; the control spins both.
+        Some("desktop-park") => vec!["desktop-session", "desktop-home", "desktop-park"],
+        Some("desktop-park-boot-test") => {
+            vec!["desktop-session-boot-test", "desktop-home", "desktop-park"]
+        }
+        Some("desktop-spin-boot-test") => vec!["desktop-session-boot-test", "desktop-home"],
+        Some("arthur-console") => vec!["console-interactive", "arthur-real-infer"],
+        Some("v1-console-liveness") => {
+            vec![
+                "console-interactive",
+                "arthur-real-infer",
+                "v1-console-surface",
+            ]
+        }
+        _ => Vec::new(),
+    };
+    // OT-66 K1a: a `cap-rooted-open` kernel (`NEO_TEST_EXTRA_FEATURES`) needs
+    // neo-init and neo-shell to hand their clients a derived RootDirCap.
+    let (mut init_features, mut shell_features) = (init_features, shell_features);
+    if extra_features_include("cap-rooted-open") {
+        init_features.push("cap-rooted-open");
+        shell_features.push("cap-rooted-open");
+    }
+    build_user_members(
+        init_features.as_slice(),
+        worker_features.as_slice(),
+        shell_features.as_slice(),
+        arthur_features.as_slice(),
+        feature == Some("arthur-real-brain-boot-qwen35"),
+    )
+}
+
+/// Whether `NEO_TEST_EXTRA_FEATURES` names `feature`.
+fn extra_features_include(feature: &str) -> bool {
+    env::var(NEO_TEST_EXTRA_FEATURES_ENV)
+        .is_ok_and(|extra| extra.split([',', ' ', '\t']).any(|f| f == feature))
+}
+
+fn build_user_arthur_memory_off() -> Result<(), String> {
+    build_user_members(&["arthur-memory"], &[], &[], &[], false)
+}
+
+fn build_user_members(
+    init_features: &[&str],
+    worker_features: &[&str],
+    shell_features: &[&str],
+    arthur_features: &[&str],
+    optimize_qwen35_arthur: bool,
+) -> Result<(), String> {
+    build_member(
+        "userspace neo-init",
+        USER_PACKAGE,
+        USER_BIN,
+        "userland/neo-init",
+        USER_TARGET,
+        init_features,
+        false,
+    )?;
+    build_member(
+        "userspace neo-worker",
+        WORKER_PACKAGE,
+        WORKER_BIN,
+        "userland/neo-worker",
+        USER_TARGET,
+        worker_features,
+        false,
+    )?;
+    build_member(
+        "userspace neo-shell",
+        SHELL_PACKAGE,
+        SHELL_BIN,
+        "userland/neo-shell",
+        USER_TARGET,
+        shell_features,
+        false,
+    )?;
+    build_member(
+        if optimize_qwen35_arthur {
+            "qwen35 userspace neo-arthur"
+        } else {
+            "userspace neo-arthur"
+        },
+        ARTHUR_PACKAGE,
+        ARTHUR_BIN,
+        "userland/neo-arthur",
+        USER_TARGET,
+        arthur_features,
+        false,
+    )?;
+    // OT-61 C0.5 (AAG bounce, Finding 2): apply the neoplutarch rust-src std
+    // overlay + build the REAL std-linked smoke ONLY for the std_real_smoke
+    // scenario — never on a default/production build. This keeps a plain
+    // `xtask build` from mutating the shared toolchain's rust-src or compiling
+    // a 6.5 MB build-std=std test ELF; the default build is genuinely untouched.
+    // OT-83: the ring-3 fault probe + the second-process probe, only for their
+    // scenario.
+    if let Some(bin) = fault_probe_stage() {
+        for b in [bin, "fault-probe-ok"] {
+            build_member(
+                "userspace fault-probe",
+                "fault-probe",
+                b,
+                "userland/fault-probe",
+                USER_TARGET,
+                &[],
+                false,
+            )?;
+        }
+    }
+    if stage_std_real_smoke() {
+        apply_neoplutarch_std_overlay()?;
+        verify_applied_overlay()?;
+        invalidate_stale_overlay_std()?;
+        // Before the battery: std-real-smoke needs no new std API, so this
+        // catches a toolchain-built std even where every other bin would pass.
+        verify_std_built_from_copy()?;
+        build_member(
+            "userspace std-real-smoke",
+            "std-real-smoke",
+            "std-real-smoke",
+            "userland/std-real-smoke",
+            "x86_64-unknown-neoplutarch",
+            &[],
+            false,
+        )?;
+        // The panic arm (same crate, same overlay-built std): must exit 134.
+        build_member(
+            "userspace std-real-panic",
+            "std-real-smoke",
+            "std-real-panic",
+            "userland/std-real-smoke",
+            "x86_64-unknown-neoplutarch",
+            &[],
+            false,
+        )?;
+        // OT-61 C1.3: the threads battery and the worker-panic exit-group
+        // check (same crate, same overlay-built std).
+        for bin in [
+            "std-real-threads",
+            "std-real-thread-abort",
+            "std-real-entropy",
+            "std-real-sealed",
+            "servo-host-smoke",
+        ] {
+            build_member(
+                &format!("userspace {bin}"),
+                "std-real-smoke",
+                bin,
+                "userland/std-real-smoke",
+                "x86_64-unknown-neoplutarch",
+                &[],
+                false,
+            )?;
+        }
+        for elf in [
+            std_real_smoke_path(),
+            std_real_panic_path(),
+            std_real_threads_path(),
+            std_real_smoke_path().with_file_name("std-real-thread-abort"),
+            std_real_smoke_path().with_file_name("std-real-entropy"),
+            std_real_smoke_path().with_file_name("std-real-sealed"),
+            std_real_smoke_path().with_file_name("servo-host-smoke"),
+        ] {
+            verify_std_real_syscall_sites(&elf)?;
+            verify_std_real_tcb_reads(&elf)?;
+        }
+        if std_real_staged_bins().contains(&SERVO_CLOSURE_BIN) {
+            build_servo_closure_smoke()?;
+        }
+    }
+    Ok(())
+}
+
+/// OT-61 C2.3b: the html5ever + selectors smoke. A standalone crate of its
+/// own (`userland/servo-closure-smoke`), so no other std scenario compiles the
+/// third-party closure; it links the same overlay-built std.
+const SERVO_CLOSURE_BIN: &str = "servo-closure-smoke";
+const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
+
+/// Build the closure smoke (the overlay must already be applied) and run the
+/// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
+/// read of their own.
+fn build_servo_closure_smoke() -> Result<(), String> {
+    invalidate_stale_overlay_std_in(
+        &workspace_root().join(SERVO_CLOSURE_DIR).join("target"),
+        "RUSTC_BOOTSTRAP_SYNTHETIC_TARGET=1",
+    )?;
+    build_member(
+        &format!("userspace {SERVO_CLOSURE_BIN}"),
+        SERVO_CLOSURE_BIN,
+        SERVO_CLOSURE_BIN,
+        SERVO_CLOSURE_DIR,
+        "x86_64-unknown-neoplutarch",
+        &[],
+        false,
+    )?;
+    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    verify_std_real_syscall_sites(&elf)?;
+    verify_std_real_tcb_reads(&elf)
+}
+
+/// `cargo xtask ot61-closure-build`: apply the std overlay and build the C2.3b
+/// closure smoke, with its A4 checks, without a QEMU run. The CI job that
+/// builds the vendored closure (J.c., 2026-10-29: its build scripts and proc
+/// macros run on the CI runners).
+fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-closure-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_servo_closure_smoke()?;
+    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-closure-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
+}
+
+/// The per-build copy of the toolchain's rust-src `library/` that the std
+/// overlay patches and `-Z build-std` compiles (via cargo's
+/// `__CARGO_TESTS_ONLY_SRC_ROOT`, set in `build_member_at_opt_level`). The
+/// toolchain is shared by every checkout and by a self-hosted runner's jobs;
+/// patching it in place made a std build depend on what ran there before.
+fn std_overlay_library() -> PathBuf {
+    workspace_root().join("userland/std-real-smoke/target/neo-rust-src/library")
+}
+
+/// OT-61 C0.5: copy the toolchain's rust-src `library/` afresh and apply the
+/// bounded `neoplutarch` std overlay to the copy, so `-Z build-std=std`
+/// compiles a real `std` for the target.
+fn apply_neoplutarch_std_overlay() -> Result<(), String> {
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+    let pristine = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim())
+        .join("lib/rustlib/src/rust/library");
+    let copy = std_overlay_library();
+    if copy.exists() {
+        fs::remove_dir_all(&copy).map_err(|e| format!("remove {}: {e}", copy.display()))?;
+    }
+    let parent = copy.parent().ok_or("std overlay copy has no parent")?;
+    fs::create_dir_all(parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
+    // `cp -a` keeps mtimes, so untouched std sources look unchanged to cargo.
+    let status = Command::new("cp")
+        .arg("-a")
+        .arg(&pristine)
+        .arg(&copy)
+        .status()
+        .map_err(|e| format!("cp rust-src: {e}"))?;
+    if !status.success() {
+        return Err(format!("copying {} failed", pristine.display()));
+    }
+    let script = workspace_root().join("userland/neoplutarch-std-overlay/apply-overlay.sh");
+    eprintln!(
+        "[xtask] applying neoplutarch std overlay to {}: {}",
+        copy.display(),
+        script.display()
+    );
+    let status = Command::new("bash")
+        .arg(&script)
+        .env("NEO_STD_LIBRARY", &copy)
+        .current_dir(workspace_root())
+        .status()
+        .map_err(|e| format!("failed to run apply-overlay.sh: {e}"))?;
+    if !status.success() {
+        return Err("apply-overlay.sh failed".into());
+    }
+    Ok(())
+}
+
+/// The std the std-real crates link must come from the overlaid copy. Cargo's
+/// `__CARGO_TESTS_ONLY_SRC_ROOT` is an undocumented internal, so a toolchain
+/// bump could stop honouring it, and build-std would then quietly compile the
+/// toolchain's own rust-src (a scenario that needs no new std API would still
+/// pass). Ask cargo where std came from: a no-op rebuild with
+/// `--message-format=json` reports the `std` artifact's `manifest_path`.
+fn verify_std_built_from_copy() -> Result<(), String> {
+    let out = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "-Zjson-target-spec",
+            "--bin",
+            "std-real-smoke",
+            "--message-format=json",
+        ])
+        .env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library())
+        .current_dir(workspace_root().join("userland/std-real-smoke"))
+        .output()
+        .map_err(|e| format!("cargo build --message-format=json: {e}"))?;
+    if !out.status.success() {
+        return Err("std provenance check: std-real-smoke build failed".into());
+    }
+    const KEY: &str = "\"manifest_path\":\"";
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let manifest = stdout
+        .lines()
+        .filter(|l| l.contains("\"reason\":\"compiler-artifact\""))
+        .filter_map(|l| {
+            let start = l.find(KEY)? + KEY.len();
+            let end = start + l[start..].find('"')?;
+            Some(&l[start..end])
+        })
+        .find(|m| m.ends_with("/library/std/Cargo.toml"))
+        .ok_or("std provenance check: cargo reported no std artifact")?;
+    let want = std_overlay_library().join("std/Cargo.toml");
+    if Path::new(manifest) != want {
+        return Err(format!(
+            "std provenance check: std was built from {manifest}, not the overlaid copy {}. \
+             Cargo no longer honours __CARGO_TESTS_ONLY_SRC_ROOT (toolchain bump?); see \
+             rust-toolchain.toml",
+            want.display()
+        ));
+    }
+    eprintln!("[xtask] std built from the overlaid copy: {manifest}");
+    Ok(())
+}
+
+/// OT-61 C0.5 (A4 backstop 1): what `apply-overlay.py` actually wrote into
+/// rust-src must be what the A4 gate scanned. (a) Each installed overlay module
+/// is byte-identical to its scanned source in `std/`. (b) Every line the script
+/// ADDED to a patched std file (diffed against its `.neo-pristine` backup) is
+/// run through the same A4 checker, so an arm cannot carry `asm!`, a
+/// `syscall4` call, or a `SYS_*` binding that the scanned sources do not show.
+/// Every overlay module `apply-overlay.py` copies into rust-src
+/// (`std/<source>` → `sys/<destination>`), the same table as its `COPIES`
+/// (`ot61_c05_tests` checks the two agree).
+const OVERLAY_MODULES: &[(&str, &str)] = &[
+    ("neoplutarch_rt.rs", "neoplutarch_rt.rs"),
+    ("neoplutarch_rt/tls.rs", "neoplutarch_rt/tls.rs"),
+    ("stdio_neoplutarch.rs", "stdio/neoplutarch.rs"),
+    ("alloc_neoplutarch.rs", "alloc/neoplutarch.rs"),
+    ("io_error_neoplutarch.rs", "io/error/neoplutarch.rs"),
+    ("tls_key_neoplutarch.rs", "thread_local/key/neoplutarch.rs"),
+    ("thread_neoplutarch.rs", "thread/neoplutarch.rs"),
+    ("time_neoplutarch.rs", "time/neoplutarch.rs"),
+    ("random_neoplutarch.rs", "random/neoplutarch.rs"),
+    ("fs_neoplutarch.rs", "fs/neoplutarch.rs"),
+    ("env_neoplutarch.rs", "env/neoplutarch.rs"),
+    ("os_neoplutarch.rs", "../os/neoplutarch/mod.rs"),
+];
+
+fn verify_applied_overlay() -> Result<(), String> {
+    let sys = std_overlay_library().join("std/src/sys");
+    let overlay = workspace_root().join("userland/neoplutarch-std-overlay/std");
+    for &(src, dst) in OVERLAY_MODULES {
+        let want = fs::read(overlay.join(src)).map_err(|e| format!("read overlay {src}: {e}"))?;
+        let got = fs::read(sys.join(dst)).map_err(|e| format!("read installed {dst}: {e}"))?;
+        if want != got {
+            return Err(format!(
+                "A4 backstop: installed rust-src sys/{dst} differs from the scanned overlay std/{src}"
+            ));
+        }
+    }
+    // Every patched file has a backup beside it: under sys/, and (C2.1b)
+    // os/mod.rs, so scan from std's src root.
+    let std_src = sys
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| sys.clone());
+    let mut backups = Vec::new();
+    collect_files(&std_src, &mut backups)?;
+    backups.retain(|p| p.to_string_lossy().ends_with(".neo-pristine"));
+    if backups.is_empty() {
+        return Err("A4 backstop: no .neo-pristine backups found after apply-overlay".into());
+    }
+    let mut arms = Vec::new();
+    for backup in &backups {
+        let patched = PathBuf::from(backup.to_string_lossy().trim_end_matches(".neo-pristine"));
+        let before =
+            fs::read_to_string(backup).map_err(|e| format!("read {}: {e}", backup.display()))?;
+        let after =
+            fs::read_to_string(&patched).map_err(|e| format!("read {}: {e}", patched.display()))?;
+        let mut pristine: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for l in before.lines() {
+            *pristine.entry(l).or_default() += 1;
+        }
+        let mut added = String::new();
+        for l in after.lines() {
+            match pristine.get_mut(l) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => {
+                    added.push_str(l);
+                    added.push('\n');
+                }
+            }
+        }
+        let rel = patched.strip_prefix(&std_src).unwrap_or(&patched);
+        arms.push(a4_gate::Source {
+            path: format!("rust-src-arm:{}", rel.display()),
+            text: added,
+        });
+    }
+    let manifest = fs::read_to_string(workspace_root().join("tools/ot61-pal-manifest.toml"))
+        .map_err(|e| format!("read PAL manifest: {e}"))?;
+    let table = fs::read_to_string(workspace_root().join("kernel/src/arch/x86_64/syscall.rs"))
+        .map_err(|e| format!("read kernel syscall table: {e}"))?;
+    match a4_gate::check(&arms, &manifest, &table) {
+        Ok(_) => {
+            eprintln!(
+                "[xtask] A4 backstop OK: {} installed overlay modules == scanned sources; {} patched std files' added lines pass the gate",
+                OVERLAY_MODULES.len(),
+                arms.len()
+            );
+            Ok(())
+        }
+        Err(errs) => Err(format!(
+            "A4 backstop FAILED — the overlay inserted unscanned syscall surface into rust-src:\n  {}",
+            errs.join("\n  ")
+        )),
+    }
+}
+
+/// OT-61 C0.5 (A4 backstop 2): ground truth from the built ELF. Every
+/// `syscall` / `sysenter` / `int 0x80` instruction must sit inside one of the
+/// two sanctioned trampolines (`neo_std_pal::syscall4`,
+/// `std::sys::neoplutarch_rt::syscall4`, both `#[inline(never)]`), each holding
+/// at most one. Catches anything the lexical gate cannot see (macros, build
+/// scripts, a rust-src file the overlay script touched outside its backups).
+fn verify_std_real_syscall_sites(elf: &Path) -> Result<(), String> {
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+    let objdump = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim())
+        .join("lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump");
+    let out = Command::new(&objdump)
+        .args(["-d", "--no-show-raw-insn", "--demangle"])
+        .arg(elf)
+        .output()
+        .map_err(|e| format!("run {} (llvm-tools-preview): {e}", objdump.display()))?;
+    if !out.status.success() {
+        return Err(format!("llvm-objdump failed on {}", elf.display()));
+    }
+    let sites = syscall_sites(&String::from_utf8_lossy(&out.stdout));
+    let sanctioned = [
+        "neo_std_pal::syscall4",
+        "std::sys::neoplutarch_rt::syscall4",
+    ];
+    let mut per_symbol: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (symbol, insn) in &sites {
+        if !sanctioned.contains(&symbol.as_str()) {
+            return Err(format!(
+                "A4 backstop FAILED: {} has a `{insn}` instruction in `{symbol}` — only {sanctioned:?} may issue syscalls",
+                elf.display()
+            ));
+        }
+        *per_symbol.entry(symbol.clone()).or_default() += 1;
+    }
+    if let Some((symbol, n)) = per_symbol.iter().find(|(_, n)| **n > 1) {
+        return Err(format!(
+            "A4 backstop FAILED: {} has {n} syscall instructions in `{symbol}` (expected one)",
+            elf.display()
+        ));
+    }
+    if sites.is_empty() {
+        return Err(format!(
+            "A4 backstop: no syscall instruction found in {}",
+            elf.display()
+        ));
+    }
+    eprintln!(
+        "[xtask] A4 backstop OK: {} syscall site(s) in {}, all in sanctioned trampolines",
+        sites.len(),
+        elf.display()
+    );
+    Ok(())
+}
+
+/// OT-61 C1.3, A4 G3's ELF backstop for the TLS read: every FS- or
+/// GS-relative instruction in a built std-real ELF must sit inside the one
+/// sanctioned `std::sys::neoplutarch_rt::tls::tcb` (`#[inline(never)]`, its
+/// template `mov {}, qword ptr fs:[0]`). With the key-only gate (no `PT_TLS`),
+/// this keeps every per-thread access on the key layer.
+fn verify_std_real_tcb_reads(elf: &Path) -> Result<(), String> {
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+    let objdump = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim())
+        .join("lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-objdump");
+    let out = Command::new(&objdump)
+        .args(["-d", "--no-show-raw-insn", "--demangle"])
+        .arg(elf)
+        .output()
+        .map_err(|e| format!("run {} (llvm-tools-preview): {e}", objdump.display()))?;
+    if !out.status.success() {
+        return Err(format!("llvm-objdump failed on {}", elf.display()));
+    }
+    let sites = segment_relative_sites(&String::from_utf8_lossy(&out.stdout));
+    const SANCTIONED: &str = "std::sys::neoplutarch_rt::tls::tcb";
+    if let Some((symbol, insn)) = sites.iter().find(|(s, _)| s != SANCTIONED) {
+        return Err(format!(
+            "A4 backstop FAILED: {} has `{insn}` in `{symbol}`; only {SANCTIONED} may read through FS/GS",
+            elf.display()
+        ));
+    }
+    if sites.len() > 1 {
+        return Err(format!(
+            "A4 backstop FAILED: {} has {} FS/GS-relative instructions in {SANCTIONED} (expected one)",
+            elf.display(),
+            sites.len()
+        ));
+    }
+    eprintln!(
+        "[xtask] A4 backstop OK: {} FS/GS-relative read(s) in {}, all in {SANCTIONED}",
+        sites.len(),
+        elf.display()
+    );
+    Ok(())
+}
+
+/// `(enclosing symbol, instruction)` for each `%fs:`/`%gs:`-relative
+/// instruction in `llvm-objdump -d --no-show-raw-insn --demangle` output.
+fn segment_relative_sites(disasm: &str) -> Vec<(String, String)> {
+    let mut symbol = String::new();
+    let mut out = Vec::new();
+    for line in disasm.lines() {
+        if let Some(name) = line.strip_suffix(">:").and_then(|l| l.split_once(" <")) {
+            symbol = name.1.to_string();
+            continue;
+        }
+        if line.contains("%fs:") || line.contains("%gs:") {
+            let insn: Vec<&str> = line.split_whitespace().skip(1).collect();
+            out.push((symbol.clone(), insn.join(" ")));
+        }
+    }
+    out
+}
+
+/// `(enclosing symbol, mnemonic)` for each syscall-class instruction in
+/// `llvm-objdump -d --no-show-raw-insn --demangle` output.
+fn syscall_sites(disasm: &str) -> Vec<(String, String)> {
+    let mut symbol = String::new();
+    let mut out = Vec::new();
+    for line in disasm.lines() {
+        if let Some(name) = line.strip_suffix(">:").and_then(|l| l.split_once(" <")) {
+            symbol = name.1.to_string();
+            continue;
+        }
+        let insn: Vec<&str> = line.split_whitespace().skip(1).collect();
+        let is_site = match insn.as_slice() {
+            ["syscall", ..] | ["sysenter", ..] => true,
+            ["int", op, ..] => op.trim_start_matches('$') == "0x80",
+            _ => false,
+        };
+        if is_site {
+            out.push((symbol.clone(), insn.join(" ")));
+        }
+    }
+    out
+}
+
+/// OT-61 C0.5: cargo's `-Z build-std` does NOT fingerprint edits to the
+/// toolchain's rust-src (found on this rung: an overlay fix was silently not
+/// compiled in, and the stale `libstd` from the previous overlay was linked).
+/// So xtask fingerprints the overlay itself: a BLAKE3 over every overlay file
+/// plus the sysroot path, stored beside the smoke's target dir. When it
+/// differs, the target-triple build dir is wiped and std rebuilds from the
+/// freshly patched rust-src.
+fn invalidate_stale_overlay_std() -> Result<(), String> {
+    invalidate_stale_overlay_std_in(&workspace_root().join("userland/std-real-smoke/target"), "")
+}
+
+/// The same for the std build under `target`, a std crate's own target dir.
+/// `salt` names any other input to that std build that cargo does not track
+/// (the closure smoke's `RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`).
+fn invalidate_stale_overlay_std_in(target: &Path, salt: &str) -> Result<(), String> {
+    let overlay = workspace_root().join("userland/neoplutarch-std-overlay");
+    let mut files = Vec::new();
+    collect_files(&overlay, &mut files)?;
+    files.sort();
+    let mut hasher = blake3::Hasher::new();
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .output()
+        .map_err(|e| format!("rustc --print sysroot: {e}"))?;
+    hasher.update(&sysroot.stdout);
+    hasher.update(std_overlay_library().to_string_lossy().as_bytes());
+    hasher.update(salt.as_bytes());
+    for f in &files {
+        let rel = f.strip_prefix(&overlay).unwrap_or(f);
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update(&fs::read(f).map_err(|e| format!("read {}: {e}", f.display()))?);
+    }
+    let stamp = hasher.finalize().to_hex().to_string();
+    let stamp_path = target.join(".neo-overlay-stamp");
+    if fs::read_to_string(&stamp_path).ok().as_deref() == Some(stamp.as_str()) {
+        return Ok(());
+    }
+    let triple_dir = target.join("x86_64-unknown-neoplutarch");
+    if triple_dir.exists() {
+        eprintln!(
+            "[xtask] std overlay changed; wiping {} so std rebuilds",
+            triple_dir.display()
+        );
+        fs::remove_dir_all(&triple_dir)
+            .map_err(|e| format!("remove {}: {e}", triple_dir.display()))?;
+    }
+    fs::create_dir_all(target).map_err(|e| format!("mkdir {}: {e}", target.display()))?;
+    fs::write(&stamp_path, stamp).map_err(|e| format!("write {}: {e}", stamp_path.display()))
+}
+
+fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    for e in fs::read_dir(dir).map_err(|e| format!("read_dir {}: {e}", dir.display()))? {
+        let p = e
+            .map_err(|e| format!("read_dir {}: {e}", dir.display()))?
+            .path();
+        if p.is_dir() {
+            collect_files(&p, out)?;
+        } else {
+            out.push(p);
+        }
+    }
+    Ok(())
+}
+
+/// Path to the built real-std smoke ELF (staged into the ISO as
+/// `/modules/neo-std-real-smoke`).
+fn std_real_smoke_path() -> PathBuf {
+    // std-real-smoke is a STANDALONE crate (excluded from the root workspace so
+    // it never builds for the host), so it uses its OWN target dir, not root's.
+    workspace_root()
+        .join("userland/std-real-smoke/target")
+        .join("x86_64-unknown-neoplutarch")
+        .join("debug")
+        .join("std-real-smoke")
+}
+
+/// The built ELF of a staged std bin: the closure smoke from its own crate,
+/// every other one from `userland/std-real-smoke`.
+fn std_real_bin_path(bin: &str) -> PathBuf {
+    if bin == SERVO_CLOSURE_BIN {
+        workspace_root()
+            .join(SERVO_CLOSURE_DIR)
+            .join("target/x86_64-unknown-neoplutarch/debug")
+            .join(bin)
+    } else {
+        std_real_smoke_path().with_file_name(bin)
+    }
+}
+
+/// Path to the built real-std panic-arm ELF (staged as
+/// `/modules/neo-std-real-panic`; same crate and target dir as the smoke).
+fn std_real_panic_path() -> PathBuf {
+    std_real_smoke_path().with_file_name("std-real-panic")
+}
+
+/// OT-61 C1.3: the real-std threads battery (staged as
+/// `/modules/neo-std-real-threads`; same crate and target dir as the smoke).
+fn std_real_threads_path() -> PathBuf {
+    std_real_smoke_path().with_file_name("std-real-threads")
+}
+
+/// Run `cargo build` for a workspace member. Each member's `.cargo/config.toml`
+/// owns the target spec, build-std flags, and rustflags; we only need to pass
+/// `-Zjson-target-spec` (nightly cargo gates JSON target specs behind it,
+/// which can't be set from config). `current_dir` selects the per-member
+/// config, not the workspace root's.
+fn build_member(
+    label: &str,
+    package: &str,
+    bin: &str,
+    subdir: &str,
+    target: &str,
+    features: &[&str],
+    no_default_features: bool,
+) -> Result<(), String> {
+    build_member_at_opt_level(
+        label,
+        package,
+        bin,
+        subdir,
+        target,
+        features,
+        no_default_features,
+        None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_member_at_opt_level(
+    label: &str,
+    package: &str,
+    bin: &str,
+    subdir: &str,
+    target: &str,
+    features: &[&str],
+    no_default_features: bool,
+    opt_level: Option<&str>,
+    target_rustflags: Option<&str>,
+) -> Result<(), String> {
+    eprintln!("[xtask] building {label} for {target}");
+    let mut cmd = Command::new(env!("CARGO"));
+    cmd.args([
+        "build",
+        "-Zjson-target-spec",
+        "--package",
+        package,
+        "--bin",
+        bin,
+    ]);
+    if !features.is_empty() {
+        cmd.arg("--features").arg(features.join(","));
+    }
+    if no_default_features {
+        cmd.arg("--no-default-features");
+    }
+    if label == "arthur_real_brain_boot_qwen35" || label == "qwen35 userspace neo-arthur" {
+        eprintln!("[xtask] building {label} with dev opt-level=2");
+        cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "2");
+    }
+    if subdir == "userland/std-real-smoke" || subdir == SERVO_CLOSURE_DIR {
+        // Compile std from the overlaid per-build copy, not the toolchain.
+        cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
+    }
+    if subdir == SERVO_CLOSURE_DIR {
+        // std's build script marks std `restricted_std` on an OS it doesn't
+        // list (JSON targets included), and then every crate that uses std
+        // needs `#![feature(restricted_std)]`: the vendored closure would need
+        // a patch per crate. This variable (read only there) builds std for
+        // this crate as a known target. The smoke itself does not declare the
+        // feature, so if the variable ever stops working the build fails on
+        // the same error instead of passing quietly.
+        cmd.env("RUSTC_BOOTSTRAP_SYNTHETIC_TARGET", "1");
+    }
+    if let Some(level) = opt_level {
+        eprintln!("[xtask] building {label} with dev opt-level={level}");
+        cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", level);
+    }
+    if let Some(flags) = target_rustflags {
+        // Cargo appends this to `[target.<triple>].rustflags` from the config
+        // file (the PIC/PIE link args stay); RUSTFLAGS would replace them.
+        let var = format!(
+            "CARGO_TARGET_{}_RUSTFLAGS",
+            target.to_ascii_uppercase().replace(['-', '.'], "_")
+        );
+        let flags = match env::var(&var) {
+            Ok(prev) if !prev.trim().is_empty() => format!("{prev} {flags}"),
+            _ => flags.to_string(),
+        };
+        eprintln!("[xtask] building {label} with {var}={flags}");
+        cmd.env(var, flags);
+    }
+    // The kernel embeds NEO_BUILD_ID (the NVMe log sink's header). Its build
+    // script reruns only when the variable changes, so pass the commit every
+    // time: an incremental build after a new commit must not keep the old id.
+    // A caller's own NEO_BUILD_ID wins.
+    if subdir == "kernel"
+        && env::var("NEO_BUILD_ID")
+            .ok()
+            .is_none_or(|v| v.trim().is_empty())
+        && let Some(id) = git_build_id(&workspace_root())
+    {
+        cmd.env("NEO_BUILD_ID", id);
+    }
+    // OT-87 R4.3: the install bundle's BLAKE3, compiled into an `installer`
+    // kernel. Set only when this build stages the bundle; otherwise removed,
+    // so a pin from the caller's environment never reaches another image.
+    if subdir == "kernel" {
+        match install_pin() {
+            Some(pin) => {
+                cmd.env(install_bundle::PIN_ENV, kernel_install_pin(&pin));
+            }
+            None => {
+                cmd.env_remove(install_bundle::PIN_ENV);
+            }
+        }
+    }
+    let status = cmd
+        .current_dir(workspace_root().join(subdir))
+        .status()
+        .map_err(|e| format!("failed to invoke cargo for {label}: {e}"))?;
+    if !status.success() {
+        return Err(format!("{label} build failed"));
+    }
+    Ok(())
+}
+
+/// The kernel's build id for the work tree at `repo`: `git rev-parse HEAD`,
+/// and when tracked files have changes, its first 26 characters plus `-dirty`
+/// (the log sink keeps 32 bytes, so the suffix survives). `None` when git or
+/// the repository is unavailable; the kernel's build script then looks
+/// HEAD up itself.
+fn git_build_id(repo: &Path) -> Option<String> {
+    let head = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()?;
+    if !head.status.success() {
+        return None;
+    }
+    let hash = String::from_utf8(head.stdout).ok()?.trim().to_string();
+    if hash.is_empty() {
+        return None;
+    }
+    let dirty = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()
+        .is_ok_and(|out| out.status.success() && !out.stdout.is_empty());
+    Some(build_id_from(&hash, dirty))
+}
+
+/// `hash`, or its 26-character prefix plus `-dirty`.
+fn build_id_from(hash: &str, dirty: bool) -> String {
+    if dirty {
+        format!("{}-dirty", &hash[..hash.len().min(26)])
+    } else {
+        hash.to_string()
+    }
+}
+
+// === iso ===
+
+fn cmd_iso(args: &[String]) -> Result<(), String> {
+    let (with_model, rest) = split_with_model(args)?;
+    match with_model {
+        None => {
+            cmd_build(&rest)?;
+            assemble_iso()
+        }
+        Some(neom) => cmd_iso_with_model(&neom, &rest),
+    }
+}
+
+/// B1c: the real 0.5B vocab beside the model (B1-1's reproducible import).
+const PRODUCT_05B_VOCAB_BYTES: u64 = 7_990_862;
+
+/// `--with-model <neom>` out of the `iso` arguments.
+fn split_with_model(args: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut with_model = None;
+    let mut rest = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--with-model" {
+            let path = iter
+                .next()
+                .ok_or_else(|| "--with-model requires a .neom path".to_string())?;
+            with_model = Some(PathBuf::from(path));
+        } else if let Some(path) = arg.strip_prefix("--with-model=") {
+            with_model = Some(PathBuf::from(path));
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((with_model, rest))
+}
+
+/// The model and its vocab must be the pinned 0.5B's: its sizes, then (B1c,
+/// F8) its BLAKE3 digests from the kernel's own pins, so an image the kernel
+/// would refuse at boot is never written.
+fn check_product_model_files(neom: &Path, vocab: &Path) -> Result<(), String> {
+    let size = |p: &Path| {
+        fs::metadata(p)
+            .map(|m| m.len())
+            .map_err(|e| format!("--with-model: {} ({e})", p.display()))
+    };
+    let neom_len = size(neom)?;
+    if neom_len != STAGE_B_05B_NEOM_BYTES {
+        return Err(format!(
+            "--with-model: {} is {neom_len} bytes; the pinned Qwen2.5-0.5B .neom is {STAGE_B_05B_NEOM_BYTES}",
+            neom.display()
+        ));
+    }
+    let vocab_len = size(vocab)?;
+    if vocab_len != PRODUCT_05B_VOCAB_BYTES {
+        return Err(format!(
+            "--with-model: {} is {vocab_len} bytes; the pinned vocab is {PRODUCT_05B_VOCAB_BYTES} (it must sit beside the .neom)",
+            vocab.display()
+        ));
+    }
+    // F8: the kernel would refuse a file that fails its pin at boot; refuse
+    // it here instead, before an image is written.
+    check_pinned_digest(neom, &boot_model_logic::QWEN25_05B.blake3)?;
+    check_pinned_digest(vocab, &boot_model_logic::QWEN25_05B_VOCAB.blake3)?;
+    // The image stages the vocab as NEOVOCB1: convert it now and hold the
+    // result to its own pin, so a converter change that moves the bytes
+    // cannot reach an image the kernel would refuse.
+    let vocb = convert_vocab_sidecar(vocab)?;
+    let got = *blake3::hash(&vocb).as_bytes();
+    if got != boot_model_logic::QWEN25_05B_VOCB.blake3 {
+        return Err(format!(
+            "--with-model: NEOVOCB1 from {} fails its pin: expected blake3 {} got {}; no image was written",
+            vocab.display(),
+            String::from_utf8_lossy(&boot_model_logic::hex_digest(
+                &boot_model_logic::QWEN25_05B_VOCB.blake3
+            )),
+            String::from_utf8_lossy(&boot_model_logic::hex_digest(&got))
+        ));
+    }
+    Ok(())
+}
+
+/// B1c (F3): one kernel build of the cfg matrix and what its ELF must and
+/// must not contain. The scan is over the whole file (strings, symbol table
+/// and debug info), so an item that was compiled in under any name shows up.
+struct ElfExpectation {
+    label: &'static str,
+    features: &'static str,
+    absent: &'static [&'static str],
+    present: &'static [&'static str],
+}
+
+const ELF_EXPECTATIONS: &[ElfExpectation] = &[
+    // The product kernel: real generation, none of the test instrumentation.
+    ElfExpectation {
+        label: "product-real-lm",
+        features: "desktop,atrium-pointer-forward,real-lm,model-boot-module,boot-model-preload",
+        absent: &[
+            "sample step=",
+            "forward0 top5",
+            "constrained_sample",
+            "masked_sample",
+            "model_load_resident",
+            "kv_persist",
+            "Reprefill",
+            "NEO_TEST/1",
+        ],
+        // Positive controls: the scan finds what the product does contain.
+        present: &[
+            "real_lm_generate",
+            "inference stack overflow",
+            "check_generate_request",
+        ],
+    },
+    // The lean desktop kernel (`real-lm` off): no real-LM path at all.
+    ElfExpectation {
+        label: "desktop-lean",
+        features: "desktop",
+        absent: &[
+            "real_lm_generate",
+            "qwen_inventory",
+            "inference_stack",
+            "inference stack overflow",
+            "sample step=",
+            "kv_persist",
+        ],
+        present: &["sys_generate_impl"],
+    },
+];
+
+/// Every needle from `needles` that occurs in `haystack`.
+fn elf_needles_found<'a>(haystack: &[u8], needles: &[&'a str]) -> Vec<&'a str> {
+    needles
+        .iter()
+        .copied()
+        .filter(|needle| {
+            haystack
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+        })
+        .collect()
+}
+
+/// `cargo xtask product-elf-check`: build each kernel of the B1c cfg matrix
+/// into its own target dir and check its ELF (NOTE section 3, checks 3-4).
+fn cmd_product_elf_check(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err(format!(
+            "product-elf-check takes no arguments (got {args:?})"
+        ));
+    }
+    let root = workspace_root();
+    let mut failures = Vec::new();
+    for expectation in ELF_EXPECTATIONS {
+        let target_dir = root.join("target/elf-check").join(expectation.label);
+        let status = Command::new("cargo")
+            .current_dir(root.join("kernel"))
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .args([
+                "build",
+                "-Zjson-target-spec",
+                "--bin",
+                KERNEL_BIN,
+                "--features",
+                expectation.features,
+            ])
+            .status()
+            .map_err(|e| format!("cargo build ({}): {e}", expectation.label))?;
+        if !status.success() {
+            return Err(format!(
+                "cargo build ({}) failed: {status}",
+                expectation.label
+            ));
+        }
+        let elf_path = target_dir
+            .join(KERNEL_TARGET)
+            .join("debug")
+            .join(KERNEL_BIN);
+        let elf = fs::read(&elf_path).map_err(|e| format!("read {}: {e}", elf_path.display()))?;
+        let leaked = elf_needles_found(&elf, expectation.absent);
+        let found = elf_needles_found(&elf, expectation.present);
+        let missing: Vec<&str> = expectation
+            .present
+            .iter()
+            .copied()
+            .filter(|n| !found.contains(n))
+            .collect();
+        println!(
+            "[xtask] product-elf-check {} features={} bytes={} absent_ok={} leaked={:?} present_missing={:?}",
+            expectation.label,
+            expectation.features,
+            elf.len(),
+            leaked.is_empty(),
+            leaked,
+            missing
+        );
+        if !leaked.is_empty() || !missing.is_empty() {
+            failures.push(expectation.label);
+        }
+    }
+    if failures.is_empty() {
+        println!("[xtask] product-elf-check PASS");
+        Ok(())
+    } else {
+        Err(format!("product-elf-check FAILED for {failures:?}"))
+    }
+}
+
+/// BLAKE3 of a whole file (streamed).
+fn blake3_file(path: &Path) -> Result<[u8; 32], String> {
+    use std::io::Read;
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("--with-model: {} ({e})", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("--with-model: read {} ({e})", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(*hasher.finalize().as_bytes())
+}
+
+/// Refuse a file whose BLAKE3 is not the pin, naming both digests.
+fn check_pinned_digest(path: &Path, expected: &[u8; 32]) -> Result<(), String> {
+    let got = blake3_file(path)?;
+    if &got != expected {
+        return Err(format!(
+            "--with-model: {} fails its pin: expected blake3 {} got {}; no image was written",
+            path.display(),
+            String::from_utf8_lossy(&boot_model_logic::hex_digest(expected)),
+            String::from_utf8_lossy(&boot_model_logic::hex_digest(&got))
+        ));
+    }
+    Ok(())
+}
+
+/// B1c: the product image. Kernel `desktop` + `real-lm` + `model-boot-module`
+/// (product pins only), the glass desktop with Arthur reading the model from
+/// its boot module, the model and vocab staged as modules, and the licences.
+fn cmd_iso_with_model(neom: &Path, rest: &[String]) -> Result<(), String> {
+    parse_image_flags(rest, "iso --with-model")?;
+    let vocab = neom.with_extension("vocab");
+    check_product_model_files(neom, &vocab)?;
+    set_stage_std_real_smoke(&[]);
+    set_fault_probe_stage(None);
+    set_stage_reclaim_probe(false);
+    set_stage_kat_model(false);
+    set_boot_model_stage(Some(BootModelStage {
+        neom: neom.to_path_buf(),
+        vocab,
+        stage_model: true,
+        flip_byte: false,
+        flip_vocab: false,
+        binary_vocab: true,
+    }));
+    let result = (|| {
+        build_user_with_feature(Some("desktop-with-model"))?;
+        build_product_image_kernel()?;
+        set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
+        assemble_iso()
+    })();
+    set_desktop_resolution(None);
+    set_boot_model_stage(None);
+    result
+}
+
+fn assemble_iso() -> Result<(), String> {
+    assemble_iso_with_limine_kaslr(None)
+}
+
+fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), String> {
+    let root = workspace_root();
+    let kernel_elf = kernel_path();
+    let user_elf = user_path();
+    let iso_path = root.join(ISO_OUTPUT_REL);
+    let staging = root.join(ISO_STAGING_REL);
+    let staging_boot = staging.join("boot");
+    let staging_efi_boot = staging.join("EFI/BOOT");
+    let staging_modules = staging.join("modules");
+    let limine_dir = resolve_limine_dir()?;
+
+    eprintln!("[xtask] staging ISO root at {}", staging.display());
+
+    // Clean + recreate the staging tree so stale files can't poison the ISO.
+    // Swallow only NotFound — anything else (permission denied, stale lock)
+    // means the recreation below would silently produce a contaminated tree.
+    match fs::remove_dir_all(&staging) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("clean staging {}: {e}", staging.display())),
+    }
+    fs::create_dir_all(&staging_boot)
+        .map_err(|e| format!("create {}: {e}", staging_boot.display()))?;
+    fs::create_dir_all(&staging_efi_boot)
+        .map_err(|e| format!("create {}: {e}", staging_efi_boot.display()))?;
+    fs::create_dir_all(&staging_modules)
+        .map_err(|e| format!("create {}: {e}", staging_modules.display()))?;
+
+    copy_into(&kernel_elf, &staging_boot.join("kernel"))?;
+    // OT-27a (ISC-2): the MT7601U firmware blob is NOT in git — it is staged as a
+    // Limine module ONLY when present on disk. CI-safe by construction: a blob-less
+    // checkout (e.g. a CI runner) simply omits the module + its limine.conf line, so
+    // non-WiFi ISOs are unaffected; a WiFi ISO assembled without the blob fails
+    // CLOSED at runtime (the driver's `firmware_blob()` returns a clear error). Same
+    // out-of-band, not-in-git discipline as the AI model blob.
+    let firmware_blob = firmware_blob_path();
+    let stage_firmware = firmware_blob.exists();
+    write_limine_conf(
+        &root.join("boot/limine.conf"),
+        &staging_boot.join("limine.conf"),
+        kaslr_override,
+        stage_firmware,
+        stage_std_real_smoke(),
+        &staged_model_modules(),
+    )?;
+    // Phase 1.4: ship neo-init as a Limine module. Limine reads the
+    // `module_path:` lines in limine.conf, loads each file at boot, and
+    // exposes them via ModuleResponse. Kernel's main.rs ELF-loads neo-init.
+    copy_user_elf_into(&user_elf, &staging_modules.join("neo-init"))?;
+    // Phase 1.5: also stage neo-worker. neo-init calls sys_spawn("worker")
+    // which looks up the module by path-suffix `/neo-worker`.
+    copy_user_elf_into(&worker_path(), &staging_modules.join("neo-worker"))?;
+    // Arthur Slice 1: stage neo-shell for scenario-gated sys_spawn("shell").
+    copy_user_elf_into(&shell_path(), &staging_modules.join("neo-shell"))?;
+    // Arthur Slice 3: stage neo-arthur for neo-shell's `arthur` builtin.
+    copy_user_elf_into(&arthur_path(), &staging_modules.join("neo-arthur"))?;
+    // OT-87 R4.3: the installer's bundle beside the deployment it installs,
+    // which must fit its slot files (§7.2): refused here, never truncated.
+    if let Some(pin) = install_pin().filter(|_| install_medium() != InstallMedium::NoBundle) {
+        install_bundle::check_slot_sizes(&[
+            ("kernel", &kernel_elf),
+            ("neo-init", &user_elf),
+            ("neo-worker", &worker_path()),
+            ("neo-shell", &shell_path()),
+            ("neo-arthur", &arthur_path()),
+        ])?;
+        let dst = staging.join(install_bundle::MODULE_REL);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        let bundle = workspace_root().join(install_bundle::BUNDLE_REL);
+        install_bundle::check_staged(
+            &fs::read(&bundle).map_err(|e| format!("read {}: {e}", bundle.display()))?,
+            &pin,
+        )?;
+        copy_into(&bundle, &dst)?;
+    }
+    // OT-61 C0.5 (AAG bounce, Finding 2): stage the real-std smoke ELF ONLY for
+    // its scenario (kept out of default/prod ISOs — no 6.5 MB test binary
+    // bundled). Its limine.conf module line is injected under the same flag
+    // (write_limine_conf below), mirroring the mt7601u-fw conditional-module
+    // convention, so a default ISO never references a missing module.
+    for bin in std_real_staged_bins() {
+        copy_user_elf_into(
+            &std_real_bin_path(bin),
+            &staging_modules.join(format!("neo-{bin}")),
+        )?;
+    }
+    if STAGE_LOGIN_CUT.load(std::sync::atomic::Ordering::SeqCst) {
+        let path = staging_modules.join("login-cut");
+        fs::write(&path, LOGIN_CUT_MODULE).map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    // OT-83: stage the scenario's ring-3 fault probe and the second-process probe
+    // (their module lines are injected by write_limine_conf under the same stage).
+    if let Some(bin) = fault_probe_stage() {
+        let dir = workspace_root()
+            .join("target")
+            .join(USER_TARGET)
+            .join("debug");
+        copy_user_elf_into(&dir.join(bin), &staging_modules.join("neo-fault-probe"))?;
+        copy_user_elf_into(
+            &dir.join("fault-probe-ok"),
+            &staging_modules.join("neo-fault-probe-ok"),
+        )?;
+    }
+    // OT-27a: stage the vendor firmware blob as /modules/mt7601u-fw iff present.
+    // The driver looks it up by path-suffix `/mt7601u-fw` at cold bring-up.
+    if stage_firmware {
+        copy_into(&firmware_blob, &staging_modules.join("mt7601u-fw"))?;
+        eprintln!(
+            "[xtask] staged MT7601U firmware as Limine module /modules/mt7601u-fw ({})",
+            firmware_blob.display()
+        );
+    } else {
+        // No silent caps: announce the omission so a WiFi run isn't mystified by
+        // the runtime fail-closed.
+        eprintln!(
+            "[xtask] NOTE: MT7601U firmware blob absent at {} — omitting /modules/mt7601u-fw; \
+             WiFi ISOs will fail closed at runtime (firmware is not in git — provide the vendor blob)",
+            firmware_blob.display()
+        );
+    }
+    // B1: consumable `/models/` modules (B1a: the reclaim probe).
+    let models = staged_model_modules();
+    if !models.is_empty() {
+        let staging_models = staging.join("models");
+        fs::create_dir_all(&staging_models)
+            .map_err(|e| format!("create {}: {e}", staging_models.display()))?;
+        if stage_reclaim_probe() {
+            let probe = staging_models.join(BOOT_MODULE_RECLAIM_PROBE);
+            fs::write(&probe, reclaim_probe_bytes())
+                .map_err(|e| format!("write {}: {e}", probe.display()))?;
+        }
+        if stage_kat_model() {
+            copy_into(
+                &root.join(KAT_MODEL_SRC),
+                &staging_models.join(KAT_MODEL_NEOM),
+            )?;
+        }
+        if let Some(stage) = boot_model_stage().filter(|s| s.stage_model) {
+            stage_boot_model_file(&stage, &staging_models.join(BOOT_MODEL_NEOM))?;
+            eprintln!(
+                "[xtask] staged {} as boot module /models/{BOOT_MODEL_NEOM}{}",
+                stage.neom.display(),
+                if stage.flip_byte {
+                    " (one byte flipped)"
+                } else {
+                    ""
+                }
+            );
+        }
+    }
+    if let Some(stage) = boot_model_stage() {
+        let staging_vocab = staging.join("vocab");
+        fs::create_dir_all(&staging_vocab)
+            .map_err(|e| format!("create {}: {e}", staging_vocab.display()))?;
+        let dst = if stage.binary_vocab {
+            // NEOVOCB1, converted from the sidecar here: a source that breaks
+            // the format's preconditions fails the build.
+            let dst = staging_vocab.join(BOOT_MODEL_VOCB);
+            let bytes = convert_vocab_sidecar(&stage.vocab)?;
+            fs::write(&dst, &bytes).map_err(|e| format!("write {}: {e}", dst.display()))?;
+            eprintln!(
+                "[xtask] staged {} as NEOVOCB1 /vocab/{BOOT_MODEL_VOCB} ({} bytes, blake3 {})",
+                stage.vocab.display(),
+                bytes.len(),
+                blake3::hash(&bytes).to_hex()
+            );
+            dst
+        } else {
+            let dst = staging_vocab.join(BOOT_MODEL_VOCAB);
+            copy_into(&stage.vocab, &dst)?;
+            dst
+        };
+        if stage.flip_vocab {
+            let mut bytes = fs::read(&dst).map_err(|e| format!("read {}: {e}", dst.display()))?;
+            let byte = bytes
+                .get_mut(BOOT_MODEL_FLIP_OFFSET)
+                .ok_or_else(|| format!("{} is too short to damage", dst.display()))?;
+            *byte ^= 0x01;
+            fs::write(&dst, bytes).map_err(|e| format!("write {}: {e}", dst.display()))?;
+        }
+    }
+    // OFL §2 (S2-F1): every image that carries the bundled fonts also carries
+    // their licence and notice as stand-alone readable text.
+    let staging_licenses = staging.join("licenses");
+    fs::create_dir_all(&staging_licenses)
+        .map_err(|e| format!("create {}: {e}", staging_licenses.display()))?;
+    for (src, name) in LICENSE_FILES {
+        copy_into(&root.join(src), &staging_licenses.join(name))?;
+    }
+    if boot_model_stage().is_some() {
+        for (src, name) in MODEL_LICENSE_FILES {
+            copy_into(&root.join(src), &staging_licenses.join(name))?;
+        }
+    }
+    for f in [
+        "limine-bios.sys",
+        "limine-bios-cd.bin",
+        "limine-uefi-cd.bin",
+    ] {
+        copy_into(&limine_dir.join(f), &staging_boot.join(f))?;
+    }
+    copy_into(
+        &limine_dir.join("BOOTX64.EFI"),
+        &staging_efi_boot.join("BOOTX64.EFI"),
+    )?;
+
+    if let Some(parent) = iso_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+
+    eprintln!("[xtask] building ISO at {}", iso_path.display());
+    let xorriso_status = Command::new("xorriso")
+        .args([
+            "-as",
+            "mkisofs",
+            "-R",
+            "-r",
+            "-J",
+            "-b",
+            "boot/limine-bios-cd.bin",
+            "-no-emul-boot",
+            "-boot-load-size",
+            "4",
+            "-boot-info-table",
+            "-hfsplus",
+            "-apm-block-size",
+            "2048",
+            "--efi-boot",
+            "boot/limine-uefi-cd.bin",
+            "-efi-boot-part",
+            "--efi-boot-image",
+            "--protective-msdos-label",
+        ])
+        .arg(&staging)
+        .arg("-o")
+        .arg(&iso_path)
+        .status()
+        .map_err(|e| {
+            format!("xorriso failed to launch (is it installed? try inside the dev container): {e}")
+        })?;
+
+    if !xorriso_status.success() {
+        return Err(format!("xorriso exited with status {xorriso_status}"));
+    }
+
+    // No `limine bios-install` step here. xorriso writes BIOS and UEFI El
+    // Torito records and exposes the Limine UEFI image as the ISO's EFI
+    // system partition for removable-media boot.
+    eprintln!("[xtask] ISO ready: {}", iso_path.display());
+    Ok(())
+}
+
+// === neo-test ===
+
+fn cmd_neo_test(args: &[String]) -> Result<(), String> {
+    let mut include_ignored = false;
+    let mut no_meta = false;
+    let mut meta_only = false;
+    let mut build_only = false;
+    let mut bare_metal_mode = false;
+    let mut include_explicit = false;
+    let mut shard: Option<ShardSpec> = None;
+    let mut requested: Vec<&str> = Vec::new();
+
+    let mut idx = 0;
+    while idx < args.len() {
+        let arg = args[idx].as_str();
+        match arg {
+            "--include-ignored" => include_ignored = true,
+            "--no-meta" => no_meta = true,
+            "--meta-only" => meta_only = true,
+            "--build-only" => build_only = true,
+            "--bare-metal-mode" => bare_metal_mode = true,
+            "all" => include_explicit = true,
+            "-h" | "--help" => {
+                print_neo_test_help();
+                return Ok(());
+            }
+            // --shard I/N runs only scenario subset I of N from the default
+            // suite (see shard_partition). Accepts both `--shard I/N` and
+            // `--shard=I/N`.
+            "--shard" => {
+                idx += 1;
+                let raw = args
+                    .get(idx)
+                    .ok_or_else(|| "--shard requires a value of the form I/N".to_string())?;
+                shard = Some(parse_shard_spec(raw)?);
+            }
+            _ if arg.starts_with("--shard=") => {
+                shard = Some(parse_shard_spec(&arg["--shard=".len()..])?);
+            }
+            other => requested.push(other),
+        }
+        idx += 1;
+    }
+
+    fs::create_dir_all(workspace_root().join(TEST_OUTPUT_REL))
+        .map_err(|e| format!("create {TEST_OUTPUT_REL}: {e}"))?;
+
+    if build_only && meta_only {
+        return Err("--build-only cannot be combined with --meta-only".to_string());
+    }
+    if meta_only {
+        return run_deliberate_failure_meta_test();
+    }
+
+    // Sharding partitions the canonical default suite, so it is mutually
+    // exclusive with every flag that changes the selected set or runs a
+    // single named scenario. Keeping this contract tight is what lets the
+    // shard-coverage proof reason about exactly one set.
+    if shard.is_some()
+        && (!requested.is_empty() || build_only || bare_metal_mode || include_ignored)
+    {
+        return Err(
+            "--shard partitions the default suite; it cannot be combined with named scenarios, \
+             --build-only, --bare-metal-mode, or --include-ignored"
+                .to_string(),
+        );
+    }
+
+    let mut scenarios = select_test_scenarios(&requested, include_ignored, include_explicit)?;
+    if let Some(spec) = shard {
+        scenarios = shard_partition(&scenarios, spec);
+        eprintln!(
+            "[xtask] neo-test shard {}/{}: {} scenario(s): {}",
+            spec.index,
+            spec.count,
+            scenarios.len(),
+            scenarios
+                .iter()
+                .map(|s| s.name)
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    if scenarios.is_empty() {
+        return Err("no neo-test scenarios selected".to_string());
+    }
+    if bare_metal_mode {
+        if requested.len() != 1 || scenarios.len() != 1 {
+            return Err("--bare-metal-mode requires exactly one named scenario".to_string());
+        }
+        bare_metal_log_sink_target_feature(scenarios[0].name)?;
+    }
+
+    if build_only {
+        if requested.len() != 1 || scenarios.len() != 1 {
+            return Err("--build-only requires exactly one named scenario".to_string());
+        }
+        let mode = if bare_metal_mode {
+            ScenarioBundleMode::BareMetal
+        } else {
+            ScenarioBundleMode::Vmware
+        };
+        return build_vmware_scenario_bundle(scenarios[0], mode);
+    }
+
+    let mode = if bare_metal_mode {
+        ScenarioBundleMode::BareMetal
+    } else {
+        ScenarioBundleMode::Vmware
+    };
+    for scenario in scenarios {
+        run_test_scenario_with_retries(scenario, mode)?;
+    }
+
+    // The deliberate-failure meta-test is a runner self-check that the
+    // un-sharded suite runs exactly once at the end. Under sharding it must
+    // still run exactly once across the whole matrix, so pin it to shard 1.
+    let run_meta = match shard {
+        None => true,
+        Some(spec) => spec.index == 1,
+    };
+    if requested.is_empty() && !no_meta && run_meta {
+        run_deliberate_failure_meta_test()?;
+    }
+
+    Ok(())
+}
+
+fn cmd_neo_test_build(args: &[String]) -> Result<(), String> {
+    let mut include_ignored = false;
+    let mut bare_metal_mode = false;
+    let mut requested: Vec<&str> = Vec::new();
+
+    for arg in args {
+        match arg.as_str() {
+            "--include-ignored" => include_ignored = true,
+            "--bare-metal-mode" => bare_metal_mode = true,
+            "-h" | "--help" => {
+                print_neo_test_build_help();
+                return Ok(());
+            }
+            other => requested.push(other),
+        }
+    }
+
+    fs::create_dir_all(workspace_root().join(TEST_OUTPUT_REL))
+        .map_err(|e| format!("create {TEST_OUTPUT_REL}: {e}"))?;
+
+    if requested.len() != 1 {
+        return Err("neo-test-build requires exactly one named scenario".to_string());
+    }
+
+    let scenarios = select_test_scenarios(&requested, include_ignored, false)?;
+    if scenarios.len() != 1 {
+        return Err("neo-test-build requires exactly one named scenario".to_string());
+    }
+    let mode = if bare_metal_mode {
+        ScenarioBundleMode::BareMetal
+    } else {
+        ScenarioBundleMode::Vmware
+    };
+    build_vmware_scenario_bundle(scenarios[0], mode)
+}
+
+fn run_test_scenario_with_retries(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+) -> Result<(), String> {
+    if mode.is_bare_metal() {
+        bare_metal_log_sink_target_feature(scenario.name)?;
+    }
+    if scenario.name == "arthur_real_brain_boot_15b" && stage_b_15b_neom_path()?.is_none() {
+        eprintln!(
+            "[xtask] neo-test: `{}` SKIP ({STAGE_B_NEOM_ENV}/{REAL_NEOM_ENV} unset; \
+             1.5B model blob is not in git)",
+            scenario.name
+        );
+        return Ok(());
+    }
+    if scenario.name == "arthur_real_brain_boot_3b" && stage_b_3b_neom_path()?.is_none() {
+        eprintln!(
+            "[xtask] neo-test: `{}` SKIP ({STAGE_B_NEOM_ENV}/{REAL_NEOM_ENV} unset; \
+             3B model blob is not in git)",
+            scenario.name
+        );
+        return Ok(());
+    }
+    if scenario.name == "arthur_real_brain_boot_qwen35" && stage_b_qwen35_neom_path()?.is_none() {
+        eprintln!(
+            "[xtask] neo-test: `{}` SKIP ({STAGE_B_NEOM_ENV}/{REAL_NEOM_ENV} unset; \
+             Qwen3.5-0.8B model blob is not in git)",
+            scenario.name
+        );
+        eprintln!(
+            "NEO_TEST/1 event=SKIP name=arthur_real_brain_boot_qwen35 \
+             reason=model_artifact_unavailable coverage=real_brain_not_executed \
+             required_env={STAGE_B_NEOM_ENV}_or_{REAL_NEOM_ENV}"
+        );
+        return Ok(());
+    }
+    if scenario.name == AARCH64_BARRIER_SCENARIO {
+        if mode.is_bare_metal() {
+            return Err("--bare-metal-mode is not supported for aarch64 scenarios".to_string());
+        }
+        return run_aarch64_barrier_scenario_with_retries(scenario);
+    }
+    if scenario.name == "arthur_memory" {
+        if mode.is_bare_metal() {
+            return Err("--bare-metal-mode is not supported for arthur_memory".to_string());
+        }
+        return run_arthur_memory_scenario_with_retries(scenario, mode);
+    }
+
+    // M2: arthur_memory_encrypted is a SINGLE-boot, SINGLE-spawn scenario. Its
+    // `event=PASS` is now gated on the neo-init `arthur_memory_encrypted_tests`
+    // driver, which returns a non-zero exit on any crypto failure (multi-record
+    // recall, the on-disk .key-length check that falsifies B1's growth, ciphertext
+    // tamper => fail-closed, and crypto-erase). It uses ONE arthur process on
+    // purpose: spawn->reap->spawn with a heavy first process trips a kernel
+    // thread-slab UB panic (a separate scheduler bug this scenario surfaced); M2
+    // needs no second process since recall re-reads the .mem each call and the .key
+    // growth is asserted directly on disk. It must NOT use the M1 two-boot
+    // arthur_memory flow, whose hard-coded serial assertions are M1's — it falls
+    // through to the standard runner below, which requires event=PASS.
+
+    if scenario.name == "ot90_s5_durability" {
+        if mode.is_bare_metal() {
+            return Err("--bare-metal-mode is not supported for ot90_s5_durability".to_string());
+        }
+        return run_two_boot_scenario_with_retries(scenario, run_ot90_durability_scenario);
+    }
+    if ot90_power_expect(scenario.name).is_some() {
+        if mode.is_bare_metal() {
+            return Err(format!(
+                "--bare-metal-mode is not supported for {}: it is judged by QEMU's QMP report",
+                scenario.name
+            ));
+        }
+        return run_ot90_power_scenario_with_retries(scenario);
+    }
+    if is_reboot_persistence_scenario(scenario) {
+        if mode.is_bare_metal() {
+            return Err("--bare-metal-mode is not supported for reboot scenarios".to_string());
+        }
+        return run_two_boot_scenario_with_retries(scenario, run_reboot_persistence_scenario);
+    }
+    if login_scenarios::is_login_vm_scenario(scenario.name) {
+        if mode.is_bare_metal() {
+            return Err(format!(
+                "--bare-metal-mode is not supported for {}: it runs on the VM layout",
+                scenario.name
+            ));
+        }
+        return run_two_boot_scenario_with_retries(
+            scenario,
+            login_scenarios::run_login_vm_scenario,
+        );
+    }
+    if scenario.name == VM_INSTALLED_SCENARIO {
+        if mode.is_bare_metal() {
+            return Err(format!(
+                "--bare-metal-mode is not supported for {VM_INSTALLED_SCENARIO}"
+            ));
+        }
+        return run_two_boot_scenario_with_retries(scenario, run_vm_installed_scenario);
+    }
+    if is_install_scenario(scenario.name) {
+        if mode.is_bare_metal() {
+            return Err(format!(
+                "--bare-metal-mode is not supported for {}: the installer runs in a VM only",
+                scenario.name
+            ));
+        }
+        return run_two_boot_scenario_with_retries(scenario, run_install_scenario);
+    }
+    if scenario.name == VM_ONE_DISK_SCENARIO || scenario.name == VM_ONE_DISK_4K_SCENARIO {
+        if mode.is_bare_metal() {
+            return Err(format!(
+                "--bare-metal-mode is not supported for {VM_ONE_DISK_SCENARIO}"
+            ));
+        }
+        return run_two_boot_scenario_with_retries(scenario, run_vm_one_disk_scenario);
+    }
+
+    let mut previous_error = None;
+
+    let attempts = test_scenario_attempts();
+
+    for attempt in 1..=attempts {
+        match run_test_scenario(scenario, attempt, mode)
+            .and_then(|observed| require_observed_pass(scenario, &observed))
+            .and_then(|()| validate_bare_metal_qemu_log_sink(scenario, mode))
+            .and_then(|()| {
+                if scenario.name == "neofs_large_write" {
+                    host_check_neofs_large_write()
+                } else if scenario.name == NEOFS_GROW_WRITE_SCENARIO {
+                    host_check_neofs_grow_write()
+                } else {
+                    Ok(())
+                }
+            }) {
+            Ok(()) => {
+                if attempt > 1 {
+                    eprintln!(
+                        "[xtask] neo-test: `{}` PASS after retry attempt {}/{}",
+                        scenario.name, attempt, attempts
+                    );
+                }
+                return Ok(());
+            }
+            Err(err) if attempt < attempts => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` attempt {}/{} failed: {}",
+                    scenario.name, attempt, attempts, err
+                );
+                eprintln!(
+                    "[xtask] neo-test: retrying `{}` after transient QEMU failure candidate",
+                    scenario.name
+                );
+                previous_error = Some(err);
+            }
+            Err(err) => {
+                if let Some(previous) = previous_error {
+                    return Err(format!(
+                        "`{}` failed after {} attempts; last error: {}; previous error: {}",
+                        scenario.name, attempts, err, previous
+                    ));
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    unreachable!("attempt loop always returns")
+}
+
+fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
+    let mut previous_error = None;
+
+    let attempts = test_scenario_attempts();
+
+    for attempt in 1..=attempts {
+        match run_aarch64_barrier_scenario(scenario, attempt)
+            .and_then(|observed| require_observed_semihost_pass(scenario, &observed))
+        {
+            Ok(()) => {
+                if attempt > 1 {
+                    eprintln!(
+                        "[xtask] neo-test: `{}` aarch64 PASS after retry attempt {}/{}",
+                        scenario.name, attempt, attempts
+                    );
+                }
+                return Ok(());
+            }
+            Err(err) if attempt < attempts => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` aarch64 attempt {}/{} failed: {}",
+                    scenario.name, attempt, attempts, err
+                );
+                eprintln!(
+                    "[xtask] neo-test: retrying `{}` after transient QEMU failure candidate",
+                    scenario.name
+                );
+                previous_error = Some(err);
+            }
+            Err(err) => {
+                if let Some(previous) = previous_error {
+                    return Err(format!(
+                        "`{}` failed after {} aarch64 attempts; last error: {}; previous error: {}",
+                        scenario.name, attempts, err, previous
+                    ));
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    unreachable!("attempt loop always returns")
+}
+
+fn run_two_boot_scenario_with_retries(
+    scenario: TestScenario,
+    run: fn(TestScenario, usize) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut previous_error = None;
+
+    let attempts = test_scenario_attempts();
+
+    for attempt in 1..=attempts {
+        match run(scenario, attempt) {
+            Ok(()) => {
+                if attempt > 1 {
+                    eprintln!(
+                        "[xtask] neo-test: `{}` two-boot PASS after retry attempt {}/{}",
+                        scenario.name, attempt, attempts
+                    );
+                }
+                return Ok(());
+            }
+            Err(err) if attempt < attempts => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` two-boot attempt {}/{} failed: {}",
+                    scenario.name, attempt, attempts, err
+                );
+                eprintln!(
+                    "[xtask] neo-test: retrying `{}` with a freshly seeded persistence disk",
+                    scenario.name
+                );
+                previous_error = Some(err);
+            }
+            Err(err) => {
+                if let Some(previous) = previous_error {
+                    return Err(format!(
+                        "`{}` failed after {} two-boot attempts; last error: {}; previous error: {}",
+                        scenario.name, attempts, err, previous
+                    ));
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    unreachable!("attempt loop always returns")
+}
+
+fn test_scenario_attempts() -> usize {
+    env::var(NEO_TEST_ATTEMPTS_ENV)
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|attempts| *attempts > 0)
+        .unwrap_or(TEST_SCENARIO_ATTEMPTS_DEFAULT)
+}
+
+fn print_neo_test_help() {
+    println!("NeoPlutarch QEMU integration tests");
+    println!();
+    println!("USAGE:");
+    println!("    cargo neo-test [all|SCENARIO] [--include-ignored] [--no-meta]");
+    println!("    cargo neo-test --shard I/N      run scenario subset I of N (1-based)");
+    println!("    cargo neo-test SCENARIO --bare-metal-mode");
+    println!("    cargo neo-test --build-only SCENARIO");
+    println!("    cargo neo-test --build-only SCENARIO --bare-metal-mode");
+    println!("    cargo neo-test --meta-only");
+    println!();
+    println!("ENV:");
+    println!(
+        "    {NEO_TEST_ATTEMPTS_ENV}=N   QEMU attempts per scenario (default {TEST_SCENARIO_ATTEMPTS_DEFAULT})"
+    );
+    println!();
+    println!("SCENARIOS:");
+    for scenario in TEST_SCENARIOS {
+        let suffix = if scenario.ignored { " (ignored)" } else { "" };
+        let explicit = if is_explicit_only_scenario(*scenario) {
+            " (explicit)"
+        } else {
+            ""
+        };
+        let hardware = if is_hardware_only_scenario(*scenario) {
+            " (hardware)"
+        } else {
+            ""
+        };
+        println!("    {}{}{}{}", scenario.name, suffix, explicit, hardware);
+    }
+}
+
+fn print_neo_test_build_help() {
+    println!("NeoPlutarch scenario ISO + fixture export");
+    println!();
+    println!("USAGE:");
+    println!("    cargo xtask neo-test-build SCENARIO");
+    println!("    cargo xtask neo-test-build SCENARIO --bare-metal-mode");
+    println!("    cargo neo-test --build-only SCENARIO");
+    println!("    cargo neo-test --build-only SCENARIO --bare-metal-mode");
+    println!();
+    println!("OUTPUT:");
+    println!("    {VMWARE_TEST_OUTPUT_REL}/<scenario>/<scenario>.iso");
+    println!("    {VMWARE_TEST_OUTPUT_REL}/<scenario>/manifest.txt");
+    println!("    raw fixture disks under {TEST_OUTPUT_REL}");
+    println!("    VMDKs next to the manifest when qemu-img is available");
+}
+
+/// A 1-based shard selector: "run shard `index` of `count` total shards".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ShardSpec {
+    index: usize,
+    count: usize,
+}
+
+/// Parse a `--shard I/N` value. `I` is 1-based and must satisfy `1 <= I <= N`,
+/// `N >= 1`. Anything else is a hard error — a malformed shard spec must never
+/// silently degrade into "run everything" or "run nothing".
+fn parse_shard_spec(raw: &str) -> Result<ShardSpec, String> {
+    let (i, n) = raw
+        .split_once('/')
+        .ok_or_else(|| format!("--shard expects the form I/N, got `{raw}`"))?;
+    let index: usize = i
+        .parse()
+        .map_err(|_| format!("--shard index must be a positive integer, got `{i}`"))?;
+    let count: usize = n
+        .parse()
+        .map_err(|_| format!("--shard count must be a positive integer, got `{n}`"))?;
+    if count == 0 {
+        return Err("--shard count N must be >= 1".to_string());
+    }
+    if index == 0 || index > count {
+        return Err(format!(
+            "--shard index I must be in 1..={count}, got {index}"
+        ));
+    }
+    Ok(ShardSpec { index, count })
+}
+
+fn is_reboot_persistence_scenario(scenario: TestScenario) -> bool {
+    scenario.name == "phase3_build1_reboot_persistence_smoke"
+        || scenario.name == "phase3_neofs_reboot_persistence_small_file"
+        || scenario.name == "boot_neofs_userland_persistence"
+        || scenario.name == "product_integration"
+        || scenario.name == "phase3_neofs_crash_mid_overwrite_recovery"
+        || scenario.name == "neofs_overwrite_frees"
+        || scenario.name == "neofs_file_replace"
+        || scenario.name == "phase3_neofs_superblock_rotation_recovery"
+        || scenario.name == "phase3_neofs_crash_mid_create_recovery"
+        || scenario.name == "phase3_neofs_gc_reboot_persistence"
+        || scenario.name == "phase3_neofs_gc_crash_before_publish"
+        || scenario.name == "phase3_neofs_writeback_reboot_after_drain"
+        || scenario.name == "phase3_neofs_writeback_crash_before_drain"
+        || scenario.name == "phase3_neofs_fsync_dirty_persists_after_crash"
+        || scenario.name == "phase3_neofs_unfsynced_dirty_may_be_lost"
+}
+
+fn scenario_shard_weight(scenario: TestScenario) -> u64 {
+    // CI shard wall-clock is dominated by the per-scenario KERNEL REBUILD, NOT the
+    // QEMU run. Each `neo-test-<scenario>` is a distinct compile-time feature, so
+    // every scenario costs its own `cargo build` + ISO stage (~1.5-2 min) and then
+    // a short QEMU run. Measured (run 29886473459, all 4 shards green): the QEMU
+    // time summed to 236s TOTAL across the whole 4-shard suite (~2-4s per NeoFS
+    // scenario, 12-19s for the heaviest), i.e. ~5% of the ~20-min shard wall-clock;
+    // the other ~95% is the sequential rebuilds. So the true per-scenario cost is
+    // ~constant (the build), and the right weight makes the LPT balancer equalize
+    // scenario COUNT — which is what actually sets the makespan (bounded by
+    // ceil(N_scenarios / N_shards) rebuilds).
+    //
+    // The prior timeout-as-weight over-weighted fast-but-generous-timeout scenarios
+    // (e.g. arthur_memory_forgetting: 900s weight vs 16.3s actual = 55x), so their
+    // shards were under-filled and the suite came out 9/13/14/13 scenarios — a
+    // ~13-vs-23-min spread. Weighting by the build cost collapses that toward
+    // ~13/12/12/12.
+    const BUILD_UNIT: u64 = 100;
+    // Skip-in-CI scenarios (real-brain blobs are not in git; they exit in seconds
+    // when NEO_STAGE_B_NEOM is unset). They are also filtered out of the default CI
+    // suite, so this only affects local full runs — a nominal weight sorts them last
+    // in the LPT onto the lightest shard without perturbing the scenarios that run.
+    if scenario.name == "arthur_real_brain_boot_3b"
+        || scenario.name == "arthur_real_brain_boot_qwen35"
+    {
+        return 1;
+    }
+    // A small run component (timeout as a coarse proxy for the genuinely
+    // longer-running scenarios) nudges the true peaks to spread, but stays well
+    // below BUILD_UNIT so the ~constant build cost — and therefore scenario count —
+    // dominates the balance. 180s => +3, 900s => +15, 3600s => +60.
+    //
+    // Product's 420s execution timeout is deliberately safety headroom, not an
+    // estimate of work: fresh runs measured boot 1 at <=117.9s and prior CI at
+    // 139.3s. Charging all seven timeout minutes moved product to shard 1 and
+    // collided arthur_memory_encrypted with arthur_real_brain_boot, which the
+    // capacity guard rejects. Preserve the measured three-unit run proxy that
+    // the old 180s default supplied while keeping the real execution ceiling.
+    // OT-87 R4.3: the install scenarios run for minutes (measured), so their
+    // run is charged in build units (one build is about 100 s).
+    if is_install_scenario(scenario.name) {
+        return BUILD_UNIT + install_scenario_run_secs(scenario.name);
+    }
+    let run_cost_proxy = if scenario.name == "product_integration" {
+        TEST_TIMEOUT
+    } else {
+        scenario_timeout(scenario.name)
+    };
+    BUILD_UNIT + run_cost_proxy.as_secs() / 60
+}
+
+fn scenario_shard_run_late(scenario: TestScenario) -> bool {
+    // This scenario can transiently hang under peak self-hosted runner QEMU
+    // contention. Keep it in the full suite, but run it after the shard's
+    // ordinary scenarios so the parallel matrix has usually drained.
+    scenario.name == "arthur_memory_encrypted"
+        || scenario.name == "arthur_memory_delegation"
+        || scenario.name == "arthur_memory_forgetting"
+}
+
+fn scenario_shard_conflict_group(scenario: TestScenario) -> Option<&'static str> {
+    match scenario.name {
+        "arthur_memory"
+        | "boot_neofs_userland_persistence"
+        | "arthur_memory_encrypted"
+        | "arthur_memory_delegation"
+        | "arthur_memory_forgetting" => Some("arthur_memory"),
+        _ => None,
+    }
+}
+
+/// Whether `a` and `b` must not share a shard: the same conflict group, or
+/// the encrypted-memory timeout-risk scenario beside the real-brain boot (a
+/// rule the balancer used to meet only by where the weights fell; OT-87
+/// R4.3's install weights moved it).
+fn scenarios_share_no_shard(a: TestScenario, b: TestScenario) -> bool {
+    let group = scenario_shard_conflict_group(a);
+    if group.is_some() && group == scenario_shard_conflict_group(b) {
+        return true;
+    }
+    let pair = [a.name, b.name];
+    pair.contains(&"arthur_memory_encrypted") && pair.contains(&"arthur_real_brain_boot")
+}
+
+/// Deterministically partition `scenarios` into `spec.count` shards and return
+/// the subset belonging to `spec.index` (1-based).
+///
+/// Greedy weighted partitioning rather than position-only round-robin:
+/// timeout-heavy scenarios and two-boot scenarios are assigned first to the
+/// least-loaded shard, then each shard is restored to canonical relative order
+/// with a small tail bucket for scenarios known to be runner-contention
+/// sensitive.
+/// This keeps CI re-runs deterministic while avoiding a fragile dependency on
+/// where a heavy scenario happens to sit in `TEST_SCENARIOS`.
+///
+/// Because the input order is the fixed compile-time `TEST_SCENARIOS` order,
+/// the partition is reproducible. The unit tests assert that the union over all
+/// shards equals the full set with each scenario appearing exactly once
+/// (complete + pairwise-disjoint) for every shard count.
+fn shard_partition(scenarios: &[TestScenario], spec: ShardSpec) -> Vec<TestScenario> {
+    if spec.count == 1 {
+        return scenarios.to_vec();
+    }
+
+    let mut shards: Vec<Vec<(usize, TestScenario)>> = vec![Vec::new(); spec.count];
+    let mut loads = vec![0u64; spec.count];
+    let mut weighted: Vec<(usize, TestScenario, u64)> = scenarios
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(pos, scenario)| (pos, scenario, scenario_shard_weight(scenario)))
+        .collect();
+
+    weighted.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
+
+    for (pos, scenario, weight) in weighted {
+        let target = (0..spec.count)
+            .filter(|&idx| {
+                !shards[idx]
+                    .iter()
+                    .any(|(_, existing)| scenarios_share_no_shard(scenario, *existing))
+            })
+            .min_by_key(|&idx| (loads[idx], shards[idx].len(), idx))
+            .or_else(|| (0..spec.count).min_by_key(|&idx| (loads[idx], shards[idx].len(), idx)))
+            .expect("shard count is non-zero after parse_shard_spec");
+        shards[target].push((pos, scenario));
+        loads[target] = loads[target].saturating_add(weight);
+    }
+
+    let selected = &mut shards[spec.index - 1];
+    selected.sort_by_key(|(pos, scenario)| (scenario_shard_run_late(*scenario), *pos));
+    selected.iter().map(|(_, scenario)| *scenario).collect()
+}
+
+fn select_test_scenarios(
+    requested: &[&str],
+    include_ignored: bool,
+    include_explicit: bool,
+) -> Result<Vec<TestScenario>, String> {
+    if requested.is_empty() {
+        return Ok(TEST_SCENARIOS
+            .iter()
+            .copied()
+            .filter(|s| !s.ignored)
+            .filter(|s| !is_hardware_only_scenario(*s))
+            .filter(|s| include_explicit || !is_explicit_only_scenario(*s))
+            .collect());
+    }
+
+    let mut out = Vec::new();
+    for name in requested {
+        let scenario = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|s| s.name == *name)
+            .ok_or_else(|| format!("unknown neo-test scenario `{name}`"))?;
+        if scenario.ignored && !include_ignored {
+            return Err(format!(
+                "scenario `{}` is ignored; pass --include-ignored to run it directly",
+                scenario.name
+            ));
+        }
+        out.push(scenario);
+    }
+    Ok(out)
+}
+
+fn is_explicit_only_scenario(scenario: TestScenario) -> bool {
+    // Microbenchmarks are useful as targeted regression detectors, but they
+    // are host-load sensitive under QEMU TCG and should not gate default CI.
+    scenario.name == "irqsafe_mutex_bench" || scenario.name == "accel_intel_add_bringup"
+}
+
+fn is_hardware_only_scenario(scenario: TestScenario) -> bool {
+    // The Intel GPU bring-up family needs the OptiPlex's physical iGPU
+    // (`find_device_by_driver("accel_intel")` fails fast in QEMU — there is
+    // no emulated Gen9.5 compute device), so aggregate QEMU runs omit them
+    // all. They are run individually via --bare-metal-mode, which selects
+    // by NAME and bypasses this filter. BUILD-B closed the gap: only
+    // add_bringup was listed when ppgtt/execlist landed, so any aggregate
+    // run that reached them failed on `accel_intel_*_missing`.
+    matches!(
+        scenario.name,
+        "accel_intel_add_bringup"
+            | "accel_intel_ppgtt_bringup"
+            | "accel_intel_execlist_bringup"
+            | "accel_intel_execlist_data_bringup"
+            | "accel_intel_execlist_negative_bringup"
+            | "accel_intel_blur_silicon"
+            | "accel_intel_blur_silicon_narrowed"
+            | "mt7601u_scan_baremetal"
+            | "mt7601u_assoc_baremetal"
+    )
+}
+
+/// `cargo xtask shard-coverage N` — the sharding analog of a byte-oracle.
+///
+/// Prints every shard's scenario list + count for `N` shards, then proves that
+/// the union over all `N` shards equals the canonical default suite with each
+/// scenario appearing exactly once (complete + pairwise-disjoint). Exits
+/// non-zero on any gap or overlap, so a sharded CI matrix can never produce a
+/// false green by silently dropping or double-running scenarios. Runs no QEMU —
+/// it is a fast, deterministic CI gate. N here MUST match the CI matrix's shard
+/// count.
+fn cmd_shard_coverage(args: &[String]) -> Result<(), String> {
+    let raw = args
+        .first()
+        .ok_or_else(|| "usage: cargo xtask shard-coverage N".to_string())?;
+    let count: usize = raw
+        .parse()
+        .map_err(|_| format!("shard-coverage N must be a positive integer, got `{raw}`"))?;
+    if count == 0 {
+        return Err("shard-coverage N must be >= 1".to_string());
+    }
+
+    let full = select_test_scenarios(&[], false, false)?;
+
+    let mut union: Vec<&str> = Vec::new();
+    for index in 1..=count {
+        let shard = shard_partition(&full, ShardSpec { index, count });
+        let shard_weight: u64 = shard
+            .iter()
+            .map(|scenario| scenario_shard_weight(*scenario))
+            .sum();
+        println!(
+            "shard {index}/{count}: {} scenario(s), estimated shard weight {shard_weight}",
+            shard.len()
+        );
+        for scenario in &shard {
+            println!("    {}", scenario.name);
+            union.push(scenario.name);
+        }
+    }
+
+    // Pairwise-disjoint: no scenario name may appear in more than one shard.
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for name in &union {
+        if !seen.insert(*name) {
+            return Err(format!(
+                "shard-coverage FAILED: scenario `{name}` appears in more than one shard"
+            ));
+        }
+    }
+
+    // Complete: the set of sharded names must equal the full suite exactly.
+    let full_names: std::collections::BTreeSet<&str> = full.iter().map(|s| s.name).collect();
+    if seen != full_names {
+        let missing: Vec<&str> = full_names.difference(&seen).copied().collect();
+        let extra: Vec<&str> = seen.difference(&full_names).copied().collect();
+        return Err(format!(
+            "shard-coverage FAILED: union != full suite (missing: {missing:?}, extra: {extra:?})"
+        ));
+    }
+    // Belt-and-suspenders: multiset size must match (catches any logic drift
+    // between the disjoint check and the set-equality check above).
+    if union.len() != full.len() {
+        return Err(format!(
+            "shard-coverage FAILED: union has {} entries, full suite has {}",
+            union.len(),
+            full.len()
+        ));
+    }
+
+    println!(
+        "shard-coverage OK: {} scenario(s) partitioned across {count} shard(s); \
+         union == full suite, each scenario exactly once",
+        full.len()
+    );
+    Ok(())
+}
+
+fn run_deliberate_failure_meta_test() -> Result<(), String> {
+    let scenario = TEST_SCENARIOS
+        .iter()
+        .copied()
+        .find(|s| s.name == "expect_pass_but_fail")
+        .expect("deliberate-failure scenario must exist");
+
+    eprintln!(
+        "[xtask] neo-test meta: verifying runner catches `{}` as FAIL",
+        scenario.name
+    );
+
+    // Meta test runs a single attempt — no retry loop, so attempt is always 1.
+    let observed = run_test_scenario(scenario, 1, ScenarioBundleMode::Vmware)?;
+    if observed.exit_status.code() != Some(qemu_debug_exit_status(TEST_EXIT_FAILURE)) {
+        return Err(format!(
+            "meta-test failed: `{}` did not exit via debug failure; status={} serial={}",
+            scenario.name,
+            observed.exit_status,
+            observed.serial_log.display()
+        ));
+    }
+    if observed.terminal_count != 1 {
+        return Err(format!(
+            "meta-test failed: `{}` produced {} terminal frames, expected exactly 1; serial={}",
+            scenario.name,
+            observed.terminal_count,
+            observed.serial_log.display()
+        ));
+    }
+    match observed.terminal_event.as_deref() {
+        Some("FAIL") => {
+            eprintln!("[xtask] neo-test meta: deliberate failure was detected");
+            Ok(())
+        }
+        Some(other) => Err(format!(
+            "meta-test failed: `{}` terminal event was {other}, expected FAIL",
+            scenario.name
+        )),
+        None => Err(format!(
+            "meta-test failed: `{}` produced no terminal NEO_TEST frame; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        )),
+    }
+}
+
+struct ObservedTest {
+    exit_status: ExitStatus,
+    terminal_event: Option<String>,
+    terminal_count: usize,
+    saw_begin: bool,
+    serial_log: PathBuf,
+    /// OT-90 power scenarios only: every QMP event, in order.
+    qmp_events: Option<Vec<qmp::QmpEvent>>,
+}
+
+fn run_test_scenario(
+    scenario: TestScenario,
+    attempt: usize,
+    mode: ScenarioBundleMode,
+) -> Result<ObservedTest, String> {
+    build_test_artifacts_for_scenario(scenario, mode)?;
+
+    let serial_log = scenario_serial_log(&format!(
+        "{}{}{}.attempt{}.serial.log",
+        scenario.name,
+        if mode.is_bare_metal() {
+            ".bare-metal"
+        } else {
+            ""
+        },
+        neo_test_run_id_suffix(),
+        attempt
+    ));
+    remove_serial_log(&serial_log)?;
+
+    let storage_disks = if scenario_uses_storage_disk(scenario)
+        || (mode.is_bare_metal()
+            && (bare_metal_uses_nvme_log_sink_only(scenario.name)
+                || bare_metal_uses_ahci_log_sink_only(scenario.name)))
+    {
+        prepare_storage_disks_for_mode(scenario.name, mode)?
+    } else {
+        Vec::new()
+    };
+    let result = run_qemu_test_invocation(scenario, mode, serial_log.clone(), &storage_disks, None);
+    // Best-effort: copy this attempt's log to the canonical `<scenario>.serial.log`
+    // path so existing tooling keeps working. The per-attempt log remains the
+    // load-bearing copy and is never overwritten by subsequent retries.
+    let _ = copy_attempt_log_to_canonical(scenario.name, &serial_log);
+    result
+}
+
+fn run_arthur_memory_scenario_with_retries(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+) -> Result<(), String> {
+    let mut previous_error = None;
+    let attempts = test_scenario_attempts();
+    for attempt in 1..=attempts {
+        let result = run_test_scenario(scenario, attempt, mode)
+            .and_then(|observed| {
+                require_observed_pass(scenario, &observed)?;
+                require_serial_contains(
+                    scenario,
+                    &observed,
+                    "mode=on write=ok readback=ok corrupt=ephemeral",
+                    "Arthur memory feature-on boot must persist then fail-safe on corrupt input",
+                )
+            })
+            .and_then(|()| run_arthur_memory_off_boot(scenario, attempt, mode))
+            .and_then(|observed| {
+                require_observed_terminal_pass(scenario, &observed)?;
+                require_serial_contains(
+                    scenario,
+                    &observed,
+                    "mode=off no_persistence=true",
+                    "Arthur memory feature-off boot must remain ephemeral",
+                )
+            });
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < attempts => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` attempt {}/{} failed: {}",
+                    scenario.name, attempt, attempts, err
+                );
+                previous_error = Some(err);
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(previous_error.unwrap_or_else(|| {
+        format!(
+            "`{}` did not complete after {} attempt(s)",
+            scenario.name, attempts
+        )
+    }))
+}
+
+fn run_arthur_memory_off_boot(
+    scenario: TestScenario,
+    attempt: usize,
+    mode: ScenarioBundleMode,
+) -> Result<ObservedTest, String> {
+    build_test_artifacts_for_arthur_memory_off(scenario, mode)?;
+    let serial_log = scenario_serial_log(&format!(
+        "{}.off{}.attempt{}.serial.log",
+        scenario.name,
+        neo_test_run_id_suffix(),
+        attempt
+    ));
+    remove_serial_log(&serial_log)?;
+    let storage_disks = prepare_storage_disks_for_mode(scenario.name, mode)?;
+    let result = run_qemu_test_invocation(scenario, mode, serial_log.clone(), &storage_disks, None);
+    let _ = copy_attempt_log_to_canonical(scenario.name, &serial_log);
+    result
+}
+
+fn run_aarch64_barrier_scenario(
+    scenario: TestScenario,
+    attempt: usize,
+) -> Result<ObservedTest, String> {
+    let elf = build_aarch64_barrier_harness()?;
+    let serial_log = scenario_serial_log(&format!(
+        "{}{}.attempt{}.serial.log",
+        scenario.name,
+        neo_test_run_id_suffix(),
+        attempt
+    ));
+    remove_serial_log(&serial_log)?;
+    let disk = prepare_storage_disk(scenario.name)?;
+
+    eprintln!(
+        "[xtask] neo-test: launching QEMU aarch64 for `{}` (elf: {}, disk: {}, serial: {})",
+        scenario.name,
+        elf.display(),
+        disk.display(),
+        serial_log.display()
+    );
+
+    let mut qemu = Command::new("qemu-system-aarch64");
+    qemu.args([
+        "-M",
+        "virt",
+        "-cpu",
+        "cortex-a57",
+        "-m",
+        "128M",
+        "-display",
+        "none",
+        "-serial",
+    ])
+    .arg(format!("file:{}", serial_log.display()))
+    .args(["-monitor", "none", "-kernel"])
+    .arg(&elf)
+    .arg("-drive")
+    .arg(format!(
+        "if=none,format=raw,file={},id=hd0,cache=none",
+        disk.display()
+    ))
+    .args([
+        "-device",
+        "virtio-blk-device,drive=hd0",
+        "-global",
+        "virtio-mmio.force-legacy=false",
+        "-no-reboot",
+        "-d",
+        "guest_errors",
+        "-semihosting-config",
+        "enable=on,target=native",
+    ])
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
+
+    let status_result = run_with_timeout_and_dump(
+        qemu,
+        scenario_timeout(scenario.name),
+        scenario.name,
+        Some(&serial_log),
+    );
+    // Best-effort: copy this attempt's log to canonical `<scenario>.serial.log`
+    // regardless of pass/fail/timeout, so the per-attempt log is preserved while
+    // the canonical path stays usable for existing tooling.
+    let _ = copy_attempt_log_to_canonical(scenario.name, &serial_log);
+    let status = status_result?;
+    let serial = fs::read_to_string(&serial_log)
+        .map_err(|e| format!("read serial log {}: {e}", serial_log.display()))?;
+    let parsed = parse_test_serial(&serial, serial_frame_name(scenario));
+    Ok(ObservedTest {
+        exit_status: status,
+        terminal_event: parsed.terminal_event,
+        terminal_count: parsed.terminal_count,
+        saw_begin: parsed.saw_begin,
+        serial_log,
+        qmp_events: None,
+    })
+}
+
+fn build_aarch64_barrier_harness() -> Result<PathBuf, String> {
+    let root = workspace_root();
+    let manifest_dir = root.join("tools/aarch64-virtio-barrier-lane");
+    let target_dir = root.join("target/aarch64-virtio-barrier-lane");
+    let mut cargo = Command::new("cargo");
+    cargo
+        .current_dir(&manifest_dir)
+        .args([
+            "build",
+            "--target",
+            "aarch64-unknown-none",
+            "-Zbuild-std=core,compiler_builtins",
+            "-Zbuild-std-features=compiler-builtins-mem",
+            "--release",
+            "--target-dir",
+        ])
+        .arg(&target_dir);
+
+    let status = cargo
+        .status()
+        .map_err(|e| format!("failed to launch cargo for aarch64 barrier harness: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "aarch64 barrier harness build failed with status {status}"
+        ));
+    }
+
+    let elf = target_dir
+        .join("aarch64-unknown-none")
+        .join("release")
+        .join("phase3-aarch64-virtio-barrier-lane");
+    if !elf.exists() {
+        return Err(format!(
+            "aarch64 barrier harness ELF missing: {}",
+            elf.display()
+        ));
+    }
+    Ok(elf)
+}
+
+/// OT-90 P2: what each power scenario must show over QMP (THINK §8.1).
+fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
+    match name {
+        "ot90_s5_exits_qemu"
+        | "ot90_s5_durability"
+        | "ot90_straggler_forced"
+        | "ot90_stuck_disk"
+        | "ot90_stuck_sink_off" => Some(qmp::PowerExpect::PowerOff),
+        "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
+            Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
+        }
+        "ot90_restart_fallback_i8042" => {
+            Some(qmp::PowerExpect::RestartThenPowerOff { fallback: true })
+        }
+        _ => None,
+    }
+}
+
+/// OT-90 P2: one power scenario run, judged by QMP and the serial log. There is
+/// no debug-exit; QEMU must end on S5 (status 0, `SHUTDOWN` `guest-shutdown`).
+fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(), String> {
+    let expect = ot90_power_expect(scenario.name)
+        .ok_or_else(|| format!("`{}` is not an OT-90 power scenario", scenario.name))?;
+    let observed = run_test_scenario(scenario, attempt, ScenarioBundleMode::Vmware)?;
+    let events = observed
+        .qmp_events
+        .as_deref()
+        .ok_or_else(|| format!("`{}`: no QMP record", scenario.name))?;
+    if !observed.saw_begin {
+        return Err(format!(
+            "`{}` never began; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
+    }
+    if !observed.exit_status.success() {
+        return Err(format!(
+            "`{}`: QEMU exited {} (S5 ends it with 0); serial={}",
+            scenario.name,
+            observed.exit_status,
+            observed.serial_log.display()
+        ));
+    }
+    let serial = fs::read_to_string(&observed.serial_log)
+        .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+    qmp::judge(expect, events, &serial).map_err(|e| {
+        format!(
+            "`{}`: {e}; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        )
+    })?;
+    // Chad #199 item 2: K2 never came back from the stuck disk; the deadline
+    // abandoned it (so K3 never ran) and S5 still came.
+    if scenario.name == "ot90_stuck_disk" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "stage=disk_stuck completions=held",
+                "stage=power_off_requested",
+                "[ power ] shutdown: started kind=PowerOff",
+                "[ power ] shutdown: deadline passed in K2 after ",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        if serial.contains("[ power ] K3 log flushed") {
+            return Err(format!(
+                "`{}`: K3 ran, so the disk was never stuck; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    // #267 (Chad 3b): the sink was armed, K3 flushed it, then its disk went
+    // quiet; the power path (S5, or the reset and boot 2's S5) still ran.
+    if scenario.name == "ot90_stuck_sink_off" || scenario.name == "ot90_stuck_sink_restart" {
+        let mut want = vec![
+            "stage=sink_installed",
+            "[ power ] K3 log flushed",
+            "[ power ] test: the sink's disk stops completing requests",
+        ];
+        if scenario.name == "ot90_stuck_sink_off" {
+            want.push("power: S5 PM1a=");
+        } else {
+            want.push("reset step=1 fadt_register space=");
+            want.push("stage=boot2 action=power_off");
+        }
+        ot90_require_in_order(scenario.name, &serial, &want)?;
+    }
+    // OT-90 P3a: K1 terminated the straggler within its bound, before S5.
+    if scenario.name == "ot90_straggler_forced" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "stage=straggler pid=",
+                "[ power ] K1 terminated=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        if !serial.contains("survivors=0 ticks=") || serial.contains("K1 terminated=0 ") {
+            return Err(format!(
+                "`{}`: K1 did not terminate the straggler within its bound; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    eprintln!(
+        "[xtask] neo-test: `{}` PASS on QMP {:?}",
+        scenario.name, events
+    );
+    Ok(())
+}
+
+/// `markers` appear in `serial` in this order.
+fn ot90_require_in_order(name: &str, serial: &str, markers: &[&str]) -> Result<(), String> {
+    let mut at = 0;
+    for marker in markers {
+        match serial[at..].find(marker) {
+            Some(i) => at += i + marker.len(),
+            None => return Err(format!("`{name}`: serial lacks `{marker}` (in order)")),
+        }
+    }
+    Ok(())
+}
+
+/// OT-90 P3a `ot90_s5_durability`: two QEMU runs on one NeoFS disk, each
+/// ending in a clean S5 judged by QMP. Boot 1 writes the file with no fsync
+/// (writeback held) and its K2 must report the mount clean; boot 2 must read
+/// it back (`stage=readback`) and never write it again (a second
+/// `stage=write` means the drain lost it), then see a write refused once its
+/// mount has shut down (the freeze).
+fn run_ot90_durability_scenario(scenario: TestScenario, attempt: usize) -> Result<(), String> {
+    build_test_artifacts_for_scenario(scenario, ScenarioBundleMode::Vmware)?;
+    let disk = prepare_storage_disk(scenario.name)?;
+    let storage_disks = vec![disk.clone()];
+    let mut serials = Vec::new();
+    for boot in 1..=2 {
+        let log = scenario_serial_log(&format!(
+            "{}{}.attempt{}.boot{}.serial.log",
+            scenario.name,
+            neo_test_run_id_suffix(),
+            attempt,
+            boot
+        ));
+        remove_serial_log(&log)?;
+        let result = run_qemu_test_invocation(
+            scenario,
+            ScenarioBundleMode::Vmware,
+            log.clone(),
+            &storage_disks,
+            None,
+        );
+        let _ = copy_boot_attempt_log_to_canonical(scenario.name, boot, &log);
+        let observed = result?;
+        if !observed.exit_status.success() {
+            return Err(format!(
+                "`{}` boot {boot}: QEMU exited {} (S5 ends it with 0); serial={}",
+                scenario.name,
+                observed.exit_status,
+                observed.serial_log.display()
+            ));
+        }
+        let events = observed
+            .qmp_events
+            .as_deref()
+            .ok_or_else(|| format!("`{}` boot {boot}: no QMP record", scenario.name))?;
+        let serial = fs::read_to_string(&observed.serial_log)
+            .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+        qmp::judge(qmp::PowerExpect::PowerOff, events, &serial)
+            .map_err(|e| format!("`{}` boot {boot}: {e}", scenario.name))?;
+        if !serial.contains("[ power ] K2 mount=")
+            || serial.contains("[ power ] K2 mount=/neofs clean=0")
+        {
+            return Err(format!(
+                "`{}` boot {boot}: K2 did not report the NeoFS mount clean; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+        serials.push((serial, observed.serial_log.clone()));
+    }
+    let (boot1, _) = &serials[0];
+    let (boot2, log2) = &serials[1];
+    if !boot1.contains("stage=write fsync=none") {
+        return Err(format!(
+            "`{}`: boot 1 did not write the file",
+            scenario.name
+        ));
+    }
+    if boot2.contains("stage=write")
+        || !boot2.contains("stage=readback durability=ok")
+        || !boot2.contains("stage=frozen write_after_freeze=refused")
+    {
+        return Err(format!(
+            "`{}`: boot 2 did not read back boot 1's file (the clean shutdown lost it); serial={}",
+            scenario.name,
+            log2.display()
+        ));
+    }
+    eprintln!(
+        "[xtask] neo-test: `{}` PASS: written with no fsync, read back after a clean S5 (disk {})",
+        scenario.name,
+        disk.display()
+    );
+    Ok(())
+}
+
+fn run_ot90_power_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
+    let attempts = test_scenario_attempts();
+    let mut previous = None;
+    for attempt in 1..=attempts {
+        match run_ot90_power_scenario(scenario, attempt) {
+            Ok(()) => return Ok(()),
+            Err(err) if attempt < attempts => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` attempt {}/{} failed: {}",
+                    scenario.name, attempt, attempts, err
+                );
+                previous = Some(err);
+            }
+            Err(err) => {
+                return Err(match previous {
+                    Some(p) => format!(
+                        "`{}` failed after {} attempts; last error: {}; previous error: {}",
+                        scenario.name, attempts, err, p
+                    ),
+                    None => err,
+                });
+            }
+        }
+    }
+    Err(format!("`{}`: no attempts ran", scenario.name))
+}
+
+fn run_reboot_persistence_scenario(scenario: TestScenario, attempt: usize) -> Result<(), String> {
+    build_test_artifacts_for_scenario(scenario, ScenarioBundleMode::Vmware)?;
+
+    let disk = prepare_storage_disk(scenario.name)?;
+    eprintln!(
+        "[xtask] neo-test: `{}` persistence disk {} will be reused across both boots",
+        scenario.name,
+        disk.display()
+    );
+
+    let boot1_log = scenario_serial_log(&format!(
+        "{}{}.attempt{}.boot1.serial.log",
+        scenario.name,
+        neo_test_run_id_suffix(),
+        attempt
+    ));
+    remove_serial_log(&boot1_log)?;
+    let storage_disks = vec![disk.clone()];
+    let boot1_result = run_qemu_test_invocation(
+        scenario,
+        ScenarioBundleMode::Vmware,
+        boot1_log.clone(),
+        &storage_disks,
+        None,
+    );
+    let _ = copy_boot_attempt_log_to_canonical(scenario.name, 1, &boot1_log);
+    let boot1 = boot1_result?;
+    require_observed_pass(scenario, &boot1)?;
+    require_serial_contains(
+        scenario,
+        &boot1,
+        "stage=write",
+        "first boot must write the persistence pattern",
+    )?;
+
+    let boot2_log = scenario_serial_log(&format!(
+        "{}{}.attempt{}.boot2.serial.log",
+        scenario.name,
+        neo_test_run_id_suffix(),
+        attempt
+    ));
+    remove_serial_log(&boot2_log)?;
+    let boot2_result = run_qemu_test_invocation(
+        scenario,
+        ScenarioBundleMode::Vmware,
+        boot2_log.clone(),
+        &storage_disks,
+        None,
+    );
+    let _ = copy_boot_attempt_log_to_canonical(scenario.name, 2, &boot2_log);
+    let boot2 = boot2_result?;
+    require_observed_pass(scenario, &boot2)?;
+    require_serial_contains(
+        scenario,
+        &boot2,
+        "stage=readback",
+        "second boot must read back the first boot's pattern",
+    )?;
+
+    eprintln!(
+        "[xtask] neo-test: `{}` two-boot persistence PASS (disk: {}, serial: {}, {})",
+        scenario.name,
+        disk.display(),
+        boot1.serial_log.display(),
+        boot2.serial_log.display()
+    );
+    Ok(())
+}
+
+/// OT-87 R1: the installed-on-a-VM scenario (THINK §3): the gate's proof
+/// that LogansOS boots from its own disk under UEFI and keeps its state
+/// across a reboot.
+const VM_INSTALLED_SCENARIO: &str = "vm_installed_two_boot";
+
+/// Three boots of `boot.raw` (the scenario's ISO, made by `vm-image`'s
+/// `write_vm_disks`) under the pinned OVMF, no `-cdrom`:
+///
+/// 1. with `data.raw`: the guest finds no memory file and writes one
+///    (`stage=write`);
+/// 2. the control, with a fresh data disk in its place: the readback check
+///    must FAIL, or it would pass without persistence;
+/// 3. with the first boot's `data.raw` again: the guest reads the file back
+///    (`stage=readback`).
+///
+/// Every boot must mount NeoFS from device 1 (the data disk; the boot disk
+/// carries no superblock, which `check_vm_layout` holds it to), and the boot
+/// disk must end byte-identical: nothing the guest does writes it.
+fn run_vm_installed_scenario(scenario: TestScenario, attempt: usize) -> Result<(), String> {
+    build_test_artifacts_for_scenario(scenario, ScenarioBundleMode::Vmware)?;
+    let ovmf = resolve_ovmf(true)?;
+    let dir = workspace_root().join(TEST_OUTPUT_REL).join(scenario.name);
+    let (boot, data) = write_vm_disks(&dir, true)?;
+    let boot_digest = blake3_file_hex(&boot)?;
+    let control = dir.join("control-data.raw");
+    prepare_neofs_storage_disk_with_payload_files_sized(
+        &control,
+        "arthur-memory",
+        None,
+        &[],
+        &[],
+        Some(vm_image::DATA_DISK_MIB),
+    )?;
+    let vars = dir.join("vars.fd");
+    eprintln!(
+        "[xtask] neo-test: `{}` installed layout: firmware {} boot {} data {}",
+        scenario.name,
+        ovmf.code.display(),
+        boot.display(),
+        data.display()
+    );
+
+    let run_boot = |boot_no: usize, data_disk: &Path| -> Result<ObservedTest, String> {
+        let log = scenario_serial_log(&format!(
+            "{}{}.attempt{}.boot{}.serial.log",
+            scenario.name,
+            neo_test_run_id_suffix(),
+            attempt,
+            boot_no
+        ));
+        remove_serial_log(&log)?;
+        vm_vars_copy(&ovmf, &vars)?;
+        let args = vm_image::vm_disk_args(&ovmf.code, &vars, &boot, data_disk);
+        let result = run_qemu_test_invocation(
+            scenario,
+            ScenarioBundleMode::Vmware,
+            log.clone(),
+            &[],
+            Some(&args),
+        );
+        let _ = copy_boot_attempt_log_to_canonical(scenario.name, boot_no, &log);
+        let observed = result?;
+        require_observed_pass(scenario, &observed)?;
+        require_serial_contains(
+            scenario,
+            &observed,
+            "mounted NeoFS readwrite at /neofs device_index=1 ",
+            "the kernel must mount the data disk (device 1), not the boot disk",
+        )?;
+        Ok(observed)
+    };
+    let readback = |observed: &ObservedTest| {
+        require_serial_contains(
+            scenario,
+            observed,
+            "stage=readback",
+            "a second boot of the same disks must read the first boot's memory file back",
+        )
+    };
+
+    let first = run_boot(1, &data)?;
+    require_serial_contains(
+        scenario,
+        &first,
+        "stage=write",
+        "the first boot must write its memory file to the data disk",
+    )?;
+    let fresh = run_boot(2, &control)?;
+    if readback(&fresh).is_ok() {
+        return Err(format!(
+            "`{}` control: a fresh data disk passed the readback check, so the check does not prove persistence; serial={}",
+            scenario.name,
+            fresh.serial_log.display()
+        ));
+    }
+    eprintln!(
+        "[xtask] neo-test: `{}` control: a fresh data disk fails the readback check, as it must",
+        scenario.name
+    );
+    let second = run_boot(3, &data)?;
+    readback(&second)?;
+    let after = blake3_file_hex(&boot)?;
+    if after != boot_digest {
+        return Err(format!(
+            "`{}`: the boot disk changed across the boots (blake3 {boot_digest} -> {after}); nothing may write it",
+            scenario.name
+        ));
+    }
+    eprintln!(
+        "[xtask] neo-test: `{}` installed two-boot PASS (boot disk unchanged, serial: {}, {}, {})",
+        scenario.name,
+        first.serial_log.display(),
+        fresh.serial_log.display(),
+        second.serial_log.display()
+    );
+    Ok(())
+}
+
+/// OT-87 R4.1: the `serial=` a scenario gives a virtio or SATA disk (what
+/// GET_ID or IDENTIFY reports). `None`: none; a virtio disk then has no identity.
+fn scenario_disk_serial(scenario: &str, idx: usize) -> Option<&'static str> {
+    match (scenario, idx) {
+        ("install_claim_identity", 0) => Some("LOGANSOS-R41"),
+        ("install_claim_identity", 3) => Some("LOGANSOS-SATA"),
+        ("install_claim_identity", 4) => Some("LOGANSOS-R41"),
+        _ => None,
+    }
+}
+
+/// OT-87 R4.3: the logical sector size a scenario's virtio disks present
+/// (QEMU's `logical_block_size`, read by the kernel's `virtio-blk-size`).
+/// `None`: QEMU's default, 512.
+fn scenario_logical_block_size(scenario: &str) -> Option<u32> {
+    match scenario {
+        "block_write_guard_4k" => Some(4096),
+        _ => None,
+    }
+}
+
+/// OT-87 R3: the one-disk installed scenario.
+const VM_ONE_DISK_SCENARIO: &str = "vm_one_disk_two_boot";
+/// OT-87 R4.3: the same at S=4096.
+const VM_ONE_DISK_4K_SCENARIO: &str = "vm_one_disk_two_boot_4k";
+
+/// The one-disk scenario's logical sector size.
+fn one_disk_sector(scenario: &str) -> u64 {
+    if scenario == VM_ONE_DISK_4K_SCENARIO {
+        4096
+    } else {
+        vm_image::ONE_DISK_SECTOR
+    }
+}
+
+/// BLAKE3 of `disk` outside partition 2: the protective MBR, both tables,
+/// the ESP and the gaps. Nothing the guest does may change them.
+fn one_disk_outside_partition_hex(disk: &Path, s: u64) -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let layout = vm_image::one_disk_layout(s);
+    let mut file = fs::File::open(disk).map_err(|e| format!("open {}: {e}", disk.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 1 << 20];
+    for (start, end) in [
+        (0, layout.neofs.0 * s),
+        ((layout.neofs.1 + 1) * s, vm_image::ONE_DISK_BYTES),
+    ] {
+        file.seek(SeekFrom::Start(start))
+            .map_err(|e| format!("seek {}: {e}", disk.display()))?;
+        let mut left = end - start;
+        while left > 0 {
+            let n = left.min(buf.len() as u64) as usize;
+            file.read_exact(&mut buf[..n])
+                .map_err(|e| format!("read {}: {e}", disk.display()))?;
+            hasher.update(&buf[..n]);
+            left -= n as u64;
+        }
+    }
+    Ok(hex_string(hasher.finalize().as_bytes()))
+}
+
+/// Three boots of one `disk.raw` (made by `write_one_disk`) under the pinned
+/// OVMF, no `-cdrom`, as `run_vm_installed_scenario` does with two disks:
+///
+/// 1. the guest finds no memory file and writes one (`stage=write`);
+/// 2. the control, a fresh one-disk image: the readback check must FAIL;
+/// 3. the first disk again: the guest reads the file back (`stage=readback`).
+///
+/// Every boot must mount NeoFS from partition 2 of device 0, and the guard
+/// must arm exactly that partition. Everything outside it ends byte-identical.
+fn run_vm_one_disk_scenario(scenario: TestScenario, attempt: usize) -> Result<(), String> {
+    build_test_artifacts_for_scenario(scenario, ScenarioBundleMode::Vmware)?;
+    let ovmf = resolve_ovmf(true)?;
+    let dir = workspace_root().join(TEST_OUTPUT_REL).join(scenario.name);
+    let s = one_disk_sector(scenario.name);
+    let disk = write_one_disk(&dir, true, s)?;
+    let control = write_one_disk(&dir.join("control"), true, s)?;
+    let outside = one_disk_outside_partition_hex(&disk, s)?;
+    let layout = vm_image::one_disk_layout(s);
+    let partition_line = format!(
+        "fs: NeoFS partition device_index=0 partition=2 first_lba={} lba_count={}",
+        layout.neofs.0,
+        layout.neofs.1 + 1 - layout.neofs.0
+    );
+    let armed_line = format!(
+        "writes armed device=0 driver=virtio-blk marker=neofs extent=0x{:x}..0x{:x} table=gpt",
+        layout.neofs.0 * s,
+        (layout.neofs.1 + 1) * s
+    );
+    let vars = dir.join("vars.fd");
+    eprintln!(
+        "[xtask] neo-test: `{}` one-disk layout: firmware {} disk {}",
+        scenario.name,
+        ovmf.code.display(),
+        disk.display()
+    );
+    let run_boot = |boot_no: usize, image: &Path| -> Result<ObservedTest, String> {
+        let log = scenario_serial_log(&format!(
+            "{}{}.attempt{}.boot{}.serial.log",
+            scenario.name,
+            neo_test_run_id_suffix(),
+            attempt,
+            boot_no
+        ));
+        remove_serial_log(&log)?;
+        vm_vars_copy(&ovmf, &vars)?;
+        let args = vm_image::vm_one_disk_args(&ovmf.code, &vars, image, s);
+        let result = run_qemu_test_invocation(
+            scenario,
+            ScenarioBundleMode::Vmware,
+            log.clone(),
+            &[],
+            Some(&args),
+        );
+        let _ = copy_boot_attempt_log_to_canonical(scenario.name, boot_no, &log);
+        let observed = result?;
+        require_observed_pass(scenario, &observed)?;
+        for (needle, why) in [
+            (
+                partition_line.as_str(),
+                "NeoFS must be found on partition 2 of the boot disk",
+            ),
+            (
+                "mounted NeoFS readwrite at /neofs device_index=0 ",
+                "the kernel must mount the boot disk's partition",
+            ),
+        ] {
+            require_serial_contains(scenario, &observed, needle, why)?;
+        }
+        if s == 4096 {
+            require_serial_contains(
+                scenario,
+                &observed,
+                "logical_block_size=4096",
+                "the 4K variant must run on a 4096-byte logical-sector disk",
+            )?;
+        }
+        Ok(observed)
+    };
+    let readback = |observed: &ObservedTest| {
+        require_serial_contains(
+            scenario,
+            observed,
+            "stage=readback",
+            "a second boot of the same disk must read the first boot's memory file back",
+        )
+    };
+
+    // The guard judges a device at its first write, so the boots that write
+    // (the first, and the control) carry its arming line.
+    let armed = |observed: &ObservedTest| {
+        require_serial_contains(
+            scenario,
+            observed,
+            &armed_line,
+            "the guard must arm exactly partition 2 (the R3 partition rule)",
+        )
+    };
+    let first = run_boot(1, &disk)?;
+    require_serial_contains(
+        scenario,
+        &first,
+        "stage=write",
+        "the first boot must write its memory file to partition 2",
+    )?;
+    armed(&first)?;
+    let fresh = run_boot(2, &control)?;
+    armed(&fresh)?;
+    if readback(&fresh).is_ok() {
+        return Err(format!(
+            "`{}` control: a fresh disk passed the readback check, so the check does not prove persistence; serial={}",
+            scenario.name,
+            fresh.serial_log.display()
+        ));
+    }
+    let second = run_boot(3, &disk)?;
+    readback(&second)?;
+    let after = one_disk_outside_partition_hex(&disk, s)?;
+    if after != outside {
+        return Err(format!(
+            "`{}`: bytes outside partition 2 changed across the boots (blake3 {outside} -> {after}); only the armed partition may be written",
+            scenario.name
+        ));
+    }
+    eprintln!(
+        "[xtask] neo-test: `{}` one-disk two-boot PASS (outside partition 2 unchanged, serial: {}, {}, {})",
+        scenario.name,
+        first.serial_log.display(),
+        fresh.serial_log.display(),
+        second.serial_log.display()
+    );
+    Ok(())
+}
+
+/// OT-87 R4.3: the installer's QEMU scenarios (`run_install_scenario`).
+const INSTALL_FRESH_SCENARIO: &str = "install_fresh";
+const INSTALL_FRESH_4K_SCENARIO: &str = "install_fresh_4k";
+const INSTALL_STOP_FINISH_SCENARIO: &str = "install_stop_finish";
+/// Every stop, W1..W6: off the merge gate (`ignored`), run on demand with
+/// `--include-ignored`. The write-back-cache KAT already cuts at every
+/// submission and flush; the gate's three stops prove the real path.
+const INSTALL_STOP_FINISH_FULL_SCENARIO: &str = "install_stop_finish_full";
+const INSTALL_REFUSALS_SCENARIO: &str = "install_refusals";
+/// OT-87 R4.4: the console installer, end to end.
+const INSTALL_CONSOLE_SCENARIO: &str = "install_console";
+/// OT-87 R4.4: `install_console`'s first boot, which lists and goes back
+/// (only its serial script; it runs under `install_console`).
+const INSTALL_CONSOLE_LIST_SCENARIO: &str = "install_console_list";
+/// OT-87 R4.4: the Atrium installer, from Home to the confirmation screen
+/// and back (a desktop scenario booted as an install one).
+const INSTALL_ATRIUM_SCENARIO: &str = "install_atrium";
+/// OT-87 R4.4b: the intro session on an image that can't install: no Install
+/// chip. Without the bundle; and with a pin the bundle doesn't match.
+const INSTALL_ATRIUM_NO_BUNDLE_SCENARIO: &str = "install_atrium_no_bundle";
+const INSTALL_ATRIUM_BAD_PIN_SCENARIO: &str = "install_atrium_bad_pin";
+
+fn is_install_scenario(name: &str) -> bool {
+    matches!(
+        name,
+        INSTALL_FRESH_SCENARIO
+            | INSTALL_FRESH_4K_SCENARIO
+            | INSTALL_STOP_FINISH_SCENARIO
+            | INSTALL_STOP_FINISH_FULL_SCENARIO
+            | INSTALL_REFUSALS_SCENARIO
+            | INSTALL_CONSOLE_SCENARIO
+            // Only a serial script, but its boot needs an install boot's
+            // memory, timeout and kernel scenario name.
+            | INSTALL_CONSOLE_LIST_SCENARIO
+            | INSTALL_ATRIUM_SCENARIO
+            | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
+            | INSTALL_ATRIUM_BAD_PIN_SCENARIO
+    )
+}
+
+/// The stops `install_stop_finish` makes. The gate: W2 (the protective MBR
+/// and the primary table, the first point the disk is recognisably ours),
+/// W5 (the payload written, not yet committed) and W6 (the commit). The full
+/// scenario: all six.
+fn install_stops(name: &str) -> &'static [&'static str] {
+    if name == INSTALL_STOP_FINISH_FULL_SCENARIO {
+        &["W1", "W2", "W3", "W4", "W5", "W6"]
+    } else {
+        &["W2", "W5", "W6"]
+    }
+}
+
+/// Measured QEMU seconds per run of an install scenario (local TCG: an
+/// install boot about 215 s, a stop before W3 about 10 s, the installed boot
+/// about 25 s), for the shard balancer: unlike most scenarios these runs, not
+/// the kernel build, dominate.
+fn install_scenario_run_secs(name: &str) -> u64 {
+    const INSTALL: u64 = 215;
+    match name {
+        INSTALL_FRESH_SCENARIO | INSTALL_FRESH_4K_SCENARIO => INSTALL + 25,
+        INSTALL_REFUSALS_SCENARIO => 10,
+        // The list's preflights, then one install and the installed boot.
+        INSTALL_CONSOLE_SCENARIO => INSTALL + 40,
+        // A desktop session that lists the disks and backs out: no install.
+        INSTALL_ATRIUM_SCENARIO => 150,
+        INSTALL_ATRIUM_NO_BUNDLE_SCENARIO | INSTALL_ATRIUM_BAD_PIN_SCENARIO => 90,
+        // Per stop: the stop (W1, W2 about 10 s; later ones part or all of a
+        // payload) and its Finish; W6's stop is a whole install and its
+        // refused Finish 25 s. One installed boot.
+        _ => {
+            let stops: u64 = install_stops(name)
+                .iter()
+                .map(|step| match *step {
+                    "W1" | "W2" => 10 + INSTALL,
+                    "W3" => 30 + INSTALL,
+                    "W4" => 40 + INSTALL,
+                    "W5" => 2 * INSTALL + 30,
+                    _ => INSTALL + 25,
+                })
+                .sum();
+            stops + 25
+        }
+    }
+}
+
+/// The smallest disk the installer takes (`install_logic::MIN_TARGET_BYTES`,
+/// THINK §4.6). The fresh installs use exactly this.
+const INSTALL_MIN_BYTES: u64 = 2 << 30;
+/// The other targets: room to spare.
+const INSTALL_TARGET_BYTES: u64 = 3 << 30;
+
+/// BLAKE3 of a file, read 1 MiB at a time (the targets are GiB-sized).
+fn blake3_file_streamed(path: &Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_string(hasher.finalize().as_bytes()))
+}
+
+/// A sparse, all-zero disk of `bytes`.
+fn write_blank_disk(path: &Path, bytes: u64) -> Result<(), String> {
+    let file = fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    file.set_len(bytes)
+        .map_err(|e| format!("size {}: {e}", path.display()))
+}
+
+/// The plan disk the kernel's `run_install` reads: `LOGANSOS-PLAN1 <plan>`
+/// and a newline in sector 0.
+fn write_install_plan(path: &Path, plan: &str) -> Result<(), String> {
+    let mut bytes = vec![0u8; 1 << 20];
+    let text = format!("LOGANSOS-PLAN1 {plan}\n");
+    bytes[..text.len()].copy_from_slice(text.as_bytes());
+    fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// Write `layout`'s MBR, both headers and both arrays to `path` (a disk of
+/// its geometry).
+fn write_gpt_tables(path: &Path, layout: &gpt_logic::Layout) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let s = layout.sector_size;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("open {}: {e}", path.display()))?;
+    for (lba, bytes) in [
+        (0, &layout.mbr),
+        (1, &layout.primary_header),
+        (2, &layout.entries),
+        (layout.backup_entries_lba, &layout.entries),
+        (layout.last_lba, &layout.backup_header),
+    ] {
+        file.seek(SeekFrom::Start(lba * s))
+            .and_then(|_| file.write_all(bytes))
+            .map_err(|e| format!("write {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// GUIDs for the host-made tables (as GPT stores them).
+fn install_test_guid(tag: u8) -> [u8; 16] {
+    let mut g = [tag; 16];
+    g[7] = (g[7] & 0x0f) | 0x40;
+    g[8] = (g[8] & 0x3f) | 0x80;
+    g
+}
+
+/// The installer's own table, complete, on an otherwise empty disk: a
+/// completed LogansOS disk as `classify` sees it.
+fn installed_layout(bytes: u64) -> Result<gpt_logic::Layout, String> {
+    gpt_logic::gpt_layout(
+        512,
+        bytes / 512 - 1,
+        install_test_guid(0x11),
+        install_test_guid(0x12),
+        install_test_guid(0x13),
+        false,
+    )
+    .ok_or_else(|| "no installer layout for the test disk".to_string())
+}
+
+/// A valid GPT that isn't ours: the same table with entry 2 a Linux
+/// filesystem partition (type 0FC63DAF-8483-4772-8E79-3D69D8477DE4), CRCs
+/// recomputed.
+fn foreign_layout(bytes: u64) -> Result<gpt_logic::Layout, String> {
+    const LINUX_DATA: [u8; 16] = [
+        0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47, 0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d,
+        0xe4,
+    ];
+    let mut layout = installed_layout(bytes)?;
+    layout.entries[128..144].copy_from_slice(&LINUX_DATA);
+    let crc = gpt_logic::crc32(&layout.entries);
+    for header in [&mut layout.primary_header, &mut layout.backup_header] {
+        header[88..92].copy_from_slice(&crc.to_le_bytes());
+        header[16..20].fill(0);
+        let h = gpt_logic::crc32(&header[..gpt_logic::HEADER_MIN]);
+        header[16..20].copy_from_slice(&h.to_le_bytes());
+    }
+    Ok(layout)
+}
+
+/// The §4.4 oracle on the disk the kernel installed: its MBR, both headers
+/// and both arrays are byte for byte `gpt_layout` for its geometry and the
+/// GUIDs it chose (read from its primary header and array), complete.
+fn check_installed_table(path: &Path, s: u64) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = fs::metadata(path)
+        .map_err(|e| format!("stat {}: {e}", path.display()))?
+        .len();
+    let mut file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
+    let mut read = |offset: u64, n: usize| -> Result<Vec<u8>, String> {
+        let mut out = vec![0u8; n];
+        file.seek(SeekFrom::Start(offset))
+            .and_then(|_| file.read_exact(&mut out))
+            .map_err(|e| format!("read {}: {e}", path.display()))?;
+        Ok(out)
+    };
+    let header = read(s, s as usize)?;
+    let array = read(2 * s, gpt_logic::LAYOUT_ARRAY_BYTES)?;
+    let guid = |b: &[u8]| -> [u8; 16] { b.try_into().expect("16 bytes") };
+    let layout = gpt_logic::gpt_layout(
+        s,
+        len / s - 1,
+        guid(&header[56..72]),
+        guid(&array[16..32]),
+        guid(&array[144..160]),
+        false,
+    )
+    .ok_or_else(|| format!("{}: no layout for its geometry", path.display()))?;
+    for (what, lba, want) in [
+        ("protective MBR", 0, &layout.mbr),
+        ("primary header", 1, &layout.primary_header),
+        ("primary array", 2, &layout.entries),
+        ("backup array", layout.backup_entries_lba, &layout.entries),
+        ("backup header", layout.last_lba, &layout.backup_header),
+    ] {
+        if &read(lba * s, want.len())? != want {
+            return Err(format!(
+                "{}: the {what} at LBA {lba} is not the §4.4 table for S={s}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The installer's scenarios. Each boot-1 kernel is the same `neo-test-install`
+/// kernel, booted under the pinned OVMF from `boot.raw` (the ISO's bytes,
+/// carrying the bundle), with a plan disk and its targets; the plan says what
+/// it does (`test_harness::run_install`):
+///
+/// - `install_fresh` / `install_fresh_4k`: a fresh install to a blank disk of
+///   exactly the minimum size, at S=512 / S=4096; then that disk boots alone
+///   and Arthur's model and vocab load from its NeoFS partition
+///   (`arthur_model_from_neofs`'s checks);
+/// - `install_stop_finish`: `install-stop-after=Wn` at W2, W5 and W6
+///   (`install_stop_finish_full`: every step), each then Finish installing
+///   (W6's stop is a complete install: Finish is refused with no write); the
+///   W5 one then boots alone;
+/// - `install_refusals`: a 1 GiB disk, one a sector short of the minimum, a
+///   device without flush, a foreign GPT, a whole-disk FAT32 filesystem and
+///   a completed install, each refused for both starts with no write.
+///
+/// The boot medium is never written, and the kernel shows it is not read
+/// once the install starts.
+fn run_install_scenario(scenario: TestScenario, attempt: usize) -> Result<(), String> {
+    stage_install_bundle()?;
+    set_install_medium(match scenario.name {
+        INSTALL_ATRIUM_NO_BUNDLE_SCENARIO => InstallMedium::NoBundle,
+        INSTALL_ATRIUM_BAD_PIN_SCENARIO => InstallMedium::WrongPin,
+        _ => InstallMedium::Whole,
+    });
+    let built = build_test_artifacts_for_scenario(scenario, ScenarioBundleMode::Vmware);
+    set_install_medium(InstallMedium::Whole);
+    set_install_pin(None);
+    built?;
+    let ovmf = resolve_ovmf(true)?;
+    let dir = workspace_root().join(TEST_OUTPUT_REL).join(scenario.name);
+    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let iso = workspace_root().join(ISO_OUTPUT_REL);
+    let boot = dir.join(vm_image::BOOT_DISK);
+    fs::copy(&iso, &boot)
+        .map_err(|e| format!("copy {} to {}: {e}", iso.display(), boot.display()))?;
+    let boot_digest = blake3_file_streamed(&boot)?;
+    let plan_disk = dir.join("plan.raw");
+    let vars = dir.join("vars.fd");
+    let boot_no = std::cell::Cell::new(0usize);
+    let log_for = |label: &str| -> Result<PathBuf, String> {
+        boot_no.set(boot_no.get() + 1);
+        let log = scenario_serial_log(&format!(
+            "{}{}.attempt{}.boot{}-{}.serial.log",
+            scenario.name,
+            neo_test_run_id_suffix(),
+            attempt,
+            boot_no.get(),
+            label
+        ));
+        remove_serial_log(&log)?;
+        Ok(log)
+    };
+    // One boot from the install medium: `plan` against `disks`, its serial
+    // script `script`'s (R4.4: the console scenario's list-only boot has
+    // its own).
+    let install_boot_as = |script: TestScenario,
+                           plan: &str,
+                           disks: &[vm_image::InstallDisk],
+                           needles: &[&str]| {
+        write_install_plan(&plan_disk, plan)?;
+        let plan_digest = blake3_file_streamed(&plan_disk)?;
+        let log = log_for(&plan.replace(' ', "-"))?;
+        vm_vars_copy(&ovmf, &vars)?;
+        let mut all = vec![
+            vm_image::InstallDisk {
+                path: &boot,
+                serial: "LOGANSOS-BOOT",
+                sector: 512,
+            },
+            vm_image::InstallDisk {
+                path: &plan_disk,
+                serial: "LOGANSOS-PLAN",
+                sector: 512,
+            },
+        ];
+        all.extend(disks.iter().map(|d| vm_image::InstallDisk {
+            path: d.path,
+            serial: d.serial,
+            sector: d.sector,
+        }));
+        let args = vm_image::vm_install_args(&ovmf.code, &vars, &all);
+        let observed =
+            run_qemu_test_invocation(script, ScenarioBundleMode::Vmware, log, &[], Some(&args))?;
+        require_observed_pass(script, &observed)?;
+        for needle in needles {
+            require_serial_contains(
+                scenario,
+                &observed,
+                needle,
+                "the install boot must report its plan's outcome",
+            )?;
+        }
+        // The Atrium sessions only look (no install starts), and run the
+        // desktop's harness, which doesn't count the boot medium's reads.
+        if !script.name.starts_with(INSTALL_ATRIUM_SCENARIO) {
+            require_serial_contains(
+                scenario,
+                &observed,
+                "install boot_medium reads_during_install=0",
+                "the installer must not read the boot medium once it starts (THINK §4.7)",
+            )?;
+        }
+        if blake3_file_streamed(&plan_disk)? != plan_digest {
+            return Err(format!(
+                "`{}`: the plan disk changed during `{plan}`",
+                scenario.name
+            ));
+        }
+        if blake3_file_streamed(&boot)? != boot_digest {
+            return Err(format!(
+                "`{}`: the boot medium changed during `{plan}`",
+                scenario.name
+            ));
+        }
+        eprintln!(
+            "[xtask] neo-test: `{}` install boot `{plan}` PASS (serial: {})",
+            scenario.name,
+            observed.serial_log.display()
+        );
+        Ok::<(), String>(())
+    };
+    let install_boot = |plan: &str, disks: &[vm_image::InstallDisk], needles: &[&str]| {
+        install_boot_as(scenario, plan, disks, needles)
+    };
+    // The installed disk, alone: `arthur_model_from_neofs` with its model
+    // and vocab on partition 2 of the disk it boots from.
+    let installed_boot = |target: &Path, s: u64, log: PathBuf| -> Result<(), String> {
+        let installed = TestScenario {
+            name: "arthur_model_from_neofs",
+            ..scenario
+        };
+        vm_vars_copy(&ovmf, &vars)?;
+        let args = vm_image::vm_install_args(
+            &ovmf.code,
+            &vars,
+            &[vm_image::InstallDisk {
+                path: target,
+                serial: "LOGANSOS-TARGET",
+                sector: s,
+            }],
+        );
+        let observed =
+            run_qemu_test_invocation(installed, ScenarioBundleMode::Vmware, log, &[], Some(&args))?;
+        // Every `arthur_model_from_neofs` check: the model and vocab from
+        // NeoFS under their pins, no boot module, Arthur's reply.
+        require_observed_pass(installed, &observed)?;
+        require_serial_contains(
+            installed,
+            &observed,
+            "fs: NeoFS partition device_index=0 partition=2 ",
+            "the installed disk's NeoFS is its partition 2",
+        )?;
+        if s == 4096 {
+            require_serial_contains(
+                installed,
+                &observed,
+                "logical_block_size=4096 blocks=",
+                "the 4K install's disk boots as a 4096-byte logical-sector disk",
+            )?;
+        }
+        for name in ["neo-init", "neo-worker", "neo-shell", "neo-arthur"] {
+            require_serial_contains(
+                installed,
+                &observed,
+                &format!("BOOTMOD module path=/slot/A/{name} "),
+                "the installed disk boots slot A's deployment",
+            )?;
+        }
+        eprintln!(
+            "[xtask] neo-test: `{}` installed disk booted alone, model from NeoFS PASS (serial: {})",
+            scenario.name,
+            observed.serial_log.display()
+        );
+        Ok(())
+    };
+    let target = dir.join("target.raw");
+    let target_disk = |s: u64| vm_image::InstallDisk {
+        path: &target,
+        serial: "LOGANSOS-TARGET",
+        sector: s,
+    };
+    match scenario.name {
+        INSTALL_FRESH_SCENARIO | INSTALL_FRESH_4K_SCENARIO => {
+            let s = if scenario.name == INSTALL_FRESH_4K_SCENARIO {
+                4096
+            } else {
+                512
+            };
+            write_blank_disk(&target, INSTALL_MIN_BYTES)?;
+            install_boot(
+                "fresh",
+                &[target_disk(s)],
+                &[
+                    "install_fresh=ok",
+                    &format!("install: preflight slot=2 S={s} "),
+                ],
+            )?;
+            check_installed_table(&target, s)?;
+            let log = log_for("installed")?;
+            installed_boot(&target, s, log)?;
+        }
+        INSTALL_STOP_FINISH_SCENARIO | INSTALL_STOP_FINISH_FULL_SCENARIO => {
+            for &step in install_stops(scenario.name) {
+                write_blank_disk(&target, INSTALL_TARGET_BYTES)?;
+                install_boot(
+                    &format!("stop {step}"),
+                    &[target_disk(512)],
+                    &[&format!("install_stop=ok after={step}")],
+                )?;
+                if step == "W6" {
+                    check_installed_table(&target, 512)?;
+                    let before = blake3_file_streamed(&target)?;
+                    install_boot(
+                        "finish-refused",
+                        &[target_disk(512)],
+                        &["install_finish_refused=ok"],
+                    )?;
+                    if blake3_file_streamed(&target)? != before {
+                        return Err(format!(
+                            "`{}`: Finish on a completed install wrote the disk",
+                            scenario.name
+                        ));
+                    }
+                    continue;
+                }
+                install_boot(
+                    "finish",
+                    &[target_disk(512)],
+                    &["install_finish=ok", "start=Finish"],
+                )?;
+                check_installed_table(&target, 512)?;
+                if step == "W5" {
+                    let log = log_for("installed")?;
+                    installed_boot(&target, 512, log)?;
+                }
+            }
+        }
+        INSTALL_REFUSALS_SCENARIO => {
+            let rows: [(&str, &str, u64); 6] = [
+                ("LOGANSOS-1GIB", "1gib.raw", 1 << 30),
+                ("LOGANSOS-SHORT", "short.raw", INSTALL_MIN_BYTES - 512),
+                ("LOGANSOS-NOFLUSH", "noflush.raw", INSTALL_TARGET_BYTES),
+                ("LOGANSOS-FOREIGN", "foreign.raw", INSTALL_TARGET_BYTES),
+                ("LOGANSOS-FATDISK", "fat.raw", INSTALL_TARGET_BYTES),
+                ("LOGANSOS-INSTALLED", "installed.raw", INSTALL_TARGET_BYTES),
+            ];
+            let paths: Vec<PathBuf> = rows.iter().map(|(_, f, _)| dir.join(f)).collect();
+            for ((serial, _, bytes), path) in rows.iter().zip(&paths) {
+                write_blank_disk(path, *bytes)?;
+                match *serial {
+                    "LOGANSOS-FOREIGN" => write_gpt_tables(path, &foreign_layout(*bytes)?)?,
+                    "LOGANSOS-INSTALLED" => write_gpt_tables(path, &installed_layout(*bytes)?)?,
+                    // A filesystem with no partition table: FAT32 over the
+                    // whole disk.
+                    "LOGANSOS-FATDISK" => {
+                        let status = Command::new("mformat")
+                            .arg("-i")
+                            .arg(path)
+                            .args(["-F", "::"])
+                            .status()
+                            .map_err(|e| format!("launch mformat: {e}"))?;
+                        if !status.success() {
+                            return Err(format!("mformat {}: {status}", path.display()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let before = paths
+                .iter()
+                .map(|p| blake3_file_streamed(p))
+                .collect::<Result<Vec<_>, _>>()?;
+            let disks: Vec<vm_image::InstallDisk> = rows
+                .iter()
+                .zip(&paths)
+                .map(|((serial, _, _), path)| vm_image::InstallDisk {
+                    path,
+                    serial,
+                    sector: 512,
+                })
+                .collect();
+            install_boot(
+                "refusals",
+                &disks,
+                &["install_refusals=ok rows=6 boot_disk=refused"],
+            )?;
+            for (((serial, _, _), path), was) in rows.iter().zip(&paths).zip(&before) {
+                if &blake3_file_streamed(path)? != was {
+                    return Err(format!(
+                        "`{}`: the refused disk {serial} was written",
+                        scenario.name
+                    ));
+                }
+            }
+        }
+        INSTALL_CONSOLE_SCENARIO => {
+            write_blank_disk(&target, INSTALL_MIN_BYTES)?;
+            // First a boot that lists and goes back: LIST writes nothing, and
+            // every refused row's token is refused again by RUN (the kernel
+            // runs them after userland exits). Every disk is hashed across it.
+            let list_only = TestScenario {
+                name: INSTALL_CONSOLE_LIST_SCENARIO,
+                ..scenario
+            };
+            let target_before = blake3_file_streamed(&target)?;
+            install_boot_as(
+                list_only,
+                "console-list",
+                &[target_disk(512)],
+                &[
+                    "install: list rows=3 claimed_after=0",
+                    "[ neo-shell ] install: back",
+                    "install rerun refused slot=0 listed_refusal=1 status=1",
+                    "install rerun refused slot=1 listed_refusal=3 status=3",
+                    "install_console=ok",
+                    "refused_rerun=2 claimed_after=0",
+                ],
+            )?;
+            if blake3_file_streamed(&target)? != target_before {
+                return Err(format!(
+                    "`{}`: the list-only boot wrote the target",
+                    scenario.name
+                ));
+            }
+            // The plan disk is unused here (userland runs); it is one more
+            // refused row, too small.
+            install_boot(
+                "console",
+                &[target_disk(512)],
+                &[
+                    "[ neo-worker ] installer-probe list=EPERM run=EPERM",
+                    "[ neo-init ] installer: no-cap probe exited 0",
+                    "[ neo-init ] installer: cap to worker refused EPERM",
+                    "LogansOS installer. Disks:",
+                    "LOGANSOS-BOOT  (",
+                    "not available: this is the disk LogansOS is running from",
+                    "not available: too small: needs 2 GiB",
+                    "512-byte sectors, blank)  Install",
+                    "That isn't the number of a disk you can choose.",
+                    "Install LogansOS on LOGANSOS-TARGET (",
+                    "[ neo-shell ] install: status=0",
+                    "LogansOS is installed.",
+                    "install: done outcome=Installed",
+                    "install_console=ok",
+                ],
+            )?;
+            check_installed_table(&target, 512)?;
+            let log = log_for("installed")?;
+            installed_boot(&target, 512, log)?;
+        }
+        INSTALL_ATRIUM_SCENARIO => {
+            write_blank_disk(&target, INSTALL_MIN_BYTES)?;
+            let before = blake3_file_streamed(&target)?;
+            install_boot(
+                "atrium",
+                &[target_disk(512)],
+                &[
+                    "DESKTOP home ready",
+                    "install: list rows=3 claimed_after=0",
+                    "DESKTOP installer list shown rows=3 offered=1 selected=2",
+                    "DESKTOP installer selected row=2 via=key",
+                    "DESKTOP installer confirm shown row=2 action=Install",
+                    "DESKTOP installer back to=list",
+                    "DESKTOP installer back to=home via=esc",
+                    "DESKTOP installer refused row=0 not selectable reason=\"this is the disk LogansOS is running from\"",
+                    "DESKTOP installer selected row=2 via=click",
+                    "DESKTOP installer back to=home via=click",
+                    "DESKTOP installer chip shown=1",
+                    "DESKTOP home chip selected=3",
+                    "DESKTOP home chip activated target=install\n",
+                    "DESKTOP home chip activated target=install via=click at=42,234",
+                    "DESKTOP home intent submitted target=arthur",
+                    "material=glass_home_hint_install oracle=scene_oracle.py",
+                    "DESKTOP home return client=arthur exit=0",
+                ],
+            )?;
+            if blake3_file_streamed(&target)? != before {
+                return Err(format!(
+                    "`{}`: the target was written, but the session only looked",
+                    scenario.name
+                ));
+            }
+        }
+        INSTALL_ATRIUM_NO_BUNDLE_SCENARIO | INSTALL_ATRIUM_BAD_PIN_SCENARIO => {
+            write_blank_disk(&target, INSTALL_MIN_BYTES)?;
+            let before = blake3_file_streamed(&target)?;
+            let medium: &[&str] = if scenario.name == INSTALL_ATRIUM_BAD_PIN_SCENARIO {
+                &["install: bundle bytes=", " match=false"]
+            } else {
+                &[]
+            };
+            let mut needles = vec![
+                "DESKTOP home ready",
+                // Every row refused for the medium (code 11), so no chip.
+                "install: list slot=0 ",
+                "install: list rows=3 claimed_after=0",
+                "DESKTOP installer chip shown=0",
+                "DESKTOP intro hint exact=column_pattern",
+                "material=glass_home_hint oracle=scene_oracle.py",
+            ];
+            needles.extend_from_slice(medium);
+            install_boot("atrium-no-chip", &[target_disk(512)], &needles)?;
+            let serial = fs::read_to_string(scenario_serial_log(&format!(
+                "{}{}.attempt{}.boot{}-atrium-no-chip.serial.log",
+                scenario.name,
+                neo_test_run_id_suffix(),
+                attempt,
+                boot_no.get()
+            )))
+            .unwrap_or_default();
+            let rows: Vec<&str> = serial
+                .lines()
+                .filter(|l| l.contains("install: list slot="))
+                .collect();
+            if rows.is_empty() || !rows.iter().all(|l| l.trim_end().ends_with("refusal=11")) {
+                return Err(format!(
+                    "`{}`: every listed disk must be refused for the medium: {rows:?}",
+                    scenario.name
+                ));
+            }
+            if blake3_file_streamed(&target)? != before {
+                return Err(format!("`{}`: the target was written", scenario.name));
+            }
+        }
+        other => return Err(format!("{other}: not an install scenario")),
+    }
+    eprintln!("[xtask] neo-test: `{}` PASS", scenario.name);
+    Ok(())
+}
+
+fn build_test_artifacts_for_scenario(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+) -> Result<(), String> {
+    build_user_for_scenario(scenario)?;
+    eprintln!("[xtask] neo-test: building scenario `{}`", scenario.name);
+    build_test_kernel(scenario, mode)?;
+    // Desktop S1: the session scenario boots the pinned production mode.
+    set_desktop_resolution(scenario_desktop_resolution(scenario.name));
+    let iso = assemble_iso_with_limine_kaslr(scenario.limine_kaslr);
+    set_desktop_resolution(None);
+    iso
+}
+
+/// Scenarios that boot the desktop session at the production-pinned mode.
+fn scenario_desktop_resolution(scenario_name: &str) -> Option<(u32, u32)> {
+    is_desktop_kernel_scenario(scenario_name).then_some(DESKTOP_DEFAULT_RESOLUTION)
+}
+
+/// Scenarios that boot the desktop session's machine (its mode, CPU and
+/// input devices): the [`DESKTOP_SCENARIOS`] table and OT-66 L1's sign-in
+/// scenarios (`login_*`), which carry their own scripts and checks.
+fn is_desktop_kernel_scenario(scenario_name: &str) -> bool {
+    is_desktop_session_scenario(scenario_name) || scenario_name.starts_with("login_")
+}
+
+/// The desktop-session gate scenarios ([`DESKTOP_SCENARIOS`]).
+/// Arthur's refusal probe (`arthur-refusal-probe-test`) and the WM's side of
+/// it, in order: each refused request is logged by the WM before its reply,
+/// and Arthur logs the statuses once every reply is in. Statuses are
+/// `ProtocolError::status`: 2 BadLength, 3 BadField, 4 BadState, 7
+/// CapRequired. The configure-mismatch refusal comes later, at the corner
+/// drag's configure, and the real ack after it is still accepted.
+const SESSION_REFUSAL_SEQUENCE: [&str; 12] = [
+    "DESKTOP request refused op=9 status=4", // a commit of a committed serial
+    "DESKTOP request refused op=9 status=3", // damage past the right edge
+    "DESKTOP request refused op=5 status=7", // destroy, another channel
+    "DESKTOP request refused op=7 status=7", // yield, another channel
+    "DESKTOP request refused op=4 status=4", // focus request, not taken here
+    "DESKTOP request refused op=6 status=4", // ack, nothing published
+    "DESKTOP request refused op=9 status=2", // payload cut short
+    "DESKTOP arthur refusal probe commit_stale=4 damage_outside=3 destroy_wrong_channel=7 yield_wrong_channel=7 unexpected=4 configure_unpublished=4 truncated=2 garbage=dropped",
+    "DESKTOP request refused op=6 status=3", // ack of the wrong serial
+    "DESKTOP arthur refusal probe configure_mismatch=3",
+    "DESKTOP pointer resize from=640x400 to=760x460",
+    "DESKTOP arthur configure size=760x460 serial=1",
+];
+
+/// The headerless bytes are dropped after the truncated request's refusal
+/// and before the next request (Arthur does not wait for them, so the drop
+/// is not ordered against its probe line).
+const SESSION_DROP_SEQUENCE: [&str; 3] = [
+    "DESKTOP request refused op=9 status=2",
+    "DESKTOP request dropped len=8 reason=no-header",
+    "DESKTOP request refused op=6 status=3",
+];
+
+/// Janus #96: during the first answer's emblem the WM refuses Arthur's
+/// probe (BadField past the edge, CapRequired on the wrong channel), Arthur
+/// sees both statuses in the replies, and the WM, still running, turns that
+/// emblem to its end and then the second answer's (the pace check holds
+/// both to the frame clock).
+const BUSY_REFUSAL_SEQUENCE: [&str; 5] = [
+    "DESKTOP busy refused status=3 scene=unchanged",
+    "DESKTOP busy refused status=7 scene=unchanged",
+    "DESKTOP arthur busy probe valid=0 overflow=3 wrong_channel=7",
+    "DESKTOP busy emblem ended ms=",
+    "DESKTOP busy emblem ended ms=",
+];
+
+/// A9-D: the WM's frame period for the busy emblem (`neo_atrium::busy`).
+const BUSY_FRAME_MS: u64 = 1000 / 12;
+
+/// Every `DESKTOP busy emblem ended ms=<ms> presents=<n> ...` line, in order.
+fn busy_emblem_ends(serial: &str) -> Vec<(u64, u64)> {
+    serial
+        .lines()
+        .filter_map(|line| {
+            let rest = line.split("DESKTOP busy emblem ended ms=").nth(1)?;
+            let (ms, rest) = rest.split_once(" presents=")?;
+            let presents = rest.split_whitespace().next()?;
+            Some((ms.parse().ok()?, presents.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Two emblems (one per answer), each over a real generation (at least a
+/// second), each presented at no less than half its frame clock: a WM that
+/// froze while Arthur generated presents once, when the emblem appears.
+fn check_busy_emblem_pace(serial: &str) -> Result<(), String> {
+    let ends = busy_emblem_ends(serial);
+    if ends.len() != 2 {
+        return Err(format!("want 2 emblems (one per answer), saw {ends:?}"));
+    }
+    for (ms, presents) in ends {
+        let due = ms / BUSY_FRAME_MS;
+        if ms < 1000 || presents < 2 || presents * 2 < due {
+            return Err(format!(
+                "shown {ms} ms with {presents} presents; its clock was due {due} (need half, over at least 1 s)"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A9-C: Arthur's scroll witnesses in order: a page up, a line up (one line
+/// further), a page down (a page further back down: rows - 1 = 11), and a
+/// page down that follows the newest text again.
+fn check_scroll_sequence(serial: &str) -> Result<(), String> {
+    let lines: Vec<&str> = serial
+        .lines()
+        .filter_map(|l| l.split("DESKTOP arthur scroll ").nth(1))
+        .collect();
+    let top = |line: &str, key: &str| -> Result<u64, String> {
+        line.strip_prefix(&format!("key={key} view_top="))
+            .and_then(|v| v.trim().parse().ok())
+            .ok_or_else(|| format!("want `key={key} view_top=<n>`, saw `{line}`"))
+    };
+    let [pgup, up, pgdn, follow] = lines.as_slice() else {
+        return Err(format!("want 4 scroll lines, saw {lines:?}"));
+    };
+    let (a, b, c) = (top(pgup, "pgup")?, top(up, "up")?, top(pgdn, "pgdn")?);
+    if b + 1 != a || c != b + 11 || follow.trim() != "key=pgdn view=follow" {
+        return Err(format!(
+            "scroll tops pgup={a} up={b} pgdn={c}, then `{follow}`"
+        ));
+    }
+    Ok(())
+}
+
+/// A9-C2: the wheel reached Arthur on hover both ways (the WM's witnesses),
+/// the first notch moved the view three lines up from the newest (Arthur's
+/// `view_top`), and the second followed again.
+fn check_wheel_sequence(serial: &str) -> Result<(), String> {
+    let wm: Vec<&str> = serial
+        .lines()
+        .filter_map(|l| l.split("DESKTOP pointer wheel=").nth(1))
+        .collect();
+    if wm != ["1 to=arthur", "-1 to=arthur"] {
+        return Err(format!(
+            "want the WM to forward wheel 1 then -1 to arthur, saw {wm:?}"
+        ));
+    }
+    let arthur: Vec<&str> = serial
+        .lines()
+        .filter_map(|l| l.split("DESKTOP arthur scroll ").nth(1))
+        .collect();
+    let [first, second] = arthur.as_slice() else {
+        return Err(format!("want 2 scroll lines, saw {arthur:?}"));
+    };
+    let top: u64 = first
+        .strip_prefix("key=wheel view_top=")
+        .and_then(|v| v.trim().parse().ok())
+        .ok_or_else(|| format!("want `key=wheel view_top=<n>`, saw `{first}`"))?;
+    if second.trim() != "key=wheel view=follow" {
+        return Err(format!(
+            "want the second notch to follow again, saw `{second}`"
+        ));
+    }
+    // 20 seed lines, the greeting's two, `You> hello desktop`, the answer
+    // and the empty prompt line: the newest view's top is 14; one notch up
+    // is three lines.
+    if top != 14 - 3 {
+        return Err(format!("one notch moved the view to {top}, want 11"));
+    }
+    Ok(())
+}
+
+fn is_desktop_session_scenario(scenario_name: &str) -> bool {
+    desktop_scenario(scenario_name).is_some()
+}
+
+fn build_test_artifacts_for_arthur_memory_off(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+) -> Result<(), String> {
+    build_user_arthur_memory_off()?;
+    eprintln!(
+        "[xtask] neo-test: building scenario `{}` with neo-arthur memory off",
+        scenario.name
+    );
+    build_test_kernel(scenario, mode)?;
+    assemble_iso_with_limine_kaslr(scenario.limine_kaslr)
+}
+
+struct VmwareDiskExport {
+    qemu_index: usize,
+    raw_path: PathBuf,
+    vmdk_path: Option<PathBuf>,
+    role: String,
+    qemu_backend: String,
+    vmware_controller: String,
+}
+
+fn build_vmware_scenario_bundle(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+) -> Result<(), String> {
+    if scenario.name == AARCH64_BARRIER_SCENARIO {
+        return Err("neo-test build-only export is only supported for x86_64 ISO scenarios".into());
+    }
+
+    let root = workspace_root();
+    let bundle_dir = root.join(VMWARE_TEST_OUTPUT_REL).join(scenario.name);
+    fs::create_dir_all(&bundle_dir)
+        .map_err(|e| format!("create VMware scenario dir {}: {e}", bundle_dir.display()))?;
+
+    build_test_artifacts_for_scenario(scenario, mode)?;
+
+    let source_iso = root.join(ISO_OUTPUT_REL);
+    let iso_name = if mode.is_bare_metal() {
+        format!("{}.bare-metal.iso", scenario.name)
+    } else {
+        format!("{}.iso", scenario.name)
+    };
+    let bundle_iso = bundle_dir.join(iso_name);
+    fs::copy(&source_iso, &bundle_iso).map_err(|e| {
+        format!(
+            "copy scenario ISO {} -> {}: {e}",
+            source_iso.display(),
+            bundle_iso.display()
+        )
+    })?;
+    if mode.is_bare_metal() {
+        refuse_guard_off_image(&bundle_iso)?;
+    }
+
+    let storage_disks = if scenario_uses_storage_disk(scenario)
+        || (mode.is_bare_metal()
+            && (bare_metal_uses_nvme_log_sink_only(scenario.name)
+                || bare_metal_uses_ahci_log_sink_only(scenario.name)))
+    {
+        prepare_storage_disks_for_mode(scenario.name, mode)?
+    } else {
+        Vec::new()
+    };
+    let disk_exports = export_vmware_disks(scenario, mode, &storage_disks, &bundle_dir)?;
+
+    let manifest = bundle_dir.join("manifest.txt");
+    write_vmware_manifest(scenario, mode, &bundle_iso, &disk_exports, &manifest)?;
+
+    println!(
+        "NEO_VMWARE_SCENARIO/1 scenario={} mode={} iso={} manifest={}",
+        scenario.name,
+        if mode.is_bare_metal() {
+            "bare-metal"
+        } else {
+            "vmware"
+        },
+        bundle_iso.display(),
+        manifest.display()
+    );
+    for disk in disk_exports
+        .iter()
+        .filter(|disk| disk.role == "scenario" || disk.role == "log-sink")
+    {
+        let vmdk = disk
+            .vmdk_path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_string());
+        println!(
+            "NEO_VMWARE_DISK/1 scenario={} role={} qemu_index={} raw={} vmdk={} controller={}",
+            scenario.name,
+            disk.role,
+            disk.qemu_index,
+            disk.raw_path.display(),
+            vmdk,
+            disk.vmware_controller
+        );
+    }
+    Ok(())
+}
+
+fn export_vmware_disks(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+    storage_disks: &[PathBuf],
+    bundle_dir: &Path,
+) -> Result<Vec<VmwareDiskExport>, String> {
+    let qemu_img = find_qemu_img();
+    if qemu_img.is_none() && !storage_disks.is_empty() {
+        eprintln!(
+            "[xtask] neo-test-build: qemu-img not found; manifest will reference raw disks only"
+        );
+    }
+
+    let mut exports = Vec::new();
+    for (qemu_index, raw_path) in storage_disks.iter().enumerate() {
+        let (role, qemu_backend, vmware_controller) =
+            classify_vmware_disk(scenario.name, mode, qemu_index);
+        let vmdk_path = match qemu_img.as_ref() {
+            Some(qemu_img) => {
+                let vmdk_path = bundle_dir.join(format!("device{qemu_index}.vmdk"));
+                Some(convert_raw_to_vmdk(qemu_img, raw_path, &vmdk_path)?)
+            }
+            None => None,
+        };
+        exports.push(VmwareDiskExport {
+            qemu_index,
+            raw_path: raw_path.clone(),
+            vmdk_path,
+            role,
+            qemu_backend,
+            vmware_controller,
+        });
+    }
+    Ok(exports)
+}
+
+/// Muse's R4.1 review, item 4: NVMe namespace notices and resets under the
+/// claim (`test_harness::run_install_claim_nvme_events`).
+const INSTALL_CLAIM_NVME_EVENTS_SCENARIO: &str = "install_claim_nvme_events";
+
+/// One NVMe controller in a subsystem (so namespaces can be attached and
+/// detached): namespace 1 attached, namespace 2 a detached twin of the same
+/// size. Each has its own EUI64.
+fn install_claim_nvme_events_args() -> Result<Vec<String>, String> {
+    let dir = workspace_root().join(TEST_OUTPUT_REL);
+    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let mut args: Vec<String> = vec![
+        "-device".into(),
+        "nvme-subsys,id=nvmesubsys0,nqn=logansos-r41".into(),
+        "-device".into(),
+        "nvme,id=nvme0,serial=LOGANSOS-NVME,subsys=nvmesubsys0".into(),
+    ];
+    for (nsid, detached) in [(1u32, false), (2, true)] {
+        let path = dir.join(format!("{INSTALL_CLAIM_NVME_EVENTS_SCENARIO}.ns{nsid}.raw"));
+        let file =
+            fs::File::create(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
+        file.set_len(64 << 20)
+            .map_err(|e| format!("size {}: {e}", path.display()))?;
+        args.push("-drive".into());
+        args.push(format!(
+            "if=none,id=nvmens{nsid},format=raw,cache=writeback,file={}",
+            path.display()
+        ));
+        args.push("-device".into());
+        args.push(format!(
+            "nvme-ns,drive=nvmens{nsid},nsid={nsid},eui64=0x4c4f47414e5300{nsid:02x},detached={detached}"
+        ));
+    }
+    Ok(args)
+}
+
+fn classify_vmware_disk(
+    scenario_name: &str,
+    mode: ScenarioBundleMode,
+    qemu_index: usize,
+) -> (String, String, String) {
+    // OT-87 R4.1: virtio-blk disks (one with serial=, one without, and a twin
+    // of the first), an NVMe and a SATA disk, so each driver's identity read
+    // runs.
+    if !mode.is_bare_metal() && scenario_name == "install_claim_identity" {
+        let backend = match qemu_index {
+            2 => "nvme",
+            3 => "ich9-ahci",
+            _ => "virtio-blk",
+        };
+        return (
+            "scenario".to_string(),
+            backend.to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+    if mode.is_bare_metal()
+        && matches!(
+            scenario_name,
+            "infer_transformer_forward" | "arthur_compositor_baremetal"
+        )
+    {
+        if qemu_index == 0 {
+            return (
+                "scenario".to_string(),
+                "ich9-ahci".to_string(),
+                "sata-ahci".to_string(),
+            );
+        }
+        if qemu_index == NVME_DEVICE_INDEX {
+            return (
+                "log-sink".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if mode.is_bare_metal() && bare_metal_uses_nvme_log_sink_only(scenario_name) {
+        if qemu_index == NVME_DEVICE_INDEX {
+            return (
+                "log-sink".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if mode.is_bare_metal() && bare_metal_uses_ahci_log_sink_only(scenario_name) {
+        if qemu_index == AHCI_DEVICE_INDEX {
+            return (
+                "log-sink".to_string(),
+                "ich9-ahci".to_string(),
+                "sata-ahci".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if mode.is_bare_metal() && scenario_uses_ahci_disk(scenario_name) {
+        if qemu_index == AHCI_DEVICE_INDEX {
+            return (
+                "scenario".to_string(),
+                "ich9-ahci".to_string(),
+                "sata-ahci".to_string(),
+            );
+        }
+        if qemu_index == NVME_DEVICE_INDEX {
+            return (
+                "log-sink".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if mode.is_bare_metal() && scenario_uses_nvme_disk(scenario_name) {
+        if qemu_index == AHCI_DEVICE_INDEX {
+            return (
+                "log-sink".to_string(),
+                "ich9-ahci".to_string(),
+                "sata-ahci".to_string(),
+            );
+        }
+        if qemu_index == NVME_DEVICE_INDEX {
+            return (
+                "scenario".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if scenario_uses_ahci_disk(scenario_name) {
+        if qemu_index == AHCI_DEVICE_INDEX {
+            return (
+                "scenario".to_string(),
+                "ich9-ahci".to_string(),
+                "sata-ahci".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if scenario_uses_nvme_disk(scenario_name) {
+        if qemu_index == NVME_DEVICE_INDEX {
+            return (
+                "scenario".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "omit-for-vmware".to_string(),
+        );
+    }
+
+    if scenario_uses_fat32_disk(scenario_name) {
+        if qemu_index == 1 {
+            return (
+                "scenario".to_string(),
+                "virtio-blk".to_string(),
+                "qemu-layout".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "qemu-layout".to_string(),
+        );
+    }
+
+    if scenario_uses_ext4_disk(scenario_name) {
+        if qemu_index == 2 {
+            return (
+                "scenario".to_string(),
+                "virtio-blk".to_string(),
+                "qemu-layout".to_string(),
+            );
+        }
+        return (
+            "qemu-filler".to_string(),
+            "virtio-blk".to_string(),
+            "qemu-layout".to_string(),
+        );
+    }
+
+    if qemu_index == 0 {
+        return (
+            "scenario".to_string(),
+            "virtio-blk".to_string(),
+            "qemu-layout".to_string(),
+        );
+    }
+
+    (
+        "qemu-filler".to_string(),
+        "virtio-blk".to_string(),
+        "qemu-layout".to_string(),
+    )
+}
+
+fn write_vmware_manifest(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+    iso_path: &Path,
+    disk_exports: &[VmwareDiskExport],
+    manifest_path: &Path,
+) -> Result<(), String> {
+    let mut manifest = String::new();
+    manifest.push_str("NEO_VMWARE_SCENARIO/1\n");
+    manifest.push_str(&format!("scenario={}\n", scenario.name));
+    manifest.push_str(&format!(
+        "mode={}\n",
+        if mode.is_bare_metal() {
+            "bare-metal"
+        } else {
+            "vmware"
+        }
+    ));
+    manifest.push_str(&format!("iso={}\n", iso_path.display()));
+    manifest.push_str(&format!(
+        "iso_relative={}\n",
+        workspace_relative_display(iso_path)
+    ));
+    manifest.push_str(
+        "host_path_note=when built inside docker compose, /workspace maps to the repository root on the host; use the relative paths under this repo in VMware\n",
+    );
+    manifest.push_str(&format!("disk_count={}\n", disk_exports.len()));
+
+    if mode.is_bare_metal() && scenario_uses_ahci_disk(scenario.name) {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach the scenario disk as SATA/AHCI and the log sink disk as NVMe; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=AHCI scenario code mounts the registered ahci block device; block log sink targets the registered nvme block device\n",
+        );
+        manifest.push_str(&format!(
+            "log_sink_offset=0x{:x}\nlog_sink_size={}\n",
+            BARE_METAL_LOG_REGION_OFFSET, BARE_METAL_LOG_REGION_SIZE
+        ));
+    } else if mode.is_bare_metal() && scenario_uses_nvme_disk(scenario.name) {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach the scenario disk as NVMe and the log sink disk as SATA/AHCI; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=NVMe scenario code mounts the registered nvme block device; block log sink targets the registered ahci block device\n",
+        );
+        manifest.push_str(&format!(
+            "log_sink_offset=0x{:x}\nlog_sink_size={}\n",
+            BARE_METAL_LOG_REGION_OFFSET, BARE_METAL_LOG_REGION_SIZE
+        ));
+    } else if mode.is_bare_metal()
+        && matches!(
+            scenario.name,
+            "infer_transformer_forward" | "arthur_compositor_baremetal"
+        )
+    {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach the scenario model disk as SATA/AHCI and the log sink disk as NVMe; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=scenario mounts NeoFS from the AHCI model disk; block log sink targets the registered nvme block device\n",
+        );
+        manifest.push_str(&format!(
+            "log_sink_offset=0x{:x}\nlog_sink_size={}\n",
+            BARE_METAL_LOG_REGION_OFFSET, BARE_METAL_LOG_REGION_SIZE
+        ));
+    } else if mode.is_bare_metal() && bare_metal_uses_nvme_log_sink_only(scenario.name) {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach only the log sink disk as NVMe; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=scenario probes physical hardware and writes the authoritative PASS/FAIL frame to the registered nvme block log sink\n",
+        );
+        manifest.push_str(&format!(
+            "log_sink_offset=0x{:x}\nlog_sink_size={}\n",
+            BARE_METAL_LOG_REGION_OFFSET, BARE_METAL_LOG_REGION_SIZE
+        ));
+    } else if mode.is_bare_metal() && bare_metal_uses_ahci_log_sink_only(scenario.name) {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach only the log sink disk as SATA/AHCI; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=scenario probes physical hardware and writes the authoritative PASS/FAIL frame to the registered ahci block log sink\n",
+        );
+        manifest.push_str(&format!(
+            "log_sink_offset=0x{:x}\nlog_sink_size={}\n",
+            BARE_METAL_LOG_REGION_OFFSET, BARE_METAL_LOG_REGION_SIZE
+        ));
+    } else if scenario_uses_ahci_disk(scenario.name) {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach the scenario disk as SATA/AHCI; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=AHCI scenario code discovers the registered ahci block device and mounts deviceN dynamically\n",
+        );
+    } else if scenario_uses_nvme_disk(scenario.name) {
+        manifest.push_str(
+            "vmware_minimum_attachment=attach the scenario disk as NVMe; omit qemu-filler disks\n",
+        );
+        manifest.push_str(
+            "runtime_source=NVMe scenario code discovers the registered nvme block device and mounts deviceN dynamically\n",
+        );
+    } else {
+        manifest.push_str(
+            "vmware_minimum_attachment=qemu-layout export only; VMware attachment order is not validated for this scenario class\n",
+        );
+    }
+
+    for disk in disk_exports {
+        let prefix = format!("disk.{}", disk.qemu_index);
+        manifest.push_str(&format!("{prefix}.role={}\n", disk.role));
+        manifest.push_str(&format!("{prefix}.qemu_backend={}\n", disk.qemu_backend));
+        manifest.push_str(&format!(
+            "{prefix}.vmware_controller={}\n",
+            disk.vmware_controller
+        ));
+        manifest.push_str(&format!("{prefix}.raw={}\n", disk.raw_path.display()));
+        manifest.push_str(&format!(
+            "{prefix}.raw_relative={}\n",
+            workspace_relative_display(&disk.raw_path)
+        ));
+        if let Some(vmdk) = &disk.vmdk_path {
+            manifest.push_str(&format!("{prefix}.vmdk={}\n", vmdk.display()));
+            manifest.push_str(&format!(
+                "{prefix}.vmdk_relative={}\n",
+                workspace_relative_display(vmdk)
+            ));
+        } else {
+            manifest.push_str(&format!("{prefix}.vmdk=none\n"));
+            manifest.push_str(&format!("{prefix}.vmdk_relative=none\n"));
+        }
+    }
+
+    fs::write(manifest_path, manifest)
+        .map_err(|e| format!("write VMware manifest {}: {e}", manifest_path.display()))
+}
+
+fn workspace_relative_display(path: &Path) -> String {
+    let root = workspace_root();
+    path.strip_prefix(&root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
+}
+
+fn find_qemu_img() -> Option<PathBuf> {
+    for candidate in qemu_img_candidates() {
+        match Command::new(&candidate)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+        {
+            Ok(status) if status.success() => return Some(candidate),
+            Ok(_) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
+    }
+    None
+}
+
+fn qemu_img_candidates() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("qemu-img"),
+        PathBuf::from("/usr/bin/qemu-img"),
+        PathBuf::from("/usr/local/bin/qemu-img"),
+    ]
+}
+
+fn convert_raw_to_vmdk(
+    qemu_img: &Path,
+    raw_path: &Path,
+    vmdk_path: &Path,
+) -> Result<PathBuf, String> {
+    match fs::remove_file(vmdk_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove VMDK {}: {e}", vmdk_path.display())),
+    }
+
+    let status = Command::new(qemu_img)
+        .args(["convert", "-f", "raw", "-O", "vmdk"])
+        .arg(raw_path)
+        .arg(vmdk_path)
+        .status()
+        .map_err(|e| format!("launch {} convert: {e}", qemu_img.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "{} convert {} -> {} failed with status {}",
+            qemu_img.display(),
+            raw_path.display(),
+            vmdk_path.display(),
+            status
+        ));
+    }
+    Ok(vmdk_path.to_path_buf())
+}
+
+fn scenario_serial_log(file_name: &str) -> PathBuf {
+    workspace_root().join(TEST_OUTPUT_REL).join(file_name)
+}
+
+/// Optional suffix segment derived from `NEO_TEST_RUN_ID`, used to make
+/// per-attempt serial-log filenames unique across repeated outer-loop
+/// invocations of the same scenario.
+///
+/// Fix 8 alone guarantees attempts within a single neo-test invocation get
+/// distinct logs (`<scenario>.attempt{1,2}.serial.log`), but a harness that
+/// runs the same scenario many times in a loop will see each iteration's
+/// attempt logs overwrite the previous iteration's. Setting
+/// `NEO_TEST_RUN_ID=run-7` (for example) yields
+/// `<scenario>.run-7.attempt{1,2}.serial.log`, preserving each iteration's
+/// evidence on disk for retry-cluster analysis.
+///
+/// When the env var is unset or empty, the suffix is empty and filenames
+/// remain identical to the Fix 8 baseline, preserving existing tooling.
+///
+/// The value is sanitized to ASCII alphanumerics, `-`, and `_` to prevent
+/// path traversal or unsafe filenames.
+fn neo_test_run_id_suffix() -> String {
+    match env::var("NEO_TEST_RUN_ID") {
+        Ok(raw) if !raw.is_empty() => {
+            let sanitized: String = raw
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .collect();
+            if sanitized.is_empty() {
+                String::new()
+            } else {
+                format!(".{}", sanitized)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn remove_serial_log(serial_log: &Path) -> Result<(), String> {
+    match fs::remove_file(serial_log) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove {}: {e}", serial_log.display())),
+    }
+    Ok(())
+}
+
+fn remove_optional_file(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("remove {}: {e}", path.display())),
+    }
+}
+
+/// Copy a per-attempt serial log to the canonical `<scenario>.serial.log` path.
+///
+/// This is best-effort: errors are returned so the caller can choose to log/swallow,
+/// but a copy failure does not invalidate the per-attempt log which remains on disk.
+/// Callers run this after every QEMU attempt — pass or fail — so the canonical path
+/// always points at the latest attempt, while attempt-numbered logs are never
+/// overwritten by subsequent retries.
+fn copy_attempt_log_to_canonical(scenario_name: &str, attempt_log: &Path) -> Result<(), String> {
+    let canonical = scenario_serial_log(&format!("{}.serial.log", scenario_name));
+    fs::copy(attempt_log, &canonical).map(|_| ()).map_err(|e| {
+        format!(
+            "copy {} -> {}: {e}",
+            attempt_log.display(),
+            canonical.display()
+        )
+    })
+}
+
+/// Two-boot variant of [`copy_attempt_log_to_canonical`]: preserves both boot1 and
+/// boot2 attempt logs and copies the latest attempt's log to the canonical
+/// `<scenario>.bootK.serial.log` paths.
+fn copy_boot_attempt_log_to_canonical(
+    scenario_name: &str,
+    boot: usize,
+    attempt_log: &Path,
+) -> Result<(), String> {
+    let canonical = scenario_serial_log(&format!("{}.boot{}.serial.log", scenario_name, boot));
+    fs::copy(attempt_log, &canonical).map(|_| ()).map_err(|e| {
+        format!(
+            "copy {} -> {}: {e}",
+            attempt_log.display(),
+            canonical.display()
+        )
+    })
+}
+
+fn validate_bare_metal_qemu_log_sink(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+) -> Result<(), String> {
+    if !mode.is_bare_metal() {
+        return Ok(());
+    }
+
+    let raw_path = bare_metal_log_sink_raw_path(scenario.name)?;
+    let mut file = fs::File::open(&raw_path)
+        .map_err(|e| format!("open bare-metal log sink {}: {e}", raw_path.display()))?;
+    file.seek(SeekFrom::Start(BARE_METAL_LOG_REGION_OFFSET))
+        .map_err(|e| {
+            format!(
+                "seek bare-metal log sink {} to 0x{:x}: {e}",
+                raw_path.display(),
+                BARE_METAL_LOG_REGION_OFFSET
+            )
+        })?;
+
+    let mut header = [0u8; BARE_METAL_LOG_HEADER_SIZE];
+    file.read_exact(&mut header).map_err(|e| {
+        format!(
+            "read bare-metal log sink header {} at 0x{:x}: {e}",
+            raw_path.display(),
+            BARE_METAL_LOG_REGION_OFFSET
+        )
+    })?;
+
+    if &header[..BARE_METAL_LOG_MAGIC.len()] != BARE_METAL_LOG_MAGIC {
+        return Err(format!(
+            "bare-metal QEMU log sink for `{}` has no NEO_LOG_v1 header at 0x{:x}; raw={}",
+            scenario.name,
+            BARE_METAL_LOG_REGION_OFFSET,
+            raw_path.display()
+        ));
+    }
+
+    let region_size = read_le_u64(&header, BARE_METAL_LOG_OFFSET_REGION_SIZE)?;
+    if region_size != BARE_METAL_LOG_REGION_SIZE {
+        return Err(format!(
+            "bare-metal QEMU log sink for `{}` reported region_size=0x{region_size:x}, expected 0x{:x}; raw={}",
+            scenario.name,
+            BARE_METAL_LOG_REGION_SIZE,
+            raw_path.display()
+        ));
+    }
+
+    let write_cursor = read_le_u64(&header, BARE_METAL_LOG_OFFSET_WRITE_CURSOR)?;
+    let payload_limit = region_size.saturating_sub(BARE_METAL_LOG_HEADER_SIZE as u64);
+    if write_cursor == 0 || write_cursor > payload_limit {
+        return Err(format!(
+            "bare-metal QEMU log sink for `{}` has invalid write_cursor={} payload_limit={}; raw={}",
+            scenario.name,
+            write_cursor,
+            payload_limit,
+            raw_path.display()
+        ));
+    }
+
+    let build_id = &header[BARE_METAL_LOG_OFFSET_BUILD_ID
+        ..BARE_METAL_LOG_OFFSET_BUILD_ID + BARE_METAL_LOG_BUILD_ID_LEN];
+    if build_id.iter().all(|byte| *byte == 0) {
+        return Err(format!(
+            "bare-metal QEMU log sink for `{}` has zeroed build_id; raw={}",
+            scenario.name,
+            raw_path.display()
+        ));
+    }
+
+    let scenario_name = nul_trimmed_ascii_xtask(
+        &header[BARE_METAL_LOG_OFFSET_SCENARIO_NAME
+            ..BARE_METAL_LOG_OFFSET_SCENARIO_NAME + BARE_METAL_LOG_SCENARIO_NAME_LEN],
+    );
+    if scenario_name != scenario.name {
+        return Err(format!(
+            "bare-metal QEMU log sink scenario mismatch: header=`{scenario_name}` expected=`{}` raw={}",
+            scenario.name,
+            raw_path.display()
+        ));
+    }
+
+    let degradation_reason = read_le_u32(&header, BARE_METAL_LOG_OFFSET_DEGRADATION_REASON)?;
+    if degradation_reason != 0 {
+        return Err(format!(
+            "bare-metal QEMU log sink for `{}` degraded with reason={degradation_reason}; raw={}",
+            scenario.name,
+            raw_path.display()
+        ));
+    }
+
+    let mut payload = vec![0u8; write_cursor as usize];
+    file.seek(SeekFrom::Start(
+        BARE_METAL_LOG_REGION_OFFSET + BARE_METAL_LOG_HEADER_SIZE as u64,
+    ))
+    .map_err(|e| {
+        format!(
+            "seek bare-metal log sink payload {}: {e}",
+            raw_path.display()
+        )
+    })?;
+    file.read_exact(&mut payload).map_err(|e| {
+        format!(
+            "read bare-metal log sink payload {} bytes from {}: {e}",
+            write_cursor,
+            raw_path.display()
+        )
+    })?;
+
+    let extracted_path = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{}.bare-metal-qemu.extracted.log", scenario.name));
+    fs::write(&extracted_path, &payload).map_err(|e| {
+        format!(
+            "write bare-metal QEMU extracted log {}: {e}",
+            extracted_path.display()
+        )
+    })?;
+
+    let payload_text = String::from_utf8_lossy(&payload);
+    let pass_marker = format!("NEO_TEST/1 event=PASS name={}", scenario.name);
+    if !payload_text.contains(&pass_marker) {
+        return Err(format!(
+            "bare-metal QEMU extracted log for `{}` lacks PASS marker `{pass_marker}`; output={}",
+            scenario.name,
+            extracted_path.display()
+        ));
+    }
+
+    let magic_offsets = find_bare_metal_log_magic_offsets(&raw_path)?;
+    if magic_offsets.as_slice() != [BARE_METAL_LOG_REGION_OFFSET] {
+        return Err(format!(
+            "bare-metal QEMU log sink for `{}` has NEO_LOG_v1 offsets {:?}, expected only [0x{:x}]; raw={}",
+            scenario.name,
+            magic_offsets,
+            BARE_METAL_LOG_REGION_OFFSET,
+            raw_path.display()
+        ));
+    }
+
+    eprintln!(
+        "[xtask] neo-test: bare-metal log extraction PASS scenario={} raw={} output={} captured_bytes={}",
+        scenario.name,
+        raw_path.display(),
+        extracted_path.display(),
+        write_cursor
+    );
+    Ok(())
+}
+
+fn bare_metal_log_sink_raw_path(scenario_name: &str) -> Result<PathBuf, String> {
+    let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+    match scenario_name {
+        "phase3_ahci_neofs_mount_and_readwrite" => {
+            Ok(output_dir.join(format!("{scenario_name}.nvme-log.raw")))
+        }
+        "phase3_nvme_neofs_mount_and_readwrite" => {
+            Ok(output_dir.join(format!("{scenario_name}.ahci-log.raw")))
+        }
+        // Phase 7.5 BUILD-V: the (c2) test fences the NVMe; evidence logs to the
+        // AHCI/SATA disk.
+        "vtd_fence" => Ok(output_dir.join(format!("{scenario_name}.ahci-log.raw"))),
+        "infer_transformer_forward" => Ok(output_dir.join(format!("{scenario_name}.nvme-log.raw"))),
+        name if bare_metal_uses_ahci_log_sink_only(name) => {
+            Ok(output_dir.join(format!("{scenario_name}.ahci-log.raw")))
+        }
+        name if bare_metal_uses_nvme_log_sink_only(name) => {
+            Ok(output_dir.join(format!("{scenario_name}.nvme-log.raw")))
+        }
+        _ => Err(format!(
+            "--bare-metal-mode has no log sink raw path for scenario `{scenario_name}`"
+        )),
+    }
+}
+
+fn find_bare_metal_log_magic_offsets(path: &Path) -> Result<Vec<u64>, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("open log sink raw {}: {e}", path.display()))?;
+    let mut offsets = Vec::new();
+    let mut absolute = 0u64;
+    let mut carry = Vec::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("read log sink raw {}: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+
+        let mut window = Vec::with_capacity(carry.len() + read);
+        window.extend_from_slice(&carry);
+        window.extend_from_slice(&buffer[..read]);
+        let base = absolute.saturating_sub(carry.len() as u64);
+
+        for (idx, bytes) in window.windows(BARE_METAL_LOG_MAGIC.len()).enumerate() {
+            if bytes == BARE_METAL_LOG_MAGIC {
+                let offset = base + idx as u64;
+                if offsets.last().copied() != Some(offset) {
+                    offsets.push(offset);
+                }
+            }
+        }
+
+        let keep = window
+            .len()
+            .min(BARE_METAL_LOG_MAGIC.len().saturating_sub(1));
+        carry.clear();
+        carry.extend_from_slice(&window[window.len() - keep..]);
+        absolute += read as u64;
+    }
+
+    Ok(offsets)
+}
+
+fn read_le_u64(bytes: &[u8], offset: usize) -> Result<u64, String> {
+    let end = offset + 8;
+    let raw = bytes
+        .get(offset..end)
+        .ok_or_else(|| format!("u64 read offset 0x{offset:x} exceeds header"))?;
+    let mut out = [0u8; 8];
+    out.copy_from_slice(raw);
+    Ok(u64::from_le_bytes(out))
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    let end = offset + 4;
+    let raw = bytes
+        .get(offset..end)
+        .ok_or_else(|| format!("u32 read offset 0x{offset:x} exceeds header"))?;
+    let mut out = [0u8; 4];
+    out.copy_from_slice(raw);
+    Ok(u32::from_le_bytes(out))
+}
+
+fn nul_trimmed_ascii_xtask(bytes: &[u8]) -> String {
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end])
+        .trim_end()
+        .to_string()
+}
+
+fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
+    matches!(
+        scenario_name,
+        "kernel_rng_selftest"
+            | "phase4_https_fetch"
+            | "net_dial_cap_kill_switch"
+            | "arthur_memory_encrypted"
+            | "arthur_memory_delegation"
+            | "arthur_memory_forgetting"
+            | "xsave_ymm_context_switch"
+            // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
+            // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
+            | "irq_xmm_preserve"
+            | "inference_preemptible_liveness"
+            // The Arthur perf lane's AVX2 byte-parity assertion (AutoAvx2 ≡ Scalar)
+            // is only NON-VACUOUS when the guest CPU actually exposes AVX2 — under
+            // the `qemu64` base model `avx2::runtime_available()` is false, so
+            // AutoAvx2 silently falls back to scalar and the check degrades to
+            // scalar==scalar. `-cpu max` exposes TCG AVX/AVX2 (the same treatment
+            // as `xsave_ymm_context_switch`) so the AVX2 integer dot is genuinely
+            // exercised. A `q4_k_q8_k_avx2_available()` guard in the scenario fails
+            // loudly if this is ever regressed.
+            | "arthur_compositor"
+            | "product_integration"
+            | "product_integration_baremetal"
+            // The vault draws every nonce/salt from the kernel CSPRNG, whose
+            // DRBG seeds from RDRAND — needs `-cpu max` to work under pure TCG.
+            | "vault_phase_b"
+            // CP-41: on qemu64 the xsave-fpu syscall stub silently takes the
+            // FXSAVE fallback; `-cpu max` exercises XSAVE/XRSTOR, whose MXCSR
+            // restore rule differs. The `_fxsave` twin stays on qemu64.
+            | "syscall_mxcsr_entry"
+            // CP-45: real XSAVE/XRSTOR and AVX, so the new thread's YMM upper
+            // halves are checked (qemu64 takes the FXSAVE fallback instead).
+            | "thread_entry_clean_state"
+            // OT-61 C2.0: std's fill_bytes reads the kernel CSPRNG (RDRAND seed).
+            | "std_entropy"
+            // OT-61 C2.3b: a CPU with AVX2, so the plain scenario proves the
+            // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
+            | "servo_closure_smoke"
+            | "servo_closure_smoke_avx"
+    )
+    // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
+    || is_desktop_kernel_scenario(scenario_name)
+}
+
+/// `-icount` for scenarios that need an interrupt on an exact instruction
+/// boundary. Without it TCG checks for interrupts only between translation
+/// blocks, so a one-instruction window inside a block is unreachable. With
+/// `shift=0` one instruction is 1 ns of virtual time, and QEMU executes exactly
+/// up to each timer deadline before taking the interrupt. `sleep=off` warps the
+/// clock over idle time instead of waiting for it in real time.
+fn scenario_qemu_icount(scenario_name: &str) -> Option<&'static str> {
+    match scenario_name {
+        // CP-50: a LAPIC timer swept across the syscall exit, one count
+        // (1 ns = one instruction) at a time.
+        "syscall_exit_irq_window" => Some("shift=0,sleep=off"),
+        _ => None,
+    }
+}
+
+fn is_hmp_console_scenario(scenario_name: &str) -> bool {
+    matches!(
+        scenario_name,
+        "input_path_console" | "arthur_console" | "v1_console_liveness"
+    )
+}
+
+/// `vm_disks`: OT-87 R1's installed layout ([`vm_image::vm_disk_args`]) in
+/// place of `-boot d -cdrom <iso>`.
+fn run_qemu_test_invocation(
+    scenario: TestScenario,
+    mode: ScenarioBundleMode,
+    serial_log: PathBuf,
+    storage_disks: &[PathBuf],
+    vm_disks: Option<&[String]>,
+) -> Result<ObservedTest, String> {
+    let iso_path = workspace_root().join(ISO_OUTPUT_REL);
+    eprintln!(
+        "[xtask] neo-test: launching QEMU for `{}` (serial: {})",
+        scenario.name,
+        serial_log.display()
+    );
+
+    let virtio_accel_scenario = scenario.name == "virtio_accel_identity_roundtrip"
+        || scenario.name == "virtio_accel_forward_equiv"
+        || scenario.name == "virtio_accel_migrate_roundtrip";
+    let machine = if virtio_accel_scenario {
+        "q35,memory-backend=virtio_accel_mem"
+    } else {
+        "q35"
+    };
+    let memory = qemu_memory_for_scenario(scenario.name);
+
+    let mut qemu = Command::new("qemu-system-x86_64");
+    // Scenarios whose guest consumes RDRAND need QEMU's full RDRAND emulation.
+    // `-cpu max` enables all TCG features including a *working* RDRAND in
+    // QEMU >= 8.0. The `qemu64,+rdrand` base model advertises the RDRAND CPUID
+    // bit but, under pure TCG (no KVM/WHPX acceleration), its RDRAND returns
+    // CF=0 ("no data"), so a guest that trusts the CPUID bit and issues RDRAND
+    // spins to exhaustion. On a heterogeneous CI fleet (some runners KVM-backed,
+    // some TCG-only) that makes any RDRAND-dependent scenario flake by *which
+    // runner picked it up*, not by determinism.
+    //   - kernel_rng_selftest: exercises the kernel CSPRNG's RDRAND seed path.
+    //   - phase4_https_fetch:  the userland rustls client/server seed their TLS
+    //     handshake via libneo's RDRAND-backed getrandom; on a TCG runner the
+    //     `qemu64,+rdrand` model starved that getrandom and failed the rustls
+    //     connection constructor (serial code=85: client RustlsNew, server
+    //     Limit). The scenario is already hermetic (loopback TLS, embedded
+    //     certs, FixedTime) — RDRAND availability was its only host-dependent
+    //     input, and `-cpu max` makes it deterministic. A gating QEMU scenario
+    //     must never depend on a host-variable input like that.
+    //   - arthur_memory_*: key generation and crypto-erase exercise
+    //     SYS_GETRANDOM through the same kernel CSPRNG path.
+    // OT-23/OT-40: the XSAVE/YMM scenarios need QEMU TCG AVX/XSAVE exposure.
+    let needs_qemu_max = scenario_needs_qemu_max(scenario.name);
+    let cpu_flag =
+        if scenario.name == "x2apic_smp_ipi" || scenario.name == "lapic_timer_tick_x2apic" {
+            // CP-68: an x2APIC-capable CPU, so Limine (asked for x2APIC) enables it.
+            "max,+x2apic"
+        } else if needs_qemu_max {
+            "max"
+        } else {
+            "qemu64,+rdrand,+smep,+smap"
+        };
+    qemu.args([
+        "-machine",
+        machine,
+        "-cpu",
+        cpu_flag,
+        "-m",
+        memory,
+        "-display",
+        "none",
+        "-device",
+        "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    ])
+    .arg("-smp")
+    .arg(smp_count())
+    .stdout(Stdio::null())
+    .stderr(Stdio::piped());
+    // OT-90 P2: a restart scenario boots twice in one QEMU process, so the
+    // reset must reboot the guest; every other scenario keeps `-no-reboot`.
+    let power = ot90_power_expect(scenario.name);
+    if !matches!(power, Some(qmp::PowerExpect::RestartThenPowerOff { .. })) {
+        qemu.arg("-no-reboot");
+    }
+    let qmp_recorder = match power {
+        Some(_) => {
+            let log = serial_log.with_extension("qmp.log");
+            let recorder = qmp::QmpRecorder::start(&log)?;
+            qemu.args(recorder.qemu_args());
+            Some(recorder)
+        }
+        None => None,
+    };
+    match vm_disks {
+        None => {
+            qemu.args(["-boot", "d"]).arg("-cdrom").arg(&iso_path);
+        }
+        Some(args) => {
+            qemu.args(args);
+        }
+    }
+    if let Some(icount) = scenario_qemu_icount(scenario.name) {
+        qemu.arg("-icount").arg(icount);
+    }
+    // OT-85 hermeticity: every scenario's MC146818 RTC is pinned. QEMU's
+    // default is the host's UTC time, a host-variable input, and since
+    // `rtc-epoch` the desktop kernels seed CLOCK_REALTIME from it; the
+    // wall-clock scenarios assert against this instant.
+    qemu.arg("-rtc").arg(format!("base={WALLCLOCK_RTC_BASE}"));
+    let serial_script = configure_serial_for_scenario(&mut qemu, scenario.name, &serial_log)?;
+
+    // Phase 7.5 BUILD-V: the VT-d scenario runs with an emulated IOMMU. Inject
+    // it BEFORE the PCI storage devices (QEMU requires intel-iommu ahead of the
+    // devices it protects). DMA remapping only (intremap=off); caching-mode=on
+    // makes the vIOMMU require explicit invalidations, matching real hardware
+    // and exercising the driver's V6 invalidation path.
+    if scenario.name == "vtd_fence"
+        || scenario.name == "graphics_vtd_domain"
+        || scenario.name == "rtl8125_vtd"
+    {
+        qemu.arg("-device")
+            .arg("intel-iommu,intremap=off,caching-mode=on");
+    }
+
+    if virtio_accel_scenario {
+        qemu.arg("-object")
+            .arg("memory-backend-memfd,id=virtio_accel_mem,size=512M,share=on");
+    }
+
+    let mut ahci_controller_added = false;
+    for (idx, disk) in storage_disks.iter().enumerate() {
+        let drive_id = format!("hd{idx}");
+        let (_, qemu_backend, _) = classify_vmware_disk(scenario.name, mode, idx);
+        let drive_string = format!(
+            "if=none,id={drive_id},format=raw,cache=writeback,file={}",
+            disk.display()
+        );
+        eprintln!(
+            "[xtask] neo-test: attaching raw storage disk #{} for `{}` ({}) drive={}",
+            idx,
+            scenario.name,
+            disk.display(),
+            drive_string
+        );
+        qemu.arg("-drive").arg(drive_string);
+        match qemu_backend.as_str() {
+            "ich9-ahci" => {
+                if !ahci_controller_added {
+                    qemu.arg("-device").arg("ich9-ahci,id=ahci0");
+                    ahci_controller_added = true;
+                }
+                let serial = scenario_disk_serial(scenario.name, idx)
+                    .map(|s| format!(",serial={s}"))
+                    .unwrap_or_default();
+                qemu.arg("-device")
+                    .arg(format!("ide-hd,drive={drive_id},bus=ahci0.0{serial}"));
+            }
+            // OT-87 R4.1: the claim needs the namespace's EUI64 (an NVMe
+            // namespace that reports none has no identity), and QEMU's
+            // implicit namespace reports none.
+            "nvme" if scenario.name == "install_claim_identity" => {
+                qemu.arg("-device")
+                    .arg(format!("nvme,id=nvme{idx},serial=neoplutarch-nvme{idx}"));
+                qemu.arg("-device").arg(format!(
+                    "nvme-ns,drive={drive_id},bus=nvme{idx},nsid=1,eui64=0x4c4f47414e{idx:06x}"
+                ));
+            }
+            "nvme" => {
+                qemu.arg("-device").arg(format!(
+                    "nvme,drive={drive_id},serial=neoplutarch-nvme{idx}"
+                ));
+            }
+            "virtio-blk" => {
+                let serial = scenario_disk_serial(scenario.name, idx)
+                    .map(|s| format!(",serial={s}"))
+                    .unwrap_or_default();
+                let block = scenario_logical_block_size(scenario.name)
+                    .map(|b| format!(",logical_block_size={b},physical_block_size={b}"))
+                    .unwrap_or_default();
+                qemu.arg("-device").arg(format!(
+                    "virtio-blk-pci,drive={drive_id},disable-legacy=on,disable-modern=off{serial}{block}"
+                ));
+            }
+            other => {
+                return Err(format!(
+                    "unsupported QEMU backend `{other}` for `{}` disk #{idx}",
+                    scenario.name
+                ));
+            }
+        }
+    }
+
+    if scenario.name == INSTALL_CLAIM_NVME_EVENTS_SCENARIO {
+        for arg in install_claim_nvme_events_args()? {
+            qemu.arg(arg);
+        }
+    }
+
+    if scenario.name == "phase4_virtio_net_smoltcp_wrap_smoke"
+        || scenario.name == "phase4_socket_udp_loopback"
+        || scenario.name == "phase4_slaac_udp_ipv6_loopback"
+        || scenario.name == "phase4_ndp_ipv6_neighbor"
+        || scenario.name == "phase4_dhcpv4_ipv4_udp"
+        || scenario.name == "phase4_tcp_connect_stream_close"
+        || scenario.name == "interface_identity_select"
+        || scenario.name == "wire_rx_demux"
+        || scenario.name == "interface_cap_derive_revoke"
+    {
+        qemu.args([
+            "-netdev",
+            "hubport,id=neo0,hubid=4",
+            "-device",
+            "virtio-net-pci,netdev=neo0,disable-legacy=on,disable-modern=off,mac=52:54:00:12:34:56",
+            "-netdev",
+            "hubport,id=neo1,hubid=4",
+            "-device",
+            "virtio-net-pci,netdev=neo1,disable-legacy=on,disable-modern=off,mac=52:54:00:12:34:57",
+        ]);
+    }
+
+    if scenario.name == "rtl8125_absent" || scenario.name == "rtl8125_vtd" {
+        // The RTL8125 containment stand-in: QEMU's rtl8139 (10ec:8139), no
+        // option ROM, on its own hub. Only its PCI COMMAND is exercised.
+        qemu.args([
+            "-netdev",
+            "hubport,id=rtl0,hubid=7",
+            "-device",
+            "rtl8139,netdev=rtl0,romfile=",
+        ]);
+    }
+
+    if scenario.name == "usb_ethernet" || scenario.name == "usb_ethernet_baremetal" {
+        // BUILD-B: qemu-xhci with ONLY a usb-net (CDC-ECM) function on a
+        // slirp user netdev — slirp's real DHCP server (10.0.2.2) and DNS
+        // (10.0.2.3) answer the kernel's REAL DORA + round-trip over the
+        // bulk pipes. No other USB devices: the ECM claim is the test.
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.args(["-netdev", "user,id=usbnet0"]);
+        qemu.arg("-device")
+            .arg("usb-net,netdev=usbnet0,bus=xhci0.0");
+    }
+
+    if scenario.name == "dhcp_rx_real_lease" {
+        // CB-1b ISC-3: a virtio-net on slirp's user netdev — slirp's real DHCP
+        // server (10.0.2.2, lease 10.0.2.15) answers the kernel's REAL DORA over
+        // the wire, completing through the production `dhcpv4::demux_eth_rx` (not
+        // inject_*). Hermetic + deterministic (slirp is built-in, no live network).
+        qemu.args(["-netdev", "user,id=slirp0"]);
+        qemu.arg("-device").arg(
+            "virtio-net-pci,netdev=slirp0,disable-legacy=on,disable-modern=off,mac=52:54:00:12:34:60",
+        );
+    }
+
+    if is_hmp_console_scenario(scenario.name) {
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-kbd,bus=xhci0.0");
+    }
+
+    if is_desktop_kernel_scenario(scenario.name) {
+        // The shipped desktop input topology (see `desktop_input_devices`).
+        for device in desktop_input_devices() {
+            qemu.arg("-device").arg(device);
+        }
+    }
+
+    if scenario.name == "di1_forward" {
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-mouse,bus=xhci0.0");
+    }
+
+    if scenario.name == "hid_contention" {
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-kbd,bus=xhci0.0");
+        qemu.arg("-device").arg("usb-mouse,bus=xhci0.0");
+    }
+
+    if scenario.name == "input_queue_flood" {
+        // Real keyboard AND mouse on one xHCI: the flood reaches the driver
+        // through QEMU's usb-mouse, not a test-only injection seam.
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-kbd,bus=xhci0.0");
+        qemu.arg("-device").arg("usb-mouse,bus=xhci0.0");
+    }
+
+    if scenario.name == "usb_xhci_select" {
+        // Zenbook USB input lane: two xHCIs, the input devices on the one
+        // scanned second (Intel's south xHCI, after the Type-C subsystem's).
+        qemu.arg("-device").arg("qemu-xhci,id=tcss,addr=0x0d");
+        qemu.arg("-device").arg("qemu-xhci,id=south,addr=0x14");
+        qemu.arg("-device").arg("usb-kbd,bus=south.0,port=1");
+        // The mouse sits behind a hub: the hub slot is marked by Configure
+        // Endpoint (xHCI > 0.95) and its ports read after the power-good wait.
+        qemu.arg("-device").arg("usb-hub,bus=south.0,port=2");
+        qemu.arg("-device").arg("usb-mouse,bus=south.0,port=2.1");
+    }
+
+    if scenario.name == "usb_hotplug" {
+        // No input device at boot, only an empty hub on root port 1: the
+        // script plugs the keyboard into root port 2, unplugs it, and plugs
+        // it again behind the hub (port 1.1) — both halves of the service.
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-hub,bus=xhci0.0,port=1");
+    }
+
+    if scenario.name == "usb_hid_mouse" {
+        // A real xHCI controller + a real boot-protocol USB mouse on the root
+        // port: the driver enumerates + claims it (protocol=0x02), proving the
+        // full stack bind. QEMU's usb-mouse is a HID boot mouse (class 3 / sub 1 /
+        // proto 2). The scenario self-injects report bytes for the decode assertion
+        // (deterministic — no dependence on QEMU mouse-input routing).
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-mouse,bus=xhci0.0");
+    }
+
+    if scenario.name == "usb_enumerate"
+        || scenario.name == "usb_storm"
+        || scenario.name == "usb_baremetal_probe"
+    {
+        // qemu-xhci with a keyboard and a mass-storage stick on the root
+        // ports — the BUILD-A enumeration targets (known QEMU identities).
+        let stick = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join(format!("{}-usbstick.raw", scenario.name));
+        if !stick.exists() {
+            fs::write(&stick, vec![0u8; 1 << 20])
+                .map_err(|e| format!("create usb stick image: {e}"))?;
+        }
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-device").arg("usb-kbd,bus=xhci0.0");
+        qemu.arg("-drive").arg(format!(
+            "if=none,id=usbstick,format=raw,file={}",
+            stick.display()
+        ));
+        qemu.arg("-device")
+            .arg("usb-storage,drive=usbstick,bus=xhci0.0");
+    }
+
+    let virtio_accel_host = if virtio_accel_scenario {
+        let host = start_virtio_accel_host(scenario.name)?;
+        qemu.arg("-chardev").arg(format!(
+            "socket,id=virtio_accel0,path={},server=off",
+            host.socket.display()
+        ));
+        qemu.arg("-device").arg(
+            "vhost-user-test-device-pci,chardev=virtio_accel0,virtio-id=41,num_vqs=1,vq_size=8,config_size=24",
+        );
+        Some(host)
+    } else {
+        None
+    };
+
+    if is_hmp_console_scenario(scenario.name) {
+        // The serial/HMP driver installed a private monitor for screendump +
+        // `sendkey` injection. Do not add a second monitor.
+    } else if let Ok(port) = env::var(NEO_QEMU_MONITOR_PORT_ENV) {
+        if !port.is_empty() {
+            qemu.arg("-monitor")
+                .arg(format!("tcp:127.0.0.1:{port},server,nowait"));
+        } else {
+            qemu.args(["-monitor", "none"]);
+        }
+    } else {
+        qemu.args(["-monitor", "none"]);
+    }
+
+    if let Ok(port) = env::var(NEO_QEMU_GDB_PORT_ENV)
+        && !port.is_empty()
+    {
+        qemu.arg("-gdb").arg(format!("tcp::{port}"));
+    }
+
+    let serial_driver = serial_script.map(start_serial_script_driver);
+    let status_result = run_with_timeout_and_dump(
+        qemu,
+        scenario_timeout(scenario.name),
+        scenario.name,
+        Some(&serial_log),
+    );
+    if let Some(host) = virtio_accel_host {
+        stop_virtio_accel_host(host);
+    }
+    let serial_driver_result = match serial_driver {
+        Some(driver) => driver
+            .join()
+            .map_err(|_| "serial script driver thread panicked".to_string())?,
+        None => Ok(()),
+    };
+    let qmp_events = qmp_recorder.map(qmp::QmpRecorder::finish).transpose();
+    let status = status_result?;
+    serial_driver_result?;
+    let qmp_events = qmp_events?;
+    let serial = fs::read_to_string(&serial_log)
+        .map_err(|e| format!("read serial log {}: {e}", serial_log.display()))?;
+    let parsed = parse_test_serial(&serial, serial_frame_name(scenario));
+    Ok(ObservedTest {
+        exit_status: status,
+        terminal_event: parsed.terminal_event,
+        terminal_count: parsed.terminal_count,
+        saw_begin: parsed.saw_begin,
+        serial_log,
+        qmp_events,
+    })
+}
+
+fn qemu_memory_for_scenario(name: &str) -> &'static str {
+    match name {
+        "arthur_real_brain_boot"
+        | "arthur_real_brain_boot_ot16_walker"
+        | "arthur_boot_module_answers"
+        | "arthur_boot_module_preload"
+        | "arthur_boot_module_preload_vocab_damaged"
+        | "arthur_boot_module_damaged"
+        | "arthur_boot_module_absent"
+        | "arthur_boot_module_vocab_damaged"
+        | "arthur_model_from_neofs"
+        | "arthur_model_from_neofs_damaged"
+        | "arthur_model_from_neofs_module_wins"
+        | "arthur_model_from_neofs_off"
+        | INSTALL_FRESH_SCENARIO
+        | INSTALL_FRESH_4K_SCENARIO
+        | INSTALL_STOP_FINISH_SCENARIO
+        | INSTALL_STOP_FINISH_FULL_SCENARIO
+        | INSTALL_REFUSALS_SCENARIO
+        | INSTALL_CONSOLE_SCENARIO
+        | INSTALL_CONSOLE_LIST_SCENARIO
+        | INSTALL_ATRIUM_SCENARIO
+        | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
+        | INSTALL_ATRIUM_BAD_PIN_SCENARIO
+        // B1c (F4): the 305 MiB heap tier plus a 256 MiB-aligned order-16
+        // block must fit beside each other.
+        | "real_lm_generate_boot"
+        | "real_lm_generate_guard"
+        | "real_lm_peak_baremetal"
+        | "boot_model_load_stack"
+        | "boot_model_load_ticks"
+        | "boot_model_load_ticks_control"
+        | "generate_corunner_liveness"
+        | "generate_corunner_liveness_control"
+        // B1c AAG J3: the real-LM heap tier.
+        | "inference_stack_kill"
+        | "inference_stack_kill_control"
+        | "arthur_compositor"
+        | "product_integration"
+        | "product_integration_baremetal"
+        | "arthur_compositor_baremetal"
+        // A9-D: the desktop's planes beside the real-LM heap tier.
+        | "desktop_busy_boot" => "4096M",
+        "arthur_real_brain_boot_15b" => "6144M",
+        // Desktop S1: three full-screen 1080p planes + Arthur's showcase heap.
+        name if is_desktop_session_scenario(name) => "2048M",
+        // OT-66 L1: the desktop's planes plus the sign-in KDF's 64 MiB.
+        name if name.starts_with("login_") => "2048M",
+        // OT-38 (flagged harness change, not smuggled): the 3B heap tier is 2.75
+        // GiB (vs the 1.5B's 1.75 GiB) and the ~1.955 GiB `.neom` Vec must be
+        // heap-resident, so the guest needs more than the 1.5B's 6144M. 8192M
+        // leaves ~5.4 GiB for the kernel image, page tables, disk-DMA, and the
+        // framebuffer — exceeding the 1.5B's proven ~4.35 GiB overhead margin.
+        // Fits the runner-capacity floor (pre-flight RAM guard ≥32 GiB per shard).
+        "arthur_real_brain_boot_3b" => "8192M",
+        // OT-16 B3: the 725 MiB file is staged exactly in the 1 GiB heap, while
+        // its 321 immutable tensors reserve 987 MiB after buddy power-of-two
+        // rounding. QEMU's PCI hole splits a 4 GiB guest before both copies and
+        // recurrent state are resident; 6 GiB preserves the proven 1.5B tier's
+        // runner-capacity envelope and leaves a contiguous high-memory region.
+        "arthur_real_brain_boot_qwen35" => "6144M",
+        _ => "512M",
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SerialScriptStep {
+    prompt: &'static [u8],
+    command: &'static [u8],
+}
+
+#[derive(Clone, Copy)]
+struct ScenarioScript {
+    steps: &'static [SerialScriptStep],
+    transport: ScriptTransport,
+    screenshot_rel: Option<&'static str>,
+    screenshot_after_command: Option<&'static [u8]>,
+}
+
+#[derive(Clone, Copy)]
+enum ScriptTransport {
+    Serial,
+    HmpKeyboard,
+}
+
+#[derive(Clone, Copy)]
+enum CommandTarget {
+    Serial,
+    HmpKeyboard {
+        addr: SocketAddr,
+        screenshot_rel: Option<&'static str>,
+    },
+}
+
+struct SerialScriptPlan {
+    addr: SocketAddr,
+    serial_log: PathBuf,
+    steps: &'static [SerialScriptStep],
+    timeout: Duration,
+    target: CommandTarget,
+    screenshot_after_command: Option<&'static [u8]>,
+    /// A second capture: taken when the step with this prompt is reached,
+    /// before its command is sent (the guest waits on that command).
+    mid_capture: Option<(&'static [u8], &'static str)>,
+}
+
+/// The capture before the end one (prompt, capture path): DM-1's mid
+/// transition, the intro card.
+fn mid_capture_for_scenario(scenario_name: &str) -> Option<(&'static [u8], &'static str)> {
+    desktop_scenario(scenario_name).and_then(|d| d.mid)
+}
+
+fn configure_serial_for_scenario(
+    qemu: &mut Command,
+    scenario_name: &str,
+    serial_log: &Path,
+) -> Result<Option<SerialScriptPlan>, String> {
+    let Some(script) = serial_script_for_scenario(scenario_name) else {
+        qemu.arg("-serial")
+            .arg(format!("file:{}", serial_log.display()));
+        return Ok(None);
+    };
+
+    let addr = reserve_tcp_addr("serial chardev")?;
+
+    qemu.arg("-chardev").arg(format!(
+        "socket,id=serial0,host=127.0.0.1,port={},server=on,wait=off",
+        addr.port()
+    ));
+    qemu.arg("-serial").arg("chardev:serial0");
+    let target = match script.transport {
+        ScriptTransport::Serial => CommandTarget::Serial,
+        ScriptTransport::HmpKeyboard => {
+            let hmp_addr = reserve_tcp_addr("QEMU HMP monitor")?;
+            qemu.arg("-monitor")
+                .arg(format!("tcp:127.0.0.1:{},server,nowait", hmp_addr.port()));
+            if let Some(rel) = script.screenshot_rel {
+                remove_optional_file(&workspace_root().join(rel))?;
+            }
+            if let Some((_, rel)) = mid_capture_for_scenario(scenario_name) {
+                remove_optional_file(&workspace_root().join(rel))?;
+            }
+            CommandTarget::HmpKeyboard {
+                addr: hmp_addr,
+                screenshot_rel: script.screenshot_rel,
+            }
+        }
+    };
+    Ok(Some(SerialScriptPlan {
+        addr,
+        serial_log: serial_log.to_path_buf(),
+        steps: script.steps,
+        timeout: scenario_timeout(scenario_name),
+        target,
+        screenshot_after_command: script.screenshot_after_command,
+        mid_capture: mid_capture_for_scenario(scenario_name),
+    }))
+}
+
+fn reserve_tcp_addr(label: &str) -> Result<SocketAddr, String> {
+    let listener =
+        TcpListener::bind("127.0.0.1:0").map_err(|e| format!("reserve {label} TCP port: {e}"))?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("read {label} TCP addr: {e}"))?;
+    drop(listener);
+    Ok(addr)
+}
+
+fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
+    // OT-66 L1: a multi-boot scenario types a different script each boot.
+    if let Some(steps) = *login_scenarios::SCRIPT_OVERRIDE
+        .lock()
+        .expect("login script override")
+    {
+        return Some(ScenarioScript {
+            steps,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        });
+    }
+    if let Some(d) = desktop_scenario(scenario_name) {
+        return Some(ScenarioScript {
+            steps: d.steps,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: Some(d.capture),
+            screenshot_after_command: Some(d.capture_after),
+        });
+    }
+    match scenario_name {
+        "neo_shell_repl" => Some(ScenarioScript {
+            steps: NEO_SHELL_REPL_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "neo_shell_builtins" => Some(ScenarioScript {
+            steps: NEO_SHELL_BUILTINS_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "usb_hotplug" => Some(ScenarioScript {
+            steps: USB_HOTPLUG_HMP_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "input_path_console" => Some(ScenarioScript {
+            steps: INPUT_PATH_CONSOLE_HID_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: Some(INPUT_PATH_CONSOLE_CAPTURE_REL),
+            screenshot_after_command: Some(b"exit\n"),
+        }),
+        "arthur_console" => Some(ScenarioScript {
+            steps: ARTHUR_CONSOLE_HID_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: Some(ARTHUR_CONSOLE_CAPTURE_REL),
+            screenshot_after_command: Some(b"hello arthur\n"),
+        }),
+        "v1_console_liveness" => Some(ScenarioScript {
+            steps: V1_CONSOLE_LIVENESS_HID_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: Some(V1_CONSOLE_LIVENESS_CAPTURE_REL),
+            screenshot_after_command: Some(b"hello arthur\n"),
+        }),
+        "di1_forward" => Some(ScenarioScript {
+            steps: DI1_FORWARD_HID_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "ps2_keyboard" => Some(ScenarioScript {
+            steps: PS2_KEYBOARD_HMP_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "ps2_key_repeat" => Some(ScenarioScript {
+            steps: PS2_KEY_REPEAT_HMP_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "hid_contention" => Some(ScenarioScript {
+            steps: HID_CONTENTION_HID_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "input_queue_flood" => Some(ScenarioScript {
+            steps: INPUT_QUEUE_FLOOD_HID_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_compositor" => Some(ScenarioScript {
+            steps: ARTHUR_COMPOSITOR_SLICE_A_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: Some(ARTHUR_COMPOSITOR_CAPTURE_REL),
+            screenshot_after_command: Some(b""),
+        }),
+        "arthur_converse" => Some(ScenarioScript {
+            steps: ARTHUR_CONVERSE_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_boots_thinking" => Some(ScenarioScript {
+            steps: ARTHUR_BOOTS_THINKING_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_act" => Some(ScenarioScript {
+            steps: ARTHUR_ACT_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_agentic_actions" => Some(ScenarioScript {
+            steps: ARTHUR_AGENTIC_ACTIONS_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_reversibility" => Some(ScenarioScript {
+            steps: ARTHUR_REVERSIBILITY_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_multistep_agentic" => Some(ScenarioScript {
+            steps: ARTHUR_MULTISTEP_AGENTIC_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_grants_persist" => Some(ScenarioScript {
+            steps: ARTHUR_GRANTS_PERSIST_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_real_vocab" => Some(ScenarioScript {
+            steps: ARTHUR_REAL_VOCAB_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_real_brain_boot"
+        | "arthur_real_brain_boot_ot16_walker"
+        | "arthur_boot_module_answers"
+        | "arthur_boot_module_preload"
+        | "arthur_boot_module_preload_vocab_damaged"
+        | "arthur_boot_module_damaged"
+        | "arthur_boot_module_absent"
+        | "arthur_boot_module_vocab_damaged"
+        | "arthur_model_from_neofs"
+        | "arthur_model_from_neofs_damaged"
+        | "arthur_model_from_neofs_module_wins"
+        | "arthur_model_from_neofs_off" => Some(ScenarioScript {
+            steps: ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        INSTALL_CONSOLE_LIST_SCENARIO => Some(ScenarioScript {
+            steps: INSTALL_CONSOLE_LIST_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        INSTALL_CONSOLE_SCENARIO => Some(ScenarioScript {
+            steps: INSTALL_CONSOLE_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_real_brain_boot_15b" => Some(ScenarioScript {
+            steps: ARTHUR_REAL_BRAIN_BOOT_15B_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_real_brain_boot_3b" => Some(ScenarioScript {
+            steps: ARTHUR_REAL_BRAIN_BOOT_3B_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "arthur_real_brain_boot_qwen35" => Some(ScenarioScript {
+            steps: ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS,
+            transport: ScriptTransport::Serial,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        _ => None,
+    }
+}
+
+fn start_serial_script_driver(plan: SerialScriptPlan) -> thread::JoinHandle<Result<(), String>> {
+    thread::spawn(move || drive_serial_script(plan))
+}
+
+enum CommandTargetState {
+    Serial,
+    HmpKeyboard {
+        stream: TcpStream,
+        screenshot_rel: Option<&'static str>,
+    },
+}
+
+fn drive_serial_script(plan: SerialScriptPlan) -> Result<(), String> {
+    let connect_deadline = Instant::now() + Duration::from_secs(15);
+    let mut stream = loop {
+        match TcpStream::connect(plan.addr) {
+            Ok(stream) => break stream,
+            Err(_) if Instant::now() < connect_deadline => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(e) => return Err(format!("connect serial chardev {}: {e}", plan.addr)),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|e| format!("set serial chardev read timeout: {e}"))?;
+    let _ = stream.set_nodelay(true);
+    let mut target = connect_command_target(plan.target, connect_deadline)?;
+
+    let mut log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&plan.serial_log)
+        .map_err(|e| format!("open serial log {}: {e}", plan.serial_log.display()))?;
+    let started = Instant::now();
+    let read_deadline = started + plan.timeout + Duration::from_secs(10);
+    let mut seen = Vec::new();
+    let mut next_command = 0usize;
+    let mut pending_screenshot_prompt: Option<&'static [u8]> = None;
+    // OT-59: name the step before each wait, so a hang that the outer budget
+    // kills (stream close, not our read deadline) still says which prompt never
+    // arrived. Instrumentation only — no change to pass/fail or budgets.
+    log_script_progress(&plan, "waiting", next_command, started);
+
+    loop {
+        let mut buf = [0u8; 512];
+        match stream.read(&mut buf) {
+            Ok(0) => {
+                log_script_close(&plan, next_command, started);
+                return Ok(());
+            }
+            Ok(n) => {
+                log.write_all(&buf[..n])
+                    .map_err(|e| format!("write serial log {}: {e}", plan.serial_log.display()))?;
+                log.flush()
+                    .map_err(|e| format!("flush serial log {}: {e}", plan.serial_log.display()))?;
+                seen.extend_from_slice(&buf[..n]);
+                if seen.len() > 4096 {
+                    let keep_from = seen.len() - 4096;
+                    seen.drain(..keep_from);
+                }
+                if let Some(prompt) = pending_screenshot_prompt
+                    && contains_bytes(&seen, prompt)
+                {
+                    thread::sleep(Duration::from_millis(100));
+                    capture_command_target(&mut target)?;
+                    pending_screenshot_prompt = None;
+                }
+                if let Some(command) = script_command_for_seen(plan.steps, next_command, &seen) {
+                    if let Some((prompt, rel)) = plan.mid_capture
+                        && plan.steps[next_command].prompt == prompt
+                    {
+                        capture_command_target_to(&mut target, rel)?;
+                    }
+                    let capture_before_command = plan.screenshot_after_command == Some(command)
+                        && plan.steps.get(next_command + 1).is_none();
+                    if capture_before_command {
+                        capture_command_target(&mut target)?;
+                    }
+                    write_script_command(&mut stream, &mut target, command)?;
+                    if plan.screenshot_after_command == Some(command) {
+                        if let Some(next_step) = plan.steps.get(next_command + 1) {
+                            pending_screenshot_prompt = Some(next_step.prompt);
+                        } else if !capture_before_command {
+                            capture_command_target(&mut target)?;
+                        }
+                    }
+                    next_command += 1;
+                    seen.clear();
+                    if next_command < plan.steps.len() {
+                        log_script_progress(&plan, "waiting", next_command, started);
+                    }
+                }
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                if Instant::now() > read_deadline {
+                    if next_command == plan.steps.len() {
+                        return Ok(());
+                    }
+                    return Err(format!(
+                        "serial script timed out after sending {}/{} commands",
+                        next_command,
+                        plan.steps.len()
+                    ));
+                }
+            }
+            Err(e)
+                if e.kind() == io::ErrorKind::ConnectionReset
+                    || e.kind() == io::ErrorKind::BrokenPipe =>
+            {
+                log_script_close(&plan, next_command, started);
+                return Ok(());
+            }
+            Err(e) => return Err(format!("read serial chardev {}: {e}", plan.addr)),
+        }
+    }
+}
+
+fn log_script_progress(plan: &SerialScriptPlan, state: &str, step: usize, started: Instant) {
+    eprintln!(
+        "{}",
+        script_progress_line(&plan.serial_log, plan.steps, state, step, started.elapsed())
+    );
+}
+
+fn log_script_close(plan: &SerialScriptPlan, next_command: usize, started: Instant) {
+    let state = if next_command < plan.steps.len() {
+        "STUCK (serial closed)"
+    } else {
+        "complete (serial closed)"
+    };
+    log_script_progress(plan, state, next_command, started);
+}
+
+/// OT-59: one line naming the step (1-based) a serial script is at, the prompt
+/// it is waiting for, and the command sent before it — the prompts repeat
+/// (`arthur> ` ×N), so the index and previous command are the discriminator.
+fn script_progress_line(
+    serial_log: &Path,
+    steps: &[SerialScriptStep],
+    state: &str,
+    step: usize,
+    elapsed: Duration,
+) -> String {
+    let log_name = serial_log
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let shown = |bytes: &[u8]| String::from_utf8_lossy(bytes).escape_debug().to_string();
+    let after = step
+        .checked_sub(1)
+        .and_then(|prev| steps.get(prev))
+        .map_or_else(|| "<none>".to_string(), |prev| shown(prev.command));
+    match steps.get(step) {
+        Some(next) => format!(
+            "[xtask] serial-script {log_name}: {state} step={}/{} prompt=\"{}\" after=\"{after}\" t={:.1}s",
+            step + 1,
+            steps.len(),
+            shown(next.prompt),
+            elapsed.as_secs_f64()
+        ),
+        None => format!(
+            "[xtask] serial-script {log_name}: {state} sent={}/{} after=\"{after}\" t={:.1}s",
+            step,
+            steps.len(),
+            elapsed.as_secs_f64()
+        ),
+    }
+}
+
+fn script_command_for_seen(
+    steps: &'static [SerialScriptStep],
+    next_command: usize,
+    seen: &[u8],
+) -> Option<&'static [u8]> {
+    steps
+        .get(next_command)
+        .filter(|step| contains_bytes(seen, step.prompt))
+        .map(|step| step.command)
+}
+
+fn connect_command_target(
+    target: CommandTarget,
+    connect_deadline: Instant,
+) -> Result<CommandTargetState, String> {
+    match target {
+        CommandTarget::Serial => Ok(CommandTargetState::Serial),
+        CommandTarget::HmpKeyboard {
+            addr,
+            screenshot_rel,
+        } => {
+            let mut stream = loop {
+                match TcpStream::connect(addr) {
+                    Ok(stream) => break stream,
+                    Err(_) if Instant::now() < connect_deadline => {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    Err(e) => return Err(format!("connect QEMU HMP monitor {}: {e}", addr)),
+                }
+            };
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .map_err(|e| format!("set QEMU HMP read timeout: {e}"))?;
+            stream
+                .set_write_timeout(Some(Duration::from_millis(500)))
+                .map_err(|e| format!("set QEMU HMP write timeout: {e}"))?;
+            let _ = drain_monitor(&mut stream, Duration::from_millis(200));
+            Ok(CommandTargetState::HmpKeyboard {
+                stream,
+                screenshot_rel,
+            })
+        }
+    }
+}
+
+fn write_script_command(
+    serial: &mut TcpStream,
+    target: &mut CommandTargetState,
+    command: &[u8],
+) -> Result<(), String> {
+    match target {
+        CommandTargetState::Serial => write_serial_command(serial, command),
+        CommandTargetState::HmpKeyboard {
+            stream,
+            screenshot_rel: _,
+        } => {
+            // HMP sendkey can arrive just after the shell prompt is printed but
+            // before the guest has armed the next blocking stdin read. The old
+            // pre-command screendump hid that race; keep the settle explicit.
+            thread::sleep(Duration::from_millis(500));
+            write_hmp_keys(stream, command)
+        }
+    }
+}
+
+fn capture_command_target(target: &mut CommandTargetState) -> Result<(), String> {
+    if let CommandTargetState::HmpKeyboard {
+        stream,
+        screenshot_rel: Some(rel),
+    } = target
+    {
+        write_hmp_command(stream, &format!("screendump {rel}\n"))?;
+    }
+    Ok(())
+}
+
+/// A capture to `rel` (the HMP keyboard transport's monitor), whatever the
+/// scenario's own capture path.
+fn capture_command_target_to(target: &mut CommandTargetState, rel: &str) -> Result<(), String> {
+    if let CommandTargetState::HmpKeyboard { stream, .. } = target {
+        write_hmp_command(stream, &format!("screendump {rel}\n"))?;
+    }
+    Ok(())
+}
+
+fn write_serial_command(stream: &mut TcpStream, command: &[u8]) -> Result<(), String> {
+    for byte in command {
+        stream
+            .write_all(core::slice::from_ref(byte))
+            .map_err(|e| format!("write serial command: {e}"))?;
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+/// In an HMP-keyboard script command, this byte is not a key: it waits one
+/// second, sending nothing (OT-22's quiet gap).
+const HMP_PAUSE_1S: u8 = 0x80;
+
+/// usb_hotplug: HMP `device_add` / `device_del` of the keyboard.
+const HMP_HOTPLUG_ADD_KBD: u8 = 0x86;
+const HMP_HOTPLUG_DEL_KBD: u8 = 0x87;
+const HMP_HOTPLUG_ADD_KBD_HUB: u8 = 0x88;
+
+/// ps2_key_repeat: hold a key 1.5 s (QEMU sends the make, then the break
+/// when the hold time ends).
+const HMP_HOLD_BACKSPACE: u8 = 0x89;
+const HMP_HOLD_ESCAPE: u8 = 0x8A;
+
+/// A9-C: the transcript's scroll keys (Up is the i8042 lane's 0x83).
+const HMP_PGUP: u8 = 0x8B;
+const HMP_PGDN: u8 = 0x8C;
+const HMP_UP: u8 = 0x83;
+/// A9-C2: one usb-mouse wheel notch each way (HMP `mouse_move 0 0 dz`).
+const HMP_WHEEL_A: u8 = 0x8D;
+const HMP_WHEEL_B: u8 = 0x8E;
+/// OT-87 R4.4: the Down arrow (the installer list moves with Up and Down).
+const HMP_DOWN: u8 = 0x8F;
+/// OT-87 R4.4: `install_atrium`'s pointer leg, one exact move per target
+/// from the screen centre (960,540), on the card the list logs (`card
+/// at=642,499`, rows 24 px after a 10 px pad): the boot disk's row
+/// (700,545), the target's (700,593), Choose (700,617, on its label
+/// 664..738); then the centre of each drawn Back label (#148 F1, measured
+/// in neo-atrium's `installer_buttons_hit_their_drawn_labels`): the
+/// confirmation's (792..847 → 819,593), then the list's (809..864 →
+/// 836,617). Both are left of the card's midpoint (1002), so the pre-#148
+/// equal-halves hit sent them to Go: the confirmation's would install.
+const HMP_TO_BOOT_ROW: u8 = 0x90;
+const HMP_DOWN_TWO_ROWS: u8 = 0x91;
+const HMP_DOWN_ONE_ROW: u8 = 0x92;
+const HMP_TO_CONFIRM_BACK: u8 = 0x93;
+const HMP_TO_LIST_BACK: u8 = 0x9C;
+/// OT-87 R4.4b: from the list's Back (836,617) to the Install chip's centre
+/// (42,234), and back.
+const HMP_TO_INSTALL_CHIP: u8 = 0x94;
+const HMP_FROM_INSTALL_CHIP: u8 = 0x95;
+/// OT-66 L2: Super+L, the lock chord (`sak-lock`).
+const HMP_SUPER_L: u8 = 0x96;
+/// Super+Escape (the SAK that moves the keyboard to the WM's own focus).
+const HMP_SUPER_ESCAPE: u8 = 0x9F;
+/// OT-66 L2: a screendump to `cap<N>.ppm` in [`HMP_CAPTURE_DIR`], N =
+/// byte - [`HMP_CAPTURE_0`] (0 to 4).
+const HMP_CAPTURE_0: u8 = 0x97;
+const HMP_CAPTURES: u8 = 5;
+/// Where the script's numbered captures go (the scenario sets it per boot).
+static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// usb_hotplug: plug (root port 2), type, unplug, re-plug (behind the hub,
+/// port 1.1), type. Each prompt is printed
+/// by the guest once the previous step has been observed.
+const USB_HOTPLUG_HMP_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: b"hotplug=ready-for-plug",
+        command: &[HMP_HOTPLUG_ADD_KBD],
+    },
+    SerialScriptStep {
+        prompt: b"hotplug=type-first",
+        command: b"a",
+    },
+    SerialScriptStep {
+        prompt: b"hotplug=unplug-now",
+        command: &[HMP_HOTPLUG_DEL_KBD],
+    },
+    SerialScriptStep {
+        prompt: b"hotplug=replug-now",
+        command: &[HMP_HOTPLUG_ADD_KBD_HUB],
+    },
+    SerialScriptStep {
+        prompt: b"hotplug=type-second",
+        command: b"b",
+    },
+];
+
+/// In an HMP-keyboard script command, this byte is not a key: it sends a burst
+/// of `HMP_MOUSE_BURST_MOVES` relative `mouse_move`s to the guest's mouse.
+const HMP_MOUSE_BURST: u8 = 0x01;
+const HMP_MOUSE_BURST_MOVES: usize = 40;
+
+/// Other non-key bytes in an HMP-keyboard script command: one HMP command
+/// each (DI-1 / S1-F1 controls). The chord presses Super first, the
+/// modifier-first SAK policy.
+fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
+    match byte {
+        0x02 => Some("sendkey meta_l-esc\n"),
+        0x03 => Some("mouse_button 1\n"),
+        0x04 => Some("mouse_button 0\n"),
+        0x05 => Some("mouse_move 7 3\n"),
+        // DS-1c: from the screen centre (960,540, where the WM starts the
+        // cursor) onto the Lens chip's centre (42,156), then up onto Arthur's
+        // chip (42,78). One exact move each: QEMU's HID merges consecutive
+        // relative moves before the guest polls, so a corner-then-offset pair
+        // would collapse into one delta.
+        0x06 => Some("mouse_move -918 -384\n"),
+        0x07 => Some("mouse_move 0 -78\n"),
+        // DI-1b: onto the title band, the drag itself, and back into the
+        // client; a grab dragged far off the client's left edge. Never a byte
+        // `hmp_key_for_byte` types (0x08 is Backspace, 0x09 Tab): the
+        // `special_bytes_never_shadow_a_key` test pins that.
+        0x1c => Some("mouse_move 0 -50\n"),
+        0x1d => Some("mouse_move -30 15\n"),
+        0x0f => Some("mouse_move 0 50\n"),
+        0x0e => Some("mouse_move -127 0\n"),
+        // DI-1b resize: to the corner handle, the drag, then back into the
+        // widened client.
+        0x10 => Some("mouse_move 124 0\n"),
+        0x11 => Some("mouse_move 0 124\n"),
+        0x12 => Some("mouse_move 6 0\n"),
+        0x13 => Some("mouse_move 30 15\n"),
+        0x14 => Some("mouse_move 0 -108\n"),
+        0x15 => Some("mouse_move -64 0\n"),
+        // DI-1b: the title band, mid-band (clear of the top resize edge).
+        0x16 => Some("mouse_move 0 -38\n"),
+        // DI-1b resize: to the left edge, and its drag.
+        0x17 => Some("mouse_move -125 0\n"),
+        0x18 => Some("mouse_move -80 0\n"),
+        0x19 => Some("mouse_move -30 0\n"),
+        // DL-1 (desktop_full_boot): the pre-bloom drag, the docked drag, to
+        // the corner handle, and back into the resized client.
+        0x1e => Some("mouse_move 75 15\n"),
+        0x0b => Some("mouse_move -50 -10\n"),
+        0x0c => Some("mouse_move 109 0\n"),
+        0x1f => Some("mouse_move 0 141\n"),
+        0x1a => Some("mouse_move -100 -100\n"),
+        // The first-boot intro: from the screen centre up onto the hint.
+        0x81 => Some("mouse_move 0 -20\n"),
+        // usb_hotplug: plug and unplug the keyboard.
+        HMP_HOTPLUG_ADD_KBD => Some("device_add usb-kbd,bus=xhci0.0,port=2,id=hotkbd\n"),
+        HMP_HOTPLUG_DEL_KBD => Some("device_del hotkbd\n"),
+        HMP_HOTPLUG_ADD_KBD_HUB => Some("device_add usb-kbd,bus=xhci0.0,port=1.1,id=hotkbd\n"),
+        // i8042 lane (`ps2_keyboard`): a shifted letter, an `E0` key, a
+        // right-hand modifier, and the `E1` Pause sequence.
+        0x82 => Some("sendkey shift-b\n"),
+        0x83 => Some("sendkey up\n"),
+        0x84 => Some("sendkey ctrl_r-c\n"),
+        0x85 => Some("sendkey pause\n"),
+        HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
+        HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
+        HMP_PGUP => Some("sendkey pgup\n"),
+        HMP_PGDN => Some("sendkey pgdn\n"),
+        HMP_WHEEL_A => Some("mouse_move 0 0 1\n"),
+        HMP_WHEEL_B => Some("mouse_move 0 0 -1\n"),
+        HMP_DOWN => Some("sendkey down\n"),
+        HMP_TO_BOOT_ROW => Some("mouse_move -260 5\n"),
+        HMP_DOWN_TWO_ROWS => Some("mouse_move 0 48\n"),
+        HMP_DOWN_ONE_ROW => Some("mouse_move 0 24\n"),
+        HMP_TO_CONFIRM_BACK => Some("mouse_move 119 -24\n"),
+        HMP_TO_LIST_BACK => Some("mouse_move 17 24\n"),
+        HMP_TO_INSTALL_CHIP => Some("mouse_move -794 -383\n"),
+        HMP_FROM_INSTALL_CHIP => Some("mouse_move 794 383\n"),
+        HMP_SUPER_L => Some("sendkey meta_l-l\n"),
+        HMP_SUPER_ESCAPE => Some("sendkey meta_l-esc\n"),
+        _ => None,
+    }
+}
+
+fn write_hmp_keys(stream: &mut TcpStream, command: &[u8]) -> Result<(), String> {
+    for &byte in command {
+        if byte == HMP_PAUSE_1S {
+            thread::sleep(Duration::from_secs(1));
+            continue;
+        }
+        if byte == HMP_MOUSE_BURST {
+            // One write for the whole burst (no per-command monitor drain), so
+            // the reports arrive as a real flood rather than at drain pace.
+            let mut burst = String::new();
+            // Same-direction moves: QEMU merges a burst into a few reports, and
+            // alternating deltas could net to (0,0), which the boot decoder
+            // suppresses (counted as a report, never routed).
+            for _ in 0..HMP_MOUSE_BURST_MOVES {
+                burst.push_str("mouse_move 5 3\n");
+            }
+            stream
+                .write_all(burst.as_bytes())
+                .map_err(|e| format!("write QEMU HMP mouse burst: {e}"))?;
+            let _ = drain_monitor(stream, Duration::from_millis(100));
+            continue;
+        }
+        if (HMP_CAPTURE_0..HMP_CAPTURE_0 + HMP_CAPTURES).contains(&byte) {
+            let dir = HMP_CAPTURE_DIR.lock().expect("capture dir").clone();
+            if let Some(dir) = dir {
+                let path = dir.join(format!("cap{}.ppm", byte - HMP_CAPTURE_0));
+                let _ = fs::remove_file(&path);
+                write_hmp_command(stream, &format!("screendump {}\n", path.display()))?;
+                thread::sleep(Duration::from_millis(500));
+            }
+            continue;
+        }
+        if let Some(command) = hmp_special_for_byte(byte) {
+            write_hmp_command(stream, command)?;
+            thread::sleep(Duration::from_millis(60));
+            continue;
+        }
+        let Some(key) = hmp_key_for_byte(byte) else {
+            continue;
+        };
+        write_hmp_command(stream, &format!("sendkey {key}\n"))?;
+        thread::sleep(Duration::from_millis(60));
+    }
+    Ok(())
+}
+
+fn write_hmp_command(stream: &mut TcpStream, command: &str) -> Result<(), String> {
+    stream
+        .write_all(command.as_bytes())
+        .map_err(|e| format!("write QEMU HMP `{}`: {e}", command.trim_end()))?;
+    let _ = drain_monitor(stream, Duration::from_millis(100));
+    Ok(())
+}
+
+fn hmp_key_for_byte(byte: u8) -> Option<&'static str> {
+    match byte {
+        b'a'..=b'z' => {
+            const KEYS: [&str; 26] = [
+                "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p",
+                "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+            ];
+            Some(KEYS[(byte - b'a') as usize])
+        }
+        b'0'..=b'9' => {
+            const KEYS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+            Some(KEYS[(byte - b'0') as usize])
+        }
+        b'\n' | b'\r' => Some("ret"),
+        b' ' => Some("spc"),
+        b'\t' => Some("tab"),
+        0x08 | 0x7f => Some("backspace"),
+        0x1b => Some("esc"),
+        b'-' => Some("minus"),
+        b'=' => Some("equal"),
+        b',' => Some("comma"),
+        b'.' => Some("dot"),
+        b'/' => Some("slash"),
+        b';' => Some("semicolon"),
+        b'\'' => Some("apostrophe"),
+        b'[' => Some("bracket_left"),
+        b']' => Some("bracket_right"),
+        b'\\' => Some("backslash"),
+        _ => None,
+    }
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
+struct VirtioAccelHostProcess {
+    child: Child,
+    socket: PathBuf,
+}
+
+fn start_virtio_accel_host(scenario_name: &str) -> Result<VirtioAccelHostProcess, String> {
+    build_virtio_accel_host()?;
+    let socket = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}.virtio-accel.sock"));
+    remove_optional_file(&socket)?;
+    let binary = virtio_accel_host_binary();
+    let mut child = Command::new(&binary)
+        .arg("--socket")
+        .arg(&socket)
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| format!("launch {}: {e}", binary.display()))?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while Instant::now() < deadline {
+        if socket.exists() {
+            eprintln!(
+                "[xtask] neo-test: virtio-accel host listening socket={}",
+                socket.display()
+            );
+            return Ok(VirtioAccelHostProcess { child, socket });
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("poll virtio-accel host: {e}"))?
+        {
+            return Err(format!(
+                "virtio-accel host exited before socket ready: {status}"
+            ));
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Err(format!(
+        "virtio-accel host did not create socket within 5s: {}",
+        socket.display()
+    ))
+}
+
+fn stop_virtio_accel_host(mut host: VirtioAccelHostProcess) {
+    match host.child.try_wait() {
+        Ok(Some(status)) => {
+            eprintln!("[xtask] neo-test: virtio-accel host exited status={status}");
+        }
+        Ok(None) => {
+            let _ = host.child.kill();
+            let _ = host.child.wait();
+        }
+        Err(e) => {
+            eprintln!("[xtask] neo-test: failed to poll virtio-accel host: {e}");
+        }
+    }
+    let _ = fs::remove_file(&host.socket);
+}
+
+fn build_virtio_accel_host() -> Result<(), String> {
+    let status = Command::new(env!("CARGO"))
+        .args(["build", "-p", "virtio-accel-host"])
+        .status()
+        .map_err(|e| format!("launch cargo build -p virtio-accel-host: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "cargo build -p virtio-accel-host failed with {status}"
+        ));
+    }
+    Ok(())
+}
+
+fn virtio_accel_host_binary() -> PathBuf {
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace_root().join("target"));
+    target_dir
+        .join("debug")
+        .join(format!("virtio-accel-host{}", env::consts::EXE_SUFFIX))
+}
+
+fn scenario_uses_storage_disk(scenario: TestScenario) -> bool {
+    scenario.name.starts_with("phase3_")
+        || scenario.name == "ot90_stuck_disk"
+        || scenario.name == "ot90_stuck_sink_off"
+        || scenario.name == "ot90_stuck_sink_restart"
+        || scenario.name == "block_write_guard"
+        || scenario.name == "block_write_guard_4k"
+        || scenario.name == "install_claim_identity"
+        || scenario.name == "virtio_blk_io_gate_contention"
+        || scenario.name == "vtd_fence"
+        || scenario.name == "graphics_vtd_domain"
+        || scenario.name == "model_load_cascade"
+        || scenario.name == "mount_authority"
+        || scenario.name == "desktop_arthur_scope"
+        || scenario.name == "infer_mlp_forward"
+        || scenario.name == "infer_transformer_forward"
+        || scenario.name == "inference_preemptible_liveness"
+        || scenario.name == "infer_embedding_forward"
+        || scenario.name == "infer_embedding_oob_rejected"
+        || scenario.name == "arthur_converse"
+        || scenario.name == "arthur_boots_thinking"
+        || scenario.name == "arthur_act"
+        || scenario.name == "arthur_agentic_actions"
+        || scenario.name == "arthur_reversibility"
+        || scenario.name == "arthur_multistep_agentic"
+        || scenario.name == "arthur_console"
+        || scenario.name == "v1_console_liveness"
+        || scenario.name == "arthur_grants_persist"
+        || scenario.name == "arthur_memory"
+        || scenario.name == "boot_neofs_userland_persistence"
+        || scenario.name == "product_integration"
+        || scenario.name == "boot_neofs_no_valid_superblock"
+        || scenario.name == "boot_neofs_unexpected_error"
+        || scenario.name == "neo_shell_builtins"
+        || scenario.name == "neofs_large_file"
+        || scenario.name == "neofs_large_write"
+        || scenario.name == NEOFS_GROW_WRITE_SCENARIO
+        || scenario.name == "neofs_truncate"
+        || scenario.name == "neofs_rejects_shared_inode"
+        || scenario.name == "neofs_rejects_doubled_block"
+        || scenario.name == "neofs_read_recheck"
+        || scenario.name == "arthur_memory_encrypted"
+        || scenario.name == "arthur_memory_delegation"
+        || scenario.name == "arthur_memory_forgetting"
+        || scenario.name == "sched_spawn_reap_spawn_heavy"
+        || scenario.name == "arthur_real_vocab"
+        || scenario.name == "arthur_real_brain_boot"
+        || scenario.name == "arthur_real_brain_boot_ot16_walker"
+        || scenario.name.starts_with("arthur_model_from_neofs")
+        || scenario.name == "arthur_compositor"
+        || scenario.name == "arthur_compositor_baremetal"
+        || scenario.name == "arthur_real_brain_boot_15b"
+        || scenario.name == "arthur_real_brain_boot_3b"
+        || scenario.name == "arthur_real_brain_boot_qwen35"
+        || scenario.name == "accel_sim_forward_equiv"
+        || scenario.name == "accel_placement_residency"
+        || scenario.name == "accel_evict_pressure"
+        || scenario.name == "accel_residency_retain"
+        || scenario.name == "accel_residency_demote"
+        || scenario.name == "accel_residency_daemon"
+        || scenario.name == "accel_model_residency"
+        || scenario.name == "accel_dedup_movement"
+        || scenario.name == "virtio_accel_forward_equiv"
+        || scenario.name == "virtio_accel_migrate_roundtrip"
+        || scenario.name == "accel_intel_add_bringup"
+        || scenario.name == "accel_intel_blur_silicon"
+        || scenario.name == "accel_intel_blur_silicon_narrowed"
+}
+
+fn prepare_storage_disks_for_mode(
+    scenario_name: &str,
+    mode: ScenarioBundleMode,
+) -> Result<Vec<PathBuf>, String> {
+    if mode.is_bare_metal() {
+        return prepare_bare_metal_storage_disks(scenario_name);
+    }
+    prepare_storage_disks(scenario_name)
+}
+
+fn prepare_bare_metal_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
+    let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+    match scenario_name {
+        "phase3_ahci_neofs_mount_and_readwrite" => {
+            let device0 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 = prepare_ahci_storage_disk(
+                scenario_name,
+                &output_dir.join(format!("{scenario_name}.ahci.raw")),
+            )?;
+            let device4 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.nvme-log.raw")),
+            )?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        "phase3_nvme_neofs_mount_and_readwrite" => {
+            let device0 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.ahci-log.raw")),
+            )?;
+            let device4 = prepare_nvme_storage_disk(
+                scenario_name,
+                &output_dir.join(format!("{scenario_name}.nvme.raw")),
+            )?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        // Phase 7.5 BUILD-V: same layout as the NVMe NeoFS exemplar — the (c2)
+        // test fences the NVMe (device4), the AHCI disk (device3) is the
+        // evidence log-sink. The NVMe disk is a plain raw (the scenario only
+        // reads LBA 0 to provoke the fenced out-of-arena DMA).
+        "vtd_fence" => {
+            let device0 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.ahci-log.raw")),
+            )?;
+            let device4 = prepare_nvme_storage_disk(
+                scenario_name,
+                &output_dir.join(format!("{scenario_name}.nvme.raw")),
+            )?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        "infer_transformer_forward" => {
+            let model =
+                prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_transformer_block.neom")?;
+            let device0 = prepare_neofs_storage_disk_with_model(
+                &output_dir.join(format!("{scenario_name}.ahci.raw")),
+                "normal",
+                Some(&model),
+            )?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device3.raw")))?;
+            let device4 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.nvme-log.raw")),
+            )?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        "arthur_compositor_baremetal" => {
+            // Slice B is deliberately fail-closed: a real Qwen 0.5B artifact is
+            // mandatory, then staged out-of-band on the SATA NeoFS disk. The
+            // boot NVMe remains an independent evidence sink.
+            let model = prepare_stage_b_required_real_brain_model()?;
+            let device0 = prepare_neofs_storage_disk_with_payload_files_sized(
+                &output_dir.join(format!("{scenario_name}.ahci.raw")),
+                "normal",
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &[],
+                Some(768),
+            )?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device3.raw")))?;
+            let device4 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.nvme-log.raw")),
+            )?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        name if bare_metal_uses_ahci_log_sink_only(name) => {
+            let device0 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.ahci-log.raw")),
+            )?;
+            let device4 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device4.raw")))?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        name if bare_metal_uses_nvme_log_sink_only(name) => {
+            let device0 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+            let device1 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+            let device2 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+            let device3 =
+                prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device3.raw")))?;
+            let device4 = prepare_log_sink_storage_disk(
+                &output_dir.join(format!("{scenario_name}.nvme-log.raw")),
+            )?;
+            Ok(vec![device0, device1, device2, device3, device4])
+        }
+        _ => Err(format!(
+            "--bare-metal-mode has no disk pairing for scenario `{scenario_name}`"
+        )),
+    }
+}
+
+fn bare_metal_uses_nvme_log_sink_only(scenario_name: &str) -> bool {
+    matches!(
+        scenario_name,
+        "accel_intel_add_bringup"
+            | "mt7601u_scan_baremetal"
+            | "mt7601u_assoc_baremetal"
+            | "product_integration_baremetal"
+    )
+}
+
+fn bare_metal_uses_ahci_log_sink_only(scenario_name: &str) -> bool {
+    matches!(
+        scenario_name,
+        "accel_intel_blur_silicon" | "accel_intel_blur_silicon_narrowed"
+    )
+}
+
+fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
+    if scenario_name == "install_claim_identity" {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let a = prepare_unmarked_storage_disk(&output_dir.join(format!("{scenario_name}.a.raw")))?;
+        let b = prepare_unmarked_storage_disk(&output_dir.join(format!("{scenario_name}.b.raw")))?;
+        let c = prepare_unmarked_storage_disk(&output_dir.join(format!("{scenario_name}.c.raw")))?;
+        let d = prepare_unmarked_storage_disk(&output_dir.join(format!("{scenario_name}.d.raw")))?;
+        // The twin: disk a's serial and size, one sector of its first MiB
+        // different (THINK §2a, "replacement with the same tuple").
+        let e = prepare_unmarked_storage_disk(&output_dir.join(format!("{scenario_name}.e.raw")))?;
+        let mut twin = fs::OpenOptions::new()
+            .write(true)
+            .open(&e)
+            .map_err(|err| format!("open twin disk {}: {err}", e.display()))?;
+        twin.seek(SeekFrom::Start(64 * 1024))
+            .and_then(|_| twin.write_all(b"LOGANSOS_R41_TWIN"))
+            .and_then(|_| twin.sync_all())
+            .map_err(|err| format!("mark twin disk {}: {err}", e.display()))?;
+        return Ok(vec![a, b, c, d, e]);
+    }
+    // #267: the sealed log-sink disk alone, as disk 0.
+    if scenario_name == "ot90_stuck_sink_off" || scenario_name == "ot90_stuck_sink_restart" {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let sink =
+            prepare_log_sink_storage_disk(&output_dir.join(format!("{scenario_name}.sink.raw")))?;
+        return Ok(vec![sink]);
+    }
+    if scenario_name == "block_write_guard" || scenario_name == "block_write_guard_4k" {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let unmarked = prepare_unmarked_storage_disk(
+            &output_dir.join(format!("{scenario_name}.unmarked.raw")),
+        )?;
+        let sink =
+            prepare_log_sink_storage_disk(&output_dir.join(format!("{scenario_name}.sink.raw")))?;
+        return Ok(vec![unmarked, sink]);
+    }
+
+    if scenario_name == "boot_neofs_unexpected_error" {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let invalid =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+        let valid = prepare_neofs_storage_disk(
+            &output_dir.join(format!("{scenario_name}.device1.raw")),
+            "normal",
+        )?;
+        return Ok(vec![invalid, valid]);
+    }
+
+    if scenario_uses_nvme_disk(scenario_name) {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let device0 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+        let device1 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+        let device2 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+        let device3 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device3.raw")))?;
+        let device4 = prepare_nvme_storage_disk(
+            scenario_name,
+            &output_dir.join(format!("{scenario_name}.nvme.raw")),
+        )?;
+        return Ok(vec![device0, device1, device2, device3, device4]);
+    }
+
+    if scenario_uses_ahci_disk(scenario_name) {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let device0 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device0.raw")))?;
+        let device1 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device1.raw")))?;
+        let device2 =
+            prepare_raw_storage_disk(&output_dir.join(format!("{scenario_name}.device2.raw")))?;
+        let device3 = prepare_ahci_storage_disk(
+            scenario_name,
+            &output_dir.join(format!("{scenario_name}.ahci.raw")),
+        )?;
+        return Ok(vec![device0, device1, device2, device3]);
+    }
+
+    if scenario_uses_ext4_disk(scenario_name) {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let device0 = output_dir.join(format!("{scenario_name}.device0.raw"));
+        let device1 = output_dir.join(format!("{scenario_name}.device1.raw"));
+        let device2 = output_dir.join(format!("{scenario_name}.ext4.raw"));
+        let device0 = prepare_raw_storage_disk(&device0)?;
+        let device1 = prepare_raw_storage_disk(&device1)?;
+        let device2 = prepare_ext4_storage_disk(&device2)?;
+        return Ok(vec![device0, device1, device2]);
+    }
+
+    if scenario_uses_fat32_disk(scenario_name) {
+        let output_dir = workspace_root().join(TEST_OUTPUT_REL);
+        let device0 = output_dir.join(format!("{scenario_name}.device0.raw"));
+        let device1 = output_dir.join(format!("{scenario_name}.fat32.raw"));
+        let device0 = prepare_raw_storage_disk(&device0)?;
+        let device1 = prepare_fat32_storage_disk(&device1)?;
+        return Ok(vec![device0, device1]);
+    }
+
+    Ok(vec![prepare_storage_disk(scenario_name)?])
+}
+
+fn prepare_storage_disk(scenario_name: &str) -> Result<PathBuf, String> {
+    let path = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}.raw"));
+    if let Some(variant) = neofs_image_variant_for_scenario(scenario_name) {
+        if scenario_name == "infer_mlp_forward"
+            || scenario_name == "phase3_neofs_syscall_if_on"
+            || scenario_name == "accel_sim_forward_equiv"
+            || scenario_name == "virtio_accel_forward_equiv"
+            || scenario_name == "virtio_accel_migrate_roundtrip"
+        {
+            let model = prepare_valid_neomc_fixture(scenario_name, "valid_mlp.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == "accel_placement_residency" {
+            let model = prepare_valid_neomc_fixture(scenario_name, "valid_unary_chain.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == "accel_evict_pressure"
+            || scenario_name == "accel_residency_demote"
+            || scenario_name == "accel_residency_daemon"
+        {
+            let model = prepare_valid_neomc_fixture(scenario_name, "valid_pressure_chain.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == "accel_model_residency" || scenario_name == "accel_dedup_movement" {
+            let model = prepare_valid_neomc_fixture(scenario_name, "valid_weighted_chain.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == "accel_residency_retain" {
+            let model = prepare_valid_neomc_fixture(scenario_name, "valid_retain_chain.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == "infer_transformer_forward" {
+            let model =
+                prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_transformer_block.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == "inference_preemptible_liveness" {
+            let model =
+                prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_transformer_block.neom")?;
+            let generate_model = prepare_generation_oracle_fixture(scenario_name)?;
+            return prepare_neofs_storage_disk_with_model_files(
+                &path,
+                variant,
+                Some(&model),
+                &[("generate.neom", generate_model.as_path())],
+            );
+        }
+        if scenario_name == "infer_embedding_forward" {
+            let model = prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_embedding.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        if scenario_name == NEOFS_GROW_WRITE_SCENARIO {
+            // The volume is the first 65 MiB; the disk has room to grow into.
+            prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[],
+                &[],
+                Some(NEOFS_GROW_WRITE_VOLUME_MIB),
+            )?;
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_len(NEOFS_GROW_WRITE_DISK_MIB * 1024 * 1024))
+                .map_err(|e| format!("extend {}: {e}", path.display()))?;
+            return Ok(path);
+        }
+        if scenario_name == "neofs_large_file" || scenario_name == "neofs_truncate" {
+            let large = prepare_neofs_large_file_fixture(scenario_name)?;
+            return prepare_neofs_storage_disk_with_payload_files(
+                &path,
+                variant,
+                None,
+                &[],
+                &[(NEOFS_LARGE_FILE_NAME, large.as_path())],
+            );
+        }
+        // M2 (encryption): `arthur_memory_encrypted` is a memory-persistence
+        // scenario, NOT an inference one — it needs only its neofs image variant
+        // (`arthur-memory-encryption`), no model. It falls through to the
+        // `prepare_neofs_storage_disk(variant)` default below, exactly like
+        // `arthur_memory`. (`arthur_converse`/`arthur_act` are generation
+        // scenarios and stay on main's `with_model_files` routing below — feeding
+        // them an embedding model here infer-fails on shards 2/4.)
+        if scenario_name == "arthur_converse"
+            || scenario_name == "arthur_act"
+            || scenario_name == "arthur_console"
+            || scenario_name == "v1_console_liveness"
+        {
+            let model = prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_embedding.neom")?;
+            return prepare_neofs_storage_disk_with_model_files(
+                &path,
+                variant,
+                Some(&model),
+                &[("model-qwen2.5-1.5b.neom", model.as_path())],
+            );
+        }
+        if scenario_name == "arthur_grants_persist" {
+            let model = prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_embedding.neom")?;
+            return prepare_neofs_storage_disk_with_model_files(
+                &path,
+                variant,
+                Some(&model),
+                &[("model-qwen2.5-1.5b.neom", model.as_path())],
+            );
+        }
+        if scenario_name == "arthur_real_vocab" {
+            let model = prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_embedding.neom")?;
+            let vocab = prepare_vocab_sidecar()?;
+            return prepare_neofs_storage_disk_with_payload_files(
+                &path,
+                variant,
+                Some(&model),
+                &[("model-qwen2.5-1.5b.neom", model.as_path())],
+                &[("model-qwen2.5-1.5b.vocab", vocab.as_path())],
+            );
+        }
+        if scenario_name.starts_with("arthur_model_from_neofs") {
+            return prepare_neofs_model_disk(scenario_name, &path, variant);
+        }
+        if scenario_name == "arthur_real_brain_boot"
+            || scenario_name == "arthur_real_brain_boot_ot16_walker"
+            || scenario_name == "arthur_compositor"
+        {
+            let model = prepare_stage_b_real_brain_model()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &[],
+                Some(768),
+            );
+        }
+        if scenario_name == "product_integration" {
+            let model = prepare_product_integration_brain_model()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &[],
+                Some(768),
+            );
+        }
+        if scenario_name == "arthur_real_brain_boot_15b" {
+            let model = prepare_stage_b_15b_real_brain_model()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-1.5b.neom", model.as_path())],
+                &[],
+                Some(2048),
+            );
+        }
+        if scenario_name == "arthur_real_brain_boot_3b" {
+            let model = prepare_stage_b_3b_real_brain_model()?;
+            // The `.vocab` sidecar next to the `.neom` is auto-staged by
+            // `model_vocab_sidecar` as `model-qwen2.5-3b.vocab`. The disk is 3 GiB
+            // to hold the ~1.955 GiB `.neom` (46 MiB under the 2 GiB file cap) +
+            // the ~7.6 MiB vocab + the neofs indirect/inode overhead, with margin.
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-3b.neom", model.as_path())],
+                &[],
+                Some(3072),
+            );
+        }
+        if scenario_name == "arthur_real_brain_boot_qwen35" {
+            let model = prepare_stage_b_qwen35_real_brain_model()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen3.5-0.8b.neom", model.as_path())],
+                &[],
+                Some(1024),
+            );
+        }
+        if scenario_name == "arthur_reversibility" {
+            let model = prepare_agentic_action_oracle_model()?;
+            let danger_key = prepare_agentic_danger_key_fixture()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &[("danger.key", danger_key.as_path())],
+                Some(768),
+            );
+        }
+        if scenario_name == "arthur_multistep_agentic" {
+            let model = prepare_agentic_action_oracle_model()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &[],
+                Some(768),
+            );
+        }
+        if scenario_name == "arthur_agentic_actions" {
+            let model = prepare_agentic_action_oracle_model()?;
+            return prepare_neofs_storage_disk_with_payload_files_sized(
+                &path,
+                variant,
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &[],
+                Some(768),
+            );
+        }
+        if scenario_name == "arthur_boots_thinking" {
+            let model = prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_embedding.neom")?;
+            return prepare_neofs_storage_disk_with_model_files(
+                &path,
+                variant,
+                Some(&model),
+                &[
+                    ("model-qwen2.5-1.5b.neom", model.as_path()),
+                    ("model-qwen2.5-0.5b.neom", model.as_path()),
+                ],
+            );
+        }
+        if scenario_name == "infer_embedding_oob_rejected" {
+            let model = prepare_valid_neomc_fixture_mkdir(scenario_name, "valid_embedding.neom")?;
+            return prepare_neofs_storage_disk_with_model(&path, variant, Some(&model));
+        }
+        return prepare_neofs_storage_disk(&path, variant);
+    }
+
+    prepare_raw_storage_disk(&path)
+}
+
+/// Zenbook lane: the kernel writes only inside extents a sealed marker claims
+/// (`kernel/src/drivers/block/write_guard_logic.rs`). A throwaway QEMU disk
+/// gets the sealed scratch sector, naming its capacity, in its last 512
+/// bytes, which no scenario reads or writes.
+fn stamp_scratch_marker(file: &mut fs::File, size: u64, path: &Path) -> Result<(), String> {
+    file.seek(SeekFrom::Start(size - 512))
+        .map_err(|e| format!("seek scratch marker {}: {e}", path.display()))?;
+    file.write_all(&write_guard_logic::scratch_sector(size))
+        .map_err(|e| format!("write scratch marker {}: {e}", path.display()))
+}
+
+/// `block_write_guard`: a disk with NO valid marker. The kernel must never
+/// write it. Sized to hold a log-sink region, so the sink's refusal is
+/// exercised (not short-circuited by geometry). It carries the BARE pre-seal
+/// magics at every probe offset (what armed a disk before the seals), so a
+/// guard that matched bytes alone would arm it.
+fn prepare_unmarked_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove unmarked disk {}: {e}", path.display())),
+    }
+    let mut file = fs::File::create(path)
+        .map_err(|e| format!("create unmarked disk {}: {e}", path.display()))?;
+    file.set_len(BARE_METAL_LOG_DISK_SIZE)
+        .map_err(|e| format!("size unmarked disk {}: {e}", path.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("seek unmarked disk {}: {e}", path.display()))?;
+    file.write_all(b"NEOPLUTARCH_UNMARKED_DISK_NEVER_WRITTEN\0")
+        .map_err(|e| format!("seed unmarked disk {}: {e}", path.display()))?;
+    let bare: [(u64, &[u8]); 4] = [
+        (1024 * 1024, b"NEOFSv1\0"),
+        (64 * 1024 * 1024, b"NEOFSv1\0"),
+        (BARE_METAL_LOG_REGION_OFFSET, b"NEO_LOG_v1\0"),
+        (BARE_METAL_LOG_DISK_SIZE - 512, b"NEO_SCRATCH_v1\0\0"),
+    ];
+    for (offset, magic) in bare {
+        file.seek(SeekFrom::Start(offset))
+            .and_then(|_| file.write_all(magic))
+            .map_err(|e| format!("bare magic at 0x{offset:x} {}: {e}", path.display()))?;
+    }
+    file.sync_all()
+        .map_err(|e| format!("sync unmarked disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+fn prepare_raw_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove storage disk {}: {e}", path.display())),
+    }
+
+    let mut file = fs::File::create(path)
+        .map_err(|e| format!("create storage disk {}: {e}", path.display()))?;
+    file.set_len(STORAGE_DISK_SIZE)
+        .map_err(|e| format!("size storage disk {}: {e}", path.display()))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| format!("seek storage disk {}: {e}", path.display()))?;
+    file.write_all(b"NEOPLUTARCH_PHASE3_BUILD1_RAW_DISK\0")
+        .map_err(|e| format!("seed storage disk {}: {e}", path.display()))?;
+    stamp_scratch_marker(&mut file, STORAGE_DISK_SIZE, path)?;
+    file.sync_all()
+        .map_err(|e| format!("sync storage disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+fn prepare_log_sink_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove log sink disk {}: {e}", path.display())),
+    }
+
+    let mut file = fs::File::create(path)
+        .map_err(|e| format!("create log sink disk {}: {e}", path.display()))?;
+    file.set_len(BARE_METAL_LOG_DISK_SIZE)
+        .map_err(|e| format!("size log sink disk {}: {e}", path.display()))?;
+    // The sink writes only over a pre-provisioned sealed header, and the
+    // write guard arms only its region: provision it as an operator would
+    // (`cargo xtask log-sink-header`). No scratch sector, so the rest of the
+    // disk stays unwritable, as on the real sink disk. Nothing else is
+    // written: a table-less sink disk arms only when its first MiB is blank
+    // (R1-7), so the old BUILD5B target seed at offset 0 (read by nothing)
+    // is gone.
+    file.seek(SeekFrom::Start(BARE_METAL_LOG_REGION_OFFSET))
+        .map_err(|e| format!("seek log sink header {}: {e}", path.display()))?;
+    file.write_all(&write_guard_logic::provisioning_log_header(
+        BARE_METAL_LOG_REGION_SIZE,
+    ))
+    .map_err(|e| format!("provision log sink header {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync log sink disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+fn scenario_uses_fat32_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_fat32_")
+}
+
+fn scenario_uses_ext4_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_ext4_")
+}
+
+fn scenario_uses_ahci_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_ahci_")
+}
+
+fn scenario_uses_nvme_disk(scenario_name: &str) -> bool {
+    // Phase 7.5 BUILD-V: vtd_fence fences a real, vIOMMU-translated DMA device;
+    // NVMe is that device (QEMU's vIOMMU bypasses virtio without iommu_platform).
+    // OT-63 Slice 5: graphics_vtd_domain fences the same NVMe proxy into the
+    // GRAPHICS domain (the real Gen9 iGPU is bare-metal-only).
+    scenario_name.starts_with("phase3_nvme_")
+        || scenario_name == "vtd_fence"
+        || scenario_name == "graphics_vtd_domain"
+}
+
+fn prepare_ahci_storage_disk(scenario_name: &str, path: &Path) -> Result<PathBuf, String> {
+    match scenario_name {
+        "phase3_ahci_fat32_mount_and_read" => prepare_fat32_storage_disk(path),
+        "phase3_ahci_neofs_mount_and_readwrite" => prepare_neofs_storage_disk(path, "normal"),
+        _ => prepare_ahci_raw_pattern_disk(path),
+    }
+}
+
+fn prepare_ahci_raw_pattern_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove AHCI disk {}: {e}", path.display())),
+    }
+
+    let mut file =
+        fs::File::create(path).map_err(|e| format!("create AHCI disk {}: {e}", path.display()))?;
+    file.set_len(STORAGE_DISK_SIZE)
+        .map_err(|e| format!("size AHCI disk {}: {e}", path.display()))?;
+    let mut sectors = vec![0u8; 16 * 512];
+    for (idx, byte) in sectors.iter_mut().enumerate() {
+        let absolute = 8 * 512 + idx;
+        *byte = ahci_raw_pattern_byte(absolute);
+    }
+    file.seek(SeekFrom::Start(8 * 512))
+        .map_err(|e| format!("seek AHCI disk {}: {e}", path.display()))?;
+    file.write_all(&sectors)
+        .map_err(|e| format!("write AHCI pattern {}: {e}", path.display()))?;
+    stamp_scratch_marker(&mut file, STORAGE_DISK_SIZE, path)?;
+    file.sync_all()
+        .map_err(|e| format!("sync AHCI disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+fn ahci_raw_pattern_byte(offset: usize) -> u8 {
+    ((offset as u8).wrapping_mul(29)).wrapping_add(0x5a) ^ 0xa5
+}
+
+fn prepare_nvme_storage_disk(scenario_name: &str, path: &Path) -> Result<PathBuf, String> {
+    match scenario_name {
+        "phase3_nvme_fat32_mount_and_read" => prepare_fat32_storage_disk(path),
+        "phase3_nvme_neofs_mount_and_readwrite" => prepare_neofs_storage_disk(path, "normal"),
+        _ => prepare_nvme_raw_pattern_disk(path),
+    }
+}
+
+fn prepare_nvme_raw_pattern_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove NVMe disk {}: {e}", path.display())),
+    }
+
+    let mut file =
+        fs::File::create(path).map_err(|e| format!("create NVMe disk {}: {e}", path.display()))?;
+    file.set_len(STORAGE_DISK_SIZE)
+        .map_err(|e| format!("size NVMe disk {}: {e}", path.display()))?;
+    let mut sectors = vec![0u8; 16 * 512];
+    for (idx, byte) in sectors.iter_mut().enumerate() {
+        let absolute = 8 * 512 + idx;
+        *byte = nvme_raw_pattern_byte(absolute);
+    }
+    file.seek(SeekFrom::Start(8 * 512))
+        .map_err(|e| format!("seek NVMe disk {}: {e}", path.display()))?;
+    file.write_all(&sectors)
+        .map_err(|e| format!("write NVMe pattern {}: {e}", path.display()))?;
+    stamp_scratch_marker(&mut file, STORAGE_DISK_SIZE, path)?;
+    file.sync_all()
+        .map_err(|e| format!("sync NVMe disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+fn nvme_raw_pattern_byte(offset: usize) -> u8 {
+    ((offset as u8).wrapping_mul(37)).wrapping_add(0x33) ^ 0xc7
+}
+
+fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str> {
+    match scenario_name {
+        "phase3_neofs_mount_readonly_root" => Some("normal"),
+        "phase3_neofs_mount_selects_highest_generation" => Some("highest-generation"),
+        "phase3_neofs_mount_rejects_bad_superblock" => Some("corrupt-primary"),
+        "phase3_neofs_create_small_file" => Some("normal"),
+        "phase3_neofs_write_readback_same_boot" => Some("normal"),
+        "phase3_neofs_cache_evict" | "phase3_neofs_cache_evict_off" => Some("normal"),
+        "phase3_neofs_allocator_reuse_guard" => Some("normal"),
+        "phase3_neofs_reboot_persistence_small_file" => Some("normal"),
+        "ot90_s5_durability" => Some("normal"),
+        "ot90_stuck_disk" => Some("normal"),
+        "phase3_neofs_fsync_noop_write_through" => Some("normal"),
+        "phase3_neofs_cow_write_after_write" => Some("normal"),
+        "phase3_neofs_crash_mid_overwrite_recovery" => Some("normal"),
+        "phase3_neofs_superblock_rotation_recovery" => Some("normal"),
+        "phase3_neofs_crash_mid_create_recovery" => Some("normal"),
+        "phase3_neofs_typed_inode_exec_refusal" => Some("normal"),
+        "phase3_neofs_regular_exec_policy_stub" => Some("normal"),
+        "phase3_neofs_type_vs_rights_policy_errors" => Some("normal"),
+        "phase3_neofs_filecap_generation_stale" => Some("normal"),
+        "phase3_neofs_reserved_type_refusal" => Some("reserved-type"),
+        "phase3_neofs_filerights_u32_forward_bits" => Some("normal"),
+        "phase3_neofs_gc_mark_live_set" => Some("normal"),
+        "phase3_neofs_gc_reclaims_orphan_after_overwrite" => Some("normal"),
+        "phase3_neofs_gc_reuses_reclaimed_block" => Some("normal"),
+        "phase3_neofs_gc_reboot_persistence" => Some("normal"),
+        "phase3_neofs_gc_crash_before_publish" => Some("normal"),
+        "phase3_neofs_gc_corrupt_free_map_rejected" => Some("corrupt-free-map"),
+        "phase3_neofs_cache_hit_miss_smoke" => Some("normal"),
+        "phase3_neofs_writeback_dirty_drain" => Some("normal"),
+        "phase3_neofs_writeback_worker_stop_join" => Some("normal"),
+        "neo_shell_builtins" => Some("normal"),
+        "mount_authority" => Some("normal"),
+        "phase3_neofs_writeback_reboot_after_drain" => Some("normal"),
+        "phase3_neofs_writeback_crash_before_drain" => Some("normal"),
+        "phase3_neofs_gc_waits_for_clean_cache" => Some("normal"),
+        "phase3_neofs_fsync_dirty_persists_after_crash" => Some("normal"),
+        "phase3_neofs_unfsynced_dirty_may_be_lost" => Some("normal"),
+        "phase3_neofs_fsync_issues_flush" => Some("normal"),
+        "phase3_neofs_syscall_if_on" => Some("normal"),
+        "phase3_neofs_fsync_clean_no_extra_flush" => Some("normal"),
+        "phase3_neofs_fsync_coordinates_with_writeback_gc" => Some("normal"),
+        "phase3_neofs_fsync_filecap_stale_regression" => Some("normal"),
+        "phase3_neofs_readdir_root" => Some("arthur-memory"),
+        "phase3_neofs_readdir_stale_generation" => Some("normal"),
+        "neofs_large_file" => Some("normal"),
+        "neofs_large_write" => Some("normal"),
+        "neofs_overwrite_frees" => Some("normal"),
+        "neofs_rejects_shared_inode" => Some("shared-inode"),
+        "neofs_rejects_doubled_block" => Some("doubled-block"),
+        NEOFS_GROW_WRITE_SCENARIO => Some("normal"),
+        "neofs_file_replace" => Some("normal"),
+        "neofs_read_recheck" => Some("normal"),
+        "neofs_truncate" => Some("normal"),
+        "model_load_cascade" => Some("normal"),
+        "infer_mlp_forward" => Some("normal"),
+        "infer_transformer_forward" => Some("normal"),
+        "inference_preemptible_liveness" => Some("normal"),
+        "infer_embedding_forward" => Some("normal"),
+        "infer_embedding_oob_rejected" => Some("normal"),
+        "arthur_converse" => Some("normal"),
+        "arthur_boots_thinking" => Some("normal"),
+        "arthur_act" => Some("normal"),
+        "arthur_agentic_actions" => Some("normal"),
+        "arthur_reversibility" => Some("arthur-reversibility"),
+        "arthur_multistep_agentic" => Some("arthur-reversibility-stakes"),
+        "arthur_console" => Some("normal"),
+        "v1_console_liveness" => Some("normal"),
+        "arthur_grants_persist" => Some("arthur-memory"),
+        "arthur_memory" => Some("arthur-memory"),
+        "desktop_arthur_scope" => Some("arthur-memory"),
+        "boot_neofs_userland_persistence" => Some("arthur-memory"),
+        "product_integration" => Some("arthur-memory"),
+        "boot_neofs_unexpected_error" => Some("normal"),
+        // M2: the encrypted scenario uses the SAME neofs image as arthur_memory
+        // (neofs-mkfs has no `arthur-memory-encryption` variant); encryption is
+        // applied at runtime by the neo-arthur binary, not baked into the disk.
+        "arthur_memory_encrypted" => Some("arthur-memory"),
+        "arthur_memory_delegation" => Some("arthur-memory"),
+        "arthur_memory_forgetting" => Some("arthur-memory-forgetting"),
+        // OT-29: spawns the heavy Arthur (file I/O to /neofs/.arthur/memory), so
+        // it needs the same arthur-memory neofs image.
+        "sched_spawn_reap_spawn_heavy" => Some("arthur-memory"),
+        "arthur_real_vocab" => Some("normal"),
+        "arthur_real_brain_boot" | "arthur_real_brain_boot_ot16_walker" => Some("normal"),
+        "arthur_model_from_neofs"
+        | "arthur_model_from_neofs_damaged"
+        | "arthur_model_from_neofs_module_wins"
+        | "arthur_model_from_neofs_off" => Some("normal"),
+        "arthur_compositor" | "arthur_compositor_baremetal" => Some("normal"),
+        "arthur_real_brain_boot_15b" => Some("normal"),
+        "arthur_real_brain_boot_3b" => Some("normal"),
+        "arthur_real_brain_boot_qwen35" => Some("normal"),
+        "accel_sim_forward_equiv" => Some("normal"),
+        "accel_placement_residency" => Some("normal"),
+        "accel_evict_pressure" => Some("normal"),
+        "accel_residency_retain" => Some("normal"),
+        "accel_residency_demote" => Some("normal"),
+        "accel_residency_daemon" => Some("normal"),
+        "accel_model_residency" => Some("normal"),
+        "accel_dedup_movement" => Some("normal"),
+        "virtio_accel_forward_equiv" => Some("normal"),
+        "virtio_accel_migrate_roundtrip" => Some("normal"),
+        // BUILD-4B mount scenarios that drive sys_mount against device0.
+        "phase3_mount_neofs_device0_readonly" => Some("normal"),
+        "phase3_mount_target_exists_is_eexist" => Some("normal"),
+        "phase3_umount_busy_is_ebusy" => Some("normal"),
+        "phase3_umount_removes_namespace" => Some("normal"),
+        "phase3_umount_drop_outside_mounts" => Some("normal"),
+        _ => None,
+    }
+}
+
+// Consolidation (Rule-4, 2026-07-22): the seven `prepare_valid_*_fixture`
+// bodies were byte-identical `neomc fixtures` invocations differing only in the
+// returned `.neom` filename (and, for two, the dir suffix + a `create_dir_all`).
+// They collapse to two helpers parameterized by that filename — behavior-
+// identical at every call site (same fixture dir, same command, same error
+// strings, same returned path). The two conventions stay two helpers on
+// purpose: the on-disk dir path differs (`.neomc-fixtures` vs `_fixtures`) and
+// the mkdir variant additionally `create_dir_all`s, so unifying them would move
+// where fixtures land on disk.
+
+/// Cluster-A convention: dir `{scenario}.neomc-fixtures`, no `create_dir_all`.
+fn prepare_valid_neomc_fixture(scenario_name: &str, file: &str) -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}.neomc-fixtures"));
+    let status = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args(["run", "-p", "neomc", "--", "fixtures", "--output-dir"])
+        .arg(&fixture_dir)
+        .status()
+        .map_err(|e| format!("launch neomc fixtures for {scenario_name}: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "neomc fixtures failed for {scenario_name} with status {status}"
+        ));
+    }
+    Ok(fixture_dir.join(file))
+}
+
+/// Cluster-B convention: dir `{scenario}_fixtures`, created with `create_dir_all`.
+fn prepare_valid_neomc_fixture_mkdir(scenario_name: &str, file: &str) -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}_fixtures"));
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create fixture dir for {scenario_name}: {e}"))?;
+
+    let status = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args(["run", "-p", "neomc", "--", "fixtures", "--output-dir"])
+        .arg(&fixture_dir)
+        .status()
+        .map_err(|e| format!("launch neomc fixtures for {scenario_name}: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "neomc fixtures failed for {scenario_name} with status {status}"
+        ));
+    }
+    Ok(fixture_dir.join(file))
+}
+
+fn prepare_generation_oracle_fixture(scenario_name: &str) -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}_generate_fixtures"));
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create generation fixture dir for {scenario_name}: {e}"))?;
+    let path = fixture_dir.join("tiny_embedding_decode_oracle.neom");
+    fs::write(&path, generation_oracle_neom())
+        .map_err(|e| format!("write generation oracle {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn generation_oracle_neom() -> Vec<u8> {
+    const HEADER_OFF: usize = 0;
+    const TENSOR_OFF: usize = 96;
+    const NODE_OFF: usize = 192;
+    const NODE_REFS_OFF: usize = 240;
+    const IO_OFF: usize = 256;
+    const STRING_OFF: usize = 416;
+    const WEIGHT_OFF: usize = 4096;
+    const VOCAB: usize = 8;
+    const CONTEXT: usize = 4;
+    const WEIGHT_LEN: usize = VOCAB * VOCAB * 4;
+    const TOTAL: usize = WEIGHT_OFF + WEIGHT_LEN;
+
+    let mut bytes = vec![0u8; TOTAL];
+    bytes[0..4].copy_from_slice(b"NEOM");
+    neom_put_u32(&mut bytes, HEADER_OFF + 4, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 8, 96);
+    neom_put_u32(&mut bytes, HEADER_OFF + 16, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 20, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 24, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 28, 1);
+    neom_put_u64(&mut bytes, HEADER_OFF + 32, TENSOR_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 40, NODE_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 48, IO_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 56, STRING_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 64, 0);
+    neom_put_u64(&mut bytes, HEADER_OFF + 72, WEIGHT_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 80, WEIGHT_LEN as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 88, TOTAL as u64);
+
+    neom_put_u32(&mut bytes, TENSOR_OFF, 0);
+    neom_put_u32(&mut bytes, TENSOR_OFF + 4, 2);
+    neom_put_u64(&mut bytes, TENSOR_OFF + 8, VOCAB as u64);
+    neom_put_u64(&mut bytes, TENSOR_OFF + 16, VOCAB as u64);
+    neom_put_u64(&mut bytes, TENSOR_OFF + 72, WEIGHT_OFF as u64);
+    neom_put_u64(&mut bytes, TENSOR_OFF + 80, WEIGHT_LEN as u64);
+
+    neom_put_u32(&mut bytes, NODE_OFF, 9);
+    neom_put_u32(&mut bytes, NODE_OFF + 4, 2);
+    neom_put_u32(&mut bytes, NODE_OFF + 8, 1);
+    neom_put_u32(&mut bytes, NODE_OFF + 12, NODE_REFS_OFF as u32);
+    neom_put_u32(&mut bytes, NODE_OFF + 16, (NODE_REFS_OFF + 8) as u32);
+    neom_put_u32(&mut bytes, NODE_REFS_OFF, 1);
+    neom_put_u32(&mut bytes, NODE_REFS_OFF + 4, 0);
+    neom_put_u32(&mut bytes, NODE_REFS_OFF + 8, 2);
+
+    neom_put_u32(&mut bytes, IO_OFF, 1);
+    neom_put_u32(&mut bytes, IO_OFF + 4, 3);
+    neom_put_u32(&mut bytes, IO_OFF + 8, 1);
+    neom_put_u64(&mut bytes, IO_OFF + 16, CONTEXT as u64);
+    neom_put_u32(&mut bytes, IO_OFF + 80, 2);
+    neom_put_u32(&mut bytes, IO_OFF + 84, 0);
+    neom_put_u32(&mut bytes, IO_OFF + 88, 2);
+    neom_put_u32(&mut bytes, IO_OFF + 92, 1);
+    neom_put_u64(&mut bytes, IO_OFF + 96, CONTEXT as u64);
+    neom_put_u64(&mut bytes, IO_OFF + 104, VOCAB as u64);
+
+    for token in 0..VOCAB {
+        let next = match token {
+            1 => 2,
+            2 => 3,
+            3 => 4,
+            _ => token,
+        };
+        for vocab in 0..VOCAB {
+            let logit = if vocab == next { 8.0f32 } else { -8.0f32 };
+            let off = WEIGHT_OFF + (token * VOCAB + vocab) * 4;
+            bytes[off..off + 4].copy_from_slice(&logit.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+fn agentic_action_oracle_neom() -> Vec<u8> {
+    const HEADER_OFF: usize = 0;
+    const TENSOR_OFF: usize = 96;
+    const NODE_OFF: usize = 192;
+    const NODE_REFS_OFF: usize = 240;
+    const IO_OFF: usize = 256;
+    const STRING_OFF: usize = 416;
+    const WEIGHT_OFF: usize = 4096;
+    const WEIGHT_LEN: usize = AGENTIC_FIXTURE_VOCAB_SIZE * AGENTIC_FIXTURE_VOCAB_SIZE * 4;
+    const TOTAL: usize = WEIGHT_OFF + WEIGHT_LEN;
+
+    let mut bytes = vec![0u8; TOTAL];
+    bytes[0..4].copy_from_slice(b"NEOM");
+    neom_put_u32(&mut bytes, HEADER_OFF + 4, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 8, 96);
+    neom_put_u32(&mut bytes, HEADER_OFF + 16, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 20, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 24, 1);
+    neom_put_u32(&mut bytes, HEADER_OFF + 28, 1);
+    neom_put_u64(&mut bytes, HEADER_OFF + 32, TENSOR_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 40, NODE_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 48, IO_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 56, STRING_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 64, 0);
+    neom_put_u64(&mut bytes, HEADER_OFF + 72, WEIGHT_OFF as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 80, WEIGHT_LEN as u64);
+    neom_put_u64(&mut bytes, HEADER_OFF + 88, TOTAL as u64);
+
+    neom_put_u32(&mut bytes, TENSOR_OFF, 0);
+    neom_put_u32(&mut bytes, TENSOR_OFF + 4, 2);
+    neom_put_u64(
+        &mut bytes,
+        TENSOR_OFF + 8,
+        AGENTIC_FIXTURE_VOCAB_SIZE as u64,
+    );
+    neom_put_u64(
+        &mut bytes,
+        TENSOR_OFF + 16,
+        AGENTIC_FIXTURE_VOCAB_SIZE as u64,
+    );
+    neom_put_u64(&mut bytes, TENSOR_OFF + 72, WEIGHT_OFF as u64);
+    neom_put_u64(&mut bytes, TENSOR_OFF + 80, WEIGHT_LEN as u64);
+
+    neom_put_u32(&mut bytes, NODE_OFF, 9);
+    neom_put_u32(&mut bytes, NODE_OFF + 4, 2);
+    neom_put_u32(&mut bytes, NODE_OFF + 8, 1);
+    neom_put_u32(&mut bytes, NODE_OFF + 12, NODE_REFS_OFF as u32);
+    neom_put_u32(&mut bytes, NODE_OFF + 16, (NODE_REFS_OFF + 8) as u32);
+    neom_put_u32(&mut bytes, NODE_REFS_OFF, 1);
+    neom_put_u32(&mut bytes, NODE_REFS_OFF + 4, 0);
+    neom_put_u32(&mut bytes, NODE_REFS_OFF + 8, 2);
+
+    neom_put_u32(&mut bytes, IO_OFF, 1);
+    neom_put_u32(&mut bytes, IO_OFF + 4, 3);
+    neom_put_u32(&mut bytes, IO_OFF + 8, 1);
+    neom_put_u64(&mut bytes, IO_OFF + 16, AGENTIC_FIXTURE_CONTEXT as u64);
+    neom_put_u32(&mut bytes, IO_OFF + 80, 2);
+    neom_put_u32(&mut bytes, IO_OFF + 84, 0);
+    neom_put_u32(&mut bytes, IO_OFF + 88, 2);
+    neom_put_u32(&mut bytes, IO_OFF + 92, 1);
+    neom_put_u64(&mut bytes, IO_OFF + 96, AGENTIC_FIXTURE_CONTEXT as u64);
+    neom_put_u64(&mut bytes, IO_OFF + 104, AGENTIC_FIXTURE_VOCAB_SIZE as u64);
+
+    for token in 0..AGENTIC_FIXTURE_VOCAB_SIZE {
+        let next = match token {
+            value if value == usize::from(b'o') => AGENTIC_FIXTURE_READ_HELLO_TOKEN,
+            value if value == usize::from(b'g') => AGENTIC_FIXTURE_READ_MISSING_TOKEN,
+            value if value == usize::from(b'/') => AGENTIC_FIXTURE_LIST_ROOT_TOKEN,
+            value if value == usize::from(b'!') => AGENTIC_FIXTURE_WRITE_SCRATCH_TOKEN,
+            value if value == usize::from(b'n') => AGENTIC_FIXTURE_WRITE_FORBIDDEN_TOKEN,
+            value if value == usize::from(b'k') => AGENTIC_FIXTURE_WRITE_DANGER_KEY_TOKEN,
+            value if value == usize::from(b'm') => AGENTIC_FIXTURE_CONFIRM_TOKEN,
+            value if value == usize::from(b'w') => AGENTIC_FIXTURE_UNDO_TOKEN,
+            value if value == usize::from(b'h') => AGENTIC_FIXTURE_READ_SCRATCH_TOKEN,
+            value if value == usize::from(b'd') => AGENTIC_FIXTURE_DONE_TOKEN,
+            value if value == usize::from(b'#') => AGENTIC_FIXTURE_TRASH_SCRATCH_TOKEN,
+            value if value == usize::from(b'$') => AGENTIC_FIXTURE_MOVE_SCRATCH_TOKEN,
+            value if value == usize::from(b'@') => AGENTIC_FIXTURE_KILL_4242_TOKEN,
+            value if value == usize::from(b'%') => AGENTIC_FIXTURE_KILL_4243_TOKEN,
+            value if value == usize::from(b'?') => AGENTIC_FIXTURE_EXTERNAL_SEND_TOKEN,
+            value if value == usize::from(b'&') => AGENTIC_FIXTURE_SPAWN_INHERIT_TOKEN,
+            value if value == usize::from(b'^') => AGENTIC_FIXTURE_LOAD_MODEL_TOKEN,
+            value if value == usize::from(b'c') => AGENTIC_FIXTURE_CD_ROOT_TOKEN,
+            value if value == usize::from(b's') => AGENTIC_FIXTURE_STATUS_TOKEN,
+            value if value == usize::from(b'i') => AGENTIC_FIXTURE_CLARIFY_INSPECT_TOKEN,
+            value if value == usize::from(b'1') => AGENTIC_FIXTURE_CONFIRM_TRASH_TOKEN,
+            value if value == usize::from(b'2') => AGENTIC_FIXTURE_CONFIRM_MOVE_TOKEN,
+            value if value == usize::from(b'3') => AGENTIC_FIXTURE_CONFIRM_KILL_4242_TOKEN,
+            value if value == usize::from(b'4') => AGENTIC_FIXTURE_CONFIRM_KILL_4243_TOKEN,
+            value if value == usize::from(b'5') => AGENTIC_FIXTURE_CONFIRM_SEND_TOKEN,
+            value if value == usize::from(b'6') => AGENTIC_FIXTURE_CONFIRM_SPAWN_TOKEN,
+            value if value == usize::from(b'7') => AGENTIC_FIXTURE_CONFIRM_MODEL_TOKEN,
+            value if value == usize::from(b'8') => AGENTIC_FIXTURE_CONFIRM_WRONG_TOKEN,
+            value if value == usize::from(b'9') => AGENTIC_FIXTURE_CONFIRM_TRASH_TOKEN,
+            value if value == usize::from(b'*') => AGENTIC_FIXTURE_REFUSE_PROTECTED_TOKEN,
+            _ => AGENTIC_FIXTURE_NO_OP_TOKEN,
+        };
+        for vocab in 0..AGENTIC_FIXTURE_VOCAB_SIZE {
+            let logit = if vocab as u32 == next {
+                8.0f32
+            } else {
+                -8.0f32
+            };
+            let off = WEIGHT_OFF + (token * AGENTIC_FIXTURE_VOCAB_SIZE + vocab) * 4;
+            bytes[off..off + 4].copy_from_slice(&logit.to_le_bytes());
+        }
+    }
+    bytes
+}
+
+fn neom_put_u32(bytes: &mut [u8], off: usize, value: u32) {
+    bytes[off..off + 4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn neom_put_u64(bytes: &mut [u8], off: usize, value: u64) {
+    bytes[off..off + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+/// Generates a minimal Qwen2.5-style vocab sidecar for the `arthur_real_vocab` scenario.
+/// The format matches L1's `.vocab` export (NEOM_TOKENIZER\\t1 magic).
+fn prepare_vocab_sidecar() -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("vocab_fixtures");
+    fs::create_dir_all(&fixture_dir).map_err(|e| format!("create vocab fixture dir: {e}"))?;
+
+    // Build a minimal sidecar with 5 tokens and 1 merge pair.
+    let mut s = String::new();
+    s.push_str("NEOM_TOKENIZER\t1\n");
+    s.push_str("bos\t151644\n");
+    s.push_str("eos\t151644\n");
+    s.push_str("pad\t151644\n");
+    s.push_str("tokens\t5\n");
+    // id 0: newline (padding convention)
+    s.push_str(&format!("0\t{}\n", hex_encode(b"\n")));
+    // id 1: space
+    s.push_str(&format!("1\t{}\n", hex_encode(b" ")));
+    // id 2: "h"
+    s.push_str(&format!("2\t{}\n", hex_encode(b"h")));
+    // id 3: "i"
+    s.push_str(&format!("3\t{}\n", hex_encode(b"i")));
+    // id 4: "hi" (merged)
+    s.push_str(&format!("4\t{}\n", hex_encode(b"hi")));
+    s.push_str("merges\t1\n");
+    // rank 0: merge "h" + "i" -> "hi"
+    s.push_str(&format!("0\t{}\n", hex_encode(b"h i")));
+
+    let path = fixture_dir.join("model-qwen2.5-1.5b.vocab");
+    fs::write(&path, &s).map_err(|e| format!("write vocab sidecar {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn prepare_stage_b_real_brain_model() -> Result<PathBuf, String> {
+    if let Some(path) = env_path(STAGE_B_NEOM_ENV)? {
+        validate_stage_b_neom(&path)?;
+        return Ok(path);
+    }
+
+    if let Some(gguf_path) = env_path(STAGE_B_GGUF_ENV)? {
+        if !gguf_path.is_file() {
+            return Err(format!(
+                "{STAGE_B_GGUF_ENV} points to missing GGUF {}",
+                gguf_path.display()
+            ));
+        }
+        let output_dir = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join("stage_b_real_brain");
+        fs::create_dir_all(&output_dir).map_err(|e| {
+            format!(
+                "create Stage-B real-brain dir {}: {e}",
+                output_dir.display()
+            )
+        })?;
+        let neom_path = output_dir.join("qwen2.5-0.5b-instruct-q4_k_m.neom");
+        let vocab_path = neom_path.with_extension("vocab");
+        if !neom_path.exists() || !vocab_path.exists() {
+            let status = Command::new("cargo")
+                .current_dir(workspace_root())
+                .args(["run", "-p", "neomc", "--", "import"])
+                .arg(&gguf_path)
+                .arg("-o")
+                .arg(&neom_path)
+                .arg("--vocab-output")
+                .arg(&vocab_path)
+                .status()
+                .map_err(|e| format!("launch neomc import for {}: {e}", gguf_path.display()))?;
+            if !status.success() {
+                return Err(format!(
+                    "neomc import failed for {} with status {status}",
+                    gguf_path.display()
+                ));
+            }
+        }
+        validate_stage_b_neom(&neom_path)?;
+        return Ok(neom_path);
+    }
+
+    prepare_stage_b_fixture_brain_model()
+}
+
+fn prepare_stage_b_required_real_brain_model() -> Result<PathBuf, String> {
+    let neom = env::var(STAGE_B_NEOM_ENV).ok();
+    let gguf = env::var(STAGE_B_GGUF_ENV).ok();
+    if !stage_b_real_artifact_selected(neom.as_deref(), gguf.as_deref()) {
+        return Err(format!(
+            "Arthur compositor Slice B requires a real 485 MB Qwen 2.5 0.5B artifact; set {STAGE_B_NEOM_ENV} or {STAGE_B_GGUF_ENV} (fixture fallback is forbidden for the JOINT bare-metal capstone)"
+        ));
+    }
+    let path = prepare_stage_b_real_brain_model()?;
+    let bytes = fs::metadata(&path)
+        .map_err(|error| format!("stat Slice-B .neom {}: {error}", path.display()))?
+        .len();
+    if bytes != STAGE_B_05B_NEOM_BYTES {
+        return Err(format!(
+            "Arthur compositor Slice B requires the real Qwen2.5-0.5B .neom byte shape: {} has {bytes} bytes, expected {STAGE_B_05B_NEOM_BYTES}; fixture/surrogate artifacts are forbidden",
+            path.display()
+        ));
+    }
+    let vocab = path.with_extension("vocab");
+    let vocab_metadata = fs::metadata(&vocab).map_err(|error| {
+        format!(
+            "Arthur compositor Slice B requires the real vocabulary sidecar adjacent to the model: {} ({error})",
+            vocab.display()
+        )
+    })?;
+    if !vocab_metadata.is_file() || vocab_metadata.len() == 0 {
+        return Err(format!(
+            "Arthur compositor Slice B requires a nonempty vocabulary sidecar adjacent to the model: {}",
+            vocab.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn stage_b_real_artifact_selected(neom: Option<&str>, gguf: Option<&str>) -> bool {
+    neom.is_some_and(|value| !value.trim().is_empty())
+        || gguf.is_some_and(|value| !value.trim().is_empty())
+}
+
+fn stage_b_15b_neom_path() -> Result<Option<PathBuf>, String> {
+    if let Some(path) = env_path(STAGE_B_NEOM_ENV)? {
+        return Ok(Some(path));
+    }
+    env_path(REAL_NEOM_ENV)
+}
+
+fn prepare_stage_b_15b_real_brain_model() -> Result<PathBuf, String> {
+    let Some(path) = stage_b_15b_neom_path()? else {
+        return Err(format!(
+            "{STAGE_B_NEOM_ENV}/{REAL_NEOM_ENV} must point at the imported 1.5B .neom"
+        ));
+    };
+    validate_stage_b_15b_neom(&path)?;
+    Ok(path)
+}
+
+// OT-38: the 3B path reuses the same env vars as the 1.5B (an operator runs one
+// scenario at a time, and `validate_stage_b_3b_neom` rejects a mismatched model
+// by byte length), so pointing `NEO_STAGE_B_NEOM` at the 3B `.neom` selects it.
+fn stage_b_3b_neom_path() -> Result<Option<PathBuf>, String> {
+    if let Some(path) = env_path(STAGE_B_NEOM_ENV)? {
+        return Ok(Some(path));
+    }
+    env_path(REAL_NEOM_ENV)
+}
+
+fn prepare_stage_b_3b_real_brain_model() -> Result<PathBuf, String> {
+    let Some(path) = stage_b_3b_neom_path()? else {
+        return Err(format!(
+            "{STAGE_B_NEOM_ENV}/{REAL_NEOM_ENV} must point at the imported 3B .neom"
+        ));
+    };
+    validate_stage_b_3b_neom(&path)?;
+    Ok(path)
+}
+
+fn stage_b_qwen35_neom_path() -> Result<Option<PathBuf>, String> {
+    if let Some(path) = env_path(STAGE_B_NEOM_ENV)? {
+        return Ok(Some(path));
+    }
+    env_path(REAL_NEOM_ENV)
+}
+
+fn prepare_stage_b_qwen35_real_brain_model() -> Result<PathBuf, String> {
+    let Some(path) = stage_b_qwen35_neom_path()? else {
+        return Err(format!(
+            "{STAGE_B_NEOM_ENV}/{REAL_NEOM_ENV} must point at the imported Qwen3.5-0.8B .neom"
+        ));
+    };
+    validate_stage_b_qwen35_neom(&path)?;
+    Ok(path)
+}
+
+fn prepare_stage_b_fixture_brain_model() -> Result<PathBuf, String> {
+    let model =
+        prepare_valid_neomc_fixture_mkdir("arthur_real_brain_boot", "valid_embedding.neom")?;
+    let sidecar = model.with_extension("vocab");
+    write_stage_b_fixture_vocab_sidecar(&sidecar)?;
+    validate_stage_b_neom(&model)?;
+    Ok(model)
+}
+
+fn prepare_product_integration_brain_model() -> Result<PathBuf, String> {
+    let neom = env::var(STAGE_B_NEOM_ENV).ok();
+    let gguf = env::var(STAGE_B_GGUF_ENV).ok();
+    if stage_b_real_artifact_selected(neom.as_deref(), gguf.as_deref()) {
+        return prepare_stage_b_real_brain_model();
+    }
+
+    let model = prepare_valid_neomc_fixture_mkdir("product_integration", "valid_embedding.neom")?;
+    let sidecar = model.with_extension("vocab");
+    // The graph fixture deterministically selects token 3 after a live forward.
+    // Give that token a coherent surface form for the product answer oracle;
+    // the shared Stage-B fixture remains byte-for-byte unchanged.
+    write_stage_b_vocab_sidecar(&sidecar, &[(3, "Arthur is ready.")])?;
+    validate_stage_b_neom(&model)?;
+    Ok(model)
+}
+
+const AGENTIC_FIXTURE_VOCAB_SIZE: usize = 336;
+const AGENTIC_FIXTURE_CONTEXT: usize = 64;
+const AGENTIC_FIXTURE_READ_HELLO_TOKEN: u32 = 300;
+const AGENTIC_FIXTURE_READ_MISSING_TOKEN: u32 = 301;
+const AGENTIC_FIXTURE_LIST_ROOT_TOKEN: u32 = 302;
+const AGENTIC_FIXTURE_CLARIFY_INSPECT_TOKEN: u32 = 303;
+const AGENTIC_FIXTURE_NO_OP_TOKEN: u32 = 304;
+const AGENTIC_FIXTURE_CLARIFY_A1_TOKEN: u32 = 305;
+const AGENTIC_FIXTURE_READ_ROOT_TOKEN: u32 = 306;
+const AGENTIC_FIXTURE_WRITE_SCRATCH_TOKEN: u32 = 307;
+const AGENTIC_FIXTURE_WRITE_FORBIDDEN_TOKEN: u32 = 308;
+const AGENTIC_FIXTURE_CONFIRM_TOKEN: u32 = 309;
+const AGENTIC_FIXTURE_UNDO_TOKEN: u32 = 310;
+const AGENTIC_FIXTURE_RESTRICTED_A2_TOKEN: u32 = 311;
+const AGENTIC_FIXTURE_READ_SCRATCH_TOKEN: u32 = 312;
+const AGENTIC_FIXTURE_TRASH_SCRATCH_TOKEN: u32 = 313;
+const AGENTIC_FIXTURE_MOVE_SCRATCH_TOKEN: u32 = 314;
+const AGENTIC_FIXTURE_KILL_4242_TOKEN: u32 = 315;
+const AGENTIC_FIXTURE_KILL_4243_TOKEN: u32 = 316;
+const AGENTIC_FIXTURE_EXTERNAL_SEND_TOKEN: u32 = 317;
+const AGENTIC_FIXTURE_SPAWN_INHERIT_TOKEN: u32 = 318;
+const AGENTIC_FIXTURE_LOAD_MODEL_TOKEN: u32 = 319;
+const AGENTIC_FIXTURE_CONFIRM_TRASH_TOKEN: u32 = 320;
+const AGENTIC_FIXTURE_CONFIRM_MOVE_TOKEN: u32 = 321;
+const AGENTIC_FIXTURE_CONFIRM_KILL_4242_TOKEN: u32 = 322;
+const AGENTIC_FIXTURE_CONFIRM_KILL_4243_TOKEN: u32 = 323;
+const AGENTIC_FIXTURE_CONFIRM_SEND_TOKEN: u32 = 324;
+const AGENTIC_FIXTURE_CONFIRM_SPAWN_TOKEN: u32 = 325;
+const AGENTIC_FIXTURE_CONFIRM_MODEL_TOKEN: u32 = 326;
+const AGENTIC_FIXTURE_CONFIRM_WRONG_TOKEN: u32 = 327;
+const AGENTIC_FIXTURE_REFUSE_PROTECTED_TOKEN: u32 = 328;
+const AGENTIC_FIXTURE_CD_ROOT_TOKEN: u32 = 329;
+const AGENTIC_FIXTURE_STATUS_TOKEN: u32 = 330;
+const AGENTIC_FIXTURE_WRITE_DANGER_KEY_TOKEN: u32 = 331;
+const AGENTIC_FIXTURE_DONE_TOKEN: u32 = 332;
+const AGENTIC_AST_READ_HELLO: &str = r#"ReadFile("/hello.txt")"#;
+const AGENTIC_AST_READ_MISSING: &str = r#"ReadFile("/missing.txt")"#;
+const AGENTIC_AST_LIST_ROOT: &str = r#"ListDir("/")"#;
+const AGENTIC_AST_CLARIFY_INSPECT: &str = r#"clarify("Which path should I inspect, sir?")"#;
+const AGENTIC_AST_NO_OP: &str = r#"<tool_call>{"name":"no_op"}</tool_call>"#;
+const AGENTIC_AST_CLARIFY_A1: &str = r#"clarify("A1 can only read or list paths")"#;
+const AGENTIC_AST_READ_ROOT: &str = r#"ReadFile("/")"#;
+const AGENTIC_AST_WRITE_SCRATCH: &str = r#"<tool_call>{"name":"write_file","arguments":{"path":"/scratch","content":"NeoPlutarch scratch A2ok"}}</tool_call>"#;
+const AGENTIC_AST_WRITE_FORBIDDEN: &str = r#"<tool_call>{"name":"write_file","arguments":{"path":"/forbidden","content":"NeoPlutarch scratch A2ok"}}</tool_call>"#;
+const AGENTIC_AST_WRITE_DANGER_KEY: &str = r#"<tool_call>{"name":"write_file","arguments":{"path":"/neofs/danger.key","content":"NeoPlutarch scratch A2ok"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM: &str = r#"<tool_call>{"name":"confirm"}</tool_call>"#;
+const AGENTIC_AST_UNDO: &str = r#"<tool_call>{"name":"undo"}</tool_call>"#;
+const AGENTIC_AST_RESTRICTED_A2: &str = r#"<tool_call>{"name":"clarify","arguments":{"question":"A2 restricts delete move kill spawn and external actions"}}</tool_call>"#;
+const AGENTIC_AST_READ_SCRATCH: &str = r#"ReadFile("/scratch")"#;
+const AGENTIC_AST_TRASH_SCRATCH: &str =
+    r#"<tool_call>{"name":"trash_file","arguments":{"path":"/scratch"}}</tool_call>"#;
+const AGENTIC_AST_MOVE_SCRATCH: &str = r#"<tool_call>{"name":"move_file","arguments":{"path":"/scratch","destination":"/trash/scratch"}}</tool_call>"#;
+const AGENTIC_AST_KILL_4242: &str =
+    r#"<tool_call>{"name":"kill_process","arguments":{"handle":4242}}</tool_call>"#;
+const AGENTIC_AST_KILL_4243: &str =
+    r#"<tool_call>{"name":"kill_process","arguments":{"handle":4243}}</tool_call>"#;
+const AGENTIC_AST_EXTERNAL_SEND: &str = r#"<tool_call>{"name":"external_send","arguments":{"host":"api.example.com","port":443,"bytes":16}}</tool_call>"#;
+const AGENTIC_AST_SPAWN_INHERIT: &str = r#"<tool_call>{"name":"spawn_process","arguments":{"name":"worker","inherit_handle":99}}</tool_call>"#;
+const AGENTIC_AST_LOAD_MODEL: &str =
+    r#"<tool_call>{"name":"load_model","arguments":{"path":"/models/a3.neom"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_TRASH: &str = r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm trash /scratch"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_MOVE: &str = r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm move /scratch /trash/scratch"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_KILL_4242: &str =
+    r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm kill 4242"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_KILL_4243: &str =
+    r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm kill 4243"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_SEND: &str = r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm send api.example.com:443"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_SPAWN: &str = r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm spawn worker 99"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_MODEL: &str = r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm model /models/a3.neom"}}</tool_call>"#;
+const AGENTIC_AST_CONFIRM_WRONG: &str = r#"<tool_call>{"name":"confirm_typed","arguments":{"phrase":"confirm wrong phrase"}}</tool_call>"#;
+const AGENTIC_AST_REFUSE_PROTECTED: &str = r#"<tool_call>{"name":"refuse","arguments":{"reason":"A3 refuses broad protected or supervising-session actions"}}</tool_call>"#;
+const AGENTIC_AST_DONE: &str =
+    r#"<tool_call>{"name":"done","arguments":{"summary":"multi-step complete"}}</tool_call>"#;
+const AGENTIC_AST_CD_ROOT: &str = r#"cd("/")"#;
+const AGENTIC_AST_STATUS: &str = r#"status"#;
+const AGENTIC_FIXTURE_RESERVED_TOKENS: &[(u32, &str)] = &[
+    (AGENTIC_FIXTURE_READ_HELLO_TOKEN, AGENTIC_AST_READ_HELLO),
+    (AGENTIC_FIXTURE_READ_MISSING_TOKEN, AGENTIC_AST_READ_MISSING),
+    (AGENTIC_FIXTURE_LIST_ROOT_TOKEN, AGENTIC_AST_LIST_ROOT),
+    (
+        AGENTIC_FIXTURE_CLARIFY_INSPECT_TOKEN,
+        AGENTIC_AST_CLARIFY_INSPECT,
+    ),
+    (AGENTIC_FIXTURE_NO_OP_TOKEN, AGENTIC_AST_NO_OP),
+    (AGENTIC_FIXTURE_CLARIFY_A1_TOKEN, AGENTIC_AST_CLARIFY_A1),
+    (AGENTIC_FIXTURE_READ_ROOT_TOKEN, AGENTIC_AST_READ_ROOT),
+    (
+        AGENTIC_FIXTURE_WRITE_SCRATCH_TOKEN,
+        AGENTIC_AST_WRITE_SCRATCH,
+    ),
+    (
+        AGENTIC_FIXTURE_WRITE_FORBIDDEN_TOKEN,
+        AGENTIC_AST_WRITE_FORBIDDEN,
+    ),
+    (
+        AGENTIC_FIXTURE_WRITE_DANGER_KEY_TOKEN,
+        AGENTIC_AST_WRITE_DANGER_KEY,
+    ),
+    (AGENTIC_FIXTURE_CONFIRM_TOKEN, AGENTIC_AST_CONFIRM),
+    (AGENTIC_FIXTURE_UNDO_TOKEN, AGENTIC_AST_UNDO),
+    (
+        AGENTIC_FIXTURE_RESTRICTED_A2_TOKEN,
+        AGENTIC_AST_RESTRICTED_A2,
+    ),
+    (AGENTIC_FIXTURE_READ_SCRATCH_TOKEN, AGENTIC_AST_READ_SCRATCH),
+    (
+        AGENTIC_FIXTURE_TRASH_SCRATCH_TOKEN,
+        AGENTIC_AST_TRASH_SCRATCH,
+    ),
+    (AGENTIC_FIXTURE_MOVE_SCRATCH_TOKEN, AGENTIC_AST_MOVE_SCRATCH),
+    (AGENTIC_FIXTURE_KILL_4242_TOKEN, AGENTIC_AST_KILL_4242),
+    (AGENTIC_FIXTURE_KILL_4243_TOKEN, AGENTIC_AST_KILL_4243),
+    (
+        AGENTIC_FIXTURE_EXTERNAL_SEND_TOKEN,
+        AGENTIC_AST_EXTERNAL_SEND,
+    ),
+    (
+        AGENTIC_FIXTURE_SPAWN_INHERIT_TOKEN,
+        AGENTIC_AST_SPAWN_INHERIT,
+    ),
+    (AGENTIC_FIXTURE_LOAD_MODEL_TOKEN, AGENTIC_AST_LOAD_MODEL),
+    (
+        AGENTIC_FIXTURE_CONFIRM_TRASH_TOKEN,
+        AGENTIC_AST_CONFIRM_TRASH,
+    ),
+    (AGENTIC_FIXTURE_CONFIRM_MOVE_TOKEN, AGENTIC_AST_CONFIRM_MOVE),
+    (
+        AGENTIC_FIXTURE_CONFIRM_KILL_4242_TOKEN,
+        AGENTIC_AST_CONFIRM_KILL_4242,
+    ),
+    (
+        AGENTIC_FIXTURE_CONFIRM_KILL_4243_TOKEN,
+        AGENTIC_AST_CONFIRM_KILL_4243,
+    ),
+    (AGENTIC_FIXTURE_CONFIRM_SEND_TOKEN, AGENTIC_AST_CONFIRM_SEND),
+    (
+        AGENTIC_FIXTURE_CONFIRM_SPAWN_TOKEN,
+        AGENTIC_AST_CONFIRM_SPAWN,
+    ),
+    (
+        AGENTIC_FIXTURE_CONFIRM_MODEL_TOKEN,
+        AGENTIC_AST_CONFIRM_MODEL,
+    ),
+    (
+        AGENTIC_FIXTURE_CONFIRM_WRONG_TOKEN,
+        AGENTIC_AST_CONFIRM_WRONG,
+    ),
+    (
+        AGENTIC_FIXTURE_REFUSE_PROTECTED_TOKEN,
+        AGENTIC_AST_REFUSE_PROTECTED,
+    ),
+    (AGENTIC_FIXTURE_DONE_TOKEN, AGENTIC_AST_DONE),
+    (AGENTIC_FIXTURE_CD_ROOT_TOKEN, AGENTIC_AST_CD_ROOT),
+    (AGENTIC_FIXTURE_STATUS_TOKEN, AGENTIC_AST_STATUS),
+];
+
+fn prepare_agentic_action_oracle_model() -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("arthur_agentic_actions_oracle");
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create Arthur agentic oracle dir: {e}"))?;
+    let model = fixture_dir.join("agentic_action_oracle.neom");
+    fs::write(&model, agentic_action_oracle_neom())
+        .map_err(|e| format!("write Arthur agentic oracle {}: {e}", model.display()))?;
+    let sidecar = model.with_extension("vocab");
+    write_stage_b_agentic_fixture_vocab_sidecar(&sidecar)?;
+    validate_agentic_action_oracle_model(&model)?;
+    Ok(model)
+}
+
+fn prepare_agentic_danger_key_fixture() -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("arthur_agentic_actions_oracle");
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create Arthur agentic oracle dir: {e}"))?;
+    let key = fixture_dir.join("danger.key");
+    fs::write(&key, b"NeoPlutarch keyfile A2!!")
+        .map_err(|e| format!("write Arthur danger key {}: {e}", key.display()))?;
+    Ok(key)
+}
+
+fn write_stage_b_fixture_vocab_sidecar(path: &Path) -> Result<(), String> {
+    write_stage_b_vocab_sidecar(path, &[])
+}
+
+fn write_stage_b_agentic_fixture_vocab_sidecar(path: &Path) -> Result<(), String> {
+    let mut s = String::with_capacity(32 * 1024);
+    s.push_str("NEOM_TOKENIZER\t1\n");
+    s.push_str(&format!("tokens\t{AGENTIC_FIXTURE_VOCAB_SIZE}\n"));
+
+    for id in 0u16..=u8::MAX as u16 {
+        s.push_str(&id.to_string());
+        s.push('\t');
+        let token = stage_b_bytelevel_token(id as u8)?;
+        s.push_str(&hex_encode(&token));
+        s.push('\n');
+    }
+    for id in 256..AGENTIC_FIXTURE_VOCAB_SIZE as u32 {
+        s.push_str(&id.to_string());
+        s.push('\t');
+        let token = if let Some((_, ast)) = AGENTIC_FIXTURE_RESERVED_TOKENS
+            .iter()
+            .find(|(reserved_id, _)| *reserved_id == id)
+        {
+            stage_b_bytelevel_bytes(ast.as_bytes())?
+        } else {
+            stage_b_bytelevel_bytes(format!("<fixture:{id}>").as_bytes())?
+        };
+        s.push_str(&hex_encode(&token));
+        s.push('\n');
+    }
+    s.push_str("merges\t0\n");
+
+    fs::write(path, s)
+        .map_err(|e| format!("write Arthur agentic fixture vocab {}: {e}", path.display()))
+}
+
+fn write_stage_b_vocab_sidecar(
+    path: &Path,
+    overrides: &[(u32, &'static str)],
+) -> Result<(), String> {
+    let mut s = String::with_capacity(8 * 1024 * 1024);
+    s.push_str("NEOM_TOKENIZER\t1\n");
+    s.push_str("bos\t151644\n");
+    s.push_str("eos\t151644\n");
+    s.push_str("pad\t151644\n");
+    s.push_str("tokens\t151936\n");
+
+    for id in 0..STAGE_B_VOCAB_SIZE {
+        s.push_str(&id.to_string());
+        s.push('\t');
+        if let Some((_, ast)) = overrides
+            .iter()
+            .find(|(override_id, _)| *override_id as usize == id)
+        {
+            let token = stage_b_bytelevel_bytes(ast.as_bytes())?;
+            s.push_str(&hex_encode(&token));
+        } else if id == STAGE_B_SPECIAL_TOKEN_ID {
+            s.push_str(&hex_encode(b"<|im_end|>"));
+        } else if id < 256 {
+            let token = stage_b_bytelevel_token(id as u8)?;
+            s.push_str(&hex_encode(&token));
+        } else {
+            let token = format!("<unused_{id}>");
+            s.push_str(&hex_encode(token.as_bytes()));
+        }
+        s.push('\n');
+    }
+    s.push_str("merges\t0\n");
+
+    fs::write(path, s).map_err(|e| format!("write Stage-B fixture vocab {}: {e}", path.display()))
+}
+
+fn stage_b_bytelevel_bytes(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    for &byte in bytes {
+        out.extend_from_slice(&stage_b_bytelevel_token(byte)?);
+    }
+    Ok(out)
+}
+
+fn stage_b_bytelevel_token(byte: u8) -> Result<Vec<u8>, String> {
+    let scalar = stage_b_byte_to_unicode_scalar(byte);
+    let ch = char::from_u32(scalar).ok_or_else(|| {
+        format!("Stage-B fixture byte-level scalar {scalar} for byte {byte} is invalid")
+    })?;
+    let mut buf = [0u8; 4];
+    Ok(ch.encode_utf8(&mut buf).as_bytes().to_vec())
+}
+
+fn stage_b_byte_to_unicode_scalar(byte: u8) -> u32 {
+    if stage_b_is_direct_byte(byte) {
+        return byte as u32;
+    }
+    let mut skipped = 0u32;
+    let mut current = 0u16;
+    while current < byte as u16 {
+        if !stage_b_is_direct_byte(current as u8) {
+            skipped += 1;
+        }
+        current += 1;
+    }
+    256 + skipped
+}
+
+const fn stage_b_is_direct_byte(byte: u8) -> bool {
+    (byte >= 33 && byte <= 126) || (byte >= 161 && byte <= 172) || (byte >= 174)
+}
+
+fn env_path(name: &str) -> Result<Option<PathBuf>, String> {
+    match env::var(name) {
+        Ok(value) if value.trim().is_empty() => Ok(None),
+        Ok(value) => Ok(Some(PathBuf::from(value))),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(format!("{name} is not valid Unicode")),
+    }
+}
+
+fn validate_stage_b_neom(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!(
+            "{STAGE_B_NEOM_ENV} points to missing .neom {}",
+            path.display()
+        ));
+    }
+    let sidecar = path.with_extension("vocab");
+    if !sidecar.is_file() {
+        return Err(format!(
+            "Stage-B .neom {} is missing sibling vocab sidecar {}",
+            path.display(),
+            sidecar.display()
+        ));
+    }
+    validate_stage_b_vocab_sidecar(&sidecar)
+}
+
+fn validate_stage_b_15b_neom(path: &Path) -> Result<(), String> {
+    validate_stage_b_neom(path)?;
+    let neom_len = fs::metadata(path)
+        .map_err(|e| format!("stat Stage-B .neom {}: {e}", path.display()))?
+        .len();
+    if neom_len != STAGE_B_15B_NEOM_BYTES {
+        return Err(format!(
+            "Stage-B .neom {} has byte length {}; expected {}",
+            path.display(),
+            neom_len,
+            STAGE_B_15B_NEOM_BYTES
+        ));
+    }
+    let sidecar = path.with_extension("vocab");
+    let vocab_len = fs::metadata(&sidecar)
+        .map_err(|e| format!("stat Stage-B vocab sidecar {}: {e}", sidecar.display()))?
+        .len();
+    if vocab_len != STAGE_B_15B_VOCAB_BYTES {
+        return Err(format!(
+            "Stage-B vocab sidecar {} has byte length {}; expected {}",
+            sidecar.display(),
+            vocab_len,
+            STAGE_B_15B_VOCAB_BYTES
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stage_b_3b_neom(path: &Path) -> Result<(), String> {
+    validate_stage_b_neom(path)?;
+    let neom_len = fs::metadata(path)
+        .map_err(|e| format!("stat Stage-B .neom {}: {e}", path.display()))?
+        .len();
+    if neom_len != STAGE_B_3B_NEOM_BYTES {
+        return Err(format!(
+            "Stage-B .neom {} has byte length {}; expected {}",
+            path.display(),
+            neom_len,
+            STAGE_B_3B_NEOM_BYTES
+        ));
+    }
+    let sidecar = path.with_extension("vocab");
+    let vocab_len = fs::metadata(&sidecar)
+        .map_err(|e| format!("stat Stage-B vocab sidecar {}: {e}", sidecar.display()))?
+        .len();
+    if vocab_len != STAGE_B_3B_VOCAB_BYTES {
+        return Err(format!(
+            "Stage-B vocab sidecar {} has byte length {}; expected {}",
+            sidecar.display(),
+            vocab_len,
+            STAGE_B_3B_VOCAB_BYTES
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stage_b_qwen35_neom(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("Qwen3.5 .neom is missing: {}", path.display()));
+    }
+    let neom_len = fs::metadata(path)
+        .map_err(|e| format!("stat Qwen3.5 .neom {}: {e}", path.display()))?
+        .len();
+    if neom_len != QWEN35_08B_NEOM_BYTES {
+        return Err(format!(
+            "Qwen3.5 .neom {} has byte length {}; expected {}",
+            path.display(),
+            neom_len,
+            QWEN35_08B_NEOM_BYTES
+        ));
+    }
+    let sidecar = path.with_extension("vocab");
+    let vocab_len = fs::metadata(&sidecar)
+        .map_err(|e| format!("stat Qwen3.5 vocab sidecar {}: {e}", sidecar.display()))?
+        .len();
+    if vocab_len != QWEN35_08B_VOCAB_BYTES {
+        return Err(format!(
+            "Qwen3.5 vocab sidecar {} has byte length {}; expected {}",
+            sidecar.display(),
+            vocab_len,
+            QWEN35_08B_VOCAB_BYTES
+        ));
+    }
+    let text = fs::read_to_string(&sidecar)
+        .map_err(|e| format!("read Qwen3.5 vocab sidecar {}: {e}", sidecar.display()))?;
+    if !text.lines().any(|line| line == "tokens\t248320") {
+        return Err(format!(
+            "Qwen3.5 vocab sidecar {} does not advertise tokens=248320",
+            sidecar.display()
+        ));
+    }
+    Ok(())
+}
+
+fn validate_agentic_action_oracle_model(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!(
+            "Arthur agentic oracle points to missing .neom {}",
+            path.display()
+        ));
+    }
+    let sidecar = path.with_extension("vocab");
+    if !sidecar.is_file() {
+        return Err(format!(
+            "Arthur agentic oracle {} is missing sibling vocab sidecar {}",
+            path.display(),
+            sidecar.display()
+        ));
+    }
+    validate_agentic_fixture_vocab_sidecar(&sidecar)
+}
+
+fn validate_agentic_fixture_vocab_sidecar(path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("read Arthur agentic vocab sidecar {}: {e}", path.display()))?;
+    let expected_count_line = format!("tokens\t{AGENTIC_FIXTURE_VOCAB_SIZE}");
+    if !text
+        .lines()
+        .any(|line| line == expected_count_line.as_str())
+    {
+        return Err(format!(
+            "Arthur agentic vocab sidecar {} does not advertise tokens={AGENTIC_FIXTURE_VOCAB_SIZE}",
+            path.display()
+        ));
+    }
+    for (id, ast) in AGENTIC_FIXTURE_RESERVED_TOKENS {
+        let token = stage_b_bytelevel_bytes(ast.as_bytes())?;
+        let expected = format!("{id}\t{}", hex_encode(&token));
+        if !text.lines().any(|line| line == expected) {
+            return Err(format!(
+                "Arthur agentic vocab sidecar {} is missing reserved token {id}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_stage_b_vocab_sidecar(path: &Path) -> Result<(), String> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| format!("read Stage-B vocab sidecar {}: {e}", path.display()))?;
+    if !text.lines().any(|line| line == "tokens\t151936") {
+        return Err(format!(
+            "Stage-B vocab sidecar {} does not advertise tokens=151936",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
+
+fn prepare_neofs_large_file_fixture(scenario_name: &str) -> Result<PathBuf, String> {
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}_fixtures"));
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create NeoFS large fixture dir for {scenario_name}: {e}"))?;
+    let path = fixture_dir.join(NEOFS_LARGE_FILE_NAME);
+    let mut file = fs::File::create(&path)
+        .map_err(|e| format!("create NeoFS large fixture {}: {e}", path.display()))?;
+    let mut chunk = vec![0u8; NEOFS_LARGE_FILE_BLOCK_SIZE];
+    let mut offset = 0usize;
+    while offset < NEOFS_LARGE_FILE_BYTES {
+        let take = (NEOFS_LARGE_FILE_BYTES - offset).min(chunk.len());
+        for (idx, byte) in chunk[..take].iter_mut().enumerate() {
+            *byte = neofs_large_file_pattern_byte(offset + idx);
+        }
+        file.write_all(&chunk[..take])
+            .map_err(|e| format!("write NeoFS large fixture {}: {e}", path.display()))?;
+        offset += take;
+    }
+    file.sync_all()
+        .map_err(|e| format!("sync NeoFS large fixture {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn neofs_large_file_pattern_byte(offset: usize) -> u8 {
+    let block = offset / NEOFS_LARGE_FILE_BLOCK_SIZE;
+    let byte = offset % NEOFS_LARGE_FILE_BLOCK_SIZE;
+    ((block as u32 * 31 + byte as u32 * 17 + 0xa5) & 0xff) as u8
+}
+
+/// NFS-W1: the large-write scenario's file, byte for byte as the kernel
+/// writes it (`neofs_large_write_byte` in the harness).
+fn neofs_large_write_bytes() -> Vec<u8> {
+    (0..9 * 1024 * 1024 + 123usize)
+        .map(|i| (i.wrapping_mul(31) ^ (i / 4096).wrapping_mul(7)) as u8)
+        .collect()
+}
+
+const NEOFS_GROW_WRITE_SCENARIO: &str = "neofs_grow_write";
+const NEOFS_GROW_WRITE_VOLUME_MIB: u64 = 65;
+const NEOFS_GROW_WRITE_DISK_MIB: u64 = 96;
+
+/// `neofs_grow_write`: the host format crate's reader takes the grown disk
+/// and the files the kernel wrote (the kernel's remount checks the total).
+fn host_check_neofs_grow_write() -> Result<(), String> {
+    let disk = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{NEOFS_GROW_WRITE_SCENARIO}.raw"));
+    let verify = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args(["run", "-q", "-p", "neofs-mkfs", "--", "verify"])
+        .arg(&disk)
+        .output()
+        .map_err(|e| format!("run neofs-mkfs verify: {e}"))?;
+    let verified = String::from_utf8_lossy(&verify.stdout).to_string();
+    if !verify.status.success()
+        || !verified.contains("status=ok")
+        || !verified.contains("big.bin:Regular")
+        || !verified.contains("hello.txt:Regular")
+    {
+        return Err(format!(
+            "neofs_grow_write host check failed: neofs-mkfs verify: {verified}{}",
+            String::from_utf8_lossy(&verify.stderr)
+        ));
+    }
+    eprintln!("[xtask] neo-test: `neofs_grow_write` host check PASS (neofs-mkfs verify ok)");
+    Ok(())
+}
+
+/// NFS-W1: the disk the kernel wrote, read by two readers that share no code
+/// with the kernel's writer: `tools/neofs-inspect.py` (recomputes every hash,
+/// extracts the file) and `neofs-mkfs verify` (the host format crate's
+/// reader). The extracted bytes must be the scenario's pattern, and the
+/// stopped write must have left nothing.
+fn host_check_neofs_large_write() -> Result<(), String> {
+    let disk = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("neofs_large_write.raw");
+    let out = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("neofs_large_write.extracted.bin");
+    let _ = fs::remove_file(&out);
+    let inspect = Command::new("python3")
+        .arg("-I")
+        .arg(workspace_root().join("tools/neofs-inspect.py"))
+        .arg(&disk)
+        .args(["--verify", "--force-slow", "--extract"])
+        .arg(format!("large.bin={}", out.display()))
+        .output()
+        .map_err(|e| format!("run neofs-inspect.py: {e}"))?;
+    let report = String::from_utf8_lossy(&inspect.stdout).to_string();
+    let row = report
+        .lines()
+        .find(|l| l.trim_start().starts_with("/large.bin "))
+        .unwrap_or("");
+    let checks = [
+        (inspect.status.success(), "neofs-inspect.py exits 0"),
+        (
+            row.contains("inode ok") && row.contains("CONTENT OK"),
+            "/large.bin: inode ok, CONTENT OK",
+        ),
+        (
+            report.contains("free_map            = MATCHES"),
+            "the free map hash matches",
+        ),
+        (
+            report.contains("root_inode_hash     = MATCHES"),
+            "the root inode hash matches",
+        ),
+        (
+            !report.contains("/cut.bin"),
+            "the stopped write left no entry",
+        ),
+        (
+            !report.contains("MISMATCH") && !report.contains("ERROR"),
+            "no mismatch or error anywhere",
+        ),
+    ];
+    for (ok, what) in checks {
+        if !ok {
+            return Err(format!(
+                "neofs_large_write host check failed: {what}\n{report}{}",
+                String::from_utf8_lossy(&inspect.stderr)
+            ));
+        }
+    }
+    let extracted = fs::read(&out).map_err(|e| format!("read {}: {e}", out.display()))?;
+    if extracted != neofs_large_write_bytes() {
+        return Err(format!(
+            "neofs_large_write host check failed: {} is not the scenario's bytes",
+            out.display()
+        ));
+    }
+    let verify = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args(["run", "-q", "-p", "neofs-mkfs", "--", "verify"])
+        .arg(&disk)
+        .output()
+        .map_err(|e| format!("run neofs-mkfs verify: {e}"))?;
+    let verified = String::from_utf8_lossy(&verify.stdout).to_string();
+    if !verify.status.success()
+        || !verified.contains("status=ok")
+        || !verified.contains("large.bin:Regular")
+    {
+        return Err(format!(
+            "neofs_large_write host check failed: neofs-mkfs verify: {verified}{}",
+            String::from_utf8_lossy(&verify.stderr)
+        ));
+    }
+    eprintln!(
+        "[xtask] neo-test: `neofs_large_write` host check PASS (neofs-inspect.py CONTENT OK, extracted bytes equal, neofs-mkfs verify ok)"
+    );
+    Ok(())
+}
+
+fn prepare_neofs_storage_disk(path: &Path, variant: &str) -> Result<PathBuf, String> {
+    prepare_neofs_storage_disk_with_model(path, variant, None)
+}
+
+fn prepare_neofs_storage_disk_with_model(
+    path: &Path,
+    variant: &str,
+    model_path: Option<&Path>,
+) -> Result<PathBuf, String> {
+    prepare_neofs_storage_disk_with_model_files(path, variant, model_path, &[])
+}
+
+fn prepare_neofs_storage_disk_with_model_files(
+    path: &Path,
+    variant: &str,
+    model_path: Option<&Path>,
+    extra_models: &[(&str, &Path)],
+) -> Result<PathBuf, String> {
+    prepare_neofs_storage_disk_with_payload_files(path, variant, model_path, extra_models, &[])
+}
+
+fn prepare_neofs_storage_disk_with_payload_files(
+    path: &Path,
+    variant: &str,
+    model_path: Option<&Path>,
+    extra_models: &[(&str, &Path)],
+    extra_files: &[(&str, &Path)],
+) -> Result<PathBuf, String> {
+    prepare_neofs_storage_disk_with_payload_files_sized(
+        path,
+        variant,
+        model_path,
+        extra_models,
+        extra_files,
+        None,
+    )
+}
+
+fn prepare_neofs_storage_disk_with_payload_files_sized(
+    path: &Path,
+    variant: &str,
+    model_path: Option<&Path>,
+    extra_models: &[(&str, &Path)],
+    extra_files: &[(&str, &Path)],
+    size_mib: Option<u64>,
+) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove NeoFS disk {}: {e}", path.display())),
+    }
+
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(workspace_root())
+        .args(["run", "-p", "neofs-mkfs", "--", "create", "--output"])
+        .arg(path)
+        .args(["--variant", variant]);
+    if let Some(size_mib) = size_mib {
+        command.arg("--size-mib").arg(size_mib.to_string());
+    }
+    if let Some(model_path) = model_path {
+        command.arg("--model-path").arg(model_path);
+    }
+    let mut sidecars = Vec::new();
+    if let Some(model_path) = model_path
+        && let Some(sidecar) = model_vocab_sidecar("model.neom", model_path)?
+    {
+        sidecars.push(sidecar);
+    }
+    for (name, model_path) in extra_models {
+        command
+            .arg("--extra-model")
+            .arg(format!("{name}={}", model_path.display()));
+        if let Some(sidecar) = model_vocab_sidecar(name, model_path)? {
+            sidecars.push(sidecar);
+        }
+    }
+    for (name, file_path) in extra_files {
+        command
+            .arg("--extra-file")
+            .arg(format!("{name}={}", file_path.display()));
+    }
+    for (name, sidecar_path) in &sidecars {
+        command
+            .arg("--extra-file")
+            .arg(format!("{name}={}", sidecar_path.display()));
+    }
+    let status = command
+        .status()
+        .map_err(|e| format!("launch neofs-mkfs for {}: {e}", path.display()))?;
+    if !status.success() {
+        return Err(format!(
+            "neofs-mkfs create failed for {} variant {} with status {}",
+            path.display(),
+            variant,
+            status
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// OT-87 R2: the boot NeoFS disk carrying the 0.5B (the fixture, or the real
+/// model under NEO_STAGE_B_*) and its NEOVOCB1 vocab, under the pinned names.
+/// No text sidecar is written. `_damaged` and `_module_wins` flip one model
+/// byte: NeoFS hashes the flipped bytes, so only the pin can refuse them.
+fn prepare_neofs_model_disk(
+    scenario_name: &str,
+    path: &Path,
+    variant: &str,
+) -> Result<PathBuf, String> {
+    let source = prepare_stage_b_real_brain_model()?;
+    let dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join(format!("{scenario_name}-neofs-payload"));
+    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let model = dir.join(BOOT_MODEL_NEOM);
+    let mut bytes = fs::read(&source).map_err(|e| format!("read {}: {e}", source.display()))?;
+    if matches!(
+        scenario_name,
+        "arthur_model_from_neofs_damaged" | "arthur_model_from_neofs_module_wins"
+    ) {
+        let byte = bytes
+            .get_mut(BOOT_MODEL_FLIP_OFFSET)
+            .ok_or_else(|| format!("{} is too short to damage", source.display()))?;
+        *byte ^= 0x01;
+    }
+    fs::write(&model, &bytes).map_err(|e| format!("write {}: {e}", model.display()))?;
+    let real = bytes.len() > 64 << 20;
+    drop(bytes);
+    let vocb = dir.join(BOOT_MODEL_VOCB);
+    let vocb_bytes = convert_vocab_sidecar(&source.with_extension("vocab"))?;
+    fs::write(&vocb, vocb_bytes).map_err(|e| format!("write {}: {e}", vocb.display()))?;
+    prepare_neofs_storage_disk_with_payload_files_sized(
+        path,
+        variant,
+        None,
+        &[(BOOT_MODEL_NEOM, model.as_path())],
+        &[(BOOT_MODEL_VOCB, vocb.as_path())],
+        real.then_some(768),
+    )
+}
+
+fn model_vocab_sidecar(
+    model_name: &str,
+    model_path: &Path,
+) -> Result<Option<(String, PathBuf)>, String> {
+    let sidecar_path = model_path.with_extension("vocab");
+    if !sidecar_path.exists() {
+        return Ok(None);
+    }
+    let sidecar_name = Path::new(model_name)
+        .with_extension("vocab")
+        .file_name()
+        .ok_or_else(|| format!("derive vocab sidecar name from {model_name}"))?
+        .to_str()
+        .ok_or_else(|| format!("vocab sidecar name for {model_name} is not UTF-8"))?
+        .to_string();
+    Ok(Some((sidecar_name, sidecar_path)))
+}
+
+fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove FAT32 disk {}: {e}", path.display())),
+    }
+
+    let file =
+        fs::File::create(path).map_err(|e| format!("create FAT32 disk {}: {e}", path.display()))?;
+    file.set_len(FAT32_DISK_SIZE)
+        .map_err(|e| format!("size FAT32 disk {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync empty FAT32 disk {}: {e}", path.display()))?;
+    drop(file);
+
+    let image = path.display().to_string();
+    run_mtools("mformat", &["-i", &image, "-F", "-v", "NEOFAT32", "::"])?;
+
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("fat32-fixtures");
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create FAT32 fixture dir {}: {e}", fixture_dir.display()))?;
+
+    let hello = write_fat32_fixture(&fixture_dir, "hello.txt", b"Hello from FAT32!\n")?;
+    let readme = write_fat32_fixture(
+        &fixture_dir,
+        "readme.md",
+        b"# FAT32 Fixture\nRead-only foreign filesystem test.\n",
+    )?;
+    let nested = write_fat32_fixture(&fixture_dir, "nested.txt", b"nested file\n")?;
+    let lfn = write_fat32_fixture(&fixture_dir, "lfn.txt", b"LFN test\n")?;
+    let weights = write_fat32_fixture(&fixture_dir, "weights.neom", b"not a model on fat32\n")?;
+
+    let hello_path = hello.display().to_string();
+    let readme_path = readme.display().to_string();
+    let nested_path = nested.display().to_string();
+    let lfn_path = lfn.display().to_string();
+    let weights_path = weights.display().to_string();
+    run_mtools("mcopy", &["-i", &image, &hello_path, "::/hello.txt"])?;
+    run_mtools("mcopy", &["-i", &image, &readme_path, "::/readme.md"])?;
+    run_mtools("mmd", &["-i", &image, "::/subdir"])?;
+    run_mtools(
+        "mcopy",
+        &["-i", &image, &nested_path, "::/subdir/nested.txt"],
+    )?;
+    run_mtools(
+        "mcopy",
+        &["-i", &image, &lfn_path, "::/long filename with spaces.txt"],
+    )?;
+    run_mtools("mcopy", &["-i", &image, &weights_path, "::/weights.neom"])?;
+
+    Ok(path.to_path_buf())
+}
+
+fn write_fat32_fixture(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    fs::write(&path, bytes).map_err(|e| format!("write FAT32 fixture {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn prepare_ext4_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("remove ext4 disk {}: {e}", path.display())),
+    }
+
+    let file =
+        fs::File::create(path).map_err(|e| format!("create ext4 disk {}: {e}", path.display()))?;
+    file.set_len(EXT4_DISK_SIZE)
+        .map_err(|e| format!("size ext4 disk {}: {e}", path.display()))?;
+    file.sync_all()
+        .map_err(|e| format!("sync empty ext4 disk {}: {e}", path.display()))?;
+    drop(file);
+
+    let image = path.display().to_string();
+    run_e2fs(
+        "mke2fs",
+        &[
+            "-q",
+            "-t",
+            "ext4",
+            "-F",
+            "-b",
+            "1024",
+            "-I",
+            "256",
+            "-L",
+            "NEOEXT4",
+            "-U",
+            "11111111-2222-3333-4444-555555555555",
+            "-E",
+            "lazy_itable_init=0,lazy_journal_init=0",
+            &image,
+        ],
+    )?;
+
+    let fixture_dir = workspace_root().join(TEST_OUTPUT_REL).join("ext4-fixtures");
+    fs::create_dir_all(&fixture_dir)
+        .map_err(|e| format!("create ext4 fixture dir {}: {e}", fixture_dir.display()))?;
+
+    let hello = write_ext4_fixture(&fixture_dir, "hello.txt", b"Hello from ext4!\n")?;
+    let readme = write_ext4_fixture(
+        &fixture_dir,
+        "readme.md",
+        b"# ext4 Fixture\nRead-only foreign filesystem test.\n",
+    )?;
+    let nested = write_ext4_fixture(&fixture_dir, "nested.txt", b"nested file\n")?;
+    let notes = write_ext4_fixture(&fixture_dir, "notes.neom", b"not a model on ext4\n")?;
+    let filler = write_ext4_pattern_fixture(&fixture_dir, "filler.bin", 4096, 17)?;
+    let large = write_ext4_large_fixture(&fixture_dir, "large.bin", 1024 * 1024)?;
+
+    let commands = fixture_dir.join("debugfs-ext4-fixture.cmds");
+    let mut script = String::new();
+    script.push_str("mkdir /subdir\n");
+    script.push_str("mkdir /frag\n");
+    push_debugfs_write(&mut script, &hello, "/hello.txt");
+    push_debugfs_write(&mut script, &readme, "/readme.md");
+    push_debugfs_write(&mut script, &nested, "/subdir/nested.txt");
+    push_debugfs_write(&mut script, &notes, "/notes.neom");
+    for idx in 0..96u32 {
+        push_debugfs_write(&mut script, &filler, &format!("/frag/filler{idx:03}.bin"));
+    }
+    for idx in (0..96u32).step_by(2) {
+        script.push_str(&format!("rm /frag/filler{idx:03}.bin\n"));
+    }
+    push_debugfs_write(&mut script, &large, "/large.bin");
+    script.push_str("symlink /link_to_hello hello.txt\n");
+    script.push_str("ea_set /notes.neom user.neoplutarch.type Model\n");
+    fs::write(&commands, script)
+        .map_err(|e| format!("write debugfs command file {}: {e}", commands.display()))?;
+
+    let commands_arg = commands.display().to_string();
+    run_e2fs("debugfs", &["-w", "-f", &commands_arg, &image])?;
+
+    let filefrag = run_e2fs_output("debugfs", &["-R", "filefrag /large.bin", &image])?;
+    let filefrag_stdout = String::from_utf8_lossy(&filefrag.stdout);
+    let extent_count = parse_debugfs_extent_count(&filefrag_stdout)
+        .ok_or_else(|| format!("parse debugfs filefrag output: {filefrag_stdout}"))?;
+    if extent_count <= 1 {
+        return Err(format!(
+            "ext4 large.bin fixture has {extent_count} extent; expected more than one"
+        ));
+    }
+
+    let xattrs = run_e2fs_output("debugfs", &["-R", "ea_list /notes.neom", &image])?;
+    let xattrs_stdout = String::from_utf8_lossy(&xattrs.stdout);
+    if !xattrs_stdout.contains("user.neoplutarch.type") {
+        return Err(format!(
+            "ext4 notes.neom xattr missing from debugfs ea_list output: {xattrs_stdout}"
+        ));
+    }
+
+    run_e2fs("dumpe2fs", &["-h", &image])?;
+    Ok(path.to_path_buf())
+}
+
+fn push_debugfs_write(script: &mut String, host_path: &Path, target_path: &str) {
+    script.push_str("write ");
+    script.push_str(&host_path.display().to_string());
+    script.push(' ');
+    script.push_str(target_path);
+    script.push('\n');
+}
+
+fn write_ext4_fixture(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    fs::write(&path, bytes).map_err(|e| format!("write ext4 fixture {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn write_ext4_pattern_fixture(
+    dir: &Path,
+    name: &str,
+    len: usize,
+    seed: u8,
+) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    let mut bytes = Vec::with_capacity(len);
+    for idx in 0..len {
+        bytes.push(seed.wrapping_add((idx % 251) as u8));
+    }
+    fs::write(&path, bytes).map_err(|e| format!("write ext4 fixture {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn write_ext4_large_fixture(dir: &Path, name: &str, len: usize) -> Result<PathBuf, String> {
+    let path = dir.join(name);
+    let mut bytes = Vec::with_capacity(len);
+    for idx in 0..len {
+        bytes.push((idx % 251) as u8);
+    }
+    fs::write(&path, bytes).map_err(|e| format!("write ext4 fixture {}: {e}", path.display()))?;
+    Ok(path)
+}
+
+fn parse_debugfs_extent_count(output: &str) -> Option<u32> {
+    for line in output.lines() {
+        if !line.contains("large.bin:") {
+            continue;
+        }
+        for token in line.split(|ch: char| !ch.is_ascii_digit()) {
+            if token.is_empty() {
+                continue;
+            }
+            if let Ok(count) = token.parse::<u32>() {
+                return Some(count);
+            }
+        }
+    }
+    None
+}
+
+fn run_mtools(program: &str, args: &[&str]) -> Result<(), String> {
+    let status = Command::new(program)
+        .args(args)
+        .status()
+        .map_err(|e| format!("launch {program}: {e}"))?;
+    if !status.success() {
+        return Err(format!("{program} failed with status {status}"));
+    }
+    Ok(())
+}
+
+fn run_e2fs(program: &str, args: &[&str]) -> Result<(), String> {
+    let _ = run_e2fs_output(program, args)?;
+    Ok(())
+}
+
+fn run_e2fs_output(program: &str, args: &[&str]) -> Result<Output, String> {
+    let mut not_found = None;
+    for candidate in e2fs_candidates(program) {
+        match Command::new(&candidate).args(args).output() {
+            Ok(output) => {
+                if output.status.success() {
+                    return Ok(output);
+                }
+                return Err(format!(
+                    "{} failed with status {}\nstdout:\n{}\nstderr:\n{}",
+                    candidate.display(),
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                not_found = Some(e);
+            }
+            Err(e) => {
+                return Err(format!("launch {}: {e}", candidate.display()));
+            }
+        }
+    }
+    Err(format!(
+        "launch {program}: {}",
+        not_found
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "not found".to_string())
+    ))
+}
+
+fn e2fs_candidates(program: &str) -> Vec<PathBuf> {
+    let path = Path::new(program);
+    if path.components().count() > 1 {
+        return vec![path.to_path_buf()];
+    }
+    vec![
+        PathBuf::from(program),
+        PathBuf::from("/usr/sbin").join(program),
+        PathBuf::from("/sbin").join(program),
+        PathBuf::from("/usr/bin").join(program),
+    ]
+}
+
+fn run_with_timeout_and_dump(
+    mut cmd: Command,
+    timeout: Duration,
+    label: &str,
+    dump_target: Option<&Path>,
+) -> Result<ExitStatus, String> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("failed to launch QEMU for `{label}`: {e}"))?;
+    let start = Instant::now();
+
+    loop {
+        if let Some(_status) = child
+            .try_wait()
+            .map_err(|e| format!("poll QEMU for `{label}`: {e}"))?
+        {
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("collect QEMU output for `{label}`: {e}"))?;
+            if !output.stderr.is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("[xtask] qemu stderr for `{label}`:\n{stderr}");
+            }
+            eprintln!(
+                "[xtask] neo-test: `{label}` qemu elapsed={:.1}s status={} budget={}s",
+                start.elapsed().as_secs_f64(),
+                output.status,
+                timeout.as_secs()
+            );
+            return Ok(output.status);
+        }
+
+        if start.elapsed() >= timeout {
+            let elapsed = start.elapsed();
+            if let Some(dump_path) = dump_target {
+                attempt_timeout_monitor_dump(label, dump_path);
+            }
+            let _ = child.kill();
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("collect timed-out QEMU output for `{label}`: {e}"))?;
+            if !output.stderr.is_empty() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("[xtask] qemu stderr for timed-out `{label}`:\n{stderr}");
+            }
+            eprintln!(
+                "[xtask] neo-test: `{label}` qemu elapsed={:.1}s TIMEOUT budget={}s",
+                elapsed.as_secs_f64(),
+                timeout.as_secs()
+            );
+            return Err(format!(
+                "QEMU timed out after {}s for `{label}`",
+                timeout.as_secs()
+            ));
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Best-effort capture of QEMU monitor state on timeout.
+///
+/// Only fires when both `NEO_QEMU_TIMEOUT_DUMP=1` and `NEO_QEMU_MONITOR_PORT=<port>`
+/// are set. Connects to the monitor with bounded timeouts and writes the output
+/// to a sibling `.timeout-dump.log` derived from the per-attempt serial log path.
+/// Connection or read failure is itself classification evidence (Case A) and is
+/// recorded in the dump file.
+fn attempt_timeout_monitor_dump(label: &str, serial_log: &Path) {
+    let dump_requested = env::var(NEO_QEMU_TIMEOUT_DUMP_ENV)
+        .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false);
+    if !dump_requested {
+        return;
+    }
+    let port_var = env::var(NEO_QEMU_MONITOR_PORT_ENV).ok();
+    let Some(port_str) = port_var.as_deref().filter(|s| !s.is_empty()) else {
+        eprintln!(
+            "[xtask] timeout-dump: {NEO_QEMU_TIMEOUT_DUMP_ENV}=1 but {NEO_QEMU_MONITOR_PORT_ENV} unset; skipping monitor capture for `{label}`"
+        );
+        return;
+    };
+    let Ok(port) = port_str.parse::<u16>() else {
+        eprintln!(
+            "[xtask] timeout-dump: {NEO_QEMU_MONITOR_PORT_ENV}=`{port_str}` is not a valid TCP port; skipping monitor capture for `{label}`"
+        );
+        return;
+    };
+    let dump_path = derive_timeout_dump_path(serial_log);
+    let mut dump_file = match fs::File::create(&dump_path) {
+        Ok(file) => file,
+        Err(err) => {
+            eprintln!(
+                "[xtask] timeout-dump: cannot open {} for `{label}`: {err}",
+                dump_path.display()
+            );
+            return;
+        }
+    };
+    let _ = writeln!(
+        dump_file,
+        "[xtask] timeout-dump for `{label}` via monitor 127.0.0.1:{port}"
+    );
+    let dump_result = capture_monitor_dump(port, &mut dump_file);
+    match dump_result {
+        Ok(()) => {
+            eprintln!(
+                "[xtask] timeout-dump: wrote QEMU monitor capture to {} for `{label}`",
+                dump_path.display()
+            );
+        }
+        Err(err) => {
+            let _ = writeln!(dump_file, "[xtask] timeout-dump: capture FAILED: {err}");
+            eprintln!(
+                "[xtask] timeout-dump: monitor capture FAILED for `{label}` ({err}) -> {}",
+                dump_path.display()
+            );
+        }
+    }
+}
+
+fn derive_timeout_dump_path(serial_log: &Path) -> PathBuf {
+    let parent = serial_log.parent().unwrap_or_else(|| Path::new("."));
+    let stem = serial_log
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("qemu");
+    parent.join(format!("{stem}.timeout-dump.log"))
+}
+
+fn capture_monitor_dump(port: u16, dump_file: &mut fs::File) -> Result<(), String> {
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(1000))
+        .map_err(|e| format!("connect 127.0.0.1:{port}: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_millis(1500)))
+        .map_err(|e| format!("set read timeout: {e}"))?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .map_err(|e| format!("set write timeout: {e}"))?;
+
+    // Drain the monitor banner.
+    let _ = drain_monitor(&mut stream, Duration::from_millis(200));
+
+    // Send a monitor command, echo it + its output into the dump file, and
+    // return the captured output for parsing.
+    let mut run_cmd = |dump_file: &mut fs::File, cmd: &str| -> Result<String, String> {
+        let _ = writeln!(dump_file, "(qemu) {}", cmd.trim_end());
+        stream
+            .write_all(cmd.as_bytes())
+            .map_err(|e| format!("write `{}`: {e}", cmd.trim_end()))?;
+        let out = drain_monitor(&mut stream, Duration::from_millis(2000));
+        dump_file
+            .write_all(out.as_bytes())
+            .map_err(|e| format!("write dump for `{}`: {e}", cmd.trim_end()))?;
+        let _ = writeln!(dump_file);
+        Ok(out)
+    };
+
+    run_cmd(dump_file, "info status\n")?;
+    run_cmd(dump_file, "info cpus\n")?;
+    let regs = run_cmd(dump_file, "info registers -a\n")?;
+
+    // Per-CPU stack capture: a hung SMP guest parks every CPU in a `pause` spin;
+    // `info registers` names the RIP (spin_loop) but not *which* lock/caller.
+    // HMP has no `$rsp` variable, so parse each `RSP=<hex>` from the register
+    // dump and read that stack by *literal* address — kernel higher-half
+    // mappings are global, so any CPU context resolves them. The return-address
+    // chain in the dumped stack names the spin-loop caller and the contended
+    // lock (subtract the KASLR slide, then addr2line against the kernel ELF).
+    for line in regs.lines() {
+        if let Some(idx) = line.find("RSP=") {
+            let hex: String = line[idx + 4..]
+                .chars()
+                .take_while(|c| c.is_ascii_hexdigit())
+                .collect();
+            if hex.len() >= 8 {
+                run_cmd(dump_file, &format!("x/256gx 0x{hex}\n"))?;
+            }
+        }
+    }
+    let _ = stream.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+fn drain_monitor(stream: &mut TcpStream, settle: Duration) -> String {
+    let mut buf = [0u8; 4096];
+    let mut out = String::new();
+    let deadline = Instant::now() + settle;
+    while Instant::now() < deadline {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => out.push_str(&String::from_utf8_lossy(&buf[..n])),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => break,
+            Err(ref e) if e.kind() == io::ErrorKind::TimedOut => break,
+            Err(_) => break,
+        }
+    }
+    out
+}
+
+struct ParsedSerial {
+    terminal_event: Option<String>,
+    terminal_count: usize,
+    saw_begin: bool,
+}
+
+/// The scenario name the KERNEL emits in its `NEO_TEST` serial frames — usually
+/// the xtask scenario name, but a scenario that reuses another's kernel
+/// `SCENARIO` const via a composed feature reports the *base* name. The OT-16
+/// walker parity scenario reuses arthur_real_brain_boot's forward + emit
+/// unchanged (only the kernel feature set differs), so it reports that base name.
+fn serial_frame_name(scenario: TestScenario) -> &'static str {
+    match scenario.name {
+        "arthur_real_brain_boot_ot16_walker" => "arthur_real_brain_boot",
+        VM_INSTALLED_SCENARIO | VM_ONE_DISK_SCENARIO | VM_ONE_DISK_4K_SCENARIO => {
+            "boot_neofs_userland_persistence"
+        }
+        // OT-87 R4.3: one kernel; its install boots report under the
+        // scenario its installed disk runs.
+        // OT-87 R4.4: the Atrium installer runs the intro session's kernel.
+        INSTALL_ATRIUM_SCENARIO
+        | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
+        | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
+        name if is_install_scenario(name) => "arthur_model_from_neofs",
+        other => other,
+    }
+}
+
+fn parse_test_serial(serial: &str, scenario_name: &str) -> ParsedSerial {
+    let mut terminal_event = None;
+    let mut terminal_count = 0;
+    let mut saw_begin = false;
+
+    for line in serial.lines() {
+        let Some(frame) = line.trim().strip_prefix(TEST_FRAME_PREFIX) else {
+            continue;
+        };
+        let mut event = None;
+        let mut name = None;
+        for token in frame.split_whitespace() {
+            if let Some(v) = token.strip_prefix("event=") {
+                event = Some(v);
+            } else if let Some(v) = token.strip_prefix("name=") {
+                name = Some(v);
+            }
+        }
+        if name != Some(scenario_name) {
+            continue;
+        }
+        match event {
+            Some("BEGIN") => saw_begin = true,
+            Some("PASS") | Some("FAIL") => {
+                terminal_count += 1;
+                terminal_event = event.map(str::to_string);
+            }
+            _ => {}
+        }
+    }
+
+    ParsedSerial {
+        terminal_event,
+        terminal_count,
+        saw_begin,
+    }
+}
+
+fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    if observed.exit_status.code() != Some(qemu_debug_exit_status(TEST_EXIT_SUCCESS)) {
+        return Err(format!(
+            "`{}` did not exit via debug success; status={} serial={}",
+            scenario.name,
+            observed.exit_status,
+            observed.serial_log.display()
+        ));
+    }
+    require_observed_terminal_pass(scenario, observed)?;
+    // OT-90 P2: the kill-switch build has no power module, so boot logs no plan.
+    if scenario.name == "ot90_kill_switch_off" {
+        require_serial_absent(
+            scenario,
+            observed,
+            "[ kernel ] power:",
+            "power-control off must compile out the power path",
+        )?;
+    }
+    // OT-61 C0.5: exit codes alone cannot tell a LOUD panic from a silent one.
+    // The panic message must reach the console (overlay panic_output -> stderr
+    // -> the console fd) before abort_internal exits 134, and stderr must print.
+    if scenario.name == "std_real_smoke" {
+        for needle in [
+            "[ std-real-smoke ] std::eprintln! (stderr -> the console fd): ok",
+            "[ std-real-smoke ] PASS: std print+alloc+errno+loud-stubs+exit",
+            "panicked at src/panic.rs:",
+            "index out of bounds: the len is 0 but the index is 3",
+            "[ std ] neoplutarch abort_internal -> SYS_EXIT(134)",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the real-std smoke must print to stdout+stderr and the panic arm must abort LOUDLY (message, then exit 134)",
+            )?;
+        }
+    }
+    if scenario.name == "swapgs_irq_ring3" {
+        for needle in [
+            "shootdown_lock_probe=ok waiter_cpu=0 if0_contention=ok if_preserved=true ipi_ack=ok eoi_progress=ok",
+            "shootdown_publication_filter_probe=ok ready=false ipi_delta=0",
+            "shootdown_pre_ring3_rejoin_probe=ok ready=true ipi_ack=ok",
+            "shootdown_publication_probe=ok filtered_while_if0=ok pre_ring3_ack=ok",
+            "swapgs_ring3_ready_probe=ok reschedule_ipi_ring3_entries=",
+            "lock_contention_probe=ok publication_probe=ok ring3_ready_probe=ok if_preserved=true eoi_progress=ok",
+            "ipis_sent=128",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "swapgs shootdown regression must prove interruptible lock contention, ACK/EOI progress, and the ring-3 IPI flood",
+            )?;
+        }
+    }
+    if scenario.name == "arthur_converse" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: model: hello",
+            "Arthur conversation scenario must include the model reply",
+        )?;
+    }
+    if scenario.name == "arthur_boots_thinking" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: model: hello",
+            "Arthur boot-thinking scenario must generate a model reply",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: model: active 0.5b",
+            "Arthur boot-thinking scenario must switch to the fallback model",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "NEO_TEST/1 event=INFO name=arthur_boots_thinking boot=ok default=/neofs/model-qwen2.5-1.5b.neom switch=/neofs/model-qwen2.5-0.5b.neom generate=before_after",
+            "Arthur boot-thinking scenario must report boot/load/generate/switch proof",
+        )?;
+    }
+    if scenario.name == "arthur_memory_forgetting" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "NEO_TEST/1 event=PASS name=arthur_memory_forgetting arthur_memory_forgetting=ok forget_endstate=ok wipe_endstate=ok fresh_after_wipe=ok m4_default_off_m3=ok no_new_invariant=ok",
+            "Arthur M4 forgetting scenario must report the renamed end-state proof tokens",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "NEO_TEST/1 event=INFO name=arthur_memory_forgetting forget_endstate=ok wipe_endstate=ok cap_revoke=ok sibling_until_total=ok fresh_after_wipe=ok no_new_invariant=ok",
+            "Arthur M4 forgetting driver must report the renamed end-state proof tokens",
+        )?;
+    }
+    if scenario.name == "forward_mixed_quant" {
+        for needle in [
+            "role=attn_q dtype=q4_K",
+            "role=ffn_gate dtype=q5_0",
+            "role=ffn_down dtype=q6_K",
+            "role=attn_o dtype=q8_0",
+            "forward_mixed_quant=ok",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "forward mixed-quant scenario must log each dtype discriminator",
+            )?;
+        }
+    }
+    if scenario.name == "ot16_gdn_walker_execution" {
+        for needle in [
+            "ot16_gdn_walker_execution=ok",
+            "schedule=Qwen2AttentionFFN,GatedDeltaNetLinear",
+            "gdn_recurrent_step=executed",
+            "state_carry=proven",
+            "cross_token_state=ok",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "OT-16 B2b GDN scenario must prove real walker dispatch and cross-token state carry",
+            )?;
+        }
+    }
+    if scenario.name == "di1_forward" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DI1FWD ready route=claimed",
+                "DI1FWD records=",
+                "DI1FWD reclaimed generation=",
+                "DI1FWD released",
+                // Jarvis (#46 RETURN F3): the client route set is capped; the
+                // pointer route is outside it.
+                "DI1FWD route_cap cap=32 activated=31 refused=5 pointer_claim_under_flood=true",
+                "forward=record_buttons_once replay=refused drop=once",
+                " route_cap=bounded",
+            ],
+            "pointer records must be consumed exactly once, die with their generation, fall back to ADR-074, and the client route set must be capped",
+        )?;
+    }
+    if scenario.name == "token_park_teardown_churn" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "TOKENCHURN rounds=60 parked_and_killed=all",
+                "TOKENCHURN live_checks_ok=true under_frame_alloc=0",
+                "token_park_teardown=no_corruption rounds=60",
+            ],
+            "tearing down a process whose thread is token-parked must never leave a CPU on its freed PML4 (CP-60)",
+        )?;
+    }
+    if scenario.name == "wait_any_core" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "WAITANY ipc result=1 latency_ticks=",
+                " ipc_wakes=1",
+                "WAITANY race rounds=16 woken=16 fired_before_park=",
+                "WAITANY deadline result=-110 late_ticks=",
+                "WAITANY kill rc=0 entries_left=0 zombies=0",
+                "WAITANY rebind result=1 latency_ticks=",
+                " ipc_wakes=1",
+                "WAITANY revoke rc=0 returned=true result=-9 handle_wakes=",
+                " ipc_wakes=0",
+                "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf",
+            ],
+            "an IPC-only wait must end on the send, a send inside the check-to-park window must never be lost, a deadline must end the wait by the tick, a waiter killed while parked must leave no entry, a handle closed and reused before the registration must be re-watched, and a handle revoked under a parked wait must end it with EBADF (Jarvis rung-1 F1)",
+        )?;
+    }
+    if scenario.name == "hid_contention" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "HIDCONTEND ready typed=10 path=staged",
+                "HIDCONTEND drained key_events=20 expected=20",
+                "HIDCONTEND sak pending=4 latched=1",
+                // Jarvis F1: A's staged key never reaches B after the handoff.
+                "HIDCONTEND handoff b_events=0 a_events=0 handoff_dropped=2",
+                // Jarvis F2 (CP-37): fd-0 entry points driven with interrupts
+                // ON never take PRIMARY or a device lock IF=1.
+                "HIDCONTEND mixed_if fd0_reads=64 if_on_acquisitions=0",
+                // CP-56 (#55): killing the process that holds the active
+                // focus, mid-session, drops it with DELIVERY taken IF=0.
+                "HIDCONTEND teardown kill_rc=0 focus_dropped=true route_cleared=true delivery_if_on=0",
+                "press_release_pairs=all_in_order contention=exercised sak=latched_once buttons=reconciled handoff=fail_closed mixed_if=no_deadlock teardown=if_off",
+            ],
+            "every HID press and release must survive DELIVERY lock contention, in order; a staged key must not cross a focus handoff; PRIMARY, the device locks and DELIVERY (including a killed focus holder's Drop) must only ever be taken IF=0",
+        )?;
+    }
+    if scenario.name == "input_queue_flood" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "INPUTFLOOD ready typed=26 policy=class-aware",
+                "INPUTFLOOD drained queued=",
+                "keystrokes_kept=all_in_order pointer_flood=overflowed_queue",
+            ],
+            "the pointer flood must overflow the per-client queue without evicting any keystroke",
+        )?;
+    }
+    // S2-F2: in every desktop session the WM presents a damage commit as the
+    // band Arthur redrew (translated to output coordinates), not the whole
+    // client rect; the logged rect is what the present actually wrote.
+    if let Some(home_flow) = desktop_scenario(scenario.name).and_then(|d| d.band) {
+        let serial = read_serial(observed)?;
+        let line = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP client damage first="))
+            .ok_or_else(|| format!("`{}` logged no damage commit", scenario.name))?;
+        if !line.ends_with(" band=yes") {
+            return Err(format!(
+                "`{}` presented more than a band for a damage commit: {line}",
+                scenario.name
+            ));
+        }
+        // S1/S3's first damage commit is one typed keystroke: one text line
+        // (Home's is the intent's whole answer, a few lines, still a band).
+        let height = line
+            .split("first=")
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|wh| wh.split('x').nth(1))
+            .and_then(|h| h.parse::<usize>().ok())
+            .ok_or_else(|| format!("`{}` unparsable damage line: {line}", scenario.name))?;
+        if !home_flow && height > 32 {
+            return Err(format!(
+                "`{}` a keystroke presented {height} rows, more than one text line: {line}",
+                scenario.name
+            ));
+        }
+        // Arthur's footer naming its model is its own commit, below the
+        // footer rule, and is a band too.
+        let footer = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP client footer damage="))
+            .ok_or_else(|| format!("`{}` logged no footer commit", scenario.name))?;
+        if !footer.ends_with(" band=yes") {
+            return Err(format!(
+                "`{}` presented more than a band for the footer: {footer}",
+                scenario.name
+            ));
+        }
+    }
+    if scenario.name == "desktop_session_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+                "DESKTOP session boot compositor=neo-init policy=userland-wm",
+                "DESKTOP scene full_screen=1920x1080 tier=full client_at=676,370 owner=wm stale_pixels=0",
+                "DESKTOP session ready focus=arthur input=adr074-live wm_event_bytes=0",
+                "DESKTOP arthur keystroke ascii=104",
+                "DESKTOP arthur keystroke ascii=112",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP answer composited surface=arthur full_scene=wm_owned",
+                "DESKTOP session end client=arthur exit=0",
+                "DESKTOP readback full_screen=1920x1080 wm_pixels_exact=",
+            ],
+            "desktop S1 must boot the session, route live usb-kbd keystrokes to Arthur, and read back the full-screen WM scene",
+        )?;
+        // The live desktop was captured (QEMU screendump) with the typed line
+        // on screen, before Enter ended the test session.
+        require_framebuffer_capture(scenario, DESKTOP_SESSION_BOOT_CAPTURE_REL)?;
+        // No model is installed here, so the footer must not name one.
+        require_serial_contains(
+            scenario,
+            observed,
+            "ARTHUR footer model=none",
+            "with no model loaded the footer must say so, never a default name",
+        )?;
+    }
+    if scenario.name == "desktop_glass_boot" || scenario.name == "desktop_glass_rt_boot" {
+        let glass = scenario.name == "desktop_glass_boot";
+        let (material, scene, readback, capture) = if glass {
+            (
+                "DESKTOP material=glass cause=default",
+                "DESKTOP scene full_screen=1920x1080 s3=atrium client_at=682,371 blur_regions=4 owner=wm stale_pixels=0",
+                "DESKTOP readback full_screen=1920x1080 material=glass oracle=scene_oracle.py",
+                DESKTOP_GLASS_BOOT_CAPTURE_REL,
+            )
+        } else {
+            (
+                "DESKTOP material=reduce-transparency cause=build-feature",
+                "DESKTOP scene full_screen=1920x1080 s3=atrium client_at=682,371 blur_regions=0 owner=wm stale_pixels=0",
+                "DESKTOP readback full_screen=1920x1080 material=reduce_transparency oracle=scene_oracle.py",
+                DESKTOP_GLASS_RT_BOOT_CAPTURE_REL,
+            )
+        };
+        // RT's flat panel lets the kernel check the labels exactly.
+        let labels = if glass {
+            "" // (an empty needle matches in place)
+        } else {
+            "DESKTOP labels exact=font_area_oracle bar=Atrium title=Arthur"
+        };
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+                "DESKTOP session boot compositor=neo-init policy=userland-wm",
+                material,
+                scene,
+                "DESKTOP perf build_cycles=",
+                "DESKTOP session ready focus=arthur input=adr074-live wm_event_bytes=0",
+                "DESKTOP arthur keystroke ascii=104",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP answer composited surface=arthur full_scene=wm_owned",
+                // Typing is damage-only: no glass region is ever re-blurred.
+                " reblurs_during_typing=0",
+                "DESKTOP session end client=arthur exit=0",
+                labels,
+                // Codex S3 MEDIUM: every label run exact (both materials),
+                // only its glyph window masked from the digest.
+                "DESKTOP labels exact=label_oracle runs=5 trust_subtitle=owned chip_name=Arthur masked=glyph_windows_only",
+                readback,
+            ],
+            "desktop S3 must boot the glass/RT session, blur each glass region once, never re-blur while typing, and read back the full frame against the independent scene oracle",
+        )?;
+        require_framebuffer_capture(scenario, capture)?;
+    }
+    if scenario.name == "desktop_idle_parks" || scenario.name == "desktop_idle_spins" {
+        require_desktop_idle_window(scenario, observed)?;
+    }
+    if scenario.name == "desktop_pointer_boot" || scenario.name == "desktop_resize_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP pointer route claimed authority=input-system policy=wm",
+                "DESKTOP arthur input_system claim=EPERM forward=EPERM sak=EPERM activate=EPERM",
+                // Janus DS-1b: the SAK is honoured while the broker waits for
+                // a withheld proof (before the deadline refuses it). Enter on
+                // the WM's own focus then refocuses Arthur (checked below; it
+                // may land before or after the deadline).
+                "DESKTOP arthur launch module=probe proof=withheld",
+                "DESKTOP launchcap awaiting-proof module=2 value=0",
+                "DESKTOP pointer escape focus=spine via=sak",
+                "DESKTOP launchcap proof-timeout module=2 value=3000",
+                // The late proof cost Arthur its cap (a late send now fails
+                // instead of blocking short of the reply).
+                "DESKTOP launchcap revoked module=2 value=0",
+                "DESKTOP launchcap refused module=2 value=7",
+                "DESKTOP arthur launch module=probe refused=no-proof",
+                "DESKTOP arthur answer composited round=1",
+                "DESKTOP pointer escape focus=spine via=sak",
+                "DESKTOP pointer focus client=arthur via=click",
+                "DESKTOP pointer forward client=arthur phase=down local=278,169",
+                "DESKTOP arthur pointer buttons=1 phase=1 local=278,169",
+                "DESKTOP arthur pointer buttons=0 phase=3 local=278,169",
+                // DI-1b: a real usb-mouse title-band drag moves the frame by
+                // exactly the drag, re-blurs once (5 at build + 1), leaves no
+                // residue, and the client is never told: its next click is
+                // still window-relative.
+                "DESKTOP pointer move from=674,337 to=554,397 client_at=562,431 blur_regions_total=6 residue_pixels=0",
+                "DESKTOP pointer forward client=arthur phase=down local=278,31",
+                "DESKTOP arthur pointer buttons=1 phase=1 local=278,31",
+                "DESKTOP arthur pointer buttons=0 phase=3 local=278,31",
+                // A grab dragged 508 px left, past the client's left edge
+                // (562): the release is clamped to the surface, never the
+                // negative offset that would reveal the window's position.
+                "DESKTOP arthur pointer buttons=1 phase=1 local=278,31",
+                "DESKTOP arthur pointer buttons=0 phase=3 local=0,31",
+                "DESKTOP home hold client=arthur",
+            ],
+            "the WM must escape on the SAK, refocus on a click it consumes, forward the next click to Arthur at exact local coordinates, and move the window by a title-band drag without telling the client",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "DESKTOP pointer focus client=arthur via=enter",
+            "Janus DS-1b: after the SAK during a withheld proof, Enter must refocus Arthur",
+        )?;
+    }
+    if scenario.name == "desktop_resize_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &SESSION_REFUSAL_SEQUENCE,
+            "every client-error arm of the WM's session loop must refuse its request in the reply's status and keep the session (and the resize after it) going",
+        )?;
+        require_serial_sequence(
+            scenario,
+            observed,
+            &SESSION_DROP_SEQUENCE,
+            "bytes with no header must be dropped, in order, without ending the session",
+        )?;
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP configure mailbox granted client=arthur rights=read-only",
+                "DESKTOP arthur pointer buttons=0 phase=3 local=0,31",
+                // A real usb-mouse corner drag: the WM decides the size and
+                // publishes it (no position: the mailbox holds none) ...
+                "DESKTOP pointer resize request edges=RB size=760x460 serial=1 published=mailbox",
+                // ... Arthur lays itself out at it and acks; the WM shows
+                // exactly that picture: the frame stays, one more blur (5 +
+                // move + resize), no residue, the client rect is the
+                // client's pixels, laid out at the new height ...
+                "DESKTOP pointer resize from=640x400 to=760x460 frame_at=554,397 serial=1 blur_regions_total=7 residue_pixels=0 client_mismatch=0 footer_rule=yes",
+                // ... and replies, after which Arthur logs it.
+                "DESKTOP arthur configure size=760x460 serial=1",
+                // Past the old 640 width: the clamp follows the new size.
+                "DESKTOP pointer forward client=arthur phase=down local=700,31",
+                "DESKTOP arthur pointer buttons=1 phase=1 local=700,31",
+                "DESKTOP arthur pointer buttons=0 phase=3 local=700,31",
+                // A left-edge drag: the origin moves, the right edge stays
+                // (554 + 16 + 760 = 494 + 16 + 820), one more blur.
+                "DESKTOP pointer resize request edges=L size=820x460 serial=2 published=mailbox",
+                "DESKTOP pointer resize from=760x460 to=820x460 frame_at=494,397 serial=2 blur_regions_total=8 residue_pixels=0 client_mismatch=0 footer_rule=yes",
+                "DESKTOP arthur configure size=820x460 serial=2",
+                "DESKTOP home hold client=arthur",
+                // The resized window survives hold and resume intact.
+                "DESKTOP view switch=resume residue_pixels=0",
+            ],
+            "DI-1b resize: a corner drag must publish the size, Arthur must lay itself out at it and ack, and the WM must show exactly that picture and forward clicks against the new size",
+        )?;
+    }
+    // A9-D: both answers were real generations, and while each ran the WM
+    // kept turning the emblem on its own clock.
+    if scenario.name == "desktop_busy_boot" {
+        let serial = read_serial(observed)?;
+        if serial.contains("DESKTOP arthur model=absent") {
+            return Err(format!(
+                "`{}` Arthur had no model: the answers were not generations",
+                scenario.name
+            ));
+        }
+        check_busy_emblem_pace(&serial)
+            .map_err(|e| format!("`{}` busy emblem: {e}", scenario.name))?;
+        require_serial_sequence(
+            scenario,
+            observed,
+            &BUSY_REFUSAL_SEQUENCE,
+            "Janus #96: a refused OP_BUSY (past the surface's edge, or on the wrong channel) must get a refusal status in its reply while the WM keeps serving, and the emblem must still turn for the valid request after it",
+        )?;
+    }
+    // A9-C: the transcript scrolled as scripted, each step by the right
+    // number of lines.
+    if scenario.name == "desktop_scroll_boot" {
+        let serial = read_serial(observed)?;
+        check_scroll_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
+    }
+    if scenario.name == "desktop_wheel_boot" {
+        let serial = read_serial(observed)?;
+        check_wheel_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
+    }
+    if scenario.name == "desktop_arthur_scope" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "ARTHUR scope outside=eperm inside=ok dotdot=eperm sibling=eperm narrow=eacces",
+            "K1b: Arthur's root-form opens reach only his scopes",
+        )?;
+    }
+    if scenario.name == "desktop_home_boot"
+        || scenario.name == "desktop_icons_boot"
+        || scenario.name == "desktop_pointer_boot"
+        || scenario.name == "desktop_resize_boot"
+        || scenario.name == "desktop_idle_parks"
+        || scenario.name == "desktop_idle_spins"
+    {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+                "DESKTOP session boot compositor=neo-init policy=userland-wm",
+                "DESKTOP material=glass cause=default",
+                // Home's intent field plus the four glass boxes: five blurs, once.
+                "DESKTOP scene full_screen=1920x1080 s3=atrium client_at=682,371 blur_regions=5 owner=wm stale_pixels=0",
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                // The WM reads only its OWN focus's keys while Home is shown.
+                "DESKTOP home keystroke ascii=104",
+                "DESKTOP home keystroke ascii=112",
+                "DESKTOP home intent submitted target=arthur",
+                // Chad DS-1ab F1: the launch is one `HANDOFF` — Arthur takes
+                // the route and the intent (logging it before its discard
+                // ack), and only then is the window view presented. Every
+                // view switch presents everything it repainted.
+                "DESKTOP arthur intent bytes=13",
+                "DESKTOP view switch=window stale_pixels=0",
+                "DESKTOP view switch=window residue_pixels=0",
+                // DS-1b: the broker's LaunchCap — granted, refused, and the
+                // pinned ADVISORY status (a direct spawn still succeeds).
+                "DESKTOP launchcap minted client=arthur allow=probe advisory=true",
+                "DESKTOP launchcap granted module=2 value=1",
+                "DESKTOP arthur launch module=probe granted=true",
+                "DESKTOP launchcap refused module=1 value=10",
+                "DESKTOP arthur launch module=arthur refused=not-permitted",
+                "DESKTOP launchcap refused module=2 value=7",
+                "DESKTOP arthur launch module=probe refused=cap-required",
+                "DESKTOP launchcap advisory direct_spawn=allowed exit=1",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP arthur answer composited round=1",
+                // Esc: OP_YIELD_FOCUS. Home holds the live Arthur.
+                "DESKTOP arthur yield focus=home held=true",
+                "DESKTOP view switch=hold stale_pixels=0",
+                "DESKTOP view switch=hold residue_pixels=0",
+                "DESKTOP home hold client=arthur focus=wm-home",
+                "DESKTOP home chip selected=1",
+                "DESKTOP home chip selected=0",
+                "DESKTOP home keystroke ascii=97",
+                "DESKTOP home intent submitted target=arthur",
+                // The same Arthur resumes with the new intent (no respawn):
+                // the route, then the intent, then the view (Chad F1). (The
+                // resume's residue line and Arthur's line come from two
+                // processes; checked below.)
+                "DESKTOP home resume client=arthur intent_bytes=005",
+                "DESKTOP arthur line=again",
+                "DESKTOP answer composited surface=arthur full_scene=wm_owned",
+                " reblurs_during_typing=0",
+                "DESKTOP session end client=arthur exit=0",
+                "DESKTOP view switch=home stale_pixels=0",
+                "DESKTOP view switch=home residue_pixels=0",
+                "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=",
+                // Codex DS-1a F2: the empty field's placeholder and caret, exact.
+                "DESKTOP field exact=field_oracle state=empty_focused placeholder=yes caret=yes masked=glyph_window_only",
+                "DESKTOP readback full_screen=1920x1080 material=glass_home oracle=scene_oracle.py",
+            ],
+            "DS-1 must boot into Home, take the intent on the WM's own focus, launch Arthur with it, return the keyboard to Home on exit, never re-blur, and read back the Home view against the independent oracle",
+        )?;
+        // Five blurs at build; DI-1b's one window move adds exactly one, and
+        // each of its two resizes one more.
+        require_serial_contains(
+            scenario,
+            observed,
+            if scenario.name == "desktop_resize_boot" {
+                "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=8\n"
+            } else if scenario.name == "desktop_pointer_boot" {
+                "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=6\n"
+            } else {
+                "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=5\n"
+            },
+            "the session must blur only at build (plus once per completed window move)",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "DESKTOP session ready focus=arthur input=adr074-live wm_event_bytes=0",
+            "DS-1 must hand Arthur its ACTIVATE-only focus after the intent",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "DESKTOP arthur resume intent bytes=5",
+            "DS-1: the held Arthur must receive Home's second intent",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "DESKTOP view switch=resume residue_pixels=0",
+            "DS-1: the resume repaints the window view exactly",
+        )?;
+        // Chad DS-1a F1: every handoff runs swap → discard → present, so a
+        // key typed during the hold reaches Home or is discarded at Arthur's
+        // next turn — never replayed into Arthur after it resumes.
+        if scenario.name == "desktop_home_boot" {
+            let serial = read_serial(observed)?;
+            let after_yield = serial
+                .split("DESKTOP arthur yield focus=home held=true")
+                .nth(1)
+                .ok_or("no yield")?;
+            if after_yield.contains("DESKTOP arthur keystroke ascii=122")
+                || after_yield.contains("DESKTOP arthur keystroke ascii=8\n")
+            {
+                return Err(format!(
+                    "`{}` a key typed during the hold reached Arthur after it resumed (F1 replay)",
+                    scenario.name
+                ));
+            }
+            // Chad DS-1ab F1 (re-check): keys typed once the launch's window
+            // view showed reach Arthur, before it yields.
+            let launch = serial
+                .split("DESKTOP view switch=window residue_pixels=0")
+                .nth(1)
+                .and_then(|after| after.split("DESKTOP arthur yield focus=home").next())
+                .ok_or("no launch window view before the yield")?;
+            if !launch.contains("DESKTOP arthur keystroke ascii=120\n")
+                || !launch.contains("DESKTOP arthur keystroke ascii=8\n")
+            {
+                return Err(format!(
+                    "`{}` keys typed once the launch's window view showed did not reach Arthur (Chad DS-1ab F1)",
+                    scenario.name
+                ));
+            }
+            for handoff in [
+                "DESKTOP handoff to=home via=hold discarded=",
+                "DESKTOP handoff to=home via=return discarded=",
+            ] {
+                require_serial_contains(
+                    scenario,
+                    observed,
+                    handoff,
+                    "Chad DS-1a F1: Home's queue is discarded at every handoff to Home",
+                )?;
+            }
+        }
+        // One Arthur for the whole session: the resume reused the held client.
+        require_single_arthur(scenario, observed, false)?;
+        // Each scenario's own end capture (`desktop_icons_boot` has its own;
+        // the rest of this block capture to Home's path).
+        require_framebuffer_capture(
+            scenario,
+            desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
+        )?;
+    }
+    if scenario.name == "desktop_lens_boot"
+        || scenario.name == "desktop_lens_pointer_boot"
+        || scenario.name == "desktop_lens_fault_boot"
+        || scenario.name == "desktop_motion_boot"
+        || scenario.name == "desktop_motion_rm_boot"
+    {
+        let pointer = scenario.name == "desktop_lens_pointer_boot";
+        let fault = scenario.name == "desktop_lens_fault_boot";
+        // DM-1: the same session with motion (full / Reduce Motion).
+        let motion = match scenario.name {
+            "desktop_motion_boot" => Some(MotionProfile::Full),
+            "desktop_motion_rm_boot" => Some(MotionProfile::Reduced),
+            _ => None,
+        };
+        // The Lens's own surface: its frame blurred once more at build.
+        let mut lines: Vec<&str> = vec![
+            "DESKTOP scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+            "DESKTOP session boot compositor=neo-init policy=userland-wm",
+            "DESKTOP material=glass cause=default",
+            // The four glass boxes, Home's intent field and the Lens frame:
+            // six blurs, once.
+            "DESKTOP scene full_screen=1920x1080 s3=atrium client_at=682,371 blur_regions=6 owner=wm stale_pixels=0",
+            "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+            "DESKTOP home intent submitted target=arthur",
+            // Chad DS-1ab F1: the launch's window view after Arthur's intent.
+            "DESKTOP arthur intent bytes=13",
+            "DESKTOP view switch=window stale_pixels=0",
+            "DESKTOP view switch=window residue_pixels=0",
+            // DS-1c widens Arthur's LaunchCap to the Lens; DS-1b's probes and
+            // the pinned ADVISORY spawn are unchanged.
+            "DESKTOP launchcap minted client=arthur allow=probe,lens advisory=true",
+            "DESKTOP launchcap granted module=2 value=1",
+            "DESKTOP launchcap refused module=1 value=10",
+            "DESKTOP launchcap refused module=2 value=7",
+            "DESKTOP launchcap advisory direct_spawn=allowed exit=1",
+            "DESKTOP arthur answer composited round=1",
+            "DESKTOP arthur yield focus=home held=true",
+            "DESKTOP home hold client=arthur focus=wm-home",
+            "DESKTOP home keystroke ascii=108",
+            "DESKTOP home intent submitted target=arthur",
+            // #47: the route, then the intent (Arthur discards and acks),
+            // then the view: the resume's residue line follows.
+            "DESKTOP home resume client=arthur intent_bytes=006",
+            "DESKTOP arthur line=list /",
+            // Arthur's read-only action blooms the Lens through its LaunchCap;
+            // the broker lends it `/` (LOOKUP|READDIR) only.
+            "DESKTOP lens bloomed path=/ rights=lookup,readdir focus=none",
+            "DESKTOP launchcap granted module=3 value=0",
+            "DESKTOP arthur lens opened path=/",
+            "DESKTOP answer composited surface=arthur full_scene=wm_owned",
+        ];
+        if pointer {
+            lines.extend([
+                // A click on the Lens's chip switches to it; one on Arthur's
+                // chip switches back (both consumed by the WM).
+                "DESKTOP pointer press at=42,156",
+                "DESKTOP pointer select target=lens via=click at=42,156",
+                "DESKTOP pointer press at=42,78",
+                "DESKTOP pointer focus client=arthur via=click",
+            ]);
+        } else {
+            lines.extend([
+                // The keyboard: Esc holds Arthur, Tab Tab reaches the Lens's
+                // chip, Enter switches to the Lens, Tab back to Arthur.
+                "DESKTOP arthur yield focus=home held=true",
+                "DESKTOP home hold client=arthur focus=wm-home",
+                "DESKTOP home chip selected=1",
+                "DESKTOP home chip selected=2",
+                "DESKTOP view switch=lens stale_pixels=0",
+                "DESKTOP view switch=lens residue_pixels=0",
+                "DESKTOP lens view shown selected=lens via=chip focus=wm-home",
+                "DESKTOP lens view left to=arthur via=tab",
+                "DESKTOP home resume client=arthur intent_bytes=000",
+                "DESKTOP view switch=resume residue_pixels=0",
+            ]);
+        }
+        lines.extend([
+            " reblurs_during_typing=0",
+            // The Lens ends with the session's intent.
+            "DESKTOP lens ended exit=0",
+            "DESKTOP session end client=arthur exit=0",
+            "DESKTOP view switch=home stale_pixels=0",
+            "DESKTOP view switch=home residue_pixels=0",
+            "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=6",
+            "DESKTOP readback full_screen=1920x1080 material=glass_home oracle=scene_oracle.py",
+        ]);
+        if pointer {
+            // Claimed right after the material, before the first frame.
+            lines.insert(
+                3,
+                "DESKTOP pointer route claimed authority=input-system policy=wm",
+            );
+        }
+        if let Some(profile) = motion {
+            // Read once at boot, with the scene; the first hold stops at its
+            // mid frame (the capture) until the harness's key.
+            lines.insert(3, profile.boot_line());
+            let at = lines
+                .iter()
+                .position(|l| l.starts_with("DESKTOP home hold client=arthur"))
+                .ok_or("no hold line")?;
+            lines.insert(at, profile.hold_line());
+        }
+        if fault {
+            // Chad DS-1c F1: two blooms fail after the Lens committed (each
+            // Lens killed and reaped, its handles released); before the
+            // third, nothing the WM held for them is left.
+            let at = lines
+                .iter()
+                .position(|l| l.starts_with("DESKTOP lens bloomed"))
+                .ok_or("no bloom line")?;
+            lines.splice(
+                at..at,
+                [
+                    "DESKTOP lens failed stage=130",
+                    "DESKTOP launchcap spawn-failed module=3 value=130",
+                    "DESKTOP arthur lens refused path=/",
+                    "DESKTOP lens failed stage=130",
+                    "DESKTOP launchcap spawn-failed module=3 value=130",
+                    "DESKTOP arthur lens refused path=/",
+                    "DESKTOP lens leak-check failed_blooms=2 handles_leaked=0 maps_leaked=0\n",
+                ],
+            );
+        }
+        require_serial_sequence(
+            scenario,
+            observed,
+            &lines,
+            "DS-1c must bloom the read-only Lens from Arthur's `list /`, switch to it and back (Spine chip: keyboard, or a click), end it with the session, never re-blur, and return Home",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "DESKTOP arthur resume intent bytes=6",
+            "DS-1c: the held Arthur must receive the `list /` intent",
+        )?;
+        require_single_arthur(scenario, observed, true)?;
+        if let Some(profile) = motion {
+            // The end frames are the unchanged presents: the end capture is
+            // desktop_lens_boot's, against the same oracle.
+            let (end, mid) = match profile {
+                MotionProfile::Full => {
+                    (DESKTOP_MOTION_BOOT_CAPTURE_REL, DESKTOP_MOTION_BOOT_MID_REL)
+                }
+                MotionProfile::Reduced => (
+                    DESKTOP_MOTION_RM_BOOT_CAPTURE_REL,
+                    DESKTOP_MOTION_RM_BOOT_MID_REL,
+                ),
+            };
+            require_motion(scenario, observed, profile, &MOTION_KIND_NAMES)?;
+            require_motion_mid_capture(scenario, mid, profile)?;
+            require_framebuffer_capture(scenario, end)?;
+            require_lens_capture(scenario, end, None)?;
+        } else if fault {
+            require_framebuffer_capture(scenario, DESKTOP_LENS_FAULT_BOOT_CAPTURE_REL)?;
+            require_lens_capture(scenario, DESKTOP_LENS_FAULT_BOOT_CAPTURE_REL, None)?;
+        } else if pointer {
+            require_framebuffer_capture(scenario, DESKTOP_LENS_POINTER_BOOT_CAPTURE_REL)?;
+            require_lens_capture(
+                scenario,
+                DESKTOP_LENS_POINTER_BOOT_CAPTURE_REL,
+                Some((42, 156)),
+            )?;
+        } else {
+            require_framebuffer_capture(scenario, DESKTOP_LENS_BOOT_CAPTURE_REL)?;
+            require_lens_capture(scenario, DESKTOP_LENS_BOOT_CAPTURE_REL, None)?;
+        }
+    }
+    if scenario.name == "desktop_full_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+                "DESKTOP session boot compositor=neo-init policy=userland-wm",
+                "DESKTOP material=glass cause=default",
+                "DESKTOP pointer route claimed authority=input-system policy=wm",
+                // The four glass boxes, Home's field and the Lens frame.
+                "DESKTOP scene full_screen=1920x1080 s3=atrium client_at=682,371 blur_regions=6 owner=wm stale_pixels=0",
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                "DESKTOP home intent submitted target=arthur",
+                "DESKTOP arthur intent bytes=13",
+                "DESKTOP launchcap minted client=arthur allow=probe,lens advisory=true",
+                "DESKTOP arthur answer composited round=1",
+                // No Lens yet: the frame alone moves (one blur), its Lens
+                // geometry left for the next bloom.
+                "DESKTOP pointer move from=674,337 to=974,397 client_at=982,431 blur_regions_total=7 residue_pixels=0\n",
+                "DESKTOP arthur yield focus=home held=true",
+                "DESKTOP home hold client=arthur focus=wm-home",
+                "DESKTOP home resume client=arthur intent_bytes=006",
+                "DESKTOP arthur line=list /",
+                // No room beside the moved window: the bloom slides it first
+                // (one move, one blur) to the group clamp's origin ...
+                "DESKTOP pointer move from=974,397 to=826,397 client_at=834,431 blur_regions_total=8 residue_pixels=0\n",
+                "DESKTOP lens slide from=974,397 to=826,397 lens_at=1514,397",
+                // ... and the Lens, shown there, re-blurs its glass once.
+                "DESKTOP lens bloomed path=/ rights=lookup,readdir focus=none",
+                "DESKTOP launchcap granted module=3 value=0",
+                "DESKTOP arthur lens opened path=/",
+                // Docked: the title band still drags the window; the Lens
+                // follows (frame + Lens blurs), its picture intact.
+                "DESKTOP pointer move from=826,397 to=626,357 client_at=634,391 blur_regions_total=11 residue_pixels=0 lens_at=1314,357 lens_mismatch=0",
+                // A corner resize: the Lens follows the right edge, its own
+                // size fixed (frame + Lens blurs).
+                "DESKTOP pointer resize request edges=RB size=760x460 serial=1 published=mailbox",
+                "DESKTOP pointer resize from=640x400 to=760x460 frame_at=626,357 serial=1 blur_regions_total=13 residue_pixels=0 client_mismatch=0 footer_rule=yes lens_at=1434,357 lens_mismatch=0",
+                "DESKTOP arthur configure size=760x460 serial=1",
+                "DESKTOP pointer forward client=arthur phase=down local=564,264",
+                "DESKTOP arthur pointer buttons=1 phase=1 local=564,264",
+                "DESKTOP arthur pointer buttons=0 phase=3 local=564,264",
+                " reblurs_during_typing=0",
+                "DESKTOP lens ended exit=0",
+                "DESKTOP session end client=arthur exit=0",
+                "DESKTOP view switch=home stale_pixels=0",
+                "DESKTOP view switch=home residue_pixels=0",
+                "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=13\n",
+                "DESKTOP readback full_screen=1920x1080 material=glass_home oracle=scene_oracle.py",
+            ],
+            "DL-1: with every desktop feature on, a bloom must slide a moved window so the Lens fits, and the docked Lens must move with a title-band drag and follow a corner resize, its picture intact, no residue, blurs only for the frame changes",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "DESKTOP configure mailbox granted client=arthur rights=read-only",
+            "DL-1: Arthur gets its configure mailbox in the full build",
+        )?;
+        require_single_arthur(scenario, observed, true)?;
+        require_framebuffer_capture(scenario, DESKTOP_FULL_BOOT_CAPTURE_REL)?;
+        // DM-1: `desktop-full` carries motion; every transition of the
+        // session (moves and resizes are direct manipulation, not motion)
+        // is held to the plan, bounded, paced and ends on its own present —
+        // the dock capture is then an end frame.
+        require_serial_contains(
+            scenario,
+            observed,
+            MotionProfile::Full.boot_line(),
+            "DM-1: desktop-full must run with motion (the default profile)",
+        )?;
+        require_motion(scenario, observed, MotionProfile::Full, &MOTION_KIND_NAMES)?;
+        require_dock_capture(scenario, DESKTOP_FULL_BOOT_CAPTURE_REL)?;
+    }
+    if scenario.name == "desktop_intro_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+                "DESKTOP session boot compositor=neo-init policy=userland-wm",
+                "DESKTOP material=glass cause=default",
+                "DESKTOP pointer route claimed authority=input-system policy=wm",
+                // The cards are opaque: no blur beyond the Lens build's six.
+                "DESKTOP scene full_screen=1920x1080 s3=atrium client_at=682,371 blur_regions=6 owner=wm stale_pixels=0",
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                // QEMU has no NeoFS: the USB-only variant, every session.
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                // The first key ends the intro, then types.
+                "DESKTOP intro closed via=key",
+                "DESKTOP home keystroke ascii=104",
+                "DESKTOP home keystroke ascii=112",
+                // `help` + Enter: the WM's card, not an intent.
+                "DESKTOP help shown via=typed rows=6",
+                "DESKTOP help closed via=esc",
+                "DESKTOP help shown via=click rows=6",
+                "DESKTOP help closed via=key",
+                "DESKTOP home intent submitted target=arthur",
+                "DESKTOP arthur intent bytes=13",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP arthur answer composited round=1",
+                "DESKTOP arthur yield focus=home held=true",
+                // The held Home shows the hint: residue holds with it masked.
+                "DESKTOP view switch=hold residue_pixels=0",
+                "DESKTOP home hold client=arthur focus=wm-home",
+                "DESKTOP home chip selected=1",
+                "DESKTOP home chip selected=0",
+                "DESKTOP home resume client=arthur intent_bytes=005",
+                "DESKTOP arthur line=again",
+                "DESKTOP session end client=arthur exit=0",
+                "DESKTOP view switch=home stale_pixels=0",
+                "DESKTOP view switch=home residue_pixels=0",
+                "DESKTOP home return client=arthur exit=0 focus=wm-home blur_regions_total=6\n",
+                "DESKTOP field exact=field_oracle state=empty_focused placeholder=yes caret=yes masked=glyph_window_only",
+                "DESKTOP intro hint exact=column_pattern rows=1 masked=hint_box",
+                "DESKTOP readback full_screen=1920x1080 material=glass_home_hint oracle=scene_oracle.py",
+            ],
+            "the intro must show at session start and end at the first key; `help` (typed) and the hint (clicked) must show the help card without reaching Arthur; DS-1's round must follow and Home end with the hint",
+        )?;
+        // `help` is the WM's: Arthur is spawned once, for `hello desktop`,
+        // after both help cards, and never receives the word.
+        let serial = read_serial(observed)?;
+        let before_arthur = serial
+            .split("DESKTOP arthur intent bytes=")
+            .next()
+            .unwrap_or_default();
+        if !before_arthur.contains("DESKTOP help shown via=click")
+            || serial.contains("DESKTOP arthur line=help")
+        {
+            return Err(format!(
+                "`{}` the help card must be the WM's: Arthur saw `help` or ran before it",
+                scenario.name
+            ));
+        }
+        require_single_arthur(scenario, observed, false)?;
+        require_serial_contains(
+            scenario,
+            observed,
+            MotionProfile::Full.boot_line(),
+            "the intro rides on desktop-full, which carries motion",
+        )?;
+        require_motion(scenario, observed, MotionProfile::Full, &["view", "close"])?;
+        require_framebuffer_capture(scenario, DESKTOP_INTRO_BOOT_MID_REL)?;
+        require_intro_capture(scenario, DESKTOP_INTRO_BOOT_MID_REL, IntroCard::Intro)?;
+        require_framebuffer_capture(scenario, DESKTOP_INTRO_BOOT_CAPTURE_REL)?;
+        require_intro_capture(scenario, DESKTOP_INTRO_BOOT_CAPTURE_REL, IntroCard::Help)?;
+    }
+    if scenario.name == "wallclock_rtc" {
+        require_wallclock_seeded(scenario, observed)?;
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "[ wallclock ] OT-85 wall-clock probe",
+                " spread_ns=0 ticks=5 monotonic=nondecreasing",
+                "[ wallclock ] boot date=\"Wednesday, October 21, 2026\" time=\"5:48 PM\"",
+                "[ wallclock ] PASS: boot instant = pinned RTC (Wednesday, October 21, 2026, 5:48 PM)",
+                "wallclock_rtc=ok rtc=seeded",
+            ],
+            "the probe must read the pinned RTC's boot instant through libneo::civil, the base fixed",
+        )?;
+        require_wallclock_probe_oracle(scenario, observed)?;
+    }
+    if scenario.name == "wallclock_rtc_fallback" {
+        let serial = read_serial(observed)?;
+        let fallbacks = serial.matches("[ kernel ] rtc: fallback ").count();
+        if fallbacks != 1
+            || !serial
+                .contains("[ kernel ] rtc: fallback reason=out-of-range realtime=boot-relative")
+            || serial.contains("[ kernel ] rtc: seeded")
+        {
+            return Err(format!(
+                "`{}` must log exactly one fallback line (out-of-range: a 0xFF bus) and never seed; saw {fallbacks}",
+                scenario.name
+            ));
+        }
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "[ wallclock ] base_ns=0 spread_ns=0 ticks=5 monotonic=nondecreasing",
+                "[ wallclock ] realtime=boot-relative",
+                "[ wallclock ] PASS: fallback keeps boot-relative realtime",
+                "wallclock_rtc_fallback=ok",
+            ],
+            "the forced-invalid RTC must leave realtime boot-relative and the boot running",
+        )?;
+    }
+    if scenario.name == "desktop_clock_boot" {
+        require_wallclock_seeded(scenario, observed)?;
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP session boot compositor=neo-init policy=userland-wm",
+                "DESKTOP clock boot date=\"Wednesday, October 21, 2026\" time=\"5:48 PM\"",
+                "DESKTOP clock shown date=\"Wednesday, October 21, 2026\" time=\"",
+                "DESKTOP intro clock row=\"Good ",
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                "DESKTOP intro shown variant=ready usb=1 rows=8 persistent=0",
+                "DESKTOP intro closed via=key",
+                "DESKTOP help shown via=typed rows=6",
+                "DESKTOP help shown via=click rows=6",
+                "DESKTOP home intent submitted target=arthur",
+                "DESKTOP view switch=home residue_pixels=0",
+                "DESKTOP home return client=arthur exit=0 focus=wm-home",
+                "DESKTOP clock readback box=642,285,720,84 ink_pixels=",
+                "desktop_clock_boot=ok",
+            ],
+            "the clock session: the probe's boot instant, the readout, the time-aware intro, DS-1's round, the readback",
+        )?;
+        require_single_arthur(scenario, observed, false)?;
+        require_clock_words(scenario, observed)?;
+        require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL)?;
+        require_clock_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL, true)?;
+        require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_CAPTURE_REL)?;
+        require_clock_capture(scenario, DESKTOP_CLOCK_BOOT_CAPTURE_REL, false)?;
+    }
+    if scenario.name == "arthur_compositor" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SHOWCASE neofs mount=readwrite model_blob=out_of_band",
+                "SHOWCASE scanout gate=armed backend=software authority=gpu-submit compositor=neo-init",
+                "SHOWCASE boot framebuffer=ready owner=g1-compositor",
+                "SHOWCASE compositor up protocol=ADR-073 input=ADR-074",
+                "SHOWCASE surface created role=TEXT client=arthur cap=dedicated-channel",
+                "SHOWCASE bypass client_present=EPERM buffer=self-created-fresh authority=gpu-submit client_cap=absent",
+                "SHOWCASE seam buffer=client-rw compositor-ro-nx attach=accepted",
+                "SHOWCASE scanout compositor_present=allowed authority=gpu-submit compositor_cap=held backend=software",
+                "SHOWCASE greeting composited surface=arthur compositor_event_bytes=0",
+                "SHOWCASE memory stage=surface_resident used_bytes=",
+                "vocab_load tokens=151936",
+                "model_load start path=/neofs/model-qwen2.5-0.5b.neom",
+                "SHOWCASE memory stage=model_resident used_bytes=",
+                // The footer names the model from the path it was loaded from.
+                "ARTHUR footer model=\"Qwen2.5 0.5B\"",
+                "SHOWCASE footprint discriminator=model-485MB-plus-compositor source=qwen2.5-0.5b",
+                "SHOWCASE model resident with_compositor=true source=neofs",
+                "SHOWCASE slice=A greeting=composited qemu_gate=ready",
+                "SHOWCASE surface destroyed client=arthur registry_alive=false",
+                "SHOWCASE slice=A pass render_seam=proven input=not_exercised",
+                "SHOWCASE bypass_oracle client_present=EPERM framebuffer_unchanged=true poison=0x00d123e4 destination=0,0",
+                "SHOWCASE pixel_oracle text=Arthur font=Inter px=22 window=28x20 within_bounds=560/560 coverage_slack=2/255 destination=64,64 source=shared-pixel-buffer",
+            ],
+            "Arthur compositor Slice A must prove the ordered boot, client-owned surface, backend-independent scanout authority, denied fresh-buffer bypass with unchanged framebuffer, authorized compositor present, 485 MB footprint discriminator, model residency, and composited-pixel seam",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "SHOWCASE input focus=active client=arthur",
+            "Slice A compiles the keyboard route but must not claim that QEMU exercised Slice B input",
+        )?;
+        require_framebuffer_capture(scenario, ARTHUR_COMPOSITOR_CAPTURE_REL)?;
+    }
+    if scenario.name == "product_integration" {
+        let serial = fs::read_to_string(&observed.serial_log)
+            .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+        if serial.contains("stage=readback") {
+            require_serial_sequence(
+                scenario,
+                observed,
+                &[
+                    "[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues",
+                    "[ kernel ] boot-neofs: mounted /neofs readwrite",
+                    "PRODUCT rung=1 framebuffer_initialized=true boot_reached_harness=true panic=false",
+                    "PRODUCT rung=4 eth0=no_device boot_continues=true outcome_latch=NoDevice qemu_ax88179=absent",
+                    "stage=readback bytes=39 source=prior_boot byte_equal=true fsync_prior_boot=true",
+                    "product_integration=ok product_feature=compiled second_boot=prior_disk_byte_readback",
+                ],
+                "product boot 2 must mount the reused disk and byte-verify boot 1's fsynced record",
+            )?;
+        } else {
+            require_serial_sequence(
+                scenario,
+                observed,
+                &[
+                    "[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues",
+                    "[ kernel ] boot-neofs: mounted /neofs readwrite",
+                    "PRODUCT rung=1 framebuffer_initialized=true boot_reached_harness=true panic=false",
+                    "PRODUCT rung=4 eth0=no_device boot_continues=true outcome_latch=NoDevice qemu_ax88179=absent",
+                    "DW1 clients created role_text=2 direct_present=eperm,eperm",
+                    "DW1 focus switch=A delivered=1 unfocused_b=0 wm_event_bytes=0",
+                    "DW1 focus switch=B delivered=1 unfocused_a=0 focus_atomicity=count_conserved injected=2 delivered=2 lost=0 duplicated=0",
+                    "stage=desktop role_text_surfaces=2 focus_switches=2 focused_deliveries=2 unfocused_deliveries=0 direct_present=eperm,eperm",
+                    "SHOWCASE surface created role=TEXT client=arthur cap=dedicated-channel",
+                    "SHOWCASE focus activated surface=arthur no_snoop=true",
+                    "SHOWCASE product typed question=hello_world bytes=12 source=input_focus_test_router",
+                    "SHOWCASE product received prompt=hello_world bytes=11 byte_equal=true source=input_focus",
+                    "SHOWCASE inference start source=input_focus",
+                    "reply=\"",
+                    "SHOWCASE product answer coherent=true bytes_nonzero=true non_echo=true provenance=/neofs/model-qwen2.5-0.5b.neom",
+                    "SHOWCASE inference complete forward=real",
+                    "SHOWCASE answer composited surface=arthur forward=real serial=0x4152544855520001",
+                    "SHOWCASE product arthur pass typed_question_to_composited_answer=complete",
+                    "stage=arthur received_prompt=hello_world byte_equal=true coherent_reply=validated provenance=neofs_model_path",
+                    "product_integration=ok product_feature=compiled rung1=framebuffer_runtime_read rung2=dw1_runtime_assertions rung3=received_prompt_exact_and_coherent_reply_with_provenance rung4=eth0_no_device_runtime_latch rung5=same_boot_fsync_readback",
+                ],
+                "product boot 1 must execute fail-capable runtime assertions for all five rungs",
+            )?;
+        }
+        require_serial_contains(
+            scenario,
+            observed,
+            "product_integration=ok product_feature=compiled",
+            "the terminal product assertion must be earned by the runtime latches and userland exit code",
+        )?;
+    }
+    // DECISION 2026-08-01 §1: `accel_intel_blur_silicon` is no longer a blur
+    // run. Its acceptance is the I-14(c) containment REFUSAL, and per the
+    // ruling the PASS must be readable off the serial log rather than inferred
+    // from an exit code — so the refusal breadcrumb is asserted here. Both
+    // lines carry hardware evidence: the PCI COMMAND register read back from
+    // the device with BUS MASTER clear, and the CPU compute floor still present
+    // (degrade, never fail the boot).
+    if scenario.name == "accel_intel_blur_silicon" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "accel-intel: ContainmentNotArmed",
+            "the refusal must name itself on the serial log — a future bring-up reads WHY there is no GPU in one line",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "bus_master=clear",
+            "the refusal must prove BUS MASTER is clear in the device's own PCI COMMAND register, not merely that a code path was taken",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "cpu_floor=present",
+            "no VT-d must degrade to no-GPU-acceleration, never to no-boot (DECISION condition 1)",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "accel_intel_blur_silicon=ok acceptance=i14c_containment_refusal",
+            "the scenario's acceptance sentence is the containment refusal, not the old narrowing-OFF blur",
+        )?;
+    }
+    if scenario.name == "dw1_desktop_wm" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DW1 scanout gate=armed backend=software authority=gpu-submit wm=neo-init",
+                "DW1 wm boot root=home-spine policy=userland kernel_delta=zero",
+                "DW1 root created role=WORKFIELD_ROOT home=spine",
+                "DW1 clients created role_text=2 direct_present=eperm,eperm",
+                "DW1 scene composed root_plus_two_text ordered=wm_buffer",
+                "DW1 focus switch=A delivered=1 unfocused_b=0 wm_event_bytes=0",
+                "DW1 focus switch=B delivered=1 unfocused_a=0 focus_atomicity=count_conserved injected=2 delivered=2 lost=0 duplicated=0",
+                "DW1 inv_wm_1 no_peer_verbs=name_enumerate_restack_sample_absent",
+                "DW1 pass desktop=two_text_surfaces full_scene_focus_isolated",
+                "DW1 pixel_oracle spine=ok root_bg=ok a_event=ok b_top_overlap=ok background=ok",
+                "dw1_desktop_wm=ok root=home_spine role_text_surfaces=2 full_scene_composition=wm_owned_buffer focus_isolation=ok direct_present=eperm,eperm inv_wm_1=no_peer_verbs fuzz=WrongOwner_CapRequired stacking_byte_oracle=ok focus_atomicity=count_conserved",
+            ],
+            "DW-1 must prove root+two text clients, WM-owned full-scene composition, focus isolation, direct-present refusal, INV-WM-1, stacking bytes, and focus atomicity",
+        )?;
+    }
+    if scenario.name == "dw2_scene_policy" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DW2 scanout gate=armed backend=software authority=gpu-submit wm=neo-init",
+                "DW2 wm boot root=home-spine policy=userland kernel_delta=zero",
+                "DW2 root created role=WORKFIELD_ROOT home=spine",
+                "DW2 clients created role_text=2 direct_present=eperm,eperm",
+                "DW2 scene composed root_plus_two_text ordered=wm_buffer full_scene_redraw=1",
+                "DW2 focus_history next=B_to_A previous=A_to_B successor_policy=armed focus_atomicity=count_conserved injected=4 delivered=4 lost=0 duplicated=0",
+                "DW2 hold minimized=B spine_chip=visible successor_focus=A whole_scene_redraw=ok",
+                "DW2 restore surface=B buffer_byte_identical=true restored_from_spine_chip=true whole_scene_redraw=ok",
+                "DW2 configure op=OP_CONFIGURE size_only=width_height serial=1 no_position_fields=true bounded=ok wm_laid_out=true channel_bound=SurfaceCap",
+                "DW2 inv_wm_1 extended verbs=configure_destroy no_peer_name_enumerate_restack_sample fuzz=WrongOwner_CapRequired",
+                "DW2 scene_byte_oracle stages=initial,focus_a,focus_b,hold,restore,configure,dismiss_b,spawn_c,dismiss_c result=ok",
+                "DW2 policy_channel_binding verbs=OP_CONFIGURE,hold,restore,dismiss result=SurfaceCap_bound",
+                "DW2 dismiss destroyed_surface=true cap_released=true count_conservation=3-2-3-2 successor_focus=A channel_bound=SurfaceCap",
+                "DW2 pass scene_policy=focus_history_hold_restore_dismiss_configure channel_bound=new_verbs scene_byte_oracle=per_policy_op whole_scene_redraw=wm_owned_buffer dw2_off=dw1_bit_for_bit zero_kernel_delta=no_new_syscalls",
+                "DW2 pixel_oracle spine=ok root_bg=ok a_successor=ok dismissed_b_gone=ok dismissed_c_gone=ok whole_scene_redraw=ok",
+                "dw2_scene_policy=ok focus_history=next_previous successor_on_hide_close hold_restore=byte_identical dismiss=count_conserved configure=size_only_no_position channel_bound=new_verbs scene_byte_oracle=per_policy_op whole_scene_redraw=wm_owned_buffer inv_wm_1=new_verbs_fuzzed dw2_off=dw1_bit_for_bit zero_kernel_delta=no_new_syscalls",
+            ],
+            "DW-2 must prove focus history, hold/byte-identical restore, dismissal with cap release and count conservation, size-only configure, INV-WM-1 for the new verb, per-policy-operation scene byte oracles, whole-scene redraw, and the DW-2-off kill switch",
+        )?;
+    }
+    if scenario.name == "arthur_real_brain_boot"
+        || scenario.name == "arthur_real_brain_boot_ot16_walker"
+    {
+        // This scenario runs in two modes: the hermetic CI fixture (an embedding
+        // model, env-blank — what the 4-shard QEMU gate runs) and the local
+        // real-brain proof (a real autoregressive LM, NEO_STAGE_B_{GGUF,NEOM}
+        // set). The breadcrumb chain below is common to both; the route + reply
+        // assertions branch by mode so each path self-validates.
+        let real_brain = std::env::var(STAGE_B_GGUF_ENV)
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty())
+            || std::env::var(STAGE_B_NEOM_ENV)
+                .ok()
+                .is_some_and(|v| !v.trim().is_empty());
+        for needle in [
+            "neofs_mount ok",
+            "model_open path=/neofs/model-qwen2.5-0.5b.neom",
+            "model_open path=/neofs/model-qwen2.5-0.5b.neom size=",
+            "model_load_resident bytes=",
+            "vocab_load tokens=151936",
+            "prompt_tokenize n=",
+            "forward token=0 ms=",
+            "decode done tokens=",
+            "reply=\"",
+            "arthur_real_brain_boot=ok",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Arthur real-brain scenario must emit the Stage-B breadcrumb chain",
+            )?;
+        }
+        if real_brain {
+            // OT-37: a real autoregressive LM MUST take the kernel sys_generate
+            // inventory path, not the fixture single-forward smoke path.
+            require_serial_contains(
+                scenario,
+                observed,
+                "model_kind=inventory(real-lm)",
+                "real-brain mode must route through the inventory LM path",
+            )?;
+            // Zenbook acceptance: the real 0.5B ends on `<|im_end|>`, and the
+            // reply rendered it. The reply line must carry no control token.
+            let serial = fs::read_to_string(&observed.serial_log)
+                .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+            if let Some(line) = serial
+                .lines()
+                .find(|l| l.contains("reply=\"") && l.contains("<|"))
+            {
+                return Err(format!(
+                    "`{}` reply rendered a control token: {line}; serial={}",
+                    scenario.name,
+                    observed.serial_log.display()
+                ));
+            }
+        } else {
+            // OT-37 ISC-4: the hermetic fixture is an embedding model (graph), so
+            // it must take the single-forward smoke path, not the kernel
+            // sys_generate LM path, and that path must emit a NON-EOS reply token.
+            // Qwen's EOS (<|im_end|>) is id 151645; the fixture deterministically
+            // emits id 3 (TOKEN_REPLY). Asserting the exact non-EOS id makes a
+            // regression to the old hardcoded-EOS behavior fail CI red instead of
+            // passing through silently.
+            for needle in ["model_kind=graph(fixture)", "fixture_reply_id=1 [3]"] {
+                require_serial_contains(
+                    scenario,
+                    observed,
+                    needle,
+                    "fixture mode must take the graph smoke path with a non-EOS reply",
+                )?;
+            }
+        }
+    }
+    if scenario.name.starts_with("arthur_boot_module_") {
+        check_arthur_boot_module_serial(scenario, observed)?;
+    }
+    if scenario.name.starts_with("arthur_model_from_neofs") {
+        check_arthur_model_from_neofs_serial(scenario, observed)?;
+    }
+    if scenario.name == INSTALL_CLAIM_NVME_EVENTS_SCENARIO {
+        for needle in [
+            "[ kernel ] nvme: namespace-attribute notices armed",
+            "-> nvme_namespace_attribute_changed",
+            "nvme: async event log=0x04",
+            "nvme_events leg=notice refused=MediaChangedBefore",
+            "result=Some(StaleToken)",
+            "nvme_events leg=reclaim stale_token=refused write=ok",
+            "media changed reason=nvme_csts_not_ready",
+            "nvme_events leg=reset refused=DeviceDead",
+            "nvme_events leg=reenabled io_queue=gone",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the NVMe claim must see the notice and the reset (Muse R4.1 item 4)",
+            )?;
+        }
+    }
+    if scenario.name == "install_claim_identity" {
+        // OT-87 R4.4 (Muse, R4.3 note 1(a)): a plain write to the claimed
+        // disk is refused by the claim, before the guard's arming.
+        require_serial_contains(
+            scenario,
+            observed,
+            "- an install claim holds it",
+            "a plain write must be refused while an install claim holds the device",
+        )?;
+    }
+    if scenario.name == "boot_module_reclaim" {
+        // B1c (F4): the probe's guaranteed order (1,535-1,536 pages -> 9).
+        require_serial_contains(
+            scenario,
+            observed,
+            "BOOTMOD admitted guaranteed_order=9",
+            "the admitted zone must supply the order its span guarantees",
+        )?;
+    }
+    if scenario.name == "inference_stack_overflow" {
+        for needle in [
+            "[ kernel ] inference stack: 256 KiB at",
+            "inference_stack control depth=",
+            "canary=intact",
+            "inference_stack canary_control=detected",
+            "inference_stack overflow armed frames=100",
+            "[ trap  ] inference stack overflow guard=Low",
+            "trap=double_fault guard=low",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "an inference-stack overflow must reach #DF on the low guard, named, after both controls",
+            )?;
+        }
+    }
+    if scenario.name == "inference_stack_shootdown" {
+        for needle in [
+            "inference_shootdown owner_cpu=0 owner_if_inside=true sent=16",
+            " timeouts=0 ",
+            "if_restored_off=true ready_after=true canary=true",
+            "inference_stack_shootdown=ok ack=all timeouts=0 timer=live preempted=yes if_restored=yes",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the inference-stack owner must ACK a concurrent shootdown, keep the BSP timer, and be preemptible",
+            )?;
+        }
+    }
+    if scenario.name == "inference_stack_kill" {
+        for needle in [
+            "inference_kill setup holder_pid=",
+            "inference_kill waiter terminate=0 boundary_exit=true cancelled=1 forward_ran=false holder_still=true",
+            "inference_kill holder terminate=0 boundary_exit=true left_park_on_cancel=true busy_after=false owner_after=None",
+            "inference_kill baselines arcs=1/1 heap_delta=",
+            "inference_kill race terminate=0 holder_returned=true cancelled_after_win=1 forwards=1 waiter_boundary_exit=true",
+            " frames_delta=0 served=42 returned=1",
+            "inference_stack_kill=ok waiter=cancelled_and_exited holder=cancelled_and_exited release_race=cancelled_after_win resources=recovered stack=serving",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "a killed inference waiter and holder must cancel, exit at the boundary, and give back every resource",
+            )?;
+        }
+    }
+    // Zenbook ask-freeze: the preload keeps CPU 0 ticking; the old IF=0 load
+    // freezes it (each can fail: the needles name the measured state).
+    if scenario.name == "boot_model_load_ticks" {
+        for needle in [
+            "BOOTMODEL preload path=/models/kv-persist-kat.neom ok=true",
+            "boot_model_ticks preload ok=true shared_second_handle=true",
+            "if_on=true cpu0_ticks_during_load=2",
+            "boot_model_load_ticks=ok cpu0=ticking corunner=ran if=on handle=shared",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the boot preload must keep CPU 0 ticking and share one model",
+            )?;
+        }
+    }
+    // A9 freeze class: the needles name the measured state, so either can
+    // fail.
+    if scenario.name == "generate_corunner_liveness" {
+        for needle in [
+            "gen_corunner cpus=4 ",
+            "generate_corunner_liveness=ok cpus=4 ",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "every CPU's co-runner must keep running through a lever-2 generation",
+            )?;
+        }
+    }
+    if scenario.name == "generate_corunner_liveness_control" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "generate_corunner_liveness_control=starvation_shown",
+            "an IF=0 generation must starve CPU 0's co-runner (the check can fail)",
+        )?;
+    }
+    if scenario.name == "boot_model_load_ticks_control" {
+        for needle in [
+            "if_on=false cpu0_ticks_during_load=0 corunner_runs=0",
+            "boot_model_load_ticks_control=freeze_shown cpu0_ticks=0 corunner=0 if=off",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the old in-syscall load must freeze CPU 0 (the control can fail)",
+            )?;
+        }
+    }
+    if scenario.name == "boot_model_load_stack" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "boot_model_load_stack blake3 bytes=485489152 depth=",
+            "the stack depth at the real model's size must be measured",
+        )?;
+    }
+    if scenario.name == "inference_stack_kill_control" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "inference_stack_kill_control=leak_shown waiter_zombified=yes model_arc_leaked=yes",
+            "the pre-J3 kill rule must leak the zombified waiter's model Arc (the control can fail)",
+        )?;
+    }
+    if scenario.name == "inference_stack_shootdown_control" {
+        for needle in [
+            "tlb_shootdown_timeout sender_cpu=1",
+            "expected_panic=tlb_shootdown_timeout owner_cpu=0 owner_if=0",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the pre-fix IF=0 owner must make the shootdown time out (the control can fail)",
+            )?;
+        }
+    }
+    if scenario.name == "real_lm_generate_guard" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "real_lm_guard tokens=[11, 0, 3, 4, 10, 3] python_oracle=[11, 0, 3, 4, 10, 3] max_new=48",
+            "A9-B: the guarded core must match the independent Python oracle, cut by the loop stop",
+        )?;
+    }
+    if scenario.name == "real_lm_generate_boot" {
+        for needle in [
+            "BOOTMODEL take path=/models/kv-persist-kat.neom bytes=382464",
+            "match=true",
+            "BOOTMOD reclaim path=/models/kv-persist-kat.neom",
+            "BOOTMODEL loaded path=/models/kv-persist-kat.neom",
+            "BOOTMODEL refused path=/models/unpinned.neom reason=unpinned",
+            "BOOTMODEL absent path=/models/kv-persist-kat.neom",
+            "real_lm tokens=[11, 0, 3, 3, 3, 3, 3, 3] python_oracle=[11, 0, 3, 3, 3, 3, 3, 3]",
+            "real_lm control_tokens=[4, 11, 3, 3, 3, 3, 3, 3]",
+            "real_lm graph_route=Some(-22)",
+            "real_lm bounds over_new=Some(-22) over_prompt=Some(-22) zero_new=Some(-22) constrained_refused=true masked_refused=true alloc_calls=0",
+            "real_lm handles missing=Some(-9) not_a_model=Some(-9) no_semantic_use=Some(-1) no_meta_use=Some(-1) full=None",
+            "real_lm abi case=infer_over_cap ret=-22 allocs=0 ok=true",
+            "real_lm abi case=masked_bad_mask_null_out ret=-22 allocs=0 ok=true",
+            "real_lm abi case=constrained_over_prompt_bad_desc ret=-22 allocs=0 ok=true",
+            "real_lm abi case=infer_inventory_marked ret=1 allocs=0 ok=true",
+            "real_lm abi case=infer_graph_marked ret=0 allocs=0 ok=true",
+            "real_lm abi cases=16 refusals=14 zero_alloc=yes admitted_alloc=yes marker=inventory_only",
+            "real_lm max_order=16",
+            "in_primary=true used_delta=65536",
+            "CENSUS label=real_lm_end",
+            "CENSUS label=real_lm_end inference_stack_size=262144 inference_stack_high_water=",
+            "real_lm_generate_boot=ok",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "B1c product real-LM scenario must load, generate, bound and refuse",
+            )?;
+        }
+    }
+    if scenario.name == "arthur_real_brain_boot_15b" {
+        for needle in [
+            "neofs_mount ok",
+            "model_load start path=/neofs/model-qwen2.5-1.5b.neom",
+            "vocab_load tokens=151936",
+            "model_open path=/neofs/model-qwen2.5-1.5b.neom",
+            "model_open path=/neofs/model-qwen2.5-1.5b.neom size=1111411200",
+            "config layer_count=28 head_dim=128 rope_theta=1000000 hidden=1536 intermediate=8960 q_heads=12 kv_heads=2 vocab=151936 context=4096",
+            "model_load_resident bytes=1111411200",
+            "heap_cap=",
+            "neofs_model_read_indirect file_size=",
+            "direct=8 single=512 double=262144 triple=",
+            "pre_forward ready",
+            "arthur_real_brain_boot_15b=ok",
+            "init_continues=true",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Arthur 1.5B boot smoke must reach the pre-forward load ladder",
+            )?;
+        }
+        require_serial_absent(
+            scenario,
+            observed,
+            "forward token=0 ms=",
+            "Arthur 1.5B QEMU smoke must stop before the TCG-hostile forward",
+        )?;
+    }
+    if scenario.name == "arthur_real_brain_boot_3b" {
+        for needle in [
+            "neofs_mount ok",
+            "model_load start path=/neofs/model-qwen2.5-3b.neom",
+            "vocab_load tokens=151936",
+            "model_open path=/neofs/model-qwen2.5-3b.neom",
+            "model_open path=/neofs/model-qwen2.5-3b.neom size=2099030016",
+            "config layer_count=36 head_dim=128 rope_theta=1000000 hidden=2048 intermediate=11008 q_heads=16 kv_heads=2 vocab=151936 context=4096",
+            "model_load_resident bytes=2099030016",
+            "heap_cap=",
+            "neofs_model_read_indirect file_size=",
+            "direct=8 single=512 double=262144 triple=",
+            "pre_forward ready",
+            "arthur_real_brain_boot_3b=ok",
+            "init_continues=true",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Arthur 3B boot smoke must reach the pre-forward load ladder",
+            )?;
+        }
+        require_serial_absent(
+            scenario,
+            observed,
+            "forward token=0 ms=",
+            "Arthur 3B QEMU smoke must stop before the TCG-hostile forward",
+        )?;
+    }
+    if scenario.name == "arthur_real_brain_boot_qwen35" {
+        for needle in [
+            "neofs_mount ok",
+            "model_load start path=/neofs/model-qwen3.5-0.8b.neom",
+            "vocab_load tokens=248320",
+            "model_open path=/neofs/model-qwen3.5-0.8b.neom size=725171456",
+            "config layer_count=24 head_dim=256",
+            "q_heads=8 kv_heads=2 vocab=248320",
+            "model_load_resident bytes=725171456",
+            "heap_cap=1073741824",
+            "qwen35_runtime_oracle=ok walker=executed attention_layers=6 gdn_layers=18",
+            "cross_token_state_carried=true",
+            "qwen35_token_oracle=ok prompt=Hello tokens=32",
+            qwen35_llama_cpp_golden::LLAMA_CPP_QWEN35_HELLO_GENERATED_IDS_LINE,
+            "arthur_real_brain_boot_qwen35=ok",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Qwen3.5 boot must execute the walker/GDN recurrence and match the 32-token oracle",
+            )?;
+        }
+    }
+    if scenario.name == "arthur_act" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch testfs hello",
+            "Arthur action scenario must include the granted read result",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: write_file",
+            "Arthur action scenario must include the ungranted write denial",
+        )?;
+    }
+    if scenario.name == "arthur_agentic_actions" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_mode=graph-fixture",
+            "Arthur agentic A1 scenario must use the hermetic model-logit oracle in CI",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_candidates=",
+            "Arthur agentic A1 scenario must enumerate multiple grammar candidates",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "masked_sample step=",
+            "Arthur agentic A1 scenario must run the masked model sampler",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=ReadFile(\"/hello.txt\")",
+            "Arthur agentic A1 scenario must show model logits selected the hello AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=ReadFile(\"/missing.txt\")",
+            "Arthur agentic A1 scenario must show model logits selected the missing AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"write_file\",\"arguments\":{\"path\":\"/scratch\",\"content\":\"NeoPlutarch scratch A2ok\"}}</tool_call>",
+            "Arthur agentic A2 scenario must show model logits selected the mutating write AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"confirm\"}</tool_call>",
+            "Arthur agentic A2 scenario must show explicit confirm as a grammar branch",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"write_file\",\"arguments\":{\"path\":\"/forbidden\",\"content\":\"NeoPlutarch scratch A2ok\"}}</tool_call>",
+            "Arthur agentic A2 scenario must show model-selected ungranted mutating AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"undo\"}</tool_call>",
+            "Arthur agentic A2 scenario must show undo as a grammar branch",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch testfs hello",
+            "Arthur agentic A1 scenario must include the granted read result",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: list_dir: bytes=",
+            "Arthur agentic A1 scenario must include the granted list result",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=status",
+            "Arthur agentic A1 scenario must show model logits selected the status AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: status: ready",
+            "Arthur agentic A1 scenario must render a plain-language status result",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=cd(\"/\")",
+            "Arthur agentic A1 scenario must show model logits selected the cd AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: cd: /",
+            "Arthur agentic A1 scenario must cap-check and render the cd result",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=clarify(\"Which path should I inspect, sir?\")",
+            "Arthur agentic A1 scenario must show clarify as the grammar recovery branch",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: clarify: Which path should I inspect, sir?",
+            "Arthur agentic A1 scenario must render clarify in the butler register",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: read_file requires file /missing.txt rights=0x1",
+            "Arthur agentic A1 scenario must include the ungranted read denial",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: confirm required: write_file /scratch bytes=24 reversible=snapshot-before-write",
+            "Arthur agentic A2 scenario must hold a mutating AST pending before confirmation",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: write_file: bytes=24 undo=snapshot path=/scratch",
+            "Arthur agentic A2 scenario must execute the granted mutating action after confirmation",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch scratch A2ok",
+            "Arthur agentic A2 scenario must show the confirmed write changed the file",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: write_file requires file /forbidden rights=0x2",
+            "Arthur agentic A2 scenario must surface ungranted mutating actions through the cap-check",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: undo: write_file restored bytes=24 path=/scratch",
+            "Arthur agentic A2 scenario must restore the snapshot through undo",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch scratch base",
+            "Arthur agentic A2 scenario must prove the undo recovered the pre-write content",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"trash_file\",\"arguments\":{\"path\":\"/scratch\"}}</tool_call>",
+            "Arthur agentic A3 scenario must show model-selected trash AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"confirm_typed\",\"arguments\":{\"phrase\":\"confirm trash /scratch\"}}</tool_call>",
+            "Arthur agentic A3 scenario must show typed confirmation as a grammar branch",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: dry-run required: tier=T",
+            "Arthur agentic A3 scenario must dry-run recoverable destructive actions",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: typed-confirm: wrong phrase no-op",
+            "Arthur agentic A3 scenario must reject wrong typed confirmations without executing",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: trash_file: moved_to_trash path=/scratch undo=A2-snapshot",
+            "Arthur agentic A3 scenario must convert delete/trash into A2-recoverable trash",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch trashes A3ok",
+            "Arthur agentic A3 scenario must show the recoverable trash mutation before undo",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: move_file: moved_to_trash path=/scratch destination=/trash/scratch undo=A2-snapshot",
+            "Arthur agentic A3 scenario must convert move-equivalent destruction into A2 recovery",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: typed-confirm: stale-preview no-op",
+            "Arthur agentic A3 scenario must reject stale typed confirmations",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: kill_process: confirmed handle=4242",
+            "Arthur agentic A3 scenario must execute a typed-confirmed kill through the grant gate",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: kill_process requires process 4243 rights=0x1 rechecked-after-confirm",
+            "Arthur agentic A3 scenario must re-deny revoked or missing grants after confirmation",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: confirm: typed confirmation required no-op",
+            "Arthur agentic A3 scenario must not treat untyped confirm as external-send authority",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: external_send: bytes=16 policy=per-send typed-confirm",
+            "Arthur agentic A3 scenario must require per-send typed confirmation for external sends",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: spawn_process requires inherit handle 99 rechecked-after-confirm",
+            "Arthur agentic A3 scenario must deny ungranted inherited handles",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: load_model: handle=9009",
+            "Arthur agentic A3 scenario must route model grants through the A3 typed-confirm path",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: refused: A3 refuses broad protected or supervising-session actions",
+            "Arthur agentic A3 scenario must refuse protected or unpreviewable actions",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: ipc_freq tier=A1 action=read_file syscalls=",
+            "Arthur IPC-frequency measurement must report an A1 action",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: ipc_freq tier=A2 action=write_file syscalls=",
+            "Arthur IPC-frequency measurement must report an A2 action",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: ipc_freq tier=A3 action=trash_file syscalls=",
+            "Arthur IPC-frequency measurement must report an A3 action",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            " cap_checks=",
+            "Arthur IPC-frequency measurement must read the cap-check counter",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            " exec_round_trips=",
+            "Arthur IPC-frequency measurement must read the execute round-trip counter",
+        )?;
+        // === Yolo-within-guardrails posture (the ISC-5 matrix on live QEMU) ===
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: yolo",
+            "the boot default posture must be yolo (queried before any /posture set)",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: write_file: bytes=24 undo=snapshot path=/scratch posture=yolo",
+            "yolo must execute a granted reversible write with no confirmation, undo armed",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: write_file requires file /forbidden rights=0x2 posture=yolo",
+            "yolo missing-cap must be DENIED by the unchanged cap-check with confirmation skipped (Article 29.3)",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: trash_file: moved_to_trash path=/scratch undo=A2-snapshot posture=yolo",
+            "yolo must execute a granted trash-recoverable action with no dry-run, undo armed",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "phrase=confirm kill 4242 posture=yolo",
+            "yolo must still gate irreversible-LOCAL actions behind the dry-run + typed confirm",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "phrase=confirm send api.example.com:443 posture=yolo",
+            "yolo must still gate irreversible-EXTERNAL sends behind the per-send typed confirm",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: set cautious",
+            "the posture selector must switch to cautious (the pre-yolo A3 transcript follows)",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: set off",
+            "the posture selector must switch to off",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: off - agentic actions disabled (/posture yolo to enable)",
+            "posture off must leave the agentic layer inert (no decode, no execution)",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: set yolo",
+            "the posture selector must recover from off back to yolo",
+        )?;
+    }
+    if scenario.name == "arthur_reversibility" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_mode=graph-fixture",
+            "Arthur reversibility scenario must use the hermetic model-logit oracle in CI",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: yolo",
+            "Arthur reversibility scenario must start in the yolo posture",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: write_file: bytes=24 undo=prewrite.bin path=/scratch posture=yolo",
+            "Arthur reversibility scenario must arm the encrypted prewrite artifact",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch scratch A2ok",
+            "Arthur reversibility scenario must show the reversible write changed the file",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: undo: write_file restored bytes=24 path=/scratch",
+            "Arthur reversibility scenario must restore from the undo artifact",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch scratch base",
+            "Arthur reversibility scenario must show the original preimage after undo",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: write_file requires file /forbidden rights=0x2 posture=yolo",
+            "Arthur reversibility scenario must deny ungranted A2 mutation through the cap-check",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"write_file\",\"arguments\":{\"path\":\"/neofs/danger.key\",\"content\":\"NeoPlutarch scratch A2ok\"}}</tool_call>",
+            "Arthur reversibility scenario must model-select the key-file confirm path",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: confirm required: write_file /neofs/danger.key reason=key-file-not-backed-up posture=yolo",
+            "Arthur reversibility scenario must not back up .key files or silently proceed",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: write_file: bytes=24 undo=unavailable confirmed=destructive path=/neofs/danger.key",
+            "Arthur reversibility scenario must execute the irreversible key-file write only after confirm",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: set off",
+            "Arthur reversibility scenario must expose the A2 runtime kill-switch",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: off - agentic actions disabled (/posture yolo to enable)",
+            "Arthur reversibility scenario must leave A2 inert when the runtime kill-switch is off",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "agentic_model_ast=<tool_call>{\"name\":\"trash_file\"",
+            "Arthur reversibility scenario must remain A2-only and not unlock A3 trash actions",
+        )?;
+    }
+    if scenario.name == "arthur_multistep_agentic" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_mode=graph-fixture",
+            "Arthur A3 multi-step scenario must use the hermetic model-logit oracle in CI",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast_kind=read_file",
+            "Arthur A3 multi-step scenario must emit read ASTs in the chain",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast_kind=write_file",
+            "Arthur A3 multi-step scenario must emit the mutating write AST",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast_kind=confirm",
+            "Arthur A3 multi-step scenario must emit explicit confirmation as its own turn",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "agentic_model_ast_kind=done",
+            "Arthur A3 multi-step scenario must emit the done AST that closes the chain",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: multi-step paused step=2 reason=stakes-policy ledger=1:read_file undo=no,2:write_file pending-confirm chain_undo=session per_step_confirm=ok",
+            "Arthur A3 multi-step scenario must pause at the destructive step instead of batch-approving it",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: multi-step done steps=3 budget=4 ledger=1:read_file undo=no,2:write_file undo=session,3:read_file undo=no chain_undo=session cap_check=per_step multi_step=ok",
+            "Arthur A3 multi-step scenario must resume after confirmation and complete an ordered three-step chain",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: undo: write_file restored bytes=24 path=/scratch",
+            "Arthur A3 multi-step scenario must leave the whole chain undoable through the OT-19 session window",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch scratch base",
+            "Arthur A3 multi-step scenario must prove undo restored the pre-write scratch content",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: multi-step stopped reason=budget steps=4 budget=4 ledger=1:read_file undo=no,2:read_file undo=no,3:read_file undo=no,4:read_file undo=no",
+            "Arthur A3 multi-step scenario must stop runaway chains at the step budget with an honest ledger",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: posture: off - agentic actions disabled (/posture yolo to enable)",
+            "Arthur A3 multi-step scenario must keep the runtime kill-switch inert",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur_multistep_agentic=ok ordered_steps=ok per_step_confirm=ok stakes_policy=ok step_budget=ok partial_ledger=ok chain_undo=session kill_switch=ok init_continues=true",
+            "Arthur A3 multi-step scenario must report its kernel pass marker",
+        )?;
+    }
+    if scenario.name == "arthur_grants_persist" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] grant_derive resource=.arthur/",
+            "Arthur grants scenario must derive the D7 default cap",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] grant_derive resource=/hello.txt",
+            "Arthur grants scenario must derive the durable read cap",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: read_file: NeoPlutarch testfs hello",
+            "Arthur grants scenario must read through the delegated cap",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: write_file",
+            "Arthur grants scenario must deny write at the grant mirror",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: grant_probe: write errno=-13",
+            "Arthur grants scenario must prove the read-only kernel cap denies writes",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: Denied: read_file",
+            "Arthur grants scenario must deny a never-granted path",
+        )?;
+    }
+    if scenario.name == "neo_shell_builtins" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "commands: help ls cat pwd cd echo status arthur spawn exit",
+            "neo-shell builtins scenario must print help text",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ kernel ] sysstat: buffer-validation truth table PASS",
+            "neo-shell builtins scenario must validate sys_sysstat buffers",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "processes: ",
+            "neo-shell builtins scenario must print status process count",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "memory: ",
+            "neo-shell builtins scenario must print status memory aggregate",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "cores: 4 online",
+            "neo-shell builtins scenario must print NEO_SMP=4 cores",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "uptime: ",
+            "neo-shell builtins scenario must print status uptime",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "Hello from NeoFS v1 BUILD-2 2A mkfs.",
+            "neo-shell builtins scenario must cat a known NeoFS file",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "hello.txt",
+            "neo-shell builtins scenario must list a known NeoFS entry",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] cat: /neofs/missing.txt: not found",
+            "neo-shell builtins scenario must report missing files cleanly",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: echo: hello arthur",
+            "neo-shell builtins scenario must preserve the Arthur builtin",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] arthur exit=0",
+            "neo-shell builtins scenario must return from Arthur to the shell",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-init ] neo-shell builtins exited; init continues",
+            "neo-shell builtins scenario must return control to init",
+        )?;
+    }
+    if scenario.name == "kernel_observability" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ kernel ] observe: buffer-validation truth table PASS",
+            "kernel observability scenario must validate SYS_OBSERVE buffers",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-init ] observe: sys_observe ok version=3 sched=advanced memory=pressure trace=syscall read_only=governance",
+            "kernel observability scenario must read stats from userspace",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ kernel ] observe: trace seq=",
+            "kernel observability scenario must drain the trace ring to serial",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "kernel_observability=ok sys_observe=read_only abi_v3=ok sched=advanced memory=pressure",
+            "kernel observability scenario must report the read-only proof",
+        )?;
+    }
+    if scenario.name == "kernel_observability_disabled" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-init ] observe: sys_observe disabled errno=ENOSYS read_surface=off",
+            "kernel observability disabled scenario must reject SYS_OBSERVE",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "kernel_observability_disabled=ok sys_observe=ENOSYS feature_off=true",
+            "kernel observability disabled scenario must prove the kill switch",
+        )?;
+    }
+    if scenario.name == "phase4_https_fetch" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdialcap no_cap=denied in_scope=ok out_of_scope=denied post_revoke=denied legacy_connect_tcp=denied legacy_sendto=denied legacy_egress=closed",
+            "cap-routed HTTPS must prove NetDialCap authority and close every legacy egress root",
+        )?;
+    }
+    if scenario.name == "net_dial_cap_kill_switch" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdialcap kill_switch=off ambient_dial=ok equality=pre_feature",
+            "NetDialCap kill-switch must preserve the pre-feature ambient dial path",
+        )?;
+    }
+    if scenario.name == "arthur_console" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: model: hello",
+            "Arthur console scenario must use the deterministic model reply",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] arthur exit=0",
+            "Arthur console scenario must return from the spawned Arthur process",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-init ] arthur console shell exited; init continues",
+            "Arthur console scenario must return control to init",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "Good afternoon. I'm Arthur",
+            "V1 greeting must be feature-off in the legacy Arthur console scenario",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "arthur: thinking... forward pass running",
+            "V1 liveness indicator must be feature-off in the legacy Arthur console scenario",
+        )?;
+        require_framebuffer_capture(scenario, ARTHUR_CONSOLE_CAPTURE_REL)?;
+    }
+    if scenario.name == "v1_console_liveness" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "Good afternoon. I'm Arthur",
+                "Tell me what you'd like, in your own words",
+                "arthur> ",
+                "arthur: thinking... forward pass running",
+                "arthur: thinking... forward pass complete tokens=1",
+                "arthur: model: hello",
+                "[ neo-shell ] arthur exit=0",
+                "neo> ",
+                "[ neo-shell ] exit",
+                "[ neo-init ] v1 console liveness shell exited; init continues",
+            ],
+            "V1 console transcript must prove boot-to-greeting, liveness around generation, reply, and neo> bypass in order",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "Good afternoon. I'm Arthur",
+            "V1 console must show the butler first-boot greeting",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "Tell me what you'd like, in your own words",
+            "V1 console greeting must tell a first-timer what to do",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "help\" shows you the way",
+            "V1 console greeting must expose the deterministic shell path",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: thinking... forward pass running",
+            "V1 console must show liveness before the real forward call",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: thinking... forward pass complete tokens=1",
+            "V1 console must tie liveness completion to generated tokens",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur: model: hello",
+            "V1 console scenario must include the model reply in the transcript",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] arthur exit=0",
+            "V1 console must return from Arthur to the shell",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] exit",
+            "V1 console must leave the deterministic neo> shell usable after Arthur exits",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-init ] v1 console liveness shell exited; init continues",
+            "V1 console scenario must return control to init",
+        )?;
+        require_framebuffer_capture(scenario, V1_CONSOLE_LIVENESS_CAPTURE_REL)?;
+    }
+    if scenario.name == "input_path_console" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ neo-shell ] exit",
+            "input path scenario must exit the shell through fd=0",
+        )?;
+        require_framebuffer_capture(scenario, INPUT_PATH_CONSOLE_CAPTURE_REL)?;
+    }
+    Ok(())
+}
+
+fn require_observed_semihost_pass(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    if !observed.exit_status.success() {
+        return Err(format!(
+            "`{}` did not exit via semihosting success; status={} serial={}",
+            scenario.name,
+            observed.exit_status,
+            observed.serial_log.display()
+        ));
+    }
+    require_observed_terminal_pass(scenario, observed)
+}
+
+fn require_observed_terminal_pass(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    if !observed.saw_begin {
+        return Err(format!(
+            "`{}` produced no BEGIN frame; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
+    }
+    if observed.terminal_count != 1 {
+        return Err(format!(
+            "`{}` produced {} terminal frames, expected exactly 1; serial={}",
+            scenario.name,
+            observed.terminal_count,
+            observed.serial_log.display()
+        ));
+    }
+    match observed.terminal_event.as_deref() {
+        Some("PASS") => {
+            eprintln!("[xtask] neo-test: `{}` PASS", scenario.name);
+            Ok(())
+        }
+        Some("FAIL") => Err(format!(
+            "`{}` emitted FAIL; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        )),
+        Some(other) => Err(format!(
+            "`{}` emitted unexpected terminal event `{other}`; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        )),
+        None => Err(format!(
+            "`{}` produced no terminal PASS/FAIL frame; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        )),
+    }
+}
+
+fn require_serial_contains(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+    needle: &str,
+    detail: &str,
+) -> Result<(), String> {
+    let serial = fs::read_to_string(&observed.serial_log)
+        .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+    if serial.contains(needle) {
+        Ok(())
+    } else {
+        Err(format!(
+            "`{}` serial did not contain `{needle}` ({detail}); serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ))
+    }
+}
+
+fn require_serial_absent(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+    needle: &str,
+    detail: &str,
+) -> Result<(), String> {
+    let serial = fs::read_to_string(&observed.serial_log)
+        .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+    if serial.contains(needle) {
+        Err(format!(
+            "`{}` serial unexpectedly contained `{needle}` ({detail}); serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// OT-22: the WM's idle-window line. Parked: the BSP idled at least 70% of
+/// a gap of at least 200 ticks. Spinning (the control): at most 5%, which is
+/// what proves the witness measures parking rather than accounting noise.
+fn require_desktop_idle_window(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let serial =
+        fs::read_to_string(&observed.serial_log).map_err(|e| format!("read serial log: {e}"))?;
+    let line = serial
+        .lines()
+        .find(|l| l.contains("DESKTOP idle window ticks="))
+        .ok_or_else(|| format!("`{}` logged no idle window", scenario.name))?;
+    let field = |key: &str| -> Result<u64, String> {
+        line.split(key)
+            .nth(1)
+            .and_then(|r| r.split(' ').next())
+            .and_then(|v| v.trim().parse().ok())
+            .ok_or_else(|| format!("`{}` unparsable idle line: {line}", scenario.name))
+    };
+    let (ticks, pct) = (field("ticks=")?, field("pct=")?);
+    if ticks < 200 {
+        return Err(format!("`{}` idle window too short: {line}", scenario.name));
+    }
+    let parked = scenario.name == "desktop_idle_parks";
+    // 70%, not the THINK's 80%: a quiet host measures ~95%, but a loaded one
+    // stretches the per-tick input pump across more of each tick under TCG
+    // (82% seen). The control sits at 0%, so the margin stays decisive.
+    if parked && pct < 70 {
+        return Err(format!(
+            "`{}` an idle desktop must park (BSP idle >= 70%): {line}",
+            scenario.name
+        ));
+    }
+    if !parked && pct > 5 {
+        return Err(format!(
+            "`{}` the spinning control idled more than 5%, so the witness does not measure parking: {line}",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+fn require_serial_sequence(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+    needles: &[&str],
+    detail: &str,
+) -> Result<(), String> {
+    let serial = fs::read_to_string(&observed.serial_log)
+        .map_err(|e| format!("read serial log {}: {e}", observed.serial_log.display()))?;
+    let mut search_from = 0usize;
+    for needle in needles {
+        let Some(relative) = serial[search_from..].find(needle) else {
+            return Err(format!(
+                "`{}` serial did not contain ordered `{needle}` after byte {} ({detail}); serial={}",
+                scenario.name,
+                search_from,
+                observed.serial_log.display()
+            ));
+        };
+        search_from += relative + needle.len();
+    }
+    Ok(())
+}
+
+fn require_framebuffer_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+) -> Result<(), String> {
+    let capture = workspace_root().join(capture_rel);
+    let bytes = fs::read(&capture)
+        .map_err(|e| format!("read framebuffer capture {}: {e}", capture.display()))?;
+    let bright = ppm_bright_pixels(&bytes).ok_or_else(|| {
+        format!(
+            "`{}` framebuffer capture was not a P6 PPM: {}",
+            scenario.name,
+            capture.display()
+        )
+    })?;
+    if bright < 64 {
+        return Err(format!(
+            "`{}` framebuffer capture had only {} bright text pixels; capture={}",
+            scenario.name,
+            bright,
+            capture.display()
+        ));
+    }
+    Ok(())
+}
+
+fn ppm_bright_pixels(bytes: &[u8]) -> Option<usize> {
+    let (_, _, raster) = ppm_raster(bytes)?;
+    Some(
+        raster
+            .chunks_exact(3)
+            .filter(|p| p[0] > 120 && p[1] > 120 && p[2] > 120)
+            .count(),
+    )
+}
+
+/// The desktop scenarios' pinned output (and so their screendumps).
+const CAPTURE_W: usize = 1920;
+const CAPTURE_H: usize = 1080;
+
+/// A desktop screendump (`rel`): its path and its 1920x1080 RGB raster. The
+/// errors name it as each caller always has: `what` on a read failure, `tag`
+/// for the format and size, `size_note` after the size.
+fn load_capture(
+    scenario: TestScenario,
+    rel: &str,
+    (what, tag, size_note): (&str, &str, &str),
+) -> Result<(PathBuf, Vec<u8>), String> {
+    let capture = workspace_root().join(rel);
+    let bytes =
+        fs::read(&capture).map_err(|e| format!("read {what} {}: {e}", capture.display()))?;
+    let (w, h, raster) =
+        ppm_raster(&bytes).ok_or_else(|| format!("`{}` {tag} was not a P6 PPM", scenario.name))?;
+    if (w, h) != (CAPTURE_W, CAPTURE_H) {
+        return Err(format!("`{}` {tag} is {w}x{h}{size_note}", scenario.name));
+    }
+    Ok((capture, raster.to_vec()))
+}
+
+/// Pixel `(x, y)` of a 1920-wide RGB raster as `0x00RRGGBB`.
+fn rgb(raster: &[u8], x: usize, y: usize) -> u32 {
+    let p = &raster[(y * CAPTURE_W + x) * 3..(y * CAPTURE_W + x) * 3 + 3];
+    (u32::from(p[0]) << 16) | (u32::from(p[1]) << 8) | u32::from(p[2])
+}
+
+/// The oracles' digest of a 1920x1080 capture: FNV-1a over every pixel as
+/// four little-endian bytes, row-major, the mask boxes hashed as zero.
+fn masked_fnv(raster: &[u8], boxes: &[(usize, usize, usize, usize)]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for y in 0..CAPTURE_H {
+        for x in 0..CAPTURE_W {
+            let masked = boxes
+                .iter()
+                .any(|&(bx, by, bw, bh)| x >= bx && y >= by && x < bx + bw && y < by + bh);
+            let word = if masked { 0 } else { rgb(raster, x, y) };
+            for b in word.to_le_bytes() {
+                hash ^= u64::from(b);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    hash
+}
+
+/// A binary PPM's width, height and RGB raster.
+fn ppm_raster(bytes: &[u8]) -> Option<(usize, usize, &[u8])> {
+    let mut idx = 0;
+    let magic = ppm_next_token(bytes, &mut idx)?;
+    if magic != b"P6" {
+        return None;
+    }
+    let width = parse_ascii_usize(ppm_next_token(bytes, &mut idx)?)?;
+    let height = parse_ascii_usize(ppm_next_token(bytes, &mut idx)?)?;
+    let max = parse_ascii_usize(ppm_next_token(bytes, &mut idx)?)?;
+    if max != 255 || width == 0 || height == 0 || idx >= bytes.len() {
+        return None;
+    }
+    // Exactly ONE whitespace byte separates maxval from the raster (PPM
+    // spec); the raster's first byte may itself be 0x0A/0x20 (a dark pixel).
+    if !bytes[idx].is_ascii_whitespace() {
+        return None;
+    }
+    idx += 1;
+    let pixels = width.checked_mul(height)?;
+    let data_len = pixels.checked_mul(3)?;
+    if idx.checked_add(data_len)? > bytes.len() {
+        return None;
+    }
+    Some((width, height, &bytes[idx..idx + data_len]))
+}
+
+/// DS-1c: a capture taken with the Lens bloomed must equal
+/// `scene_oracle.py lens-fixture` outside the mask boxes (labels, both
+/// client areas, and the pointer sprite when `sprite` gives where it is):
+/// Arthur focused, or (`sprite`: after the click) the selection on the Lens.
+/// Every pixel of the Lens's client must match `lens_content_oracle.py`:
+/// inside each line's glyph window within its [lo, hi] bounds, the content
+/// floor everywhere else. Checked on the host, from QEMU's own screendump.
+fn require_lens_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    sprite: Option<(usize, usize)>,
+) -> Result<(), String> {
+    // The fixtures also pin the RT and Home variants (host KATs).
+    #[allow(dead_code)]
+    mod oracle {
+        include!("../../../fixtures/desktop-ds1/lens_digests.rs");
+    }
+    mod labels {
+        include!("../../../fixtures/desktop-ds1/lens_labels.rs");
+    }
+    let mut boxes = oracle::DS1C_LENS_MASK_BOXES_1920X1080.to_vec();
+    // The WM's arrow sprite (12x18 at the cursor) rides on top of the scene.
+    if let Some((sx, sy)) = sprite {
+        boxes.push((sx, sy, 12, 18));
+    }
+    let (want, view, label_bounds) = if sprite.is_some() {
+        (
+            oracle::DS1C_WINDOW_LENS_GLASS_1920X1080_SELECTED,
+            "lens-selected",
+            &labels::SELECTED_BOUNDS,
+        )
+    } else {
+        (
+            oracle::DS1C_WINDOW_LENS_GLASS_1920X1080_FOCUSED,
+            "arthur-focused",
+            &labels::FOCUSED_BOUNDS,
+        )
+    };
+    check_lens_capture(
+        scenario,
+        capture_rel,
+        &LensCapture {
+            boxes: &boxes,
+            want,
+            view,
+            fixture: "scene_oracle.py lens-fixture",
+            sprite,
+            runs: &labels::RUNS,
+            label_windows: &labels::WINDOWS,
+            label_bounds,
+            lens_client: oracle::DS1C_LENS_MASK_BOXES_1920X1080[6],
+            content_at_fixture: true,
+        },
+    )
+}
+
+fn read_serial(observed: &ObservedTest) -> Result<String, String> {
+    fs::read_to_string(&observed.serial_log).map_err(|e| format!("read serial log: {e}"))
+}
+
+/// One Arthur for the whole session (a resume reuses the held client) and,
+/// with `lens`, exactly one Lens bloomed.
+fn require_single_arthur(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+    lens: bool,
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    if serial.matches("DESKTOP arthur intent bytes=").count() != 1 {
+        return Err(if lens {
+            format!(
+                "`{}` must spawn Arthur once and bloom one Lens",
+                scenario.name
+            )
+        } else {
+            format!(
+                "`{}` must spawn Arthur exactly once (resume, not relaunch)",
+                scenario.name
+            )
+        });
+    }
+    if lens && serial.matches("DESKTOP lens bloomed").count() != 1 {
+        return Err(format!(
+            "`{}` must spawn Arthur once and bloom one Lens",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// DM-1: the WM's motion profile in a scenario.
+#[derive(Clone, Copy, PartialEq)]
+enum MotionProfile {
+    Full,
+    Reduced,
+}
+
+/// `neo_atrium::motion::Kind` in its order (the fixture's kind index).
+const MOTION_KIND_NAMES: [&str; 6] = ["open", "close", "view", "bloom", "unbloom", "focus"];
+
+#[allow(dead_code)]
+mod motion_fixture {
+    include!("../../../fixtures/desktop-dm1/motion_digests.rs");
+}
+
+impl MotionProfile {
+    fn name(self) -> &'static str {
+        match self {
+            MotionProfile::Full => "full",
+            MotionProfile::Reduced => "reduced",
+        }
+    }
+
+    fn boot_line(self) -> &'static str {
+        match self {
+            MotionProfile::Full => "DESKTOP motion profile=full cause=default",
+            MotionProfile::Reduced => "DESKTOP motion profile=reduced cause=build-feature",
+        }
+    }
+
+    fn hold_line(self) -> &'static str {
+        match self {
+            MotionProfile::Full => "DESKTOP motion hold kind=view profile=full frame=3/10",
+            MotionProfile::Reduced => "DESKTOP motion hold kind=view profile=reduced frame=3/6",
+        }
+    }
+
+    /// The oracle's frame count for `kind` (`scene_oracle.py motion-fixture`).
+    fn frames(self, kind: &str) -> Option<u32> {
+        let p = match self {
+            MotionProfile::Full => 0,
+            MotionProfile::Reduced => 1,
+        };
+        let k = MOTION_KIND_NAMES.iter().position(|&n| n == kind)? as u8;
+        motion_fixture::PLANS
+            .iter()
+            .find(|&&((pp, kk), _)| (pp, kk) == (p, k))
+            .map(|&(_, (frames, _))| frames)
+    }
+}
+
+/// DM-1: every `DESKTOP motion kind=K profile=P frames=N rects=R
+/// presented=Q frame_px=X screen_px=S elapsed_ms=E paced_ms=M early=0
+/// uncovered=0 end_mismatch=Z` line of the session: the profile's frame
+/// count for the kind (the oracle's plan table) with every frame presented
+/// (`Q = (N − 1)·R`); damage bounded to the change's rects (`X < S`, never
+/// the whole screen); every frame paced (none before its own deadline, so
+/// `E ≥ M = ⌊(N − 1)·P⌋`); every animated rect inside the end frame's
+/// presents; and the end frame equal to the change composed before the
+/// first frame (`Z = 0`). Every kind in `kinds` must have run.
+fn require_motion(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+    profile: MotionProfile,
+    kinds: &[&str],
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let mut seen: Vec<&str> = Vec::new();
+    for line in serial
+        .lines()
+        .filter(|l| l.starts_with("DESKTOP motion kind="))
+    {
+        let field = |key: &str| {
+            line.split(' ')
+                .find_map(|w| w.strip_prefix(key).and_then(|v| v.strip_prefix('=')))
+                .ok_or_else(|| format!("`{}` motion line lacks {key}: {line}", scenario.name))
+        };
+        let num = |key: &str| -> Result<u64, String> {
+            field(key)?
+                .parse::<u64>()
+                .map_err(|e| format!("`{}` motion {key}: {e}: {line}", scenario.name))
+        };
+        let kind = field("kind")?;
+        let fail = |why: &str| format!("`{}` DM-1 {why}: {line}", scenario.name);
+        if field("profile")? != profile.name() {
+            return Err(fail("wrong motion profile"));
+        }
+        let want = profile
+            .frames(kind)
+            .ok_or_else(|| fail("unknown motion kind"))?;
+        let frames = num("frames")?;
+        if frames != u64::from(want) {
+            return Err(fail(&format!("frame count is not the plan's {want}")));
+        }
+        let (frame_px, screen_px) = (num("frame_px")?, num("screen_px")?);
+        let rects = num("rects")?;
+        if rects == 0 || frame_px == 0 || frame_px >= screen_px {
+            return Err(fail("damage is not bounded to the change's rects"));
+        }
+        if num("presented")? != (frames - 1) * rects {
+            return Err(fail("a frame was skipped (presents != (N-1) * rects)"));
+        }
+        let paced = (frames - 1) * 16_666_667 / 1_000_000;
+        if num("paced_ms")? != paced || num("elapsed_ms")? < paced || num("early")? != 0 {
+            return Err(fail("the frames were not paced"));
+        }
+        if num("uncovered")? != 0 {
+            return Err(fail(
+                "an animated rect lies outside the end frame's presents",
+            ));
+        }
+        if num("end_mismatch")? != 0 {
+            return Err(fail("the end frame is not the change's own present"));
+        }
+        if let Some(&k) = MOTION_KIND_NAMES.iter().find(|&&k| k == kind)
+            && !seen.contains(&k)
+        {
+            seen.push(k);
+        }
+    }
+    for kind in kinds {
+        if !seen.contains(kind) {
+            return Err(format!(
+                "`{}` DM-1: no `{kind}` transition ran (saw {seen:?})",
+                scenario.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// DM-1: the first hold's mid frame (the window view focused blending toward
+/// Home with Arthur held) against `scene_oracle.py motion-fixture`, labels
+/// and Arthur's client masked.
+fn require_motion_mid_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    profile: MotionProfile,
+) -> Result<(), String> {
+    use motion_fixture::*;
+    let (want, frame) = match profile {
+        MotionProfile::Full => (HOLD_MID_GLASS_FULL, HOLD_MID_FULL_FRAME),
+        MotionProfile::Reduced => (HOLD_MID_GLASS_REDUCED, HOLD_MID_REDUCED_FRAME),
+    };
+    if !profile.hold_line().contains(&format!("frame={frame}/")) {
+        return Err("the hold line's frame is not the oracle's mid frame".into());
+    }
+    let (capture, raster) = load_capture(
+        scenario,
+        capture_rel,
+        ("mid-transition capture", "mid capture", ""),
+    )?;
+    let hash = masked_fnv(&raster, &HOLD_MASK_BOXES);
+    if hash != want {
+        return Err(format!(
+            "`{}` mid-transition capture digest 0x{hash:016x} != oracle 0x{want:016x} (frame {frame}); capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Which card an intro capture shows.
+#[derive(Clone, Copy, PartialEq)]
+enum IntroCard {
+    Intro,
+    Help,
+}
+
+/// The first-boot intro: a capture of Home with a card (the field focused
+/// and empty) against `intro_oracle.py fixture`: the scene digest with the
+/// Home label boxes and the card's text box masked, and every text row
+/// against its exact-area column pattern (a column is inked when a pixel of
+/// the row's band reaches the row's green threshold; `#` must be, `.` must
+/// not be) — the words, not just a panel.
+/// OT-85: the host's own civil oracle (independent of libneo::civil and of
+/// the kernel's days-from-civil: it walks whole years, then whole months,
+/// from 1970, and names the weekday by counting days from a Thursday).
+/// Returns (date text, time text, hour).
+fn civil_oracle(unix_s: u64) -> (String, String, u64) {
+    const WEEKDAYS: [&str; 7] = [
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+    ];
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let leap = |y: u64| y.is_multiple_of(4) && (!y.is_multiple_of(100) || y.is_multiple_of(400));
+    let total_days = unix_s / 86_400;
+    let mut days = total_days;
+    let mut year = 1970;
+    loop {
+        let len = if leap(year) { 366 } else { 365 };
+        if days < len {
+            break;
+        }
+        days -= len;
+        year += 1;
+    }
+    let lens = [
+        31,
+        if leap(year) { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 0;
+    while days >= lens[month] {
+        days -= lens[month];
+        month += 1;
+    }
+    let secs = unix_s % 86_400;
+    let (hour, minute) = (secs / 3_600, secs % 3_600 / 60);
+    let h12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+    let ampm = if hour < 12 { "AM" } else { "PM" };
+    (
+        format!(
+            "{}, {} {}, {year}",
+            WEEKDAYS[(total_days % 7) as usize],
+            MONTHS[month],
+            days + 1
+        ),
+        format!("{h12}:{minute:02} {ampm}"),
+        hour,
+    )
+}
+
+/// The quoted value of `key="..."` in `line`.
+fn quoted<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let rest = line.split(&format!("{key}=\"")).nth(1)?;
+    rest.split('"').next()
+}
+
+/// The numeric value of `key=N` in `line`.
+fn numeric(line: &str, key: &str) -> Option<u64> {
+    line.split(&format!("{key}="))
+        .nth(1)?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// OT-85: the kernel seeded realtime from the pinned RTC: its logged wall
+/// time is the pinned minute (the guest reads it within seconds of QEMU's
+/// start), BCD 24-hour with QEMU's century byte, and its base is that wall
+/// time less at most a minute of boot.
+fn require_wallclock_seeded(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    if civil_oracle(WALLCLOCK_RTC_UNIX_S)
+        != ("Wednesday, October 21, 2026".into(), "5:48 PM".into(), 17)
+    {
+        return Err("the pinned RTC's Unix seconds disagree with the civil oracle".into());
+    }
+    let serial = read_serial(observed)?;
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ kernel ] rtc: seeded wall="))
+        .ok_or_else(|| format!("`{}` kernel never seeded the RTC epoch", scenario.name))?;
+    let wall = line
+        .split("wall=")
+        .nth(1)
+        .and_then(|w| w.split(' ').next())
+        .unwrap_or_default();
+    let second: u64 = wall
+        .strip_prefix("2026-10-21T17:48:")
+        .and_then(|ss| ss.parse().ok())
+        .ok_or_else(|| {
+            format!(
+                "`{}` seeded wall {wall} is not the pinned RTC's minute ({WALLCLOCK_RTC_BASE})",
+                scenario.name
+            )
+        })?;
+    if !line.contains(" as=local mode=bcd/24h century=0x32 ")
+        || serial.matches("[ kernel ] rtc: ").count() != 1
+    {
+        return Err(format!(
+            "`{}` must seed once, as local time, from QEMU's BCD/24-hour RTC and its FADT century byte: {line}",
+            scenario.name
+        ));
+    }
+    let base_ns = numeric(line, "base_ns").unwrap_or(0);
+    let rtc_ns = (WALLCLOCK_RTC_UNIX_S + second) * 1_000_000_000;
+    if base_ns > rtc_ns || rtc_ns - base_ns > 60_000_000_000 {
+        return Err(format!(
+            "`{}` base_ns {base_ns} is not the RTC instant {rtc_ns} less under a minute of boot",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// OT-85: the probe's logged values, re-derived by the host oracle: the base
+/// and the "now" reading format to what libneo::civil printed.
+fn require_wallclock_probe_oracle(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let find = |needle: &str| {
+        serial
+            .lines()
+            .find(|l| l.contains(needle))
+            .ok_or_else(|| format!("`{}` serial lacks `{needle}`", scenario.name))
+    };
+    let base = numeric(find("[ wallclock ] base_ns=")?, "base_ns").unwrap_or(0);
+    let now = find("[ wallclock ] now realtime_ns=")?;
+    let realtime = numeric(now, "realtime_ns").unwrap_or(0);
+    for (ns, date, time) in [
+        (
+            base,
+            quoted(find("[ wallclock ] boot date=")?, "date"),
+            quoted(find("[ wallclock ] boot date=")?, "time"),
+        ),
+        (realtime, quoted(now, "date"), quoted(now, "time")),
+    ] {
+        let (d, t, _) = civil_oracle(ns / 1_000_000_000);
+        if date != Some(d.as_str()) || time != Some(t.as_str()) {
+            return Err(format!(
+                "`{}` libneo::civil printed {date:?} {time:?} for {ns} ns; the host oracle says {d:?} {t:?}",
+                scenario.name
+            ));
+        }
+    }
+    if realtime < base || realtime - base > 120_000_000_000 {
+        return Err(format!(
+            "`{}` realtime {realtime} is not the base {base} plus a short boot",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// OT-85: every readout the WM drew, and the intro's greeting row, against
+/// the host oracle: the date is the pinned day, the time is the oracle's for
+/// the logged realtime, within the run's span of the pinned instant, and the
+/// greeting word is the hour's (morning 05-11, afternoon 12-17, else evening).
+fn require_clock_words(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let mut shown = 0;
+    let mut first_hour = None;
+    for line in serial
+        .lines()
+        .filter(|l| l.contains("DESKTOP clock shown ") || l.contains("DESKTOP clock minute "))
+    {
+        let s = numeric(line, "realtime_s").unwrap_or(0);
+        let (d, t, hour) = civil_oracle(s);
+        if quoted(line, "date") != Some(d.as_str())
+            || quoted(line, "time") != Some(t.as_str())
+            || d != "Wednesday, October 21, 2026"
+            || !(WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&s)
+        {
+            return Err(format!(
+                "`{}` readout {line:?}: the host oracle says {d:?} {t:?} for {s}",
+                scenario.name
+            ));
+        }
+        first_hour.get_or_insert((hour, t));
+        shown += 1;
+    }
+    let Some((hour, time)) = first_hour else {
+        return Err(format!("`{}` the WM drew no readout", scenario.name));
+    };
+    let word = match hour {
+        5..=11 => "morning",
+        12..=17 => "afternoon",
+        _ => "evening",
+    };
+    let row = serial
+        .lines()
+        .find(|l| l.contains("DESKTOP intro clock row="))
+        .and_then(|l| quoted(l, "row"))
+        .unwrap_or_default();
+    let want = format!("Good {word}. It's {time} on Wednesday, October 21, 2026.");
+    if row != want {
+        return Err(format!(
+            "`{}` intro greeting row {row:?}, want {want:?} ({shown} readouts)",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// OT-85: a clock session capture against clock_oracle.py: the intro card
+/// (eight rows, `intro`) or the help card, everything but the label, card
+/// text and readout boxes the clock-less oracle's; the readout box inked.
+fn require_clock_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    intro: bool,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod home {
+        include!("../../../fixtures/desktop-ds1/home_digests.rs");
+    }
+    #[allow(dead_code)]
+    mod clock {
+        include!("../../../fixtures/desktop-clock/clock.rs");
+    }
+    let (want, text_box) = if intro {
+        (
+            clock::INTRO_CLOCK_GLASS_1920X1080,
+            clock::INTRO_CLOCK_TEXT_BOX,
+        )
+    } else {
+        (
+            clock::HELP_CLOCK_GLASS_1920X1080,
+            clock::HELP_CLOCK_TEXT_BOX,
+        )
+    };
+    let (capture, raster) = load_capture(
+        scenario,
+        capture_rel,
+        ("clock capture", "clock capture", ""),
+    )?;
+    let b = home::DS1_HOME_LABEL_BOXES_1920X1080;
+    let hash = masked_fnv(
+        &raster,
+        &[b[0], b[1], b[2], text_box, clock::CLOCK_BOX_1920X1080],
+    );
+    if hash != want {
+        return Err(format!(
+            "`{}` clock capture digest 0x{hash:016x} != oracle 0x{want:016x}; capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    let (bx, by, bw, bh) = clock::CLOCK_BOX_1920X1080;
+    let ink = (by..by + bh)
+        .flat_map(|y| (bx..bx + bw).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let p = rgb(&raster, x, y);
+            (p >> 16) & 0xFF >= 0xC0 && (p >> 8) & 0xFF >= 0xC0 && p & 0xFF >= 0xC0
+        })
+        .count();
+    if ink < 200 {
+        return Err(format!(
+            "`{}` the readout box has {ink} ink pixels; capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    Ok(())
+}
+
+fn require_intro_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    card: IntroCard,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod home {
+        include!("../../../fixtures/desktop-ds1/home_digests.rs");
+    }
+    #[allow(dead_code)]
+    mod intro {
+        include!("../../../fixtures/desktop-intro/intro.rs");
+    }
+    let (want, text_box, patterns, name) = match card {
+        IntroCard::Intro => (
+            intro::INTRO_GLASS_1920X1080,
+            intro::INTRO_TEXT_BOX,
+            &intro::INTRO_PATTERNS[..],
+            "intro",
+        ),
+        IntroCard::Help => (
+            intro::HELP_GLASS_1920X1080,
+            intro::HELP_TEXT_BOX,
+            &intro::HELP_PATTERNS[..],
+            "help",
+        ),
+    };
+    let (capture, raster) = load_capture(
+        scenario,
+        capture_rel,
+        ("intro capture", "intro capture", ""),
+    )?;
+    let b = home::DS1_HOME_LABEL_BOXES_1920X1080;
+    let hash = masked_fnv(&raster, &[b[0], b[1], b[2], text_box]);
+    if hash != want {
+        return Err(format!(
+            "`{}` {name} card capture digest 0x{hash:016x} != oracle 0x{want:016x}; capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    for (row, &((bx, by, bw, bh), thr, pattern)) in patterns.iter().enumerate() {
+        for (c, want) in pattern.bytes().enumerate().take(bw) {
+            let inked =
+                (by..by + bh).any(|y| (rgb(&raster, bx + c, y) >> 8) & 0xFF >= u32::from(thr));
+            if (want == b'#' && !inked) || (want == b'.' && inked) {
+                return Err(format!(
+                    "`{}` {name} card row {row} column {c}: want `{}`, inked={inked}; capture={}",
+                    scenario.name,
+                    want as char,
+                    capture.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// DL-1 (desktop_full_boot): the capture with the Lens docked to the moved
+/// and resized window, against `scene_oracle.py dock-fixture` case 0, its
+/// labels against `lens_content_oracle.py dock-labels` and its content (the
+/// same picture, wherever the Lens is) against `lens_content_oracle.py
+/// fixture` at the docked client's origin. The sprite sits inside Arthur's
+/// client (masked).
+fn require_dock_capture(scenario: TestScenario, capture_rel: &'static str) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod dock {
+        include!("../../../fixtures/desktop-dl1/dock_digests.rs");
+    }
+    mod labels {
+        include!("../../../fixtures/desktop-dl1/dock_labels.rs");
+    }
+    if dock::DOCK_CASES[0] != (626, 357, 760, 460) {
+        return Err("dock-fixture case 0 must be desktop_full_boot's end state".into());
+    }
+    check_lens_capture(
+        scenario,
+        capture_rel,
+        &LensCapture {
+            boxes: &dock::DOCK_MASKS[0],
+            want: dock::DOCK_GLASS_FOCUSED[0],
+            view: "docked, arthur-focused",
+            fixture: "scene_oracle.py dock-fixture",
+            sprite: None,
+            runs: &labels::RUNS,
+            label_windows: &labels::WINDOWS,
+            label_bounds: &labels::FOCUSED_BOUNDS,
+            lens_client: dock::DOCK_MASKS[0][6],
+            content_at_fixture: false,
+        },
+    )
+}
+
+/// What a Lens capture is held to (DS-1c, DL-1).
+struct LensCapture<'a> {
+    /// Hashed as zero (labels, both clients, a sprite on the chrome).
+    boxes: &'a [(usize, usize, usize, usize)],
+    want: u64,
+    view: &'a str,
+    fixture: &'a str,
+    /// A sprite on the chrome: its pixels are skipped in the label check.
+    sprite: Option<(usize, usize)>,
+    runs: &'a [&'a str],
+    label_windows: &'a [(usize, usize, usize, usize)],
+    label_bounds: &'a [(&'a [u32], &'a [u32])],
+    /// Where the Lens's client is on screen.
+    lens_client: (usize, usize, usize, usize),
+    /// DS-1c: the scene and content oracles must also agree on where the
+    /// Lens is (the whole tuple; a docked Lens moves, its size never does).
+    content_at_fixture: bool,
+}
+
+fn check_lens_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    spec: &LensCapture,
+) -> Result<(), String> {
+    mod content {
+        include!("../../../fixtures/desktop-ds1/lens_content.rs");
+    }
+    let (capture, raster) = load_capture(
+        scenario,
+        capture_rel,
+        ("framebuffer capture", "capture", ", not 1920x1080"),
+    )?;
+    let pixel = |x: usize, y: usize| rgb(&raster, x, y);
+    let hash = masked_fnv(&raster, spec.boxes);
+    let (want, view) = (spec.want, spec.view);
+    if hash != want {
+        return Err(format!(
+            "`{}` Lens capture ({view}) digest 0x{hash:016x} != oracle 0x{want:016x}; capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    // AAG: the labels the digest masks — the Lens title with its read-only
+    // cue, the second chip's "L" / "Lens" — held to their exact-area bounds
+    // (lens_content_oracle.py labels), the sprite's pixels aside.
+    let in_sprite = |x: usize, y: usize| {
+        spec.sprite
+            .is_some_and(|(sx, sy)| x >= sx && y >= sy && x < sx + 12 && y < sy + 18)
+    };
+    for (run, (&(wx, wy, ww, wh), (lo, hi))) in
+        spec.label_windows.iter().zip(spec.label_bounds).enumerate()
+    {
+        for y in 0..wh {
+            for x in 0..ww {
+                let (px, py) = (wx + x, wy + y);
+                if in_sprite(px, py) {
+                    continue;
+                }
+                let got = pixel(px, py);
+                let (l, h) = (lo[y * ww + x], hi[y * ww + x]);
+                if [16u32, 8, 0].iter().any(|&sh| {
+                    let c = (got >> sh) & 0xFF;
+                    c < (l >> sh) & 0xFF || c > (h >> sh) & 0xFF
+                }) {
+                    return Err(format!(
+                        "`{}` Lens label {} pixel ({px},{py}) = 0x{got:06x} outside [0x{l:06x}, 0x{h:06x}]; capture={}",
+                        scenario.name,
+                        spec.runs[run],
+                        capture.display()
+                    ));
+                }
+            }
+        }
+    }
+    // The content oracle is the Lens's own picture (client-relative): the
+    // same wherever the Lens is docked.
+    if (spec.lens_client.2, spec.lens_client.3) != (content::LENS_CLIENT.2, content::LENS_CLIENT.3)
+        || (spec.content_at_fixture && spec.lens_client != content::LENS_CLIENT)
+    {
+        return Err("the scene and content oracles disagree on the Lens client".into());
+    }
+    let (lx, ly, lw, lh) = spec.lens_client;
+    let (mut checked, mut ink) = (0usize, 0usize);
+    for y in 0..lh {
+        for x in 0..lw {
+            let got = pixel(lx + x, ly + y);
+            let line = content::WINDOWS
+                .iter()
+                .position(|&(wx, wy, ww, wh)| x >= wx && y >= wy && x < wx + ww && y < wy + wh);
+            let (lo, hi) = match line {
+                Some(i) => {
+                    let (wx, wy, ww, _) = content::WINDOWS[i];
+                    let at = (y - wy) * ww + (x - wx);
+                    (content::BOUNDS[i].0[at], content::BOUNDS[i].1[at])
+                }
+                None => (content::FLOOR, content::FLOOR),
+            };
+            let inside = [16u32, 8, 0].iter().all(|&sh| {
+                let c = (got >> sh) & 0xFF;
+                c >= (lo >> sh) & 0xFF && c <= (hi >> sh) & 0xFF
+            });
+            if !inside {
+                return Err(format!(
+                    "`{}` Lens content pixel ({x},{y}) = 0x{got:06x} outside oracle [0x{lo:06x}, 0x{hi:06x}] (line {line:?}); capture={}",
+                    scenario.name,
+                    capture.display()
+                ));
+            }
+            checked += 1;
+            if got != content::FLOOR {
+                ink += 1;
+            }
+        }
+    }
+    println!(
+        "[xtask] {}: Lens capture ({view}) digest=0x{hash:016x} matches {}; labels exact (\"Lens · read-only\", \"L\"/\"Lens\"); content {checked} px at {lx},{ly} match lens_content_oracle.py (ink={ink})",
+        scenario.name, spec.fixture
+    );
+    Ok(())
+}
+
+fn ppm_next_token<'a>(bytes: &'a [u8], idx: &mut usize) -> Option<&'a [u8]> {
+    loop {
+        while *idx < bytes.len() && bytes[*idx].is_ascii_whitespace() {
+            *idx += 1;
+        }
+        if *idx >= bytes.len() || bytes[*idx] != b'#' {
+            break;
+        }
+        while *idx < bytes.len() && bytes[*idx] != b'\n' {
+            *idx += 1;
+        }
+    }
+    let start = *idx;
+    while *idx < bytes.len() && !bytes[*idx].is_ascii_whitespace() {
+        *idx += 1;
+    }
+    if start == *idx {
+        None
+    } else {
+        Some(&bytes[start..*idx])
+    }
+}
+
+fn parse_ascii_usize(bytes: &[u8]) -> Option<usize> {
+    let mut out = 0usize;
+    for &byte in bytes {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        out = out.checked_mul(10)?.checked_add((byte - b'0') as usize)?;
+    }
+    Some(out)
+}
+
+fn qemu_debug_exit_status(code: u32) -> i32 {
+    ((code << 1) | 1) as i32
+}
+
+/// Stage a user ELF: the OT-61 key-only TLS gate first (no native TLS the
+/// loader would never instantiate), then the copy.
+fn copy_user_elf_into(src: &Path, dst: &Path) -> Result<(), String> {
+    ot61_tls_gate::check_key_only(src)?;
+    copy_into(src, dst)
+}
+
+fn copy_into(src: &Path, dst: &Path) -> Result<(), String> {
+    fs::copy(src, dst)
+        .map(|_| ())
+        .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dst.display()))
+}
+
+fn write_limine_conf(
+    src: &Path,
+    dst: &Path,
+    kaslr_override: Option<bool>,
+    firmware_module: bool,
+    std_real_smoke_module: bool,
+    model_modules: &[&str],
+) -> Result<(), String> {
+    let mut conf = fs::read_to_string(src).map_err(|e| format!("read {}: {e}", src.display()))?;
+    if let Some(enabled) = kaslr_override {
+        conf = override_limine_kaslr(&conf, enabled)?;
+    }
+    if firmware_module {
+        conf = inject_firmware_module(&conf)?;
+    }
+    // OT-61 C0.5 (AAG bounce, Finding 2): the neo-std-real-smoke module line is
+    // kept OUT of the source boot/limine.conf and injected ONLY for its scenario
+    // (same discipline as the firmware blob), so a default/prod ISO never
+    // references a module it does not stage.
+    if std_real_smoke_module {
+        conf = inject_std_real_smoke_module(&conf, std_real_staged_bins())?;
+    }
+    if STAGE_LOGIN_CUT.load(std::sync::atomic::Ordering::SeqCst) {
+        conf = inject_module_line(&conf, "/modules/login-cut")?;
+    }
+    // OT-83: the ring-3 fault probes, only for their scenario.
+    if fault_probe_stage().is_some() {
+        conf = inject_module_line(&conf, "/modules/neo-fault-probe")?;
+        conf = inject_module_line(&conf, "/modules/neo-fault-probe-ok")?;
+    }
+    for name in model_modules {
+        conf = inject_module_line(&conf, &format!("/models/{name}"))?;
+    }
+    // OT-87 R4.3: the installer's bundle, when the kernel was built with its
+    // pin.
+    if install_pin().is_some() && install_medium() != InstallMedium::NoBundle {
+        conf = inject_module_line(&conf, &format!("/{}", install_bundle::MODULE_REL))?;
+    }
+    // B1b: the vocab is an ordinary module (it stays resident; Arthur reads it
+    // through the kernel's read-only /boot).
+    if let Some(stage) = boot_model_stage() {
+        let vocab = if stage.binary_vocab {
+            BOOT_MODEL_VOCB
+        } else {
+            BOOT_MODEL_VOCAB
+        };
+        conf = inject_module_line(&conf, &format!("/vocab/{vocab}"))?;
+    }
+    check_boot_module_count(&conf)?;
+    if let Some((width, height)) = desktop_resolution() {
+        conf = inject_limine_resolution(&conf, width, height)?;
+    }
+    fs::write(dst, conf).map_err(|e| format!("write {}: {e}", dst.display()))
+}
+
+/// B1: the consumable `/models/` modules this image stages.
+fn staged_model_modules() -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if stage_reclaim_probe() {
+        names.push(BOOT_MODULE_RECLAIM_PROBE);
+    }
+    if boot_model_stage().is_some_and(|s| s.stage_model) {
+        names.push(BOOT_MODEL_NEOM);
+    }
+    if stage_kat_model() {
+        names.push(KAT_MODEL_NEOM);
+    }
+    names
+}
+
+/// B1: inject `module_path: boot():<path>` after the last `module_path:` line.
+fn inject_module_line(conf: &str, path: &str) -> Result<String, String> {
+    let last_idx = conf
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with("module_path:"))
+        .map(|(i, _)| i)
+        .last()
+        .ok_or_else(|| format!("limine.conf has no module_path: line to anchor {path}"))?;
+    let mut out = String::new();
+    for (i, line) in conf.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+        if i == last_idx {
+            let indent_len = line.len() - line.trim_start().len();
+            out.push_str(&line[..indent_len]);
+            out.push_str("module_path: boot():");
+            out.push_str(path);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
+/// F7 (B1): refuse an image whose boot entry stages more modules than the
+/// kernel's early-boot extent array holds (it would panic before any log).
+fn check_boot_module_count(conf: &str) -> Result<(), String> {
+    let count = conf
+        .lines()
+        .filter(|l| l.trim_start().starts_with("module_path:"))
+        .count();
+    if count > MAX_BOOT_MODULES {
+        return Err(format!(
+            "F7: limine.conf stages {count} modules; the kernel holds at most {MAX_BOOT_MODULES} \
+             (MAX_BOOT_MODULE_EXTENTS) and would panic at boot"
+        ));
+    }
+    Ok(())
+}
+
+/// OT-61 C0.5: inject the `module_path:` lines for the real-std smoke ELFs
+/// (`/modules/neo-std-real-smoke`, then the panic arm
+/// `/modules/neo-std-real-panic`, then C1.3's threads battery
+/// `/modules/neo-std-real-threads` and `/modules/neo-std-real-thread-abort`)
+/// after the last existing `module_path:` line,
+/// mirroring [`inject_firmware_module`]. Injected only when the smokes are
+/// staged (their scenario), so a default ISO never lists a missing module.
+fn inject_std_real_smoke_module(conf: &str, bins: &[&str]) -> Result<String, String> {
+    let last_idx = conf
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with("module_path:"))
+        .map(|(i, _)| i)
+        .last()
+        .ok_or_else(|| {
+            "limine.conf has no module_path: line to anchor the std-real-smoke module".to_string()
+        })?;
+    let mut out = String::new();
+    for (i, line) in conf.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+        if i == last_idx {
+            let indent_len = line.len() - line.trim_start().len();
+            for bin in bins {
+                out.push_str(&line[..indent_len]);
+                out.push_str("module_path: boot():/modules/neo-");
+                out.push_str(bin);
+                out.push('\n');
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// OT-27a (ISC-2): inject a `module_path:` line for the MT7601U firmware blob
+/// (`/modules/mt7601u-fw`) into the staged limine.conf, right after the last
+/// existing `module_path:` line so it lands INSIDE the boot entry with the same
+/// indentation. Kept out of the source `boot/limine.conf` (and only injected when
+/// the blob is staged) so a blob-less / non-WiFi ISO never references a missing
+/// module. Mirrors `override_limine_kaslr`'s line-rewrite style.
+fn inject_firmware_module(conf: &str) -> Result<String, String> {
+    let last_idx = conf
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with("module_path:"))
+        .map(|(i, _)| i)
+        .last()
+        .ok_or_else(|| {
+            "limine.conf has no module_path: line to anchor the firmware module".to_string()
+        })?;
+    let mut out = String::new();
+    for (i, line) in conf.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+        if i == last_idx {
+            let indent_len = line.len() - line.trim_start().len();
+            out.push_str(&line[..indent_len]);
+            out.push_str("module_path: boot():/modules/mt7601u-fw\n");
+        }
+    }
+    Ok(out)
+}
+
+/// Desktop S1: pin the boot framebuffer mode by inserting `resolution: WxH`
+/// right after the entry's `protocol: limine` line (Limine falls back to an
+/// automatic mode if the firmware cannot provide it; the session WM lays out
+/// for whatever GOP/VBE size it actually gets).
+fn inject_limine_resolution(conf: &str, width: u32, height: u32) -> Result<String, String> {
+    let mut out = String::new();
+    let mut found = false;
+    for line in conf.lines() {
+        out.push_str(line);
+        out.push('\n');
+        let trimmed = line.trim_start();
+        if !found && trimmed.starts_with("protocol:") {
+            let indent_len = line.len() - trimmed.len();
+            out.push_str(&line[..indent_len]);
+            out.push_str(&format!("resolution: {width}x{height}\n"));
+            found = true;
+        }
+    }
+    if !found {
+        return Err("limine.conf has no protocol: line to anchor the resolution".to_string());
+    }
+    Ok(out)
+}
+
+fn override_limine_kaslr(conf: &str, enabled: bool) -> Result<String, String> {
+    let mut out = String::new();
+    let mut found = false;
+    for line in conf.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("kaslr:") {
+            let indent_len = line.len() - trimmed.len();
+            out.push_str(&line[..indent_len]);
+            out.push_str(if enabled { "kaslr: yes" } else { "kaslr: no" });
+            out.push('\n');
+            found = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if !found {
+        return Err("limine.conf has no kaslr: line to override".to_string());
+    }
+    Ok(out)
+}
+
+fn resolve_limine_dir() -> Result<PathBuf, String> {
+    let p = env::var(LIMINE_DIR_ENV).unwrap_or_else(|_| LIMINE_DIR_DEFAULT.to_string());
+    let pb = PathBuf::from(&p);
+    if !pb.exists() {
+        return Err(format!(
+            "Limine directory {p} does not exist. Set ${LIMINE_DIR_ENV} or build the dev container."
+        ));
+    }
+    Ok(pb)
+}
+
+// === run ===
+
+fn cmd_run(args: &[String]) -> Result<(), String> {
+    run_qemu(args, DisplayMode::LocalWindow)
+}
+
+fn cmd_run_headless(args: &[String]) -> Result<(), String> {
+    run_qemu(args, DisplayMode::Headless)
+}
+
+fn cmd_run_vnc(args: &[String]) -> Result<(), String> {
+    run_qemu(args, DisplayMode::Vnc)
+}
+
+/// How QEMU should present (or not present) the framebuffer.
+#[derive(Clone, Copy)]
+enum DisplayMode {
+    /// Open a GTK window on the host. Requires a display server; not
+    /// usable from inside a stock Docker container.
+    LocalWindow,
+    /// No graphical output at all. Serial console only. Best for CI
+    /// and for `docker compose run` where you only care about the
+    /// boot diagnostics.
+    Headless,
+    /// QEMU exposes a VNC server on :1 (port 5901). Connect with any
+    /// VNC client to see the framebuffer. This is the recommended mode
+    /// when running inside Docker.
+    Vnc,
+}
+
+fn run_qemu(args: &[String], mode: DisplayMode) -> Result<(), String> {
+    cmd_iso(args)?;
+
+    let iso_path = workspace_root().join(ISO_OUTPUT_REL);
+    eprintln!("[xtask] launching QEMU with ISO: {}", iso_path.display());
+
+    let mut qemu = Command::new("qemu-system-x86_64");
+    qemu.args([
+        "-machine",
+        "q35",
+        "-cpu",
+        "qemu64,+rdrand,+smep,+smap",
+        "-m",
+        "512M",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-no-shutdown",
+        "-boot",
+        "d",
+        "-cdrom",
+    ])
+    .arg(&iso_path);
+    qemu.arg("-smp").arg(smp_count());
+
+    match mode {
+        DisplayMode::LocalWindow => {
+            qemu.args(["-display", "gtk"]);
+        }
+        DisplayMode::Headless => {
+            qemu.args(["-display", "none"]);
+            eprintln!("[xtask] headless mode: serial console only");
+        }
+        DisplayMode::Vnc => {
+            // :1 means VNC display 1 -> TCP port 5901.
+            qemu.args(["-display", "none", "-vnc", ":1"]);
+            eprintln!();
+            eprintln!("[xtask] ====================================================");
+            eprintln!("[xtask]   NeoPlutarch ready.");
+            eprintln!("[xtask]   Connect a VNC client to localhost:5901");
+            eprintln!("[xtask] ====================================================");
+            eprintln!();
+        }
+    }
+
+    let status = qemu
+        .status()
+        .map_err(|e| format!("failed to launch qemu-system-x86_64: {e} (is QEMU installed?)"))?;
+
+    if !status.success() {
+        return Err(format!("qemu exited with status {status}"));
+    }
+    Ok(())
+}
+
+/// Desktop S1: the one-command live desktop. Builds neo-init as the resident
+/// session WM + Arthur as its client, the kernel with the `desktop` feature
+/// set, pins the framebuffer mode in the staged limine.conf, attaches a real
+/// qemu-xhci with a usb-kbd + usb-mouse (keystrokes reach Arthur through
+/// ADR-074 kernel routing — no injection), and keeps a persistent NeoFS disk
+/// under `target/desktop/` so Arthur's memory (and an optional model, via
+/// NEO_STAGE_B_NEOM / NEO_STAGE_B_GGUF) survives between runs.
+///
+/// Options: `--vnc` (QEMU VNC on :5901, the Docker default), `--headless`,
+/// `--window` (GTK, the default outside Docker), `--resolution WxH`,
+/// `--fresh-disk`, `--monitor PORT` (HMP monitor on 127.0.0.1:PORT — e.g. for
+/// `screendump`), `--home` (DS-1: boot into Home's intent field),
+/// `--reduce-transparency` (opaque Atrium chrome), `--classic`
+/// (the S1 chrome, glass compiled out), `--pointer` (DI-1a: Home plus the
+/// WM-owned pointer, kernel `atrium-pointer-forward`), `--resize` (DI-1b:
+/// the pointer WM with edge/corner resize), `--lens` (DS-1c: glass Home
+/// whose Arthur blooms the read-only Lens on `list /`; with `--pointer`, a
+/// click on its Spine chip switches to it), `--intro` (the full desktop with
+/// Arthur's first-boot intro and the help card). NEO_SMP sets the CPU count
+/// (default 4 here).
+fn cmd_run_desktop(args: &[String]) -> Result<(), String> {
+    let mut mode = DisplayMode::LocalWindow;
+    let mut resolution = DESKTOP_DEFAULT_RESOLUTION;
+    let mut fresh_disk = false;
+    let mut monitor: Option<String> = None;
+    // Desktop S3: glass is the default material; `--reduce-transparency`
+    // builds the opaque a11y floor, `--classic` the S1 chrome (glass off).
+    // NEO_DESKTOP_MATERIAL (`glass` / `reduce-transparency` / `classic`) sets
+    // the same default for the Docker one-click path; a flag still wins.
+    let mut wm = match env::var("NEO_DESKTOP_MATERIAL").as_deref() {
+        Ok("reduce-transparency") => "reduce-transparency",
+        Ok("classic") => "desktop-session",
+        Ok("") | Ok("glass") | Err(_) => "desktop-glass",
+        Ok(other) => return Err(format!("unknown NEO_DESKTOP_MATERIAL `{other}`")),
+    };
+    let mut home = false;
+    let mut pointer = false;
+    let mut resize = false;
+    let mut lens = false;
+    let mut intro = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--vnc" => mode = DisplayMode::Vnc,
+            "--headless" => mode = DisplayMode::Headless,
+            "--window" => mode = DisplayMode::LocalWindow,
+            "--fresh-disk" => fresh_disk = true,
+            "--reduce-transparency" => wm = "reduce-transparency",
+            "--home" => home = true,
+            "--pointer" => pointer = true,
+            "--resize" => {
+                pointer = true;
+                resize = true;
+            }
+            "--lens" => lens = true,
+            // The first-boot intro (on the full desktop).
+            "--intro" => {
+                intro = true;
+                pointer = true;
+                resize = true;
+                lens = true;
+            }
+            "--classic" => wm = "desktop-session",
+            "--resolution" => {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| "--resolution requires WxH (e.g. 1920x1080)".to_string())?;
+                resolution = parse_resolution(raw)?;
+            }
+            "--monitor" => {
+                monitor = Some(
+                    iter.next()
+                        .ok_or_else(|| "--monitor requires a TCP port".to_string())?
+                        .clone(),
+                );
+            }
+            other => return Err(format!("unknown run-desktop option `{other}`")),
+        }
+    }
+
+    // DS-1 Home composes with either material; DI-1a's pointer rides on
+    // glass Home.
+    let wm = match (home || pointer || lens, wm) {
+        (false, wm) => wm,
+        (true, "desktop-glass") if intro => "desktop-intro",
+        (true, "desktop-glass") if resize && lens => "desktop-full",
+        (true, "desktop-glass") if resize => "desktop-resize",
+        (true, "desktop-glass") if lens && pointer => "desktop-lens-pointer",
+        (true, "desktop-glass") if lens => "desktop-lens",
+        (true, _) if lens => {
+            return Err("--lens needs the glass Atrium chrome".into());
+        }
+        (true, "desktop-glass") if pointer => "desktop-pointer",
+        (true, _) if pointer => {
+            return Err("--pointer needs the glass Atrium chrome".into());
+        }
+        (true, "reduce-transparency") => "desktop-home-rt",
+        (true, "desktop-session") => {
+            return Err("--home needs the Atrium chrome (not --classic)".into());
+        }
+        (true, _) => "desktop-home",
+    };
+    set_stage_std_real_smoke(&[]);
+    set_fault_probe_stage(None);
+    build_user_with_feature(Some(wm))?;
+    build_kernel_default(&BuildOptions {
+        no_default_features: false,
+        kernel_opt_level: None,
+        kernel_target_rustflags: None,
+        kernel_features: if pointer {
+            vec!["desktop".to_string(), "atrium-pointer-forward".to_string()]
+        } else {
+            vec!["desktop".to_string()]
+        },
+    })?;
+    set_desktop_resolution(Some(resolution));
+    let iso = assemble_iso();
+    set_desktop_resolution(None);
+    iso?;
+
+    let disk = prepare_desktop_disk(fresh_disk)?;
+    let iso_path = workspace_root().join(ISO_OUTPUT_REL);
+    let smp = env::var(NEO_SMP_ENV).unwrap_or_else(|_| "4".to_string());
+    eprintln!(
+        "[xtask] desktop: {}x{} smp={} disk={}",
+        resolution.0,
+        resolution.1,
+        smp,
+        disk.display()
+    );
+
+    let mut qemu = Command::new("qemu-system-x86_64");
+    qemu.args([
+        "-machine",
+        "q35",
+        "-cpu",
+        "max",
+        "-m",
+        "4096M",
+        "-vga",
+        "std",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-boot",
+        "d",
+        "-cdrom",
+    ])
+    .arg(&iso_path);
+    qemu.arg("-smp").arg(&smp);
+    qemu.arg("-drive").arg(format!(
+        "if=none,id=desk0,format=raw,cache=writeback,file={}",
+        disk.display()
+    ));
+    qemu.arg("-device")
+        .arg("virtio-blk-pci,drive=desk0,disable-legacy=on,disable-modern=off");
+    for device in desktop_input_devices() {
+        qemu.arg("-device").arg(device);
+    }
+    match &monitor {
+        Some(port) => {
+            qemu.arg("-monitor")
+                .arg(format!("tcp:127.0.0.1:{port},server,nowait"));
+        }
+        None => {
+            qemu.args(["-monitor", "none"]);
+        }
+    }
+    match mode {
+        DisplayMode::LocalWindow => {
+            qemu.args(["-display", "gtk,zoom-to-fit=on"]);
+        }
+        DisplayMode::Headless => {
+            qemu.args(["-display", "none"]);
+        }
+        DisplayMode::Vnc => {
+            qemu.args(["-display", "none", "-vnc", ":1"]);
+            eprintln!();
+            eprintln!("[xtask] ====================================================");
+            eprintln!("[xtask]   LogansOS desktop starting.");
+            eprintln!("[xtask]   Connect a VNC viewer to localhost:5901");
+            eprintln!("[xtask] ====================================================");
+            eprintln!();
+        }
+    }
+    let status = qemu
+        .status()
+        .map_err(|e| format!("failed to launch qemu-system-x86_64: {e} (is QEMU installed?)"))?;
+    if !status.success() {
+        return Err(format!("qemu exited with status {status}"));
+    }
+    Ok(())
+}
+
+/// The live input devices the desktop session expects: a real xHCI with a
+/// HID boot keyboard and mouse. Shared by `run-desktop` and the
+/// `desktop_session_boot` scenario so the gate boots the shipped topology.
+fn desktop_input_devices() -> [&'static str; 3] {
+    [
+        "qemu-xhci,id=xhci0",
+        "usb-kbd,bus=xhci0.0",
+        "usb-mouse,bus=xhci0.0",
+    ]
+}
+
+fn parse_resolution(raw: &str) -> Result<(u32, u32), String> {
+    let (w, h) = raw
+        .split_once(['x', 'X'])
+        .ok_or_else(|| format!("resolution `{raw}` is not WxH"))?;
+    let w: u32 = w.parse().map_err(|_| format!("bad width in `{raw}`"))?;
+    let h: u32 = h.parse().map_err(|_| format!("bad height in `{raw}`"))?;
+    if !(640..=7680).contains(&w) || !(400..=4320).contains(&h) {
+        return Err(format!(
+            "resolution `{raw}` out of range (640x400 .. 7680x4320)"
+        ));
+    }
+    Ok((w, h))
+}
+
+/// OT-87 R1: `cargo xtask vm-image [--with-model <neom>] [--fresh-data]`. The
+/// ISO comes from `xtask iso` (same arguments, same bytes) and is copied
+/// unchanged to `boot.raw`. `data.raw` is made once and kept across runs (it
+/// holds the installed system's state) unless `--fresh-data`.
+fn cmd_vm_image(args: &[String]) -> Result<(), String> {
+    let mut fresh_data = false;
+    let mut one_disk = false;
+    let mut iso_args = Vec::new();
+    for arg in args {
+        if arg == "--fresh-data" {
+            fresh_data = true;
+        } else if arg == "--one-disk" {
+            one_disk = true;
+        } else {
+            iso_args.push(arg.clone());
+        }
+    }
+    cmd_iso(&iso_args)?;
+    let dir = workspace_root().join(vm_image::VM_DIR_REL);
+    if one_disk {
+        let disk = write_one_disk(&dir, fresh_data, vm_image::ONE_DISK_SECTOR)?;
+        eprintln!(
+            "[xtask] vm-image: one disk {}; boot it with `cargo xtask vm-run --one-disk`",
+            disk.display()
+        );
+        return Ok(());
+    }
+    let (boot, data) = write_vm_disks(&dir, fresh_data)?;
+    eprintln!(
+        "[xtask] vm-image: boot {} and data {}; boot them with `cargo xtask vm-run`",
+        boot.display(),
+        data.display()
+    );
+    Ok(())
+}
+
+/// Copy the ISO to `dir/boot.raw`, make `dir/data.raw` when it is missing or
+/// `fresh_data`, and hold the pair to [`vm_image::check_vm_layout`].
+fn write_vm_disks(dir: &Path, fresh_data: bool) -> Result<(PathBuf, PathBuf), String> {
+    fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let iso = workspace_root().join(ISO_OUTPUT_REL);
+    let boot = dir.join(vm_image::BOOT_DISK);
+    fs::copy(&iso, &boot)
+        .map_err(|e| format!("copy {} to {}: {e}", iso.display(), boot.display()))?;
+    let data = dir.join(vm_image::DATA_DISK);
+    let made = fresh_data || !data.exists();
+    if made {
+        // OT-66 L1: with an empty `.system/`, where the first boot creates
+        // the account (THINK §7).
+        prepare_neofs_storage_disk_with_payload_files_sized(
+            &data,
+            "arthur-memory-system",
+            None,
+            &[],
+            &[],
+            Some(vm_image::DATA_DISK_MIB),
+        )?;
+    }
+    let read = |p: &Path| fs::read(p).map_err(|e| format!("read {}: {e}", p.display()));
+    let boot_bytes = read(&boot)?;
+    vm_image::check_vm_layout(&boot_bytes, &read(&iso)?, &read(&data)?)?;
+    println!(
+        "VM_IMAGE/1 status=ok boot={} boot_bytes={} boot_blake3={} data={} data_bytes={} data_disk={}",
+        boot.display(),
+        boot_bytes.len(),
+        hex_string(blake3::hash(&boot_bytes).as_bytes()),
+        data.display(),
+        vm_image::DATA_DISK_MIB << 20,
+        if made { "created" } else { "kept" }
+    );
+    Ok((boot, data))
+}
+
+/// OT-87 R3: `dir/disk.raw`, one GPT disk (THINK §4.4): the layout's table,
+/// the ISO's tree (`target/iso-root`, from the `xtask iso` just run) on a
+/// FAT32 ESP, and a NeoFS volume filling partition 2. The table and the ESP
+/// are rewritten every time; the NeoFS partition only when the disk is new
+/// or `fresh_data`, so the installed system keeps its state.
+/// Laid out for logical sector size `s` (OT-87 R4.3: 4096 is the 4Kn
+/// variant; the ESP is then formatted with 4096-byte sectors, mtools `-S`).
+fn write_one_disk(dir: &Path, fresh_data: bool, s: u64) -> Result<PathBuf, String> {
+    use std::io::{Seek, SeekFrom, Write};
+    fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let layout = vm_image::one_disk_layout(s);
+    let disk = dir.join(vm_image::ONE_DISK);
+    let made = fresh_data || !disk.exists();
+
+    // The ESP: FAT32 over the partition's exact size, the staging tree in it.
+    let esp = dir.join("esp.img");
+    let esp_bytes = (layout.esp.1 + 1 - layout.esp.0) * s;
+    let _ = fs::remove_file(&esp);
+    fs::File::create(&esp)
+        .and_then(|f| f.set_len(esp_bytes))
+        .map_err(|e| format!("create {}: {e}", esp.display()))?;
+    let esp_arg = esp.display().to_string();
+    let sectors = (esp_bytes / s).to_string();
+    // mtools' size code: sectors of 2^(code + 7) bytes. 512 is its default.
+    let mut format_args = vec![
+        "-i", &esp_arg, "-F", "-v", "LOGANSOS", "-N", "4c4f4741", "-T", &sectors, "-h", "64", "-s",
+        "32",
+    ];
+    if s == 4096 {
+        format_args.extend(["-S", "5"]);
+    }
+    format_args.push("::");
+    run_mtools("mformat", &format_args)?;
+    let staging = workspace_root().join(ISO_STAGING_REL);
+    let mut tree: Vec<String> = fs::read_dir(&staging)
+        .map_err(|e| format!("read {}: {e}", staging.display()))?
+        .map(|e| e.map(|e| e.path().display().to_string()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("read {}: {e}", staging.display()))?;
+    tree.sort();
+    let mut args: Vec<&str> = vec!["-s", "-i", &esp_arg];
+    args.extend(tree.iter().map(String::as_str));
+    args.push("::/");
+    run_mtools("mcopy", &args)?;
+
+    let neofs = dir.join("neofs-partition.img");
+    if made {
+        let mib = layout.neofs_total_blocks * 4096 / (1024 * 1024);
+        prepare_neofs_storage_disk_with_payload_files_sized(
+            &neofs,
+            "arthur-memory-system",
+            None,
+            &[],
+            &[],
+            Some(mib),
+        )?;
+    }
+
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .read(true)
+        .open(&disk)
+        .map_err(|e| format!("open {}: {e}", disk.display()))?;
+    if made {
+        file.set_len(0)
+            .and_then(|()| file.set_len(vm_image::ONE_DISK_BYTES))
+            .map_err(|e| format!("size {}: {e}", disk.display()))?;
+    }
+    let mut put = |at: u64, bytes: &[u8]| -> Result<(), String> {
+        file.seek(SeekFrom::Start(at))
+            .and_then(|_| file.write_all(bytes))
+            .map_err(|e| format!("write {} at {at:#x}: {e}", disk.display()))
+    };
+    put(0, &layout.mbr)?;
+    put(s, &layout.primary_header)?;
+    put(2 * s, &layout.entries)?;
+    put(layout.backup_entries_lba * s, &layout.entries)?;
+    put(layout.last_lba * s, &layout.backup_header)?;
+    // A kept disk's ESP is replaced whole: zero it first, then copy.
+    if !made {
+        let zero = vec![0u8; 64 * 1024];
+        let mut at = layout.esp.0 * s;
+        let end = (layout.esp.1 + 1) * s;
+        while at < end {
+            put(at, &zero)?;
+            at += zero.len() as u64;
+        }
+    }
+    // Copy the partition images in, skipping all-zero chunks: the disk stays
+    // sparse (the ESP's free space, the empty NeoFS blocks).
+    let mut copy_in = |src: &Path, at: u64, len: u64| -> Result<(), String> {
+        let bytes = fs::read(src).map_err(|e| format!("read {}: {e}", src.display()))?;
+        if bytes.len() as u64 != len {
+            return Err(format!(
+                "{} is {} bytes, not the partition's {len}",
+                src.display(),
+                bytes.len()
+            ));
+        }
+        for (i, chunk) in bytes.chunks(64 * 1024).enumerate() {
+            if chunk.iter().any(|&b| b != 0) {
+                put(at + i as u64 * 64 * 1024, chunk)?;
+            }
+        }
+        Ok(())
+    };
+    copy_in(&esp, layout.esp.0 * s, esp_bytes)?;
+    if made {
+        copy_in(
+            &neofs,
+            layout.neofs.0 * s,
+            (layout.neofs.1 + 1 - layout.neofs.0) * s,
+        )?;
+    }
+    drop(file);
+    let mut reader = fs::File::open(&disk).map_err(|e| format!("open {}: {e}", disk.display()))?;
+    let len = reader
+        .metadata()
+        .map_err(|e| format!("stat {}: {e}", disk.display()))?
+        .len();
+    vm_image::check_one_disk(
+        len,
+        &mut |at, out| {
+            use std::io::Read;
+            reader
+                .seek(SeekFrom::Start(at))
+                .and_then(|_| reader.read_exact(out))
+                .map_err(|e| format!("read {} at {at:#x}: {e}", disk.display()))
+        },
+        s,
+    )?;
+    println!(
+        "VM_IMAGE/1 status=ok one_disk={} bytes={} esp_lba={}..{} neofs_lba={}..{} neofs_blocks={} neofs={}",
+        disk.display(),
+        len,
+        layout.esp.0,
+        layout.esp.1,
+        layout.neofs.0,
+        layout.neofs.1,
+        layout.neofs_total_blocks,
+        if made { "created" } else { "kept" }
+    );
+    Ok(disk)
+}
+
+/// A digest as lowercase hex.
+fn hex_string(digest: &[u8; 32]) -> String {
+    String::from_utf8_lossy(&boot_model_logic::hex_digest(digest)).into_owned()
+}
+
+/// BLAKE3 of a file as lowercase hex: the OVMF pins, and the VM scenario's
+/// boot disk before and after its boots.
+fn blake3_file_hex(path: &Path) -> Result<String, String> {
+    fs::read(path)
+        .map(|bytes| hex_string(blake3::hash(&bytes).as_bytes()))
+        .map_err(|e| format!("read {}: {e}", path.display()))
+}
+
+/// The firmware for a VM boot: pinned for the gate, a warning otherwise.
+fn resolve_ovmf(require_pin: bool) -> Result<vm_image::Ovmf, String> {
+    let env_dir = env::var_os(vm_image::OVMF_DIR_ENV)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from);
+    let dirs = vm_image::ovmf_search_dirs(env_dir.as_deref());
+    let (ovmf, warning) = vm_image::find_ovmf(&dirs, require_pin, blake3_file_hex)?;
+    if let Some(warning) = warning {
+        eprintln!("[xtask] warning: unpinned OVMF: {warning}");
+    }
+    Ok(ovmf)
+}
+
+/// A fresh writable copy of the firmware's variable store for one boot.
+fn vm_vars_copy(ovmf: &vm_image::Ovmf, to: &Path) -> Result<(), String> {
+    fs::copy(&ovmf.vars, to)
+        .map(|_| ())
+        .map_err(|e| format!("copy {} to {}: {e}", ovmf.vars.display(), to.display()))
+}
+
+/// OT-87 R1: `cargo xtask vm-run [--vnc | --headless | --window]`: boot the
+/// `vm-image` disks the way an installed machine boots (UEFI, its own disk,
+/// no CD). The firmware's variables are a fresh copy each run; the data disk
+/// keeps what the system wrote.
+fn cmd_vm_run(args: &[String]) -> Result<(), String> {
+    let mut mode = DisplayMode::LocalWindow;
+    let mut one_disk = false;
+    for arg in args {
+        match arg.as_str() {
+            "--vnc" => mode = DisplayMode::Vnc,
+            "--headless" => mode = DisplayMode::Headless,
+            "--window" => mode = DisplayMode::LocalWindow,
+            "--one-disk" => one_disk = true,
+            other => return Err(format!("unknown vm-run option `{other}`")),
+        }
+    }
+    let dir = workspace_root().join(vm_image::VM_DIR_REL);
+    let boot = dir.join(vm_image::BOOT_DISK);
+    let data = dir.join(vm_image::DATA_DISK);
+    let single = dir.join(vm_image::ONE_DISK);
+    let disks: Vec<&PathBuf> = if one_disk {
+        vec![&single]
+    } else {
+        vec![&boot, &data]
+    };
+    for disk in disks {
+        if !disk.is_file() {
+            return Err(format!(
+                "{} is missing; run `cargo xtask vm-image` first",
+                disk.display()
+            ));
+        }
+    }
+    let ovmf = resolve_ovmf(false)?;
+    let vars = dir.join("vars.fd");
+    vm_vars_copy(&ovmf, &vars)?;
+    let smp = env::var(NEO_SMP_ENV).unwrap_or_else(|_| "4".to_string());
+    eprintln!(
+        "[xtask] vm-run: firmware {} smp={smp} boot={} data={}",
+        ovmf.code.display(),
+        boot.display(),
+        data.display()
+    );
+    let mut qemu = Command::new("qemu-system-x86_64");
+    qemu.args([
+        "-machine",
+        "q35",
+        "-cpu",
+        "max",
+        "-m",
+        "4096M",
+        "-vga",
+        "std",
+        "-serial",
+        "stdio",
+        "-no-reboot",
+        "-monitor",
+        "none",
+    ]);
+    qemu.arg("-smp").arg(&smp);
+    if one_disk {
+        qemu.args(vm_image::vm_one_disk_args(
+            &ovmf.code,
+            &vars,
+            &single,
+            vm_image::ONE_DISK_SECTOR,
+        ));
+    } else {
+        qemu.args(vm_image::vm_disk_args(&ovmf.code, &vars, &boot, &data));
+    }
+    for device in desktop_input_devices() {
+        qemu.arg("-device").arg(device);
+    }
+    match mode {
+        DisplayMode::LocalWindow => {
+            qemu.args(["-display", "gtk,zoom-to-fit=on"]);
+        }
+        DisplayMode::Headless => {
+            qemu.args(["-display", "none"]);
+        }
+        DisplayMode::Vnc => {
+            qemu.args(["-display", "none", "-vnc", ":1"]);
+            eprintln!();
+            eprintln!("[xtask] ====================================================");
+            eprintln!("[xtask]   LogansOS VM starting.");
+            eprintln!("[xtask]   Connect a VNC viewer to localhost:5901");
+            eprintln!("[xtask] ====================================================");
+            eprintln!();
+        }
+    }
+    let status = qemu
+        .status()
+        .map_err(|e| format!("failed to launch qemu-system-x86_64: {e} (is QEMU installed?)"))?;
+    if !status.success() {
+        return Err(format!("qemu exited with status {status}"));
+    }
+    Ok(())
+}
+
+/// The persistent desktop NeoFS volume (Arthur's memory, optional model).
+fn prepare_desktop_disk(fresh: bool) -> Result<PathBuf, String> {
+    let dir = workspace_root().join("target").join("desktop");
+    fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    let disk = dir.join("neofs.raw");
+    if disk.exists() && !fresh {
+        return Ok(disk);
+    }
+    // Empty values (docker-compose passes the variable through unset) mean "no
+    // model" — never fall back to the test fixture brain in a user session.
+    let model = if env_path(STAGE_B_NEOM_ENV)?.is_some() || env_path(STAGE_B_GGUF_ENV)?.is_some() {
+        Some(prepare_stage_b_real_brain_model()?)
+    } else {
+        eprintln!(
+            "[xtask] desktop: no model provisioned (set {STAGE_B_NEOM_ENV} or {STAGE_B_GGUF_ENV}); Arthur will say so politely"
+        );
+        None
+    };
+    match &model {
+        Some(model) => {
+            let vocab = model.with_extension("vocab");
+            let files: Vec<(&str, &Path)> = if vocab.is_file() {
+                vec![("model-qwen2.5-0.5b.vocab", vocab.as_path())]
+            } else {
+                Vec::new()
+            };
+            prepare_neofs_storage_disk_with_payload_files_sized(
+                &disk,
+                "arthur-memory",
+                None,
+                &[("model-qwen2.5-0.5b.neom", model.as_path())],
+                &files,
+                Some(768),
+            )
+        }
+        None => prepare_neofs_storage_disk_with_payload_files_sized(
+            &disk,
+            "arthur-memory",
+            None,
+            &[],
+            &[],
+            // >= 64 MiB + margin: mkfs keeps three superblock copies.
+            Some(128),
+        ),
+    }
+}
+
+fn smp_count() -> String {
+    env::var(NEO_SMP_ENV).unwrap_or_else(|_| "1".to_string())
+}
+
+// === paths ===
+
+fn kernel_path() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join(KERNEL_TARGET)
+        .join("debug")
+        .join(KERNEL_BIN)
+}
+
+fn user_path() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(USER_BIN)
+}
+
+fn worker_path() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(WORKER_BIN)
+}
+
+fn shell_path() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(SHELL_BIN)
+}
+
+fn arthur_path() -> PathBuf {
+    workspace_root()
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(ARTHUR_BIN)
+}
+
+/// OT-27a (ISC-2): the MT7601U vendor firmware blob on disk. NOT committed to git
+/// (vendor binary + licensing) — provided out-of-band and staged as a Limine
+/// module (`/modules/mt7601u-fw`) by `assemble_iso_*` only when present.
+fn firmware_blob_path() -> PathBuf {
+    workspace_root()
+        .join("kernel")
+        .join("assets")
+        .join("firmware")
+        .join("mediatek")
+        .join("mt7601u.bin")
+}
+
+fn workspace_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR points at tools/xtask; go up two levels.
+    let xtask_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    xtask_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| xtask_dir.clone())
+}
+
+/// OT-87 R2: the model from the installed NeoFS volume. Every run proves the
+/// boot NeoFS mount; each scenario then proves its source and state and the
+/// absence of the others.
+fn check_arthur_model_from_neofs_serial(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    const NEOFS_MODEL: &str = "/neofs/model-qwen2.5-0.5b.neom";
+    const MODEL_DIGEST: &str = "NEOFSMODEL digest path=/neofs/model-qwen2.5-0.5b.neom \
+         pin=/models/model-qwen2.5-0.5b.neom";
+    // The fixture vocab's NEOVOCB1 pin (or the real one's, under NEO_STAGE_B_*).
+    const VOCB_DIGEST: &str = "NEOFSMODEL digest path=/neofs/model-qwen2.5-0.5b.vocb \
+         pin=/vocab/model-qwen2.5-0.5b.vocb";
+    const BOOT_PATH: &str = "/models/model-qwen2.5-0.5b.neom";
+    let common = [
+        "[ kernel ] boot-neofs: mounted /neofs readwrite",
+        "neofs_mount ok source=boot-neofs",
+        "CENSUS label=arthur_neofs_model_start",
+        "CENSUS label=arthur_neofs_model_end",
+    ];
+    let (present, absent): (Vec<String>, Vec<String>) = match scenario.name {
+        "arthur_model_from_neofs" => (
+            vec![
+                format!("NEOFSMODEL preload path={NEOFS_MODEL} stage=start"),
+                VOCB_DIGEST.into(),
+                MODEL_DIGEST.into(),
+                format!("NEOFSMODEL loaded path={NEOFS_MODEL} bytes="),
+                format!("NEOFSMODEL preload path={NEOFS_MODEL} ok=true errno=0 stack_depth="),
+                format!("BOOTMODEL absent path={BOOT_PATH}"),
+                "vocab_load tokens=151936".into(),
+                " format=neovocb1".into(),
+                format!("model_open path={NEOFS_MODEL} source=neofs preloaded=true"),
+                "ARTHUR model source=neofs state=ready".into(),
+                "reply=\"".into(),
+                "arthur_model_from_neofs=ok".into(),
+            ],
+            vec![
+                "match=false".into(),
+                "ARTHUR says:".into(),
+                "BOOTMODEL take".into(),
+                "BOOTMOD reclaim".into(),
+                "NEOFSMODEL refused".into(),
+                "skipped=vocab".into(),
+            ],
+        ),
+        // NeoFS's own hash matches the flipped bytes; only the pin refuses them.
+        "arthur_model_from_neofs_damaged" => (
+            vec![
+                format!("NEOFSMODEL preload path={NEOFS_MODEL} stage=start"),
+                VOCB_DIGEST.into(),
+                MODEL_DIGEST.into(),
+                "match=false".into(),
+                format!("NEOFSMODEL preload path={NEOFS_MODEL} ok=false errno=-74"),
+                format!("model_open path={NEOFS_MODEL} source=neofs preloaded=true"),
+                "ARTHUR model source=neofs state=damaged".into(),
+                "reply=\"arthur: My model file on this disk is damaged, so I won't use it. Reinstall LogansOS to repair it.\"".into(),
+                "arthur_model_from_neofs_damaged=ok".into(),
+            ],
+            vec![
+                format!("NEOFSMODEL loaded path={NEOFS_MODEL}"),
+                "model_kind=".into(),
+                "BOOTMODEL take".into(),
+                "Re-create the USB".into(),
+            ],
+        ),
+        // The boot modules win: the disk's (damaged) model is never consulted.
+        "arthur_model_from_neofs_module_wins" => (
+            vec![
+                format!("BOOTMODEL preload path={BOOT_PATH} stage=start"),
+                format!("BOOTMODEL take path={BOOT_PATH} bytes="),
+                "match=true".into(),
+                format!("BOOTMODEL preload path={BOOT_PATH} ok=true errno=0 stack_depth="),
+                "model_open path=/boot/models/model-qwen2.5-0.5b.neom source=boot-module".into(),
+                "ARTHUR model source=boot-module state=ready".into(),
+                "reply=\"".into(),
+                "arthur_model_from_neofs_module_wins=ok".into(),
+            ],
+            vec![
+                "match=false".into(),
+                format!("NEOFSMODEL preload path={NEOFS_MODEL}"),
+                MODEL_DIGEST.into(),
+                VOCB_DIGEST.into(),
+                "source=neofs".into(),
+                "ARTHUR says:".into(),
+            ],
+        ),
+        // Off: the same disk, and the model stays absent (no NeoFS source).
+        "arthur_model_from_neofs_off" => (
+            vec![
+                // No vocab module, so the model is never asked for (F8).
+                "vocab_load failed reason=open".into(),
+                "ARTHUR model source=boot-module state=absent".into(),
+                "reply=\"arthur: I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with.\"".into(),
+                "arthur_model_from_neofs_off=ok".into(),
+            ],
+            vec![
+                "NEOFSMODEL".into(),
+                "source=neofs".into(),
+                "model_kind=".into(),
+            ],
+        ),
+        other => return Err(format!("{other}: not a model-from-neofs scenario")),
+    };
+    for needle in common
+        .iter()
+        .copied()
+        .chain(present.iter().map(String::as_str))
+    {
+        require_serial_contains(
+            scenario,
+            observed,
+            needle,
+            "OT-87 R2 model-from-neofs scenario must emit its source, pin and state",
+        )?;
+    }
+    for needle in &absent {
+        require_serial_absent(
+            scenario,
+            observed,
+            needle,
+            "OT-87 R2 model-from-neofs control must not reach another source or state",
+        )?;
+    }
+    Ok(())
+}
+
+/// B1b: the boot-module model ladder. Every run proves the source (no NeoFS
+/// mount, `/boot` mounted, the module path) and the F7 count line; each
+/// scenario then proves its own state and the absence of the others.
+fn check_arthur_boot_module_serial(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    const PATH: &str = "/models/model-qwen2.5-0.5b.neom";
+    const VOCAB_OK: &str =
+        "BOOTMODULE digest path=/vocab/model-qwen2.5-0.5b.vocab bytes=5435213 expected=5ac8a1c3";
+    // NEOVOCB1: the fixture vocab converted at image build.
+    const VOCB_OK: &str =
+        "BOOTMODULE digest path=/vocab/model-qwen2.5-0.5b.vocb bytes=3380944 expected=98f942bf";
+    const TEXT_VOCAB: &str = "path=/vocab/model-qwen2.5-0.5b.vocab";
+    const MODEL_OPEN: &str =
+        "model_open path=/boot/models/model-qwen2.5-0.5b.neom source=boot-module";
+    let common = [
+        "BOOTMOD count=",
+        "BOOTMOD module path=",
+        "[ kernel ] fs: mounted read-only /boot module namespace (B1b)",
+        "neofs_mount skipped source=boot-module",
+        "CENSUS label=arthur_boot_module_start",
+        "CENSUS label=arthur_boot_module_end",
+    ];
+    let (present, absent): (Vec<String>, Vec<String>) = match scenario.name {
+        "arthur_boot_module_answers" => (
+            vec![
+                VOCAB_OK.into(),
+                "vocab_load tokens=151936".into(),
+                MODEL_OPEN.into(),
+                format!("BOOTMODEL take path={PATH} bytes="),
+                "match=true".into(),
+                "CENSUS label=model_built".into(),
+                format!("BOOTMOD reclaim path={PATH}"),
+                "result=Ok(".into(),
+                "CENSUS label=model_reclaimed".into(),
+                format!("BOOTMODEL loaded path={PATH}"),
+                "ARTHUR model source=boot-module state=ready".into(),
+                "reply=\"".into(),
+                "arthur_boot_module_answers=ok".into(),
+            ],
+            vec![
+                "neofs_mount ok".into(),
+                "match=false".into(),
+                "ARTHUR says:".into(),
+            ],
+        ),
+        // Zenbook ask-freeze: built at boot, then handed to Arthur.
+        "arthur_boot_module_preload" => (
+            vec![
+                format!("BOOTMODEL preload path={PATH} stage=start"),
+                format!("BOOTMODEL take path={PATH} bytes="),
+                "match=true".into(),
+                "CENSUS label=model_built".into(),
+                format!("BOOTMOD reclaim path={PATH}"),
+                "result=Ok(".into(),
+                format!("BOOTMODEL loaded path={PATH}"),
+                format!("BOOTMODEL preload path={PATH} ok=true errno=0 stack_depth="),
+                VOCB_OK.into(),
+                "verified=true".into(),
+                "vocab_load tokens=151936 bytes=3380944 read_ms=".into(),
+                " format=neovocb1".into(),
+                MODEL_OPEN.into(),
+                "ARTHUR model source=boot-module state=ready".into(),
+                "reply=\"".into(),
+                "arthur_boot_module_answers=ok".into(),
+            ],
+            vec![
+                "neofs_mount ok".into(),
+                "match=false".into(),
+                "ARTHUR says:".into(),
+                format!("BOOTMODEL absent path={PATH}"),
+                // No text sidecar is staged or read, and no fallback runs.
+                TEXT_VOCAB.into(),
+                "vocab_load failed".into(),
+            ],
+        ),
+        // A vocab that fails its pin leaves the model untaken (B1c F8).
+        "arthur_boot_module_preload_vocab_damaged" => (
+            vec![
+                format!("BOOTMODEL preload path={PATH} skipped=vocab"),
+                "BOOTMODULE digest path=/vocab/model-qwen2.5-0.5b.vocb".into(),
+                "verified=false".into(),
+                "vocab_load failed reason=open".into(),
+                "ARTHUR model source=boot-module state=damaged".into(),
+                "arthur_boot_module_vocab_damaged=ok".into(),
+            ],
+            vec![
+                "neofs_mount ok".into(),
+                "vocab_load tokens=".into(),
+                "BOOTMODEL take".into(),
+                "model_open path=".into(),
+                "stage=start".into(),
+                // A damaged NEOVOCB1 does not fall back to the text sidecar.
+                TEXT_VOCAB.into(),
+            ],
+        ),
+        "arthur_boot_module_damaged" => (
+            vec![
+                VOCAB_OK.into(),
+                "vocab_load tokens=151936".into(),
+                MODEL_OPEN.into(),
+                format!("BOOTMODEL take path={PATH} bytes="),
+                "match=false".into(),
+                "CENSUS label=model_damaged_reclaimed".into(),
+                "ARTHUR model source=boot-module state=damaged".into(),
+                "reply=\"arthur: My model file is damaged, so I won't use it. Re-create the USB from the original image.\"".into(),
+                "arthur_boot_module_damaged=ok".into(),
+            ],
+            vec![
+                "neofs_mount ok".into(),
+                "match=true".into(),
+                "BOOTMODEL loaded".into(),
+                "CENSUS label=model_built".into(),
+                "model_kind=".into(),
+                "forward token=".into(),
+            ],
+        ),
+        "arthur_boot_module_absent" => (
+            vec![
+                VOCAB_OK.into(),
+                "vocab_load tokens=151936".into(),
+                MODEL_OPEN.into(),
+                format!("BOOTMODEL absent path={PATH}"),
+                "ARTHUR model source=boot-module state=absent".into(),
+                "reply=\"arthur: I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with.\"".into(),
+                "arthur_boot_module_absent=ok".into(),
+            ],
+            vec![
+                "neofs_mount ok".into(),
+                "BOOTMODEL take".into(),
+                "BOOTMODEL loaded".into(),
+                "model_kind=".into(),
+            ],
+        ),
+        "arthur_boot_module_vocab_damaged" => (
+            vec![
+                "BOOTMODULE digest path=/vocab/model-qwen2.5-0.5b.vocab".into(),
+                "verified=false".into(),
+                "vocab_load failed reason=open".into(),
+                "ARTHUR model source=boot-module state=damaged".into(),
+                "reply=\"arthur: My model file is damaged, so I won't use it. Re-create the USB from the original image.\"".into(),
+                "arthur_boot_module_vocab_damaged=ok".into(),
+            ],
+            vec![
+                "neofs_mount ok".into(),
+                "vocab_load tokens=".into(),
+                "BOOTMODEL take".into(),
+                "model_open path=".into(),
+                "model_kind=".into(),
+            ],
+        ),
+        other => return Err(format!("{other}: not a boot-module scenario")),
+    };
+    for needle in common
+        .iter()
+        .copied()
+        .chain(present.iter().map(String::as_str))
+    {
+        require_serial_contains(
+            scenario,
+            observed,
+            needle,
+            "B1b boot-module scenario must emit its source, state and census ladder",
+        )?;
+    }
+    for needle in &absent {
+        require_serial_absent(
+            scenario,
+            observed,
+            needle,
+            "B1b boot-module control must not reach another state's breadcrumb",
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    /// F7: xtask's module ceiling is the kernel's early-boot extent capacity.
+    /// R1-4: the provisioning header goes only to a regular file.
+    #[test]
+    fn log_sink_header_writes_only_regular_files() {
+        let dir = std::env::temp_dir().join(format!("xtask-header-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        // Device paths, by name and by type.
+        for device in [
+            "/dev/null",
+            "/dev/nvme0n1",
+            "\\\\.\\PhysicalDrive0",
+            "//./PhysicalDrive0",
+        ] {
+            let err = write_regular_file(Path::new(device), b"x", true).unwrap_err();
+            assert!(err.contains("device path"), "{device}: {err}");
+        }
+        #[cfg(unix)]
+        {
+            let link = dir.join("to-null");
+            let _ = fs::remove_file(&link);
+            std::os::unix::fs::symlink("/dev/null", &link).unwrap();
+            let err = write_regular_file(&link, b"x", true).unwrap_err();
+            assert!(err.contains("not a regular file"), "{err}");
+        }
+        // A directory.
+        let err = write_regular_file(&dir, b"x", true).unwrap_err();
+        assert!(err.contains("not a regular file"), "{err}");
+        // A new file, then no overwrite without --force, then with it.
+        let out = dir.join("log-sink-header.bin");
+        let _ = fs::remove_file(&out);
+        write_regular_file(&out, &[1u8; 4096], false).unwrap();
+        assert_eq!(fs::read(&out).unwrap().len(), 4096);
+        let err = write_regular_file(&out, &[2u8; 4096], false).unwrap_err();
+        assert!(err.contains("--force"), "{err}");
+        assert_eq!(fs::read(&out).unwrap()[0], 1, "untouched");
+        write_regular_file(&out, &[2u8; 4096], true).unwrap();
+        assert_eq!(fs::read(&out).unwrap()[0], 2);
+        // The command itself: usage, and the header it writes.
+        assert!(cmd_log_sink_header(&[]).is_err());
+        let path = dir.join("cmd.bin");
+        let _ = fs::remove_file(&path);
+        cmd_log_sink_header(&[path.display().to_string()]).unwrap();
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            write_guard_logic::provisioning_log_header(BARE_METAL_LOG_REGION_SIZE).to_vec()
+        );
+        assert!(cmd_log_sink_header(&[path.display().to_string()]).is_err());
+        cmd_log_sink_header(&[path.display().to_string(), "--force".to_string()]).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Janus F2: every spelling Cargo accepts for the guard-off control is
+    /// recognised (Cargo itself accepts the package-qualified form, exit 0).
+    #[test]
+    fn guard_control_feature_in_every_spelling() {
+        for spec in [
+            "neo-test-block-write-guard-control",
+            "neoplutarch-kernel/neo-test-block-write-guard-control",
+            "  neo-test-block-write-guard-control\t",
+            "neoplutarch-kernel/ neo-test-block-write-guard-control",
+        ] {
+            assert!(feature_disables_write_guard(spec), "{spec:?}");
+        }
+        for spec in [
+            "neo-test-block-write-guard",
+            "neo-test-block-write-guard-control-extra",
+            "neoplutarch-kernel/neo-test-bare-metal-mode",
+            "",
+        ] {
+            assert!(!feature_disables_write_guard(spec), "{spec:?}");
+        }
+    }
+
+    /// A comma- or space-joined NEO_TEST_EXTRA_FEATURES list is split before
+    /// each spec is checked, so the control cannot hide in a list.
+    #[test]
+    fn guard_control_feature_in_a_list() {
+        let extra = "neo-test-ipc-park-kill-control,neoplutarch-kernel/neo-test-block-write-guard-control foo";
+        assert!(
+            extra
+                .split([',', ' ', '\t'])
+                .filter(|s| !s.is_empty())
+                .any(feature_disables_write_guard)
+        );
+    }
+
+    /// The image scan finds the kernel's guard-off marker anywhere in an
+    /// image, and removes a refused image.
+    #[test]
+    fn guard_off_image_is_refused() {
+        let mut image = vec![0u8; 4096];
+        assert!(!contains_guard_off_marker(&image));
+        image[1000..1035].copy_from_slice(write_guard_logic::GUARD_OFF_MARKER);
+        assert!(contains_guard_off_marker(&image));
+        let dir = std::env::temp_dir().join(format!("xtask-guard-off-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("bad.iso");
+        fs::write(&bad, &image).unwrap();
+        assert!(refuse_guard_off_image(&bad).is_err());
+        assert!(!bad.exists(), "a refused image is removed");
+        let good = dir.join("good.iso");
+        fs::write(&good, vec![0u8; 4096]).unwrap();
+        assert!(refuse_guard_off_image(&good).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boot_module_ceiling_matches_the_kernel() {
+        let main = std::fs::read_to_string(workspace_root().join("kernel/src/main.rs")).unwrap();
+        let line = main
+            .lines()
+            .find(|l| l.starts_with("const MAX_BOOT_MODULE_EXTENTS: usize ="))
+            .expect("kernel MAX_BOOT_MODULE_EXTENTS");
+        let value: usize = line
+            .trim_start_matches("const MAX_BOOT_MODULE_EXTENTS: usize =")
+            .trim()
+            .trim_end_matches(';')
+            .parse()
+            .unwrap();
+        assert_eq!(value, super::MAX_BOOT_MODULES);
+    }
+
+    /// F7: one module over the ceiling is refused; at the ceiling is fine.
+    #[test]
+    fn boot_module_count_is_refused_over_the_ceiling() {
+        let mut conf = String::from("/Neo\n    protocol: limine\n");
+        for i in 0..super::MAX_BOOT_MODULES {
+            conf.push_str(&format!("    module_path: boot():/modules/m{i}\n"));
+        }
+        assert!(super::check_boot_module_count(&conf).is_ok());
+        let over = super::inject_module_line(&conf, "/models/x").unwrap();
+        let err = super::check_boot_module_count(&over).unwrap_err();
+        assert!(err.contains("F7"), "{err}");
+    }
+
+    /// B1: a `/models/` line lands inside the entry, indented like its siblings.
+    #[test]
+    fn model_module_line_is_injected_after_the_last_module() {
+        let conf = "/Neo\n    protocol: limine\n    module_path: boot():/modules/neo-init\n    cmdline: x\n";
+        let out = super::inject_module_line(conf, "/models/reclaim-probe.bin").unwrap();
+        assert_eq!(
+            out,
+            "/Neo\n    protocol: limine\n    module_path: boot():/modules/neo-init\n    module_path: boot():/models/reclaim-probe.bin\n    cmdline: x\n"
+        );
+    }
+
+    /// B1a: the probe is the kernel scenario's length and pattern.
+    #[test]
+    fn reclaim_probe_is_unaligned_and_patterned() {
+        let bytes = super::reclaim_probe_bytes();
+        assert_eq!(bytes.len(), super::BOOT_MODULE_RECLAIM_PROBE_LEN);
+        assert_eq!(bytes.len() % 4096, 2560);
+        assert_eq!(bytes[0], 0x5a);
+        assert_eq!(bytes[251], 0x5a);
+        assert_eq!(bytes[1], 1 ^ 0x5a);
+    }
+
+    /// An HMP script byte is either a control (mouse, chord) or a key,
+    /// never both: a control that shadowed a key would silently drop that
+    /// keystroke from every script that types it (DI-1b once took 0x08,
+    /// Backspace, and DS-1's "zz" survived into Arthur's intent).
+    #[test]
+    fn special_bytes_never_shadow_a_key() {
+        assert!(super::hmp_key_for_byte(super::HMP_PAUSE_1S).is_none());
+        for n in 0..super::HMP_CAPTURES {
+            let byte = super::HMP_CAPTURE_0 + n;
+            assert!(super::hmp_key_for_byte(byte).is_none(), "{byte:#04x}");
+            assert!(super::hmp_special_for_byte(byte).is_none(), "{byte:#04x}");
+        }
+        assert!(super::hmp_special_for_byte(super::HMP_PAUSE_1S).is_none());
+        for byte in 0..=u8::MAX {
+            assert!(
+                super::hmp_special_for_byte(byte).is_none()
+                    || super::hmp_key_for_byte(byte).is_none(),
+                "byte {byte:#04x} is both a control and a key"
+            );
+        }
+    }
+    use super::*;
+
+    #[test]
+    fn elf_needle_scan_finds_and_misses() {
+        let elf = b"..\0real_lm_generate\0sample step=%d\0..";
+        assert_eq!(
+            elf_needles_found(elf, &["sample step=", "kv_persist", "real_lm_generate"]),
+            vec!["sample step=", "real_lm_generate"]
+        );
+        assert!(elf_needles_found(b"", &["x"]).is_empty());
+    }
+
+    /// B1c (F8): `iso --with-model` refuses a file that fails its pin, naming
+    /// both digests, and accepts one that matches (the committed KAT fixture
+    /// against its own pin stands in for the 485 MB model).
+    #[test]
+    fn with_model_digest_check_accepts_the_pin_and_names_a_mismatch() {
+        let root = workspace_root();
+        let fixture = root.join("kernel/src/ai/fixtures/kv_persist_kat.neom");
+        assert!(check_pinned_digest(&fixture, &boot_model_logic::KAT_INVENTORY.blake3).is_ok());
+        let err = check_pinned_digest(&fixture, &boot_model_logic::QWEN25_05B.blake3)
+            .expect_err("the fixture is not the 0.5B");
+        assert!(err.contains("fails its pin"), "{err}");
+        assert!(err.contains("a32e4a1b"), "names the expected digest: {err}");
+        assert!(err.contains("6f14b933"), "names the actual digest: {err}");
+        assert!(err.contains("no image was written"), "{err}");
+    }
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// The exact set a plain `cargo neo-test` (no args) runs and that the CI
+    /// matrix shards. This is the partition's "full set" of record.
+    fn canonical_suite() -> Vec<TestScenario> {
+        select_test_scenarios(&[], false, false).expect("default scenario selection")
+    }
+
+    /// S2-F1: every licence file the ISO stages exists and is non-empty, and
+    /// the font licence is the OFL.
+    #[test]
+    fn staged_licence_files_exist() {
+        let root = workspace_root();
+        for (src, _) in LICENSE_FILES {
+            let text = fs::read_to_string(root.join(src)).expect("licence file readable");
+            assert!(!text.trim().is_empty(), "{src} is empty");
+        }
+        // One OFL text per bundled face, each with its copyright notice
+        // (OFL §2), and NOTICE names both.
+        let inter = fs::read_to_string(root.join(LICENSE_FILES[0].0)).unwrap();
+        assert!(inter.contains("SIL OPEN FONT LICENSE Version 1.1"));
+        assert!(inter.contains("Copyright (c) 2016 The Inter Project Authors"));
+        let plex = fs::read_to_string(root.join(LICENSE_FILES[1].0)).unwrap();
+        assert!(plex.contains("SIL OPEN FONT LICENSE Version 1.1"));
+        assert!(plex.contains("Reserved Font Name \"Plex\""));
+        let notice = fs::read_to_string(root.join("NOTICE")).unwrap();
+        for (_, name) in &LICENSE_FILES[..2] {
+            assert!(notice.contains(&format!("/licenses/{name}")), "{name}");
+        }
+    }
+
+    /// B1b (THINK Q3 falsifier): the licence an image with a model module
+    /// stages is the full Apache-2.0 text, and NOTICE names it and the model.
+    #[test]
+    fn model_licence_files_exist_and_notice_names_them() {
+        let root = workspace_root();
+        for (src, name) in MODEL_LICENSE_FILES {
+            let text = fs::read_to_string(root.join(src)).expect("model licence readable");
+            assert!(text.contains("Apache License"), "{src}");
+            assert!(text.contains("Version 2.0, January 2004"), "{src}");
+            assert!(text.contains("END OF TERMS AND CONDITIONS"), "{src}");
+            let notice = fs::read_to_string(root.join("NOTICE")).unwrap();
+            assert!(
+                notice.contains(&format!("./{src}")),
+                "NOTICE must cite {src}"
+            );
+            assert!(notice.contains(&format!("/licenses/{name}")));
+            assert!(notice.contains(BOOT_MODEL_NEOM));
+        }
+    }
+
+    /// B1c: `iso --with-model` parsing and the size guard.
+    #[test]
+    fn with_model_is_split_from_the_iso_arguments() {
+        let args: Vec<String> = ["--with-model", "/m/x.neom", "--features", "a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (m, rest) = split_with_model(&args).unwrap();
+        assert_eq!(m, Some(PathBuf::from("/m/x.neom")));
+        assert_eq!(rest, vec!["--features".to_string(), "a".to_string()]);
+        let (m, rest) = split_with_model(&["--with-model=/y.neom".to_string()]).unwrap();
+        assert_eq!(m, Some(PathBuf::from("/y.neom")));
+        assert!(rest.is_empty());
+        assert!(split_with_model(&["--with-model".to_string()]).is_err());
+        let (m, _) = split_with_model(&[]).unwrap();
+        assert_eq!(m, None);
+    }
+
+    #[test]
+    fn with_model_refuses_files_that_are_not_the_pinned_sizes() {
+        let dir = env::temp_dir().join(format!("b1c-with-model-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let neom = dir.join("m.neom");
+        let vocab = dir.join("m.vocab");
+        fs::write(&neom, [0u8; 16]).unwrap();
+        fs::write(&vocab, [0u8; 16]).unwrap();
+        let err = check_product_model_files(&neom, &vocab).unwrap_err();
+        assert!(err.contains("485489152"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(check_product_model_files(&dir.join("absent.neom"), &vocab).is_err());
+    }
+
+    /// Image A does not wait for bring-up evidence: `boot-evidence-holds` is
+    /// a bring-up-only feature.
+    #[test]
+    fn product_image_has_no_boot_evidence_holds() {
+        assert!(!PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"boot-evidence-holds"));
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"fb-progress-console"));
+    }
+
+    /// A9-D: the busy emblem's pace check reads both answers' lines and
+    /// fails a WM that presented only when the emblem appeared.
+    #[test]
+    fn busy_emblem_pace_needs_two_emblems_kept_to_half_their_clock() {
+        let line = |ms: u64, presents: u64| {
+            format!("DESKTOP busy emblem ended ms={ms} presents={presents} last_frame=7\n")
+        };
+        let ok = format!("noise\n{}x\n{}", line(30_000, 361), line(2_000, 12));
+        assert_eq!(busy_emblem_ends(&ok), vec![(30_000, 361), (2_000, 12)]);
+        assert_eq!(check_busy_emblem_pace(&ok), Ok(()));
+        // A frozen WM: one present at the start of a 30 s generation.
+        assert!(
+            check_busy_emblem_pace(&format!("{}{}", line(30_000, 1), line(2_000, 12))).is_err()
+        );
+        // Under half the clock: 30 s is due 361 frames; 179 presents is not enough.
+        assert!(
+            check_busy_emblem_pace(&format!("{}{}", line(30_000, 179), line(2_000, 12))).is_err()
+        );
+        // Not a real generation, and a missing second answer.
+        assert!(check_busy_emblem_pace(&format!("{}{}", line(500, 6), line(2_000, 12))).is_err());
+        assert!(check_busy_emblem_pace(&line(30_000, 361)).is_err());
+    }
+
+    /// The product image turns the busy emblem on in both halves, or in
+    /// neither: Arthur's OP_BUSY is an error to a WM without `desktop-busy`.
+    #[test]
+    fn product_image_pairs_the_busy_emblem() {
+        let src = include_str!("main.rs");
+        // neo-init's list is the one that starts with "desktop-intro".
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"desktop-busy\""), "{init}");
+        let arthur = src
+            .split("Some(\"desktop-with-model\") => vec![\n            \"desktop-session\"")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(arthur.contains("\"arthur-busy-emblem\""), "{arthur}");
+    }
+
+    /// App icons (J.c., 2026-10-29): the product image's WM, which image A
+    /// builds too (`build_user_with_feature(Some("desktop-with-model"))`),
+    /// draws the Spine chips' icons.
+    #[test]
+    fn product_image_draws_the_app_icons() {
+        let src = include_str!("main.rs");
+        // neo-init's list is the one that starts with "desktop-intro".
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"atrium-app-icons\""), "{init}");
+        // Image A and the product share that one WM build: the only call.
+        assert_eq!(
+            src.matches("build_user_with_feature(Some(\"desktop-with-model\"))?")
+                .count(),
+            1
+        );
+    }
+
+    /// A9-C2: the product image turns the wheel on in the kernel and the WM
+    /// together.
+    #[test]
+    fn product_image_pairs_the_wheel() {
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"atrium-pointer-wheel"));
+        let src = include_str!("main.rs");
+        // neo-init's list is the one that starts with "desktop-intro".
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"desktop-wheel\""), "{init}");
+    }
+
+    /// OT-66 L1: the product image signs in, so its kernel has the CSPRNG
+    /// sign-in draws from; the WM's `login` without `kernel-rng` would exit
+    /// at first boot. L2: and the lock, without which the WM never arms it
+    /// (`LOCK unavailable`).
+    #[test]
+    fn product_image_pairs_login_with_kernel_rng() {
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"kernel-rng"));
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"sak-lock"));
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"sak-lock-route"));
+        // Dexter #186 item 4: the record is the WM's alone.
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"system-store"));
+        // Dexter #187 item 3a: and no other process can swap the volume it
+        // is on.
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"mount-authority"));
+        // OT-66 K1b: and Arthur reaches only his scopes. The kernel feature
+        // and the WM's go together: the WM's alone opens no scopes on a
+        // kernel without it, and the kernel's alone leaves Arthur no caps.
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"cap-rooted-open"));
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"atrium-pointer-forward"));
+        let src = include_str!("main.rs");
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"login\""), "{init}");
+        assert!(init.contains("\"cap-rooted-open\""), "{init}");
+    }
+
+    /// A9-C2: the wheel check wants both forwards to Arthur and a
+    /// three-line first step.
+    #[test]
+    fn wheel_sequence_check() {
+        let ok = "DESKTOP pointer wheel=1 to=arthur\nDESKTOP arthur scroll key=wheel view_top=11\nDESKTOP pointer wheel=-1 to=arthur\nDESKTOP arthur scroll key=wheel view=follow\n";
+        assert_eq!(check_wheel_sequence(ok), Ok(()));
+        assert!(check_wheel_sequence(&ok.replace("wheel=1 to=arthur", "wheel=1 to=none")).is_err());
+        assert!(check_wheel_sequence(&ok.replace("view_top=11", "view_top=13")).is_err());
+        assert!(check_wheel_sequence(&ok.replace("view=follow", "view_top=14")).is_err());
+    }
+
+    /// A9-C: the scroll check reads the four witnesses and their arithmetic.
+    #[test]
+    fn scroll_sequence_check() {
+        let ok = "x\nDESKTOP arthur scroll key=pgup view_top=12\nDESKTOP arthur scroll key=up view_top=11\nDESKTOP arthur scroll key=pgdn view_top=22\nDESKTOP arthur scroll key=pgdn view=follow\n";
+        assert_eq!(check_scroll_sequence(ok), Ok(()));
+        assert!(check_scroll_sequence(&ok.replace("view_top=11", "view_top=12")).is_err());
+        assert!(check_scroll_sequence(&ok.replace("view_top=22", "view_top=21")).is_err());
+        assert!(check_scroll_sequence(&ok.replace("view=follow", "view_top=23")).is_err());
+        assert!(check_scroll_sequence("DESKTOP arthur scroll key=pgup view_top=12\n").is_err());
+    }
+
+    /// NEOVOCB1: the fixture vocab this xtask writes holds its text pin, and
+    /// converts to exactly the bytes the `.vocb` fixture pin names; the
+    /// damaged control's flip lands inside the converted file; a source the
+    /// converter refuses fails the stage.
+    #[test]
+    fn fixture_vocab_converts_to_its_pinned_vocb() {
+        let dir = env::temp_dir().join(format!("vocb-fixture-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let text = dir.join("fixture.vocab");
+        write_stage_b_fixture_vocab_sidecar(&text).unwrap();
+        assert_eq!(
+            blake3_file(&text).unwrap(),
+            boot_model_logic::FIXTURE_05B_VOCAB.blake3
+        );
+        let vocb = convert_vocab_sidecar(&text).unwrap();
+        assert_eq!(vocb.len(), 3_380_944);
+        assert_eq!(
+            blake3::hash(&vocb).as_bytes(),
+            &boot_model_logic::FIXTURE_05B_VOCB.blake3
+        );
+        assert!(BOOT_MODEL_FLIP_OFFSET < vocb.len());
+        // Sparse ids: the text format allows them, the converter does not.
+        let sparse = dir.join("sparse.vocab");
+        fs::write(&sparse, "NEOM_TOKENIZER\t1\ntokens\t1\n7\t61\nmerges\t0\n").unwrap();
+        let err = convert_vocab_sidecar(&sparse).unwrap_err();
+        assert!(err.contains("BadId(7)"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// B1b: the damaged control flips a byte inside even the hermetic fixture.
+    #[test]
+    fn damaged_control_flip_lands_inside_the_fixture() {
+        const FIXTURE_LEN: usize = 4144;
+        const { assert!(BOOT_MODEL_FLIP_OFFSET < FIXTURE_LEN) };
+    }
+
+    #[test]
+    fn canonical_suite_excludes_hardware_only_scenarios() {
+        let full = canonical_suite();
+        let full_names: BTreeSet<&str> = full.iter().map(|s| s.name).collect();
+
+        for scenario in TEST_SCENARIOS
+            .iter()
+            .copied()
+            .filter(|s| is_hardware_only_scenario(*s))
+        {
+            assert!(
+                !full_names.contains(scenario.name),
+                "hardware-only scenario `{}` must not run in the default QEMU suite",
+                scenario.name
+            );
+
+            let requested = [scenario.name];
+            let selected = select_test_scenarios(&requested, false, false)
+                .expect("direct hardware scenario selection remains available");
+            assert_eq!(
+                selected.iter().map(|s| s.name).collect::<Vec<_>>(),
+                vec![scenario.name],
+                "direct selection should bypass the aggregate hardware-only filter"
+            );
+        }
+    }
+
+    #[test]
+    fn ppm_parser_keeps_a_whitespace_valued_first_pixel() {
+        // The S3 backdrop's top-left pixel is Void (0x0A0E27): its first raster
+        // byte is '\n' and must not be eaten as header whitespace.
+        let mut ppm = b"P6\n2 1\n255\n".to_vec();
+        ppm.extend_from_slice(&[0x0A, 0x0E, 0x27, 200, 200, 200]);
+        assert_eq!(ppm_bright_pixels(&ppm), Some(1));
+        ppm.pop();
+        assert_eq!(ppm_bright_pixels(&ppm), None);
+    }
+
+    #[test]
+    fn desktop_session_scenario_is_wired_and_resolution_pin_is_scoped() {
+        let scenario = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "desktop_session_boot")
+            .expect("desktop_session_boot must be registered");
+        assert_eq!(scenario.feature, "neo-test-desktop-session-boot");
+        assert_eq!(scenario.user_feature, Some("desktop-session-boot-test"));
+        assert!(
+            !scenario.ignored,
+            "the desktop gate must run in the default suite"
+        );
+        assert!(scenario_needs_qemu_max("desktop_session_boot"));
+        assert!(serial_script_for_scenario("desktop_session_boot").is_some());
+        // The 1920x1080 pin is injected for the desktop kernel's scenarios
+        // only (the desktop gate and the `login_*` boots); every other
+        // scenario keeps Limine's automatic mode (and its pixel oracles).
+        assert_eq!(
+            scenario_desktop_resolution("desktop_session_boot"),
+            Some(DESKTOP_DEFAULT_RESOLUTION)
+        );
+        assert_eq!(
+            scenario_desktop_resolution("login_two_boot"),
+            Some(DESKTOP_DEFAULT_RESOLUTION)
+        );
+        for other in TEST_SCENARIOS
+            .iter()
+            .filter(|s| !is_desktop_kernel_scenario(s.name))
+        {
+            assert_eq!(
+                scenario_desktop_resolution(other.name),
+                None,
+                "{}",
+                other.name
+            );
+        }
+        // The desktop table names exactly the desktop gate scenarios, each
+        // once, and each runs on the HMP keyboard with its end capture.
+        let mut gate: Vec<&str> = TEST_SCENARIOS
+            .iter()
+            .map(|s| s.name)
+            // OT-87 R4.4: the Atrium installer is a desktop session too.
+            .filter(|n| n.starts_with("desktop_") || n.starts_with("install_atrium"))
+            .collect();
+        let mut table: Vec<&str> = DESKTOP_SCENARIOS.iter().map(|d| d.name).collect();
+        gate.sort_unstable();
+        table.sort_unstable();
+        table.dedup();
+        assert_eq!(gate, table, "DESKTOP_SCENARIOS and TEST_SCENARIOS disagree");
+        for d in &DESKTOP_SCENARIOS {
+            let script = serial_script_for_scenario(d.name).unwrap();
+            assert_eq!(script.screenshot_rel, Some(d.capture), "{}", d.name);
+            assert!(scenario_needs_qemu_max(d.name), "{}", d.name);
+            // A9-D: the busy scenario carries the real-LM heap tier too, and
+            // the Atrium installer an install boot's (the model modules).
+            let want = if d.name == "desktop_busy_boot" || d.name.starts_with("install_atrium") {
+                "4096M"
+            } else {
+                "2048M"
+            };
+            assert_eq!(qemu_memory_for_scenario(d.name), want, "{}", d.name);
+        }
+        let conf = "/E\n    protocol: limine\n    path: boot():/boot/kernel\n";
+        assert_eq!(
+            inject_limine_resolution(conf, 1920, 1080).unwrap(),
+            "/E\n    protocol: limine\n    resolution: 1920x1080\n    path: boot():/boot/kernel\n"
+        );
+        assert!(inject_limine_resolution("/E\n", 1, 1).is_err());
+        assert_eq!(parse_resolution("1280x800"), Ok((1280, 800)));
+        assert!(parse_resolution("10x10").is_err());
+        assert_eq!(
+            desktop_input_devices(),
+            [
+                "qemu-xhci,id=xhci0",
+                "usb-kbd,bus=xhci0.0",
+                "usb-mouse,bus=xhci0.0"
+            ]
+        );
+    }
+
+    #[test]
+    fn arthur_compositor_scenarios_are_additive_and_kill_switched() {
+        let lookup = |name: &str| {
+            TEST_SCENARIOS
+                .iter()
+                .copied()
+                .find(|scenario| scenario.name == name)
+                .unwrap_or_else(|| panic!("missing scenario `{name}`"))
+        };
+        let slice_a = lookup("arthur_compositor");
+        let slice_b = lookup("arthur_compositor_baremetal");
+        let dw1 = lookup("dw1_desktop_wm");
+        let dw2 = lookup("dw2_scene_policy");
+        let standalone_arthur = lookup("arthur_console");
+        let standalone_atrium = lookup("atrium_interactive");
+
+        assert_eq!(slice_a.feature, "neo-test-arthur-compositor");
+        assert_eq!(slice_a.user_feature, Some("arthur-compositor"));
+        assert!(!slice_a.ignored);
+        assert_eq!(slice_b.feature, "neo-test-arthur-compositor-baremetal");
+        assert_eq!(slice_b.user_feature, Some("arthur-compositor-baremetal"));
+        assert!(
+            slice_b.ignored,
+            "Slice B is the JOINT hardware-only capstone"
+        );
+        assert_eq!(dw1.feature, "neo-test-dw1-desktop-wm");
+        assert_eq!(dw1.user_feature, Some("dw1-desktop-wm"));
+        assert!(!dw1.ignored);
+        assert_eq!(dw2.feature, "neo-test-dw2-scene-policy");
+        assert_eq!(dw2.user_feature, Some("dw2-scene-policy"));
+        assert!(!dw2.ignored);
+
+        // Rule 1 equality witnesses: the integrated scenario is additive and
+        // leaves both milestone scenarios mapped to their original features.
+        assert_eq!(standalone_arthur.feature, "neo-test-arthur-console");
+        assert_eq!(standalone_arthur.user_feature, Some("arthur-console"));
+        assert_eq!(standalone_atrium.feature, "neo-test-atrium-interactive");
+        assert_eq!(standalone_atrium.user_feature, Some("atrium-interactive"));
+    }
+
+    #[test]
+    fn product_integration_routes_the_shipping_two_boot_profile() {
+        let scenario = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "product_integration")
+            .expect("product integration scenario");
+
+        assert_eq!(scenario.feature, "neo-test-product-integration");
+        assert_eq!(scenario.user_feature, Some("product-integration"));
+        assert!(!scenario.ignored);
+        assert!(is_reboot_persistence_scenario(scenario));
+        assert!(scenario_uses_storage_disk(scenario));
+        assert!(scenario_needs_qemu_max(scenario.name));
+        assert_eq!(qemu_memory_for_scenario(scenario.name), "4096M");
+        assert_eq!(
+            neofs_image_variant_for_scenario(scenario.name),
+            Some("arthur-memory")
+        );
+
+        let no_disk = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "boot_neofs_no_block_device")
+            .expect("no-block-device scenario");
+        let invalid = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "boot_neofs_no_valid_superblock")
+            .expect("invalid-superblock scenario");
+        let catch_all = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "boot_neofs_unexpected_error")
+            .expect("unexpected-error scenario");
+        assert!(!scenario_uses_storage_disk(no_disk));
+        assert!(scenario_uses_storage_disk(invalid));
+        assert!(scenario_uses_storage_disk(catch_all));
+        assert_eq!(
+            neofs_image_variant_for_scenario(catch_all.name),
+            Some("normal")
+        );
+    }
+
+    #[test]
+    fn product_integration_baremetal_is_single_boot_with_an_nvme_sink_only() {
+        let scenario = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "product_integration_baremetal")
+            .expect("bare-metal product integration scenario");
+
+        assert_eq!(scenario.feature, "neo-test-product-integration-baremetal");
+        assert_eq!(scenario.user_feature, Some("product-integration-baremetal"));
+        assert!(
+            scenario.ignored,
+            "physical-only lane must stay out of QEMU CI"
+        );
+        assert!(
+            !is_reboot_persistence_scenario(scenario),
+            "the operator, not xtask, supplies the second physical boot"
+        );
+        assert_eq!(scenario_timeout(scenario.name), Duration::from_secs(3600));
+        assert_eq!(scenario_shard_weight(scenario), 160);
+        assert!(scenario_needs_qemu_max(scenario.name));
+        assert_eq!(qemu_memory_for_scenario(scenario.name), "4096M");
+
+        assert!(
+            !scenario_uses_storage_disk(scenario),
+            "xtask must not stage over the physical AHCI NeoFS volume"
+        );
+        assert_eq!(neofs_image_variant_for_scenario(scenario.name), None);
+        assert_eq!(
+            bare_metal_log_sink_target_feature(scenario.name).expect("sink feature"),
+            "neo-test-log-sink-target-nvme"
+        );
+        assert!(bare_metal_uses_nvme_log_sink_only(scenario.name));
+        assert!(!bare_metal_uses_ahci_log_sink_only(scenario.name));
+        assert_eq!(
+            classify_vmware_disk(
+                scenario.name,
+                ScenarioBundleMode::BareMetal,
+                NVME_DEVICE_INDEX,
+            ),
+            (
+                "log-sink".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn arthur_compositor_baremetal_model_selection_fails_closed() {
+        assert!(!stage_b_real_artifact_selected(None, None));
+        assert!(!stage_b_real_artifact_selected(Some("  "), Some("")));
+        assert!(stage_b_real_artifact_selected(Some("qwen.neom"), None));
+        assert!(stage_b_real_artifact_selected(None, Some("qwen.gguf")));
+        assert_eq!(STAGE_B_05B_NEOM_BYTES, 485_489_152);
+        assert_eq!(
+            Path::new("qwen2.5-0.5b-instruct-q4_k_m.neom").with_extension("vocab"),
+            PathBuf::from("qwen2.5-0.5b-instruct-q4_k_m.vocab")
+        );
+    }
+
+    #[test]
+    fn arthur_compositor_baremetal_uses_ahci_model_and_nvme_sink_layout() {
+        let mode = ScenarioBundleMode::BareMetal;
+        assert_eq!(
+            classify_vmware_disk("arthur_compositor_baremetal", mode, 0),
+            (
+                "scenario".to_string(),
+                "ich9-ahci".to_string(),
+                "sata-ahci".to_string(),
+            )
+        );
+        assert_eq!(
+            classify_vmware_disk("arthur_compositor_baremetal", mode, NVME_DEVICE_INDEX,),
+            (
+                "log-sink".to_string(),
+                "nvme".to_string(),
+                "nvme".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn slice4_blur_silicon_bundles_export_the_ahci_log_sink() {
+        let mode = ScenarioBundleMode::BareMetal;
+        for scenario in [
+            "accel_intel_blur_silicon",
+            "accel_intel_blur_silicon_narrowed",
+        ] {
+            assert_eq!(
+                bare_metal_log_sink_target_feature(scenario).expect("sink target feature"),
+                "neo-test-log-sink-target-ahci"
+            );
+            assert!(bare_metal_uses_ahci_log_sink_only(scenario));
+            assert!(!bare_metal_uses_nvme_log_sink_only(scenario));
+            assert_eq!(
+                classify_vmware_disk(scenario, mode, AHCI_DEVICE_INDEX),
+                (
+                    "log-sink".to_string(),
+                    "ich9-ahci".to_string(),
+                    "sata-ahci".to_string(),
+                )
+            );
+            assert_eq!(
+                classify_vmware_disk(scenario, mode, NVME_DEVICE_INDEX),
+                (
+                    "qemu-filler".to_string(),
+                    "virtio-blk".to_string(),
+                    "omit-for-vmware".to_string(),
+                )
+            );
+            assert!(
+                bare_metal_log_sink_raw_path(scenario)
+                    .expect("log sink path")
+                    .ends_with(format!("{scenario}.ahci-log.raw"))
+            );
+        }
+    }
+
+    #[test]
+    fn mt7601u_silicon_bundles_export_the_nvme_log_sink() {
+        let mode = ScenarioBundleMode::BareMetal;
+        for scenario in ["mt7601u_scan_baremetal", "mt7601u_assoc_baremetal"] {
+            assert!(bare_metal_uses_nvme_log_sink_only(scenario));
+            assert_eq!(
+                classify_vmware_disk(scenario, mode, 0),
+                (
+                    "qemu-filler".to_string(),
+                    "virtio-blk".to_string(),
+                    "omit-for-vmware".to_string(),
+                )
+            );
+            assert_eq!(
+                classify_vmware_disk(scenario, mode, NVME_DEVICE_INDEX),
+                (
+                    "log-sink".to_string(),
+                    "nvme".to_string(),
+                    "nvme".to_string(),
+                )
+            );
+            assert!(
+                bare_metal_log_sink_raw_path(scenario)
+                    .expect("log sink path")
+                    .ends_with(format!("{scenario}.nvme-log.raw"))
+            );
+        }
+    }
+
+    /// OT-27a (ISC-2): `inject_firmware_module` adds the firmware `module_path`
+    /// line INSIDE the boot entry — same indentation as the existing module lines,
+    /// right after the last one — and changes nothing else. Byte-oracle on the
+    /// staged limine.conf so a misplaced (column-0) line that Limine would ignore
+    /// is caught here, not on the blind Stage-B boot.
+    #[test]
+    fn inject_firmware_module_places_line_in_entry() {
+        let conf = "/NeoPlutarch\n    protocol: limine\n    kaslr: yes\n    \
+                    module_path: boot():/modules/neo-init\n    \
+                    module_path: boot():/modules/neo-worker\n";
+        let out = inject_firmware_module(conf).expect("inject");
+        assert_eq!(
+            out,
+            "/NeoPlutarch\n    protocol: limine\n    kaslr: yes\n    \
+             module_path: boot():/modules/neo-init\n    \
+             module_path: boot():/modules/neo-worker\n    \
+             module_path: boot():/modules/mt7601u-fw\n"
+        );
+        assert_eq!(out.matches("/modules/mt7601u-fw").count(), 1);
+    }
+
+    /// OT-27a (ISC-2): a conf with no `module_path:` line has nothing to anchor
+    /// the firmware module to — fail loud rather than emit a column-0 line.
+    #[test]
+    fn inject_firmware_module_errors_without_anchor() {
+        assert!(inject_firmware_module("/NeoPlutarch\n    kaslr: yes\n").is_err());
+    }
+
+    /// OT-61 C0.5 (AAG bounce, Finding 2): `inject_std_real_smoke_module` adds
+    /// the neo-std-real-smoke `module_path` line INSIDE the boot entry (same
+    /// indentation, after the last module line), only when the smoke is staged.
+    #[test]
+    fn fxsave_kernel_defaults_are_the_defaults_without_xsave() {
+        // OT-61 C2.3b: the FXSAVE scenario kernel is `--no-default-features`
+        // plus this list, so it must track kernel/Cargo.toml's `default`
+        // less `inference-preemptible` (the feature that pulls xsave-fpu).
+        let toml = fs::read_to_string(workspace_root().join("kernel/Cargo.toml")).unwrap();
+        let line = toml
+            .lines()
+            .find(|l| l.starts_with("default = ["))
+            .expect("kernel default features");
+        let defaults: Vec<&str> = line["default = [".len()..line.len() - 1]
+            .split(',')
+            .map(|f| f.trim().trim_matches('"'))
+            .filter(|f| !f.is_empty())
+            .collect();
+        let want: Vec<&str> = defaults
+            .into_iter()
+            .filter(|f| *f != "inference-preemptible")
+            .collect();
+        assert_eq!(want, FXSAVE_KERNEL_DEFAULTS);
+    }
+
+    #[test]
+    fn inject_std_real_smoke_module_places_line_in_entry() {
+        let conf = "/NeoPlutarch\n    protocol: limine\n    kaslr: yes\n    \
+                    module_path: boot():/modules/neo-init\n    \
+                    module_path: boot():/modules/neo-arthur\n";
+        let out = inject_std_real_smoke_module(conf, std_real_bins_for("std_real_smoke"))
+            .expect("inject");
+        assert_eq!(
+            out,
+            "/NeoPlutarch\n    protocol: limine\n    kaslr: yes\n    \
+             module_path: boot():/modules/neo-init\n    \
+             module_path: boot():/modules/neo-arthur\n    \
+             module_path: boot():/modules/neo-std-real-smoke\n    \
+             module_path: boot():/modules/neo-std-real-panic\n    \
+             module_path: boot():/modules/neo-std-real-entropy\n"
+        );
+        assert_eq!(out.matches("/modules/neo-std-real-smoke").count(), 1);
+        assert_eq!(out.matches("/modules/neo-std-real-panic").count(), 1);
+    }
+
+    /// A conf with no `module_path:` anchor fails loud (no column-0 line).
+    #[test]
+    fn inject_std_real_smoke_module_errors_without_anchor() {
+        assert!(inject_std_real_smoke_module("/NeoPlutarch\n    kaslr: yes\n", &["x"]).is_err());
+    }
+
+    /// ISC-2 / ISC-4 oracle: for every shard count, the union over all shards
+    /// must equal the full suite with each scenario appearing exactly once.
+    /// This is what makes sharding safe — it can never drop a scenario (false
+    /// green) or double-run one (wasted CI).
+    #[test]
+    fn shard_partition_is_complete_and_disjoint_for_all_counts() {
+        let full = canonical_suite();
+        assert!(
+            !full.is_empty(),
+            "canonical suite is empty — the partition oracle would be vacuous"
+        );
+        let full_names: BTreeSet<&str> = full.iter().map(|s| s.name).collect();
+        assert_eq!(
+            full_names.len(),
+            full.len(),
+            "the canonical suite itself contains a duplicate scenario name"
+        );
+
+        for count in 1..=8usize {
+            let mut union: Vec<&str> = Vec::new();
+            for index in 1..=count {
+                let shard = shard_partition(&full, ShardSpec { index, count });
+                for scenario in &shard {
+                    union.push(scenario.name);
+                }
+            }
+
+            // Pairwise-disjoint: each name appears at most once across shards.
+            let mut seen: BTreeSet<&str> = BTreeSet::new();
+            for name in &union {
+                assert!(
+                    seen.insert(*name),
+                    "count {count}: `{name}` appears in more than one shard"
+                );
+            }
+            // Complete + exactly-once: union size and contents match the full set.
+            assert_eq!(
+                union.len(),
+                full.len(),
+                "count {count}: union has {} entries, full suite has {} (drop or duplicate)",
+                union.len(),
+                full.len()
+            );
+            assert_eq!(seen, full_names, "count {count}: union != full suite");
+        }
+    }
+
+    /// The partition must be reproducible: same (index, count) always yields
+    /// the same ordered subset, so a CI shard re-run covers the same scenarios.
+    #[test]
+    fn shard_partition_is_stable_and_ordered() {
+        let full = canonical_suite();
+        for count in [1usize, 3, 4, 7] {
+            for index in 1..=count {
+                let spec = ShardSpec { index, count };
+                let a: Vec<&str> = shard_partition(&full, spec)
+                    .iter()
+                    .map(|s| s.name)
+                    .collect();
+                let b: Vec<&str> = shard_partition(&full, spec)
+                    .iter()
+                    .map(|s| s.name)
+                    .collect();
+                assert_eq!(a, b, "partition for {index}/{count} is not reproducible");
+
+                // The shard preserves canonical relative order inside the
+                // ordinary and CI-contention tail buckets. Count == 1 remains
+                // the identity partition, so tail deferral starts only when
+                // the suite is actually sharded.
+                let canonical: Vec<&str> = full.iter().map(|s| s.name).collect();
+                if count == 1 {
+                    assert_eq!(a, canonical, "shard 1/1 must preserve suite identity");
+                    continue;
+                }
+
+                let canonical_pos: BTreeMap<&str, usize> = full
+                    .iter()
+                    .enumerate()
+                    .map(|(pos, scenario)| (scenario.name, pos))
+                    .collect();
+                let mut expected = a.clone();
+                expected.sort_by_key(|name| {
+                    let pos = *canonical_pos
+                        .get(*name)
+                        .unwrap_or_else(|| panic!("`{name}` not found in canonical order"));
+                    (scenario_shard_run_late(full[pos]), pos)
+                });
+                assert_eq!(
+                    a, expected,
+                    "shard {index}/{count} reorders scenarios relative to its run-order buckets"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn arthur_memory_encrypted_has_timeout_headroom() {
+        assert!(
+            scenario_timeout("arthur_memory_encrypted") > TEST_TIMEOUT,
+            "arthur_memory_encrypted must keep CI contention headroom above the default timeout"
+        );
+    }
+
+    #[test]
+    fn product_integration_has_measured_per_boot_timeout_headroom() {
+        let scenario = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "product_integration")
+            .expect("product integration scenario");
+
+        assert_eq!(
+            scenario_timeout(scenario.name),
+            Duration::from_secs(420),
+            "product integration must keep the measured 3x per-boot capacity tier"
+        );
+        assert_eq!(
+            scenario_shard_weight(scenario),
+            103,
+            "safety headroom must not masquerade as seven minutes of shard work"
+        );
+    }
+
+    #[test]
+    fn arthur_memory_encrypted_uses_kernel_pass_path() {
+        assert!(
+            serial_script_for_scenario("arthur_memory_encrypted").is_none(),
+            "arthur_memory_encrypted must not use the stale interactive two-spawn serial path"
+        );
+    }
+
+    #[test]
+    fn arthur_memory_rng_variants_use_qemu_max() {
+        for scenario in [
+            "arthur_memory_encrypted",
+            "arthur_memory_delegation",
+            "arthur_memory_forgetting",
+        ] {
+            assert!(
+                scenario_needs_qemu_max(scenario),
+                "{scenario} must keep a working RDRAND source under QEMU TCG"
+            );
+        }
+    }
+
+    #[test]
+    fn qwen35_real_brain_has_residency_headroom() {
+        assert_eq!(
+            qemu_memory_for_scenario("arthur_real_brain_boot_qwen35"),
+            "6144M"
+        );
+    }
+
+    #[test]
+    fn script_progress_names_the_stuck_step_and_its_predecessor() {
+        let log = Path::new("/x/arthur_reversibility.attempt1.serial.log");
+        let line = script_progress_line(
+            log,
+            ARTHUR_REVERSIBILITY_SERIAL_STEPS,
+            "STUCK (serial closed)",
+            4,
+            Duration::from_millis(420_000),
+        );
+        assert_eq!(
+            line,
+            format!(
+                "[xtask] serial-script arthur_reversibility.attempt1.serial.log: STUCK (serial closed) step=5/{} prompt=\"arthur> \" after=\"read /scratch\\n\" t=420.0s",
+                ARTHUR_REVERSIBILITY_SERIAL_STEPS.len()
+            )
+        );
+        let first = script_progress_line(
+            log,
+            ARTHUR_REVERSIBILITY_SERIAL_STEPS,
+            "waiting",
+            0,
+            Duration::ZERO,
+        );
+        assert!(first.contains("step=1/") && first.contains("prompt=\"neo> \" after=\"<none>\""));
+        let done = script_progress_line(
+            log,
+            ARTHUR_REVERSIBILITY_SERIAL_STEPS,
+            "complete (serial closed)",
+            ARTHUR_REVERSIBILITY_SERIAL_STEPS.len(),
+            Duration::ZERO,
+        );
+        assert!(done.contains(&format!(
+            "sent={0}/{0}",
+            ARTHUR_REVERSIBILITY_SERIAL_STEPS.len()
+        )));
+    }
+
+    #[test]
+    fn qwen35_real_brain_script_is_prompt_driven() {
+        assert_eq!(
+            script_command_for_seen(ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS, 0, b"boot noise"),
+            None
+        );
+        assert_eq!(
+            script_command_for_seen(
+                ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS,
+                0,
+                NEO_SHELL_REPL_PROMPT
+            ),
+            Some(b"arthur\n".as_slice())
+        );
+        assert_eq!(
+            script_command_for_seen(ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS, 1, ARTHUR_PROMPT),
+            Some(b"hello world\n".as_slice())
+        );
+    }
+
+    #[test]
+    fn manual_qemu_gate_stages_host_and_keeps_cold_cache_headroom() {
+        let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+            .expect("read CI workflow");
+        let qemu_start = workflow.find("\n  neo-test:\n").expect("neo-test job");
+        let qemu_end = workflow.find("\n  spdx-lint:\n").expect("SPDX job");
+        let qemu = &workflow[qemu_start..qemu_end];
+        assert!(qemu.contains("needs: [nightly-skip, host-checks, product-build]"));
+        assert!(qemu.contains("timeout-minutes: 240"));
+
+        let host_start = workflow
+            .find("\n  host-checks:\n")
+            .expect("host-checks job");
+        let host = &workflow[host_start..];
+        assert!(!host.contains("needs: product-build"));
+        assert!(host.contains("timeout-minutes: 60"));
+
+        let product_start = workflow
+            .find("\n  product-build:\n")
+            .expect("blocking product build job");
+        let product_end = workflow[product_start + 1..]
+            .find("\n  # OT-69:")
+            .map(|offset| product_start + 1 + offset)
+            .expect("end of product build job");
+        let product = &workflow[product_start..product_end];
+        assert!(product.contains("--features product"));
+        assert!(product.contains("--bin kernel --no-default-features\n"));
+        assert!(!product.contains("continue-on-error: true"));
+    }
+
+    #[test]
+    fn shard_partition_spreads_timeout_heavy_scenarios() {
+        let full = canonical_suite();
+        let mut placement = BTreeMap::new();
+        for index in 1..=4usize {
+            for scenario in shard_partition(&full, ShardSpec { index, count: 4 }) {
+                placement.insert(scenario.name, index);
+            }
+        }
+
+        for name in [
+            "arthur_memory_encrypted",
+            "arthur_memory_delegation",
+            "arthur_memory_forgetting",
+            "arthur_memory",
+            "arthur_real_brain_boot",
+            "accel_residency_daemon",
+        ] {
+            assert!(
+                placement.contains_key(name),
+                "`{name}` must remain in the default sharded QEMU suite"
+            );
+        }
+
+        assert_ne!(
+            placement["arthur_memory_encrypted"], placement["arthur_memory"],
+            "the Arthur memory scenarios should not share one 4-way shard"
+        );
+        assert_ne!(
+            placement["arthur_memory_delegation"], placement["arthur_memory"],
+            "the Arthur memory delegation scenario should not share the M1 memory shard"
+        );
+        assert_ne!(
+            placement["arthur_memory_delegation"], placement["arthur_memory_encrypted"],
+            "the M2 and M3 Arthur memory scenarios should not share one 4-way shard"
+        );
+        assert_ne!(
+            placement["arthur_memory_forgetting"], placement["arthur_memory"],
+            "the M4 Arthur memory scenario should not share the M1 memory shard"
+        );
+        assert_ne!(
+            placement["arthur_memory_forgetting"], placement["arthur_memory_encrypted"],
+            "the M4 Arthur memory scenario should not share the M2 memory shard"
+        );
+        assert_ne!(
+            placement["arthur_memory_forgetting"], placement["arthur_memory_delegation"],
+            "the M4 Arthur memory scenario should not share the M3 memory shard"
+        );
+        assert_ne!(
+            placement["arthur_memory_encrypted"], placement["arthur_real_brain_boot"],
+            "the encrypted-memory timeout-risk scenario should not share the real-brain shard"
+        );
+
+        let encrypted_shard = shard_partition(
+            &full,
+            ShardSpec {
+                index: placement["arthur_memory_encrypted"],
+                count: 4,
+            },
+        );
+        assert_eq!(
+            encrypted_shard.last().map(|scenario| scenario.name),
+            Some("arthur_memory_encrypted"),
+            "arthur_memory_encrypted should run at the tail of its shard under CI contention"
+        );
+
+        let delegation_shard = shard_partition(
+            &full,
+            ShardSpec {
+                index: placement["arthur_memory_delegation"],
+                count: 4,
+            },
+        );
+        assert_eq!(
+            delegation_shard.last().map(|scenario| scenario.name),
+            Some("arthur_memory_delegation"),
+            "arthur_memory_delegation should run at the tail of its shard under CI contention"
+        );
+
+        let forgetting_shard = shard_partition(
+            &full,
+            ShardSpec {
+                index: placement["arthur_memory_forgetting"],
+                count: 4,
+            },
+        );
+        assert_eq!(
+            forgetting_shard.last().map(|scenario| scenario.name),
+            Some("arthur_memory_forgetting"),
+            "arthur_memory_forgetting should run at the tail of its shard under CI contention"
+        );
+    }
+
+    /// N == 1 is the identity partition: shard 1/1 is the whole suite.
+    #[test]
+    fn shard_count_one_is_identity() {
+        let full = canonical_suite();
+        let one = shard_partition(&full, ShardSpec { index: 1, count: 1 });
+        let one_names: Vec<&str> = one.iter().map(|s| s.name).collect();
+        let full_names: Vec<&str> = full.iter().map(|s| s.name).collect();
+        assert_eq!(one_names, full_names);
+    }
+
+    /// Over-sharding (N > suite size) must still be complete + disjoint, with
+    /// the surplus shards simply empty — never a panic or a dropped scenario.
+    #[test]
+    fn shard_partition_handles_more_shards_than_scenarios() {
+        let full = canonical_suite();
+        let count = full.len() + 5;
+        let mut union: Vec<&str> = Vec::new();
+        let mut empty_shards = 0;
+        for index in 1..=count {
+            let shard = shard_partition(&full, ShardSpec { index, count });
+            if shard.is_empty() {
+                empty_shards += 1;
+            }
+            union.extend(shard.iter().map(|s| s.name));
+        }
+        assert_eq!(union.len(), full.len(), "over-sharding dropped scenarios");
+        assert_eq!(
+            empty_shards, 5,
+            "expected exactly the surplus shards to be empty"
+        );
+    }
+
+    #[test]
+    fn parse_shard_spec_accepts_valid_specs() {
+        assert_eq!(
+            parse_shard_spec("1/4").unwrap(),
+            ShardSpec { index: 1, count: 4 }
+        );
+        assert_eq!(
+            parse_shard_spec("4/4").unwrap(),
+            ShardSpec { index: 4, count: 4 }
+        );
+        assert_eq!(
+            parse_shard_spec("1/1").unwrap(),
+            ShardSpec { index: 1, count: 1 }
+        );
+    }
+
+    #[test]
+    fn parse_shard_spec_rejects_invalid_specs() {
+        // A bad spec must never silently mean "run everything" or "run nothing".
+        assert!(
+            parse_shard_spec("0/4").is_err(),
+            "index 0 is invalid (1-based)"
+        );
+        assert!(parse_shard_spec("5/4").is_err(), "index > count is invalid");
+        assert!(parse_shard_spec("1/0").is_err(), "count 0 is invalid");
+        assert!(parse_shard_spec("1").is_err(), "missing /N");
+        assert!(parse_shard_spec("x/4").is_err(), "non-numeric index");
+        assert!(parse_shard_spec("1/y").is_err(), "non-numeric count");
+        assert!(parse_shard_spec("/4").is_err(), "empty index");
+        assert!(parse_shard_spec("1/").is_err(), "empty count");
+    }
+
+    /// The standalone CI coverage gate must pass for the matrix's shard count
+    /// and any other sane count, and reject a zero count.
+    #[test]
+    fn shard_coverage_command_agrees_with_partition() {
+        for n in ["1", "2", "3", "4", "5"] {
+            assert!(
+                cmd_shard_coverage(&[n.to_string()]).is_ok(),
+                "shard-coverage {n} should pass"
+            );
+        }
+        assert!(cmd_shard_coverage(&["0".to_string()]).is_err());
+        assert!(cmd_shard_coverage(&[]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn observed_debug_success_with_single_pass_frame_is_accepted() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let scenario = TEST_SCENARIOS
+            .iter()
+            .copied()
+            .find(|scenario| scenario.name == "ipc_heap_kill_smoke")
+            .expect("basic smoke scenario must exist");
+        let observed = ObservedTest {
+            exit_status: ExitStatus::from_raw(qemu_debug_exit_status(TEST_EXIT_SUCCESS) << 8),
+            terminal_event: Some("PASS".to_string()),
+            terminal_count: 1,
+            saw_begin: true,
+            serial_log: PathBuf::from("synthetic.serial.log"),
+            qmp_events: None,
+        };
+
+        require_observed_pass(scenario, &observed)
+            .expect("all-pass observation should be accepted");
+    }
+
+    /// L4.4 SDK-ABI drift guard: every non-test `pub const SYS_*` the kernel
+    /// defines must appear as a row of the inventory tables in
+    /// `docs/SDK-ABI.md`, with the same number; and no row may name a
+    /// constant the kernel does not define. Test-only probes are the
+    /// `SYS_TEST_*` family plus the two probes that borrow a production-range
+    /// number (`SYS_FUTEX_QUEUE_LEN`, `SYS_INPUT_FOCUS_TEST_INJECT`); they are
+    /// documented in their own table and excluded here.
+    ///
+    /// The check is on the rows, not on "does the name appear anywhere in the
+    /// file", so deleting one row fails even when the name is mentioned in a
+    /// note. Falsified by deleting any non-test row: the missing list names it.
+    #[test]
+    fn sdk_abi_doc_covers_every_kernel_syscall() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let syscall_rs = fs::read_to_string(root.join("kernel/src/arch/x86_64/syscall.rs"))
+            .expect("read kernel/src/arch/x86_64/syscall.rs");
+        let doc = fs::read_to_string(root.join("docs/SDK-ABI.md")).expect("read docs/SDK-ABI.md");
+
+        fn parse_number(text: &str) -> Option<u64> {
+            let text = text.trim();
+            match text.strip_prefix("0x") {
+                Some(hex) => u64::from_str_radix(hex, 16).ok(),
+                None => text.parse().ok(),
+            }
+        }
+
+        // Kernel side: name -> number, skipping test-only probes.
+        let mut defined: Vec<(String, u64)> = Vec::new();
+        for line in syscall_rs.lines() {
+            let Some(rest) = line.strip_prefix("pub const SYS_") else {
+                continue;
+            };
+            let Some((name, rest)) = rest.split_once(':') else {
+                continue;
+            };
+            let name = format!("SYS_{}", name.trim());
+            let test_only = name.starts_with("SYS_TEST_")
+                || name.contains("_TEST_")
+                || name == "SYS_FUTEX_QUEUE_LEN";
+            if test_only {
+                continue;
+            }
+            let number = rest
+                .split_once('=')
+                .and_then(|(_, value)| parse_number(value.trim_end_matches(';')))
+                .unwrap_or_else(|| panic!("could not parse the number of {name}"));
+            defined.push((name, number));
+        }
+
+        // Doc side: the inventory rows (`| 12 | 0x0C | `SYS_OPEN` | ...`).
+        // The test-only table's first cell is a hex number, not a decimal one,
+        // so its rows do not match.
+        let mut documented: Vec<(String, u64, u64)> = Vec::new();
+        for line in doc.lines() {
+            if !line.starts_with('|') {
+                continue;
+            }
+            let fields: Vec<&str> = line.split('|').map(str::trim).collect();
+            if fields.len() < 5 {
+                continue;
+            }
+            let Ok(dec) = fields[1].parse::<u64>() else {
+                continue;
+            };
+            let Some(hex) = parse_number(fields[2]) else {
+                continue;
+            };
+            let Some(name) = fields[3]
+                .strip_prefix('`')
+                .and_then(|name| name.strip_suffix('`'))
+            else {
+                continue;
+            };
+            if !name.starts_with("SYS_") {
+                continue;
+            }
+            documented.push((name.to_string(), dec, hex));
+        }
+
+        let mut missing: Vec<String> = Vec::new();
+        let mut mismatched: Vec<String> = Vec::new();
+        for (name, number) in &defined {
+            match documented.iter().find(|(doc_name, _, _)| doc_name == name) {
+                None => missing.push(name.clone()),
+                Some((_, dec, hex)) => {
+                    if dec != number || hex != number {
+                        mismatched
+                            .push(format!("{name} (doc {dec}/0x{hex:X}, kernel 0x{number:X})"));
+                    }
+                }
+            }
+        }
+
+        // Both inventories are non-empty: a parser regression must fail, not pass.
+        assert!(
+            defined.len() >= 90,
+            "parsed only {} non-test SYS_* constants; the parser or syscall.rs moved",
+            defined.len()
+        );
+        assert!(
+            documented.len() >= 90,
+            "parsed only {} inventory rows; the docs/SDK-ABI.md table format moved",
+            documented.len()
+        );
+        assert!(
+            missing.is_empty(),
+            "docs/SDK-ABI.md has no inventory row for {} non-test syscall(s): {}",
+            missing.len(),
+            missing.join(", ")
+        );
+        assert!(
+            mismatched.is_empty(),
+            "docs/SDK-ABI.md row number does not match the kernel: {}",
+            mismatched.join(", ")
+        );
+
+        // Reverse direction: a row must name a constant the kernel defines
+        // (catches a stale row after a removal, and a typo in the name).
+        let stale: Vec<&str> = documented
+            .iter()
+            .map(|(name, _, _)| name.as_str())
+            .filter(|name| !defined.iter().any(|(defined_name, _)| defined_name == name))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "docs/SDK-ABI.md rows name syscall(s) the kernel does not define: {}",
+            stale.join(", ")
+        );
+    }
+}

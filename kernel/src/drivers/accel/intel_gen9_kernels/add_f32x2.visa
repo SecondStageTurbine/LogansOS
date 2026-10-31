@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: CC-BY-4.0
+// Intel Gen9.5 BUILD-4a proof kernel.
+// Contract: output[0..2] = lhs[0..2] + rhs[0..2] for f32 inputs.
+//
+// Pinned finalizer recipe is documented in README.md. The checked-in Gen9
+// binary is embedded as ADD_F32X2_KERNEL_GEN9.
+
+.kernel add_f32x2
+.decl lhs v_type=G type=f32 num_elts=2
+.decl rhs v_type=G type=f32 num_elts=2
+.decl out v_type=G type=f32 num_elts=2
+
+add (M1, 2) out<1> lhs<1;1,0> rhs<1;1,0>
+// The vISA finalizer lowers this return to the EU End-Of-Thread send. Iter4
+// keeps this source-level EOT explicit because a missing EOT is the prime
+// suspect if the ring-only smoke seqno lands but the GPGPU walker never retires.
+ret (M1, 1)

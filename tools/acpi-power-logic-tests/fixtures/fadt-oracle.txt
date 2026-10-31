@@ -1,0 +1,12 @@
+# set revision flags smi_cmd acpi_enable pm1a_evt pm1b_evt pm1_evt_len pm1a_cnt pm1b_cnt pm1_cnt_len gpe0 gpe0_len reset_space reset_addr reset_value sleep_control sleep_status pm_timer
+# a register is space:width:address, or - when absent; numbers are hex
+hp-elitedesk-800-g6-mini-s21-02.27.00 6 384a5 b2 f0 1:20:1800 - 4 1:10:1804 - 2 1:0:1860 20 1 cf9 6 1:8:1804 1:8:1800 1:20:1808
+lenovo-thinkcentre-m75q-gen1-m2fkt21a 6 3c5a5 b2 a0 1:20:800 - 4 1:10:804 - 2 1:40:820 8 1 b2 be - - 1:20:808
+lenovo-thinkcentre-m910q-m1akt5aa 6 3c6a5 b2 a0 1:20:1800 - 4 1:10:1804 - 2 1:80:1880 20 1 cf9 6 - - 1:20:1808
+msi-ms-7e57-1.a70 6 3c5a5 b2 a0 1:20:800 - 4 1:10:804 - 2 1:40:820 8 1 b2 be - - 1:20:808
+optiplex-7080-1.37.0 6 3c6a5 b2 d1 1:20:1800 - 4 1:10:1804 - 2 1:80:1860 20 1 b2 73 1:8:1804 1:8:1800 1:20:1808
+optiplex-7080-linux-1.37.0 6 3c6a5 b2 d1 1:20:1800 - 4 1:10:1804 - 2 1:80:1860 20 1 b2 73 1:8:1804 1:8:1800 1:20:1808
+qemu-q35-ovmf-smp1 3 84a5 b2 2 1:20:600 - 4 1:10:604 - 2 1:80:620 10 1 cf9 f - - 1:20:608
+qemu-q35-ovmf-smp4-viommu 3 84a5 b2 2 1:20:600 - 4 1:10:604 - 2 1:80:620 10 1 cf9 f - - 1:20:608
+qemu-q35-seabios-smp1 3 84a5 b2 2 1:20:600 - 4 1:10:604 - 2 1:80:620 10 1 cf9 f - - 1:20:608
+zenbook-s14-ux5406aa-303 6 20c4f5 b2 a0 1:20:1800 - 4 1:10:1804 - 2 1:0:1860 20 1 cf9 6 - - 1:20:1808

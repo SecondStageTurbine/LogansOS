@@ -1,0 +1,70 @@
+NEO_LOG_v1unknown-build-idaccel_intel_execlist_bringupNEO_TEST/1 event=INFO name=accel_intel_execlist_bringup bare_metal_log_sink=installed target_driver=nvme offset=0x10000000 size=16777216
+NEO_TEST/1 event=INFO name=accel_intel_execlist_bringup bare_metal_log_sink_selftest=begin
+NEO_TEST/1 event=INFO name=accel_intel_execlist_bringup bare_metal_log_sink_selftest=ok cursor=228
+NEO_TEST/1 event=BEGIN name=accel_intel_execlist_bringup phase=dispatch
+[ kernel ] accel-intel: execlist-noop-kernel-eot source='send (1|M0) null r127 0x27 0x02000010 {EOT}' eot_present=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-end
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hwstam offset=0x2098 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-enable offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-unstop offset=0x209c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-pga offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-engine-configured
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-read offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-read offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-read offset=0x209c width=4
+[ kernel ] accel-intel: execlist-engine mode=0x00008000 execlist_enabled=true mi_mode=0x00000200 ring_stopped=false hws_pga=0x00240000 expected_hws=0x240000
+[ kernel ] accel-intel: execlist-submit token=1 descriptor=0x0000000100200119 lrca=0x200000 ctx_id=1 ring_tail=0x11c pml4_root=0x000000047a3a1000 oracle_match=true
+[ kernel ] accel-intel: elsp-write token=1 slot=0 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=1 slot=1 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=1 slot=2 value=0x00000001 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=1 slot=3 value=0x00200119 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+[ kernel ] accel-intel: execlist-csb post-elsp token=1 EXECLIST_STATUS=0x0000000100044032 CSB_PTR=0x00000000 write_idx=0 reset_quirk=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=1 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=2 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=3 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary post-elsp token=1 nonzero_entries=1 switch_in_seen=true idle_seen=false switch_in_then_idle=false
+[ kernel ] accel-intel: execlist-mid-status token=1 RING_HEAD=0x00000110 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xffddffff ACTHD=0x0000000000000110 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000000c1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode execlist-mid-status token=1 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-mid-status token=1 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit execlist-mid-status token=1 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode execlist-mid-status token=1 RING_FAULT=0x000000c1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x18 addr_space=PPGTT fault_gpu_va=0x000000110000 data0=0x00000110 data1=0x00000000 in_build4a_window=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+[ kernel ] accel-intel: execlist-csb mid token=1 EXECLIST_STATUS=0x0000000100044032 CSB_PTR=0x00000000 write_idx=0 reset_quirk=false
+[ kernel ] accel-intel: execlist-csb-entry mid token=1 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry mid token=1 i=1 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry mid token=1 i=2 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry mid token=1 i=3 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry mid token=1 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry mid token=1 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary mid token=1 nonzero_entries=1 switch_in_seen=true idle_seen=false switch_in_then_idle=false
+[ kernel ] accel-intel: execlist-timeout-status token=1 RING_HEAD=0x00000110 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xffddffff ACTHD=0x0000000000000110 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000000c1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode execlist-timeout-status token=1 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-timeout-status token=1 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit execlist-timeout-status token=1 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode execlist-timeout-status token=1 RING_FAULT=0x000000c1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x18 addr_space=PPGTT fault_gpu_va=0x000000110000 data0=0x00000110 data1=0x00000000 in_build4a_window=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+[ kernel ] accel-intel: execlist-csb timeout token=1 EXECLIST_STATUS=0x0000000100044032 CSB_PTR=0x00000000 write_idx=0 reset_quirk=false
+[ kernel ] accel-intel: execlist-csb-entry timeout token=1 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry timeout token=1 i=1 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry timeout token=1 i=2 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry timeout token=1 i=3 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry timeout token=1 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry timeout token=1 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary timeout token=1 nonzero_entries=1 switch_in_seen=true idle_seen=false switch_in_then_idle=false
+[ kernel ] accel-intel: execlist-bringup timeout token=1 execlist-seqno=0x00000000 csb_switch_events=1 execlist_enabled=true ring_head=0x00000110 ring_mode=0x00008000 fault_valid=true fault_space=PPGTT branch=treeC_csb+fault_PPGTT=>bad_LRC_image_or_PML4_root
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-timeout
+[ kernel ] accel-intel: execlist-gate FAIL seqno=0x00000000 csb_switch_events=1 EXECLIST_STATUS=0x0000000100044032 discriminator=mode2_switched_in_but_ring_wrong
+NEO_TEST/1 event=FAIL name=accel_intel_execlist_bringup reason=accel_intel_execlist_context_did_not_run

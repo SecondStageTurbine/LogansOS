@@ -1,0 +1,64 @@
+diff --git a/kernel/src/arch/x86_64/mod.rs b/kernel/src/arch/x86_64/mod.rs
+index a561360..5f2717d 100644
+--- a/kernel/src/arch/x86_64/mod.rs
++++ b/kernel/src/arch/x86_64/mod.rs
+@@ -301,6 +301,17 @@ pub fn disable_interrupts() {
+     interrupts::disable();
+ }
+ 
++/// Atomically enable interrupts and halt the CPU (`sti; hlt`).
++///
++/// Any interrupt that arrived while IF=0 is pending in the LAPIC and fires
++/// immediately on `sti`, so this sequence cannot sleep through a wake signal.
++/// Interrupts are enabled on return. The IDT and LAPIC must be fully initialized
++/// before this is called — only valid for APs in their idle bootstrap loop.
++#[inline(always)]
++pub fn enable_and_hlt() {
++    interrupts::enable_and_hlt();
++}
++
+ /// Return whether the local CPU's interrupt flag is currently set.
+ #[inline(always)]
+ #[allow(dead_code)]
+diff --git a/kernel/src/sched/scheduler.rs b/kernel/src/sched/scheduler.rs
+index 862a7b7..56042d6 100644
+--- a/kernel/src/sched/scheduler.rs
++++ b/kernel/src/sched/scheduler.rs
+@@ -144,7 +144,36 @@ pub fn run_ap_bootstrap(cpu_id: u32) -> ! {
+     crate::arch::x86_64::enable_interrupts();
+     loop {
+         yield_now();
+-        core::hint::spin_loop();
++        halt_current_cpu_if_idle();
++    }
++}
++
++/// Halt the current CPU until the next interrupt if its ready queue is empty.
++///
++/// The sequence is:
++///   1. Disable local interrupts (cli).
++///   2. Check whether this CPU's ready queue is empty with the scheduler lock.
++///   3. Release the lock before any halt.
++///   4a. If non-empty: re-enable interrupts (sti) and return — yield_now()
++///       on the next loop iteration will schedule the pending work.
++///   4b. If empty: execute `sti; hlt`. Any reschedule IPI that arrived while
++///       IF=0 is pending in the LAPIC and fires on `sti`, so the CPU wakes
++///       immediately rather than sleeping past a pending work signal.
++///
++/// Interrupts are enabled on return regardless of which path was taken.
++/// Only valid for APs in their idle bootstrap loop — do not call from contexts
++/// that hold locks or have interrupts already disabled.
++fn halt_current_cpu_if_idle() {
++    crate::arch::x86_64::disable_interrupts();
++    let idle = {
++        let sched = current_scheduler();
++        let s = sched.inner.lock();
++        s.ready.is_empty()
++    };
++    if idle {
++        crate::arch::x86_64::enable_and_hlt();
++    } else {
++        crate::arch::x86_64::enable_interrupts();
+     }
+ }
+ 

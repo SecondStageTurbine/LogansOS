@@ -1,0 +1,37 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Showcase Slice A — AAG BOUNCE (compositor-bypass via self-presented buffer) → Jarvis
+
+**Date:** 2026-07-21
+**From:** PM (Claude)
+**To:** Jarvis (main-tier; showcase Slice A author)
+**Status:** BOUNCED — **not merged.** Slice A (`codex/integrated-showcase-arthur-compositor-jarvis` @ `2b08d2c7`) passed 3 of 4 AAG lenses (mem-safety, I-14/concurrency, completeness — all clean; the input no-snoop inversion HOLDS). The **capability/no-snoop lens found ONE confirmed finding**, PM-re-verified in-code, that falsifies the integration's core security claim ("Arthur is a confined client that cannot touch the raw framebuffer"). Respin required before merge.
+
+## The finding (PM-re-verified, survives adversarial re-check)
+**A confined client (Arthur) can bypass the compositor and blit its own pixels to the raw framebuffer at arbitrary screen coordinates — via caps it self-mints, needing no GpuSubmit.** The chain, each link confirmed in-code:
+1. `userland/neo-arthur/src/showcase_surface.rs` calls `sys_buffer_create`, which **unconditionally installs `full_buffer_rights()` on the creator's cap** (`kernel/src/arch/x86_64/syscall.rs:5073`) = `MAP_WRITE|MAP_READ|QUERY|PRESENT|COMMIT` (`kernel/src/sched/process.rs:255`). Arthur's own buffer therefore carries **PRESENT + COMMIT**.
+2. `sys_fb_present_impl` requires only `buffer_rights::PRESENT` on the passed cap (`syscall.rs:~5214`) — **no compositor-identity / scanout-owner check.**
+3. `buffer.present()` gates on the GpuSubmit cap **only for the `HardwareFlip` backend** (`kernel/src/atrium/buffer.rs:~215`). The showcase runs the **`Software` backend** (kill-switch default), where `present()` performs the framebuffer blit with **no GpuSubmit / no compositor-identity check at all**, clipping `dst_x/dst_y` only against the **full framebuffer dimensions** — not any surface's bounds. (And even HardwareFlip defaults `GPU_SUBMIT_ENFORCE=false`.)
+4. Damage is self-serviceable (`sys_buffer_commit_damage` needs only `COMMIT`, which Arthur's buffer has).
+
+**Repro:** a compromised/buggy Arthur runs `sys_buffer_commit_damage(own_buffer, full_rect)` then `sys_fb_present(own_buffer, dst_x, dst_y)` with any `dst` — compositing over any region of the real screen, bypassing the compositor's clipping/z-order/arbitration. This is a **UI-spoof / screen-overwrite integrity vector** (paint a fake system prompt over another principal's area). For an OS where Arthur processes untrusted natural-language input, this is exactly the confinement the capability model exists to provide — so it must hold.
+
+**Why it bounces (not a RETURN note):** Slice A's premise is that Arthur is the first *real, meant-to-be-confined* client principal; this is the FIRST time such a principal holds a scanout-capable buffer cap, so the integration is what turns a latent primitive gap into an exposed compositor bypass. The confined-client pattern is **foundational** — every future app surface reuses it — so it must be sound from build one. (The input no-snoop inversion is correct and untouched; this is orthogonal to it.)
+
+## Required fix (the security property)
+**A confined client MUST NOT be able to present to raw scanout. Presenting to the framebuffer is the compositor's authority; a client reaches the screen only by `COMMIT`-ing damage to its surface, which the compositor then presents.**
+
+Note a per-cap attenuation ALONE is insufficient: dropping PRESENT from Arthur's one buffer cap doesn't close it, because `sys_buffer_create` hands PRESENT to *every* creator, so Arthur could create a fresh buffer and present that. The robust fix must gate the **scanout-present authority at the syscall**, on **all backends**:
+- **Extend the Slice-2 GpuSubmit gate to the `Software` backend** (not just `HardwareFlip`): `sys_fb_present` / `buffer.present()` must require the scanout authority (GpuSubmit or a dedicated scanout-owner cap) on **every** backend, and **arm that enforcement** in the showcase build. Confirm the **compositor (neo-init) holds** that authority while **clients (Arthur) do not** — so the well-behaved path (compositor presents Arthur's RO-imported buffer) still works, and the bypass path (Arthur presents its own buffer) returns EPERM.
+- This is a **compositor-core capability change** coupling with Cerebro's GpuSubmit/present-authority model (ADR-076/OT-63 Slice-2) — check the seam so the fix is coherent with the scanout-fence work, not a parallel scheme. If a design question arises on *which* cap gates scanout-present, flag it in the RETURN rather than guessing.
+- Add a **falsifiable AAG-style regression**: a client holding a self-created buffer attempts `sys_fb_present` → **EPERM, no framebuffer mutation** (mirror the no-snoop poison-buffer assertion); the compositor's present still succeeds. This is the byte-oracle-equivalent that proves the gate.
+
+## Close-gate + re-merge
+- Respin on the same branch; rebase fresh on `origin/main` (now `6f5f550` — includes the ryzen-5/6 runner capacity), re-run `scripts/worker-close-gate.sh`, **fresh green 4-shard `workflow_dispatch` QEMU URL** (kernel-touching).
+- The fix is security-load-bearing → expect a **re-AAG** (the capability lens re-run on the fix + a completeness check that the scanout gate is armed in the showcase, not just present in code).
+- Keep the 3 clean lenses' properties intact (no-snoop, mem-safety, I-14). Disk reclaim: persistent seat reused.
+- **The dispatch-path note:** this work should live in `Workers\jarvis` (your seat), NOT `Workers\janus` — my prior dispatch mis-wrote the folder, which is why the runner-host work and this collided in one tree. Use your own seat; the runner-host branch is already merged, so its tree is free.
+
+## Relay — what to tell Jarvis
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-21-showcase-slice-a-bounce-compositor-bypass-jarvis.md`. Your branch to respin: `codex/integrated-showcase-arthur-compositor-jarvis`. Compositor authority context: `git show origin/main:docs/ADR-076-scanout-dma-fence.md` + the GpuSubmit Slice-2 code (`kernel/src/atrium/buffer.rs`, `present_backend.rs`, `kernel/src/sched/process.rs` buffer_rights). Work in `Workers\jarvis`.
+- **One-line:** **AAG bounce — Slice A compositor-bypass.** 3/4 lenses clean (no-snoop inversion HOLDS), but a confined Arthur can **`sys_fb_present(own_buffer, any_dst)` to blit over the raw framebuffer**, because `sys_buffer_create` grants every creator PRESENT, `sys_fb_present` checks only PRESENT (no compositor-identity), and the **Software backend `present()` has no GpuSubmit/compositor gate** (that gate is HardwareFlip-only). Fix: **gate scanout-present authority on ALL backends** (extend the Slice-2 GpuSubmit gate to Software + arm it in the showcase; compositor holds the authority, clients don't) so a client presenting its own buffer gets **EPERM, no framebuffer mutation** while the compositor's present still works — add that falsifiable regression. It's a compositor-core capability change; check the seam with Cerebro's GpuSubmit/scanout-fence model, flag any design question. Rebase on `6f5f550`, fresh 4-shard QEMU URL, expect a re-AAG. Work in `Workers\jarvis` (not janus).
+- **RAG:** `buffer_rights PRESENT full_buffer_rights sys_buffer_create`, `sys_fb_present present_backend Software HardwareFlip GpuSubmit`, `atrium buffer present scanout authority`, `input focus no-snoop poison`. Health-check first; note-and-fall-back if down.

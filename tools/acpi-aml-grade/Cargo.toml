@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "acpi-aml-grade"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+default-run = "acpi-aml-grade"
+description = "ACPI/AML rung 0: grade the stock rust-osdev AML interpreters against a provenance-tracked ACPI table corpus (host only, recording handler)."
+
+# Both stock interpreters are pinned EXACTLY; the grade is of these bytes.
+#   aml  0.16.4 - the standalone `aml` crate (`AmlContext`), the one the
+#                 rung brief names.
+#   acpi 6.1.1  - its successor: upstream folded a rewritten interpreter into
+#                 `acpi` as `acpi::aml` (`Interpreter`) behind the default
+#                 `aml` feature.
+#   acpi 6.1.1 + Fix 1 - the vendored copy in third_party/acpi-loganfy with the
+#                 OT-86 Fix 1 patches, graded beside the stock crate. Both acpi
+#                 copies are renamed here so neither owns the `acpi` name.
+# None is a kernel dependency; this crate is host-only tooling.
+[dependencies]
+aml = "=0.16.4"
+acpi_stock = { package = "acpi", version = "=6.1.1" }
+acpi_fix1 = { package = "acpi-loganfy", path = "../../third_party/acpi-loganfy" }
+log = "0.4"
+serde_json = "1"
+# The `Spinlock` inside `aml` 0.16.4's `AmlValue::Buffer` (already a dependency of it;
+# needed only to build the `_DSM` UUID argument).
+spinning_top = "=0.2.5"
+
+[[bin]]
+name = "acpi-aml-grade"
+path = "src/main.rs"

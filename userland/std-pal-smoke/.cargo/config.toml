@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C0: std-pal-smoke builds for the first-class x86_64-unknown-neoplutarch
+# target (os = "neoplutarch"). The PRIMITIVE tier is no_std (build-std
+# core/alloc), standing on neo-std-pal; the real-std tier (build-std=std) is the
+# rust-src overlay sub-rung. Static, no dynamic linker (the LogansOS loader ABI).
+[build]
+target = "../x86_64-unknown-neoplutarch.json"
+
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-neoplutarch]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]

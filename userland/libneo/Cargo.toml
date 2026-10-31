@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "libneo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "NeoPlutarch userland library: syscall wrappers (Phase 1.4) + AI client API (Phase 2.5+)"
+
+[lib]
+crate-type = ["rlib"]
+test = false
+bench = false
+
+[dependencies]
+# Phase 1.5b BUILD-4: userspace heap. linked_list_allocator's `Heap` (the
+# unlocked variant) is wrapped in our own spin::Mutex inside LibneoHeap so
+# the GlobalAlloc trait's `&self` requirement is satisfiable. spin gives us
+# the mutex without touching std.
+linked_list_allocator = { version = "0.10", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
+getrandom = { version = "0.2", default-features = false, features = ["custom"] }
+rustls = { version = "0.23.34", default-features = false, features = ["custom-provider"] }
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["alloc", "zeroize"] }
+
+# Phase 2.5+ will add serde, ciborium, futures-core for the inference protocol.
+
+[features]
+default = []
+dw2-scene-policy = []
+# DS-1: the OP_YIELD_FOCUS verb (client hands the keyboard back to Home).
+atrium-yield = []
+# DS-1b: OP_LAUNCH + the broker's LaunchCap table (ADVISORY until OT-66).
+atrium-launch = []
+# S2-F2: OP_COMMIT_DAMAGE (a commit that names its changed rect).
+atrium-damage = []
+# DI-1b resize: the WM-to-client configure mailbox; the client acks with
+# OP_CONFIGURE (from dw2-scene-policy), and damage is bounded by the
+# configured size.
+atrium-configure = ["dw2-scene-policy", "atrium-damage"]
+# A9-D: OP_BUSY (the client reserves a rect for the WM's busy emblem until
+# its next commit). Bounded like a damage rect, hence atrium-damage.
+atrium-busy = ["atrium-damage"]
+# OT-88 S1: OP_SETTING (a client asks the WM, the settings store's only
+# writer, to set one setting).
+atrium-settings = []
+# L1.3: OP_PERMISSION / OP_PERMISSION_DONE (Arthur asks the WM's prompt for one
+# action on one path; THINK-2026-10-30-l1.3).
+atrium-permission = []
+# C1.1 test-only: enables SYS_FUTEX_QUEUE_LEN and sys_futex_queue_len.
+# Must NOT ship in production — test-only discriminator for the threads_futex barrier.
+neo-test = []
+# OT-66 K1a (transitional, S2 point 4): `sys_spawn_client` hands the child a
+# RootDirCap derived from the spawner's, appended after its other inherited
+# handles. For kernels built with `cap-rooted-open`. Default-off ⇒
+# `sys_spawn_client` is `sys_spawn`.
+cap-rooted-open = []
+# OT-18 E2: on-miss re-request logic + grants.json writer. Default-off ⇒ on
+# Denied Arthur stops with "I can't do that" (no escalation) ≡ E1a.
+arthur-grant-rerequest = []
+# OT-18 E3-audit: grant-set listing + in-memory action log. Default-off ⇒ no
+# audit surface/log, grants still enforced ≡ E1a/E2.
+arthur-grant-audit = []
+# OT-18 E3-revoke: `revoke_grant` store rewrite (the audit/persistence half of
+# revocation). Enforcement is the kernel `revoke_handle`, never this. Pulls in
+# the E2 writer (`serialize_grants`). Default-off ⇒ no revoke store path.
+arthur-grant-revoke = []
+# Arthur IPC-frequency measurement: read-only atomics around the action
+# dispatcher. Default-off ⇒ execute_action has no counter state.
+action-observability = []

@@ -1,0 +1,46 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Phase 7 BUILD-O2 — the dedup-to-slot re-key (the production load path comes under governance) → Jarvis
+
+**Date:** 2026-06-11
+**From:** PM/Cerebro
+**To:** Jarvis (new branch off `origin/main` `6e1ef5b`: `codex/phase-7-build-O2-dedup-slot-rekey-jarvis`)
+**Status:** DISPATCHED. **QEMU — a contained re-key of one registry onto the proven arena; the last Phase 7 spine build before the CLOSE-REPORT.**
+**Builds on:** O1b (`7db1368`, §9.13, ADR-043 — and its **finding**: `sys_model_load`'s dedup path Weak-registers *every* fresh immutable weight, and `weak > 0` is unclaimable by I-4, so the production-default load path stays pinned) + O1a (the arena: `SlotKey`, mint/retain/release, I-13) + §9.7 (BUILD-3 sharing/dedup, ADR-035).
+**Promoted obligation:** this build gates the production `sys_model_load` payoff; the serving surface inherits whichever load path exists, so O2 lands ahead of it (Jarvis's O1b close recommendation, PM-adopted).
+
+## 0. The decision this build makes
+The §9.7 dedup registry is `DEDUP: BTreeMap<[u8;32], Weak<Tensor>>` (`sharing.rs:76`) — it tracks dedup candidates by holding a `Weak` against the tensor's `Arc`. Under the O1 ownership model that `Weak` is now the **last thing pinning production weights**: `weak > 0` fails the I-4 claim gate, so every weight loaded through the default `sys_model_load` (dedup-enabled) path is unclaimable even when idle. O2 re-keys the registry: **`hash → SlotKey` instead of `hash → Weak<Tensor>`.** The arena's generation check (I-13) replaces `Weak::upgrade` as the liveness probe — a freed slot is a clean miss, exactly as a dead `Weak` is today. The moment this lands, a deduped idle weight is `strong==1 && weak==0` at its slot — claimable, demotable, daemon-managed — and **the production-default load path is under governance.** The §9.7 one-copy invariant is *strengthened*, not weakened: N sharers → 1 `SlotKey` → 1 slot → 1 resting `Arc` → 1 physical copy, and that copy can now *move* (demote/refetch) without breaking the share, because every sharer resolves through the same slot.
+
+## 1. The re-key (minimal, semantics-preserving)
+- **`DEDUP: BTreeMap<[u8;32], SlotKey>`.** `dedup_probe(hash)`: look up the `SlotKey`, then `arena::mint(key)` — a live slot returns the shared `Arc` (a **hit**); a stale/freed key (generation mismatch, I-13) is a **miss** — remove the dead entry lazily and fall through to fresh allocation (the `Weak::upgrade`-failed analogue, byte-for-byte the same outcome).
+- **`share_or_allocate_weight`:** hit ⇒ `arena::retain(slot)` + the model's weight list stores the *same* `SlotKey` (two models, one slot — the share); miss ⇒ `alloc` into the arena + insert `hash → SlotKey`. The candidate registration **no longer creates a `Weak`** — registration is the map entry itself, which pins nothing.
+- **A dedup hit racing eviction/migration:** `mint` parks on the P4a reservation and re-resolves — a probe during a demote returns the post-commit tensor. A hit on a *demoted* (CPU-resident) slot is still a **hit** — share the slot, do not re-allocate; residency is the policy layer's business, not dedup's.
+- **§9.5 count-once preserved:** one slot = one physical copy = counted once regardless of sharer count (the existing rule, now keyed naturally by the slot).
+- **RO enforcement unchanged:** rights live on the handle (§9.7/BUILD-3); the re-key touches identity, not authority.
+
+## 2. ISCs
+- **ISC-1 — The re-key.** `DEDUP` to `hash → SlotKey`; `dedup_probe` via `mint` + I-13 generation check; lazy dead-entry removal; `share_or_allocate_weight` hit/miss as §1. No `Weak<Tensor>` remains anywhere in the dedup path (grep-assertable).
+- **ISC-2 — The claim gate consequence (the point).** After a default-path (`dedup_owner=Some`) `sys_model_load`, an **idle** weight's slot is `strong==1 && weak==0` — assert claimability directly (host + gate). The I-4 row's "deduped tensors stay unclaimable" carve-out is **retired**: update the ledger row text and the `evict.rs`/`sharing.rs` docs (this is a *strengthening* — no relax-and-re-prove needed, but the ledger must reflect reality).
+- **ISC-3 — Kill-switch (Rule 1).** The non-dedup path (`dedup_owner=None`) is untouched bit-for-bit, and the **entire BUILD-3 sharing/dedup family passes unchanged**: two processes loading the same model still converge on one physical copy (the `tensor <id> shared RO {PID..} — 1 physical copy` trace), RO-write still denied `EPERM`, revoke/teardown unchanged. Dedup behavior is *identical* in every observable except the new claimability.
+- **ISC-4 — The share-survives-movement gate (REQUIRED — the new correctness surface).** The case BUILD-3 could never exercise: (a) PID-A loads model M (dedup-registered); (b) M's idle weights are **demoted** under pressure; (c) PID-B loads the same M — the probe must **hit the demoted slot** (one copy, not two), and B's inference refetches **byte-identical**; (d) both A's and B's subsequent inferences agree byte-identically; (e) §9.5 counts the copy **once** throughout, residency ≤ capacity, slot/storage balance exact. Plus the race leg: a probe racing a demote parks-and-resolves (no torn hit, no duplicate allocation — assert allocation count).
+- **ISC-5 — The production payoff gate.** Re-run the O1b payoff scenario (`accel_model_residency`) **through the default dedup-enabled `sys_model_load`** — the path O1b had to sidestep: idle weights demoted + refetched byte-identical, pinned in-flight weights never moved (I-9), N≥50 at NEO_SMP=4. This closes ADR-043's finding on the path production actually uses.
+- **ISC-6 — Standards.** SPDX; **no new `unsafe`**; no new locks (the `DEDUP` lock persists, order unchanged); `cargo fmt`; host suite + full family (sharing/grant/revoke + P1–P4b + O1a/O1b regressions) green; `shard-coverage`; `clippy -D warnings`; builds on+off. **Amend ANSPEC §9.7** (dedup keys slots; the share-survives-movement property) + a pointer note in §9.13; **ADR-044**; update the I-4 ledger row (ISC-2) + the governance audit-log line.
+
+## 3. Gate (two-stage — QEMU, no OptiPlex)
+**Expected-failure-mode analysis:** duplicate-copy regression (a probe that misses when it should hit ⇒ two physical copies — assert allocation count + the one-copy trace); stale-entry pile-up (dead hashes never removed ⇒ unbounded map — assert lazy removal fires); probe-vs-free race (I-13 must yield a clean miss, never a stale resolve — the O1a counter stays armed); accounting drift on shared-then-demoted (count-once under movement, ISC-4e); a hit returning a *draining* tensor (the O1a `inc_not_zero` discipline, already proven — keep its discriminator firing).
+- **Stage A (you):** builds; the re-key unit tests + the full sharing/dedup family unchanged; clippy; fmt; shard-coverage.
+- **Stage B (QEMU):** ISC-4 (share-survives-movement, with the race leg) + ISC-5 (the default-path payoff) at NEO_SMP=4, N≥50 on the racing scenarios; all discriminators firing; byte-identical everywhere.
+
+## 4. Scope guard
+The re-key only. **Do NOT** change the arena protocol, the daemon, the claim predicate, or any policy; **do NOT** change sharing *semantics* (rights, grant, revoke, the one-copy trace) — only the registry's key type; **do NOT** add cross-tenant dedup policy (who *may* dedup is §9.7's existing rule); **do NOT** build the serving surface; **do NOT** add `unsafe` or locks; **do NOT** change *what* any op computes (I-1). If the re-key uncovers an ownership case the arena can't express, BLOCKER to PM — don't extend the arena in-flight.
+
+## 5. Merge (PM, on Stage-B PASS)
+Close-gate: rebase onto current `main`, re-run Stage-A+B, push. PM `pm-merge-check` → `--ff-only` → `main`. **O2 completes the Phase 7 spine** — every governance line and every policy decision now reaches the production-default load path. Then: the **Phase 7 CLOSE-REPORT** (PM), and the **Phase 7.5 connectivity lane opens** (DMA-isolation decision first; I-14 in force). Carried alternatives unchanged: serving surface (now inheriting a fully-governed load path), copy-engine DMA, SIMD32 backport.
+
+---
+
+## Relay — what to tell Jarvis
+- **Dispatch (authoritative, on `main`):** `Plans/DISPATCH-2026-06-11-phase-7-build-O2-dedup-slot-rekey-jarvis.md`
+- **Context:** ADR-043 §finding (the dedup-candidate pin) + ADR-042 (the arena) + ADR-035 (BUILD-3 dedup).
+- **Branch:** `codex/phase-7-build-O2-dedup-slot-rekey-jarvis` off `origin/main` `6e1ef5b`.
+- **One-line:** Re-key `DEDUP` from `hash → Weak<Tensor>` to `hash → SlotKey`: probe = `arena::mint` with the I-13 generation check replacing `Weak::upgrade` (stale = clean miss, lazy removal); hit = `retain` + share the SlotKey; registration pins nothing. Idle deduped weights become claimable (retire I-4's dedup carve-out in the ledger). Kill-switch = the whole BUILD-3 sharing/dedup family unchanged + the non-dedup path untouched. Two new gates: **share-survives-movement** (PID-B's probe hits a *demoted* slot — one copy, byte-identical refetch, count-once, probe-vs-demote parks) and the **O1b payoff re-run through the default dedup-enabled `sys_model_load`** (closing ADR-043's finding on the production path). N≥50 NEO_SMP=4, discriminators armed. Amend ANSPEC §9.7 + ADR-044. Zero new `unsafe`, no new locks. QEMU only.

@@ -1,0 +1,56 @@
+# Phase 7.5 BUILD-B — Stage A PASS (QEMU): the Phase-4 stack over USB
+# Scenario: usb_ethernet (qemu-xhci + usb-net on a slirp user netdev)
+# Date: 2026-06-12. Branch: codex/phase-7.5-build-B-usb-ethernet-jarvis.
+#
+# What this run proves (ISC-15/16, ADR-047):
+# - QEMU's usb-net (0525:a4a2, DUAL-config) enumerates, the ECM function is
+#   found BY CONTENT (config 1, comm if 0 / data if 1 alt 1, maxseg 1514),
+#   and cdc-ecm claims it through the 7.5-A seam.
+# - MAC parsed from the iMACAddress string descriptor (52:54:00:12:34:56).
+# - The FS-device Evaluate-Context dance (the BUILD-A silicon lesson) fired
+#   in QEMU too: MPS0=64 vs FS default 8.
+# - REAL DORA over the bulk pipes: DISCOVER/REQUEST egressed bulk-OUT,
+#   slirp's OFFER/ACK arrived bulk-IN (census: offer=1 ack=1), lease
+#   10.0.2.15 applied. ARP resolved on the wire (arp=1). DNS round-trip to
+#   10.0.2.3 (udp53=1) — and AGAIN after the flood leg (post-flood alive).
+# - Kill-switch (ISC-10): cdc_ecm disabled ⇒ probe-only re-offer matches 0
+#   drivers (BUILD-A's branch); re-enabled ⇒ matches again.
+# - RX-flood (ISC-12 / I-14(b)): 512 synthetic events through the REAL
+#   routing path → queue ≤ EP_QUEUE_CAP(64), drops=448 — EXACTLY 512−64.
+# - link_state rode the interrupt endpoint genuinely (14 NetworkConnection
+#   notifications — no assume-up fallback needed in QEMU).
+# - Containment: fence refusals 0, span leaks 0, ISR cap held, ep_errors 0,
+#   tx=5/tx_completed=5/rx=5 balanced.
+#
+# Found-and-fixed during this gate (the changelog trail):
+# - The byte oracle (ISC-1a) refuted the first parser draft on first run:
+#   wMaxSegmentSize read at bytes 10..12 instead of 8..10 (after the 4-byte
+#   bmEthernetStatistics). A writer-paired round-trip would have agreed
+#   with the shared mistake — the ADR-028 rule, demonstrated live.
+# - Gate run 1: device fully bound, pump census frames=0 — the poll-
+#   starvation signature. qemu-xhci delivers no MSI (msi_configured=false)
+#   and BUILD-A only drained inside enumeration wait loops; the F6 poll
+#   path is now production (xhci::poll_events) on the class-driver service
+#   path. Run 2 passed end-to-end.
+# - BUILD-A hub path dropped its device context with DCBAA[slot] still set
+#   (latent on silicon); every path now clears before drop (Anti-3).
+#
+# --- serial excerpts (usb_ethernet.attempt1.serial.log, the passing run) ---
+
+xhci: found 00:02.0 version=1.00 slots=64 ports=8 csz=32 scratchpads=0
+xhci: no usblegsup capability (no legacy bios) — os-owned
+xhci: msi_configured=false vector=0xf3
+xhci: running — scanning 8 ports
+xhci: portsc[5] sample=0 raw=0x000206e1 ccs=true ped=false pp=true speed=1 pls=7
+xhci: addressing slot=1 port=5 speed=full csz=32 (F3 layout breadcrumb)
+xhci: bMaxPacketSize0=64 (effective 64) differs from the speed default 8 — evaluate context
+usb: enumerated port=5 slot=1 speed=full vid=0525 pid=a4a2 class=02/00/00 configs=2
+cdc-ecm: binding vid=0525 pid=a4a2 config=1 comm_if=0 data_if=1 data_alt=1 maxseg=1514
+cdc-ecm: up mac=52:54:00:12:34:56 mtu=1500 rx_buffers=24 tx_buffers=8
+usb: device vid=0525 pid=a4a2 claimed by 'cdc-ecm'
+NEO_TEST/1 event=BEGIN name=usb_ethernet phase=dispatch
+cdc-ecm: link notification connected=true
+[ kernel ] usb-eth pump(dhcp-bound): frames=2 arp=0 ipv4=2 offer=1 ack=1 dhcp_refused=0 udp53=0 other=0 (E4 census)
+[ kernel ] usb-eth pump(dns-roundtrip): frames=4 arp=1 ipv4=3 offer=1 ack=1 dhcp_refused=0 udp53=1 other=0 (E4 census)
+[ kernel ] usb-eth: done mac=52:54:00:12:34:56 lease=10.0.2.15 tx=5 tx_completed=5 rx=5 notifications=14 ep_errors=0 flood_drops=448 queue_cap_held=yes
+NEO_TEST/1 event=PASS name=usb_ethernet usb_ethernet=ok claim=cdc-ecm dora=real_over_wire lease=10.0.2.15 dns_roundtrip=ok kill_switch=build_a_equiv rx_flood=bounded_counted post_flood=alive fence_refusals=0 i14=held opens=adr-047

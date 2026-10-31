@@ -1,0 +1,26 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: OT-61 browser architecture — cross-model cross-check → Chad
+
+**Date:** 2026-07-20
+**From:** PM (Claude)
+**To:** Chad (main-tier; Codex family — cross-family reviewer of a Qwen-authored decision)
+**Status:** DISPATCHED — **cross-model design review, NO-GATE** (a verdict + divergences doc). The cross-model rule: a load-bearing decision's *convergence is only strong evidence if the reviewer is a DIFFERENT family than the author.* The OT-61 browser FINDINGS (`docs/RESEARCH-2026-07-20-ot61-browser-architecture-FINDINGS.md`) was authored by **Prometheus (Qwen)**; you (Codex) are the independent second family; the PM (Claude) synthesizes. This is a **multi-month build commitment** — corroborate it before we open the lane.
+
+## What to do
+Read the FINDINGS. **Independently** assess the load-bearing claims — do NOT just agree; try to find where the recommendation is wrong or optimistic. Deliver a verdict: **RATIFY / RATIFY-AFTER-AMENDMENT / REFUTE**, with the specific load-bearing divergences.
+
+## The claims that actually carry the decision (pressure-test each)
+1. **The license verdict (should be solid — spot-check it).** Servo/WebRender/Stylo/html5ever = MPL-2.0 → adoptable. Confirm from the raw LICENSE files yourself (curl/git, not WebFetch) — a one-line miss here invalidates the whole "adopt not build" premise. Boa = MIT.
+2. **THE RISKY ONE — Servo-subset portability onto our substrate.** The FINDINGS says: adopt `webrender + stylo + html5ever + Boa`, strip the hosted-OS baggage (winit/gstreamer/gtk/SpiderMonkey), wire to our G1 compositor + net stack. **You just measured iced's `std`/winit/wgpu coupling for the toolkit — apply that same rigor here.** How deeply is Servo's render/layout/style *core* welded to `std`, a hosted allocator, threads, a winit-shaped event loop, and platform GPU contexts? Is a `no_std`-userland port of the subset genuinely bounded, or does the coupling run so deep that "own-minimal" or a different subset is more honest? This is where a Qwen+Codex divergence would be the highest-value signal — find it if it's there.
+3. **The ~6–9 month MVP estimate.** Realistic for "render a real HTTPS page (HTML+CSS+images+basic JS+links)" on our stack, or optimistic? Which stage in the ladder is under-estimated (the WebRender-on-OT-63 wiring? the Servo→our-net-stack fetch bridge? the Boa↔DOM binding)?
+4. **WebRender ↔ OT-63 fit.** WebRender is GPU-driven (its own frame/command model). Does it actually map onto our OT-63 present path (GpuSubmitCap + the scanout-fence + the synthetic-then-real Gen9 flip), or does WebRender assume a GPU API surface (full wgpu/OpenGL) we don't have and won't soon? Is the "shared GPU substrate" claim real or hand-waved?
+5. **The cap-native security model + no-contradiction check.** Tab-as-principal / per-origin net cap / no-snoop rendering — coherent with our actual cap + G1 primitives? And does anything contradict a ratified decision (Vello text engine, own compositor, kTLS)? The FINDINGS claims zero — verify.
+
+## Deliverable + close
+- `docs/RESEARCH-2026-07-20-ot61-browser-crosscheck-FINDINGS.md` (CC-BY-4.0): the verdict (§0), then per-claim your independent assessment + any **load-bearing divergence** (where you'd change the recommendation) + any **corroboration** (where independent Codex analysis agrees, which strengthens it). Confidence-tagged. Raw-source any license/technical fact that's load-bearing.
+- No-gate; push to `Workers\chad` on branch `codex/ot61-browser-crosscheck-chad`; PM cherry-picks the FINDINGS to `main` + folds the verdict into the OT-61 decision. RETURN: verdict + 3–5 bullet divergences/corroborations.
+
+## Relay — what to tell Chad
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-20-ot61-browser-crosscheck-chad.md`. The doc under review: `git show origin/main:docs/RESEARCH-2026-07-20-ot61-browser-architecture-FINDINGS.md`. Your own toolkit spike (the std-coupling method to reuse): `git show origin/main:docs/RESEARCH-2026-07-20-gui-app-toolkit-spike-FINDINGS.md`. Work in `Workers\chad`.
+- **One-line:** **Cross-model cross-check** (you=Codex, author=Qwen/Prometheus) of the browser decision (**adopt Servo-subset**) — a multi-month commitment, so pressure-test it before we build. Verify the MPL-2.0 license (spot-check raw). Then the risky claim — **apply your iced std-coupling rigor to Servo:** is a `no_std`-userland port of `webrender+stylo+html5ever+Boa` (minus winit/gstreamer/std) actually bounded, or is the hosted-OS coupling deeper than the FINDINGS assumes (→ own-minimal or a different subset)? Sanity-check the 6–9mo MVP + the WebRender↔OT-63 GPU fit (does WebRender assume a wgpu/GL surface we don't have?) + the cap-native security model + the no-contradiction claim. Verdict: **RATIFY / RATIFY-AFTER-AMENDMENT / REFUTE** with load-bearing divergences. Deliverable `docs/RESEARCH-2026-07-20-ot61-browser-crosscheck-FINDINGS.md`. Find the divergence if it's there — a Qwen+Codex disagreement is the whole point.
+- **RAG:** `webrender wgpu gpu`, `net tcp tls_record fetch`, `atrium present_backend GpuSubmit scanout`, `SharedPixelBuffer surface`. Health-check first; note-and-fall-back if down.

@@ -1,0 +1,856 @@
+limine: Loading executable `boot():/boot/kernel`...
+limine: Loading module `boot():/modules/neo-init`...
+limine: Loading module `boot():/modules/neo-worker`...
+limine: Loading module `boot():/modules/neo-shell`...
+limine: Loading module `boot():/modules/neo-arthur`...
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=0 loaded (tss_sel=0x30)
+[ kernel ] idt: loaded (18 exception handlers + timer at vector 32 + AHCI MSI at vector 240 + NVMe MSI/MSI-X at vector 241 + TLB shootdown IPI at vector 252 + resched IPI at vector 253)
+[ kernel ] per_cpu: PER_CPU[0] at 0xffffffff96021a80 → IA32_GS_BASE (BSP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95f1d0e8), SFMASK=IF|TF|AC|DF)
+
+================================================
+  LOGANSOS  v0.0.1
+  Intelligence as a kernel primitive.
+================================================
+
+[ kernel ] entered _kernel_start, long mode, ring 0 (limine rev: supported=true, actual=Some(3))
+[ kernel ] limine: executable phys=0x000000007dfd6000 virt=0xffffffff95eef000
+[ kernel ] interrupts: enabled
+[ trap  ] BREAKPOINT (#BP) InterruptStackFrame { instruction_pointer: VirtAddr(0xffffffff95f1a731), code_segment: SegmentSelector { index: 1, rpl: Ring0 }, cpu_flags: RFlags(INTERRUPT_FLAG | SIGN_FLAG | 0x2), stack_pointer: VirtAddr(0xffff80007fecbee0), stack_segment: SegmentSelector { index: 2, rpl: Ring0 } }
+[ kernel ] breakpoint smoke test: returned cleanly
+[ kernel ] mm: hhdm_offset=0xffff800000000000, memmap_entries=23
+[ kernel ] mm: usable physical memory = 6030 MiB
+[ kernel ] mm: hhdm_phys_end=0x00000001fffffd90
+[hhdm] required_end=0x1fffffd90 exec=[0x7dfd6000,0x7e513000) modules=[module0=[0x1feb8a000,0x1fffffd90),module1=[0x1fd6e2000,0x1feb892c0),module2=[0x1fc220000,0x1fd6e1b28),module3=[0x1fafd1000,0x1fc21f4b0)] repair_pages=0
+[ kernel ] paging: CR4.PGE was not set; enabled it.
+[ kernel ] paging: GLOBAL fixup complete - 4K leaves: 5792, 2M leaves: 3065, 1G leaves: 0
+[ kernel ] paging: sanity OK - kernel .text sample virt VirtAddr(0xffffffff95f1a3a0) -> phys PhysAddr(0x7e0013a0) (global=true)
+[ kernel ] heap: ready (1024 MiB at VirtAddr(0xffffffff96800000), 262144 pages mapped)
+[ kernel ] heap: smoke test passed (Box, Vec, String)
+[ kernel ] mm: kernel PML4 phys = 0x000000007febb000
+[ kernel ] slab: initialized per-CPU state cpu=0 at 0xffffffff968000d0
+[ kernel ] apic: cpu=0 lapic_id=0 enabled xAPIC (BSP, base_phys=0x00000000fee00000)
+[ kernel ] block: init (generic block-device substrate)
+[ kernel ] pci: virtio-blk modern 00:03.0 vendor=0x1af4 device=0x1042
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=5 bar=4 offset=0x1000 length=0x1
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=2 bar=4 offset=0x3000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=4 bar=4 offset=0x2000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=3 bar=4 offset=0x1000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=1 bar=4 offset=0x0 length=0x1000
+[ kernel ] block: registered device index=0 driver=virtio-blk name=virtio-blk0 pci_bdf=Some((0, 3, 0))
+[ kernel ] virtio-blk: feature-policy bdf=00:03.0 offered=0x0000010130007e54 driver=0x0000000100000200 F_FLUSH_offered=true F_FLUSH_negotiated=true F_CONFIG_WCE_negotiated=false F_EVENT_IDX_negotiated=false queue_size=8 capacity_sectors=2097152 msix=false msi=false attach=rw
+[ kernel ] pci: AHCI controller 00:1f.2 vendor=0x8086 device=0x2922 class=0x010601
+[ kernel ] block: pci scan complete functions=7 virtio_blk=1 ahci=1 ahci_ok=0 nvme=0 nvme_ok=0 attached_devices=1
+[ kernel ] net: init (generic link-device substrate)
+[ kernel ] net: pci scan complete functions=7 virtio_net=0 virtio_net_ok=0 attached_devices=0
+[ kernel ] framebuffer: 1280x800 @ 32 bpp, pitch 5120 addr 0xffff8000fd000000
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] accel: init complete attached_devices=2
+[ kernel ] smp: Limine reports 4 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=1
+[ kernel ] smp: starting cpu_id=2 lapic_id=2
+[ kernel ] smp: starting cpu_id=3 lapic_id=3
+[ kernel ] smp: started 3 AP(s)
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffff96021b80 → IA32_GS_BASE (AP)
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffff96021c00 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffff96021b00 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffff96021c00 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffff96021b80 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=3 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] apic: cpu=2 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffff96021b00 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95f1d0e8), SFMASK=IF|TF|AC|DF)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95f1d0e8), SFMASK=IF|TF|AC|DF)
+[ kernel ] apic: cpu=1 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95f1d0e8), SFMASK=IF|TF|AC|DF)
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffff96800ad0
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffff968009a0
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=3, processor_id=3)
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=1, processor_id=1)
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffff96800870
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=2, processor_id=2)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] smp: AP ready-barrier cleared (3/3 AP(s) up)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] sched: spawned 'ping' (id=8)
+[ kernel ] sched: spawned 'pong' (id=9)
+[ kernel ] sched: spawned 'hog' (id=10)
+[ ping ] 1
+[ pong ] 1
+[ ping ] 2
+[ pong ] 2
+[ ping ] 3
+[ pong ] 3
+[ ping ] 4
+[ pong ] 4
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=8)
+[ kernel ] sched: reaped 'pong' (id=9)
+[ hog  ] preempted at least 5 ticks (start=1, now=7)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=10)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=7)
+NEO_TEST/1 event=BEGIN name=arthur_real_brain_boot_qwen35 phase=dispatch
+[ kernel ] sched: spawned 'virtio-blk-completion' (id=11)
+[ kernel ] fs: mounted NeoFS readonly at /neofs selected_superblock=0 generation=1
+neofs_mount ok
+[ kernel ] elf: neo-init module at 0xffff8001feb8a000 size=21454224 bytes
+[ frame ] phase=baseline-pre-spawn used=262665 delta=+262665
+[ kernel ] elf: loaded entry=0x0000000000400030 segments=2
+[ kernel ] sched: enqueued user thread (id=12)
+[ kernel ] proc: spawned 'neo-init' (pid=1) entry=0x0000000000400030 user_rsp=0x00007fffffffeff8 handles_inherited=0
+[ frame ] phase=post-spawn used=262690 delta=+25
+[ kernel ] proc: neo-init spawned with pid=1
+[ neo-init ] spawning neo-shell for arthur console
+[ kernel ] elf: loaded entry=0x0000000000404aa0 segments=2
+[ kernel ] sched: enqueued user thread (id=13)
+[ kernel ] proc: spawned 'user-process' (pid=2) entry=0x0000000000404aa0 user_rsp=0x00007fffffffeff8 handles_inherited=0
+[ frame ] phase=post-spawn used=262746 delta=+56
+[ neo-shell ] ready
+neo> arthur
+[ neo-shell ] arthur spawn
+[ kernel ] elf: loaded entry=0x0000000000407010 segments=3
+[ kernel ] sched: enqueued user thread (id=14)
+[ kernel ] proc: spawned 'user-process' (pid=3) entry=0x0000000000407010 user_rsp=0x00007fffffffeff8 handles_inherited=1
+[ frame ] phase=post-spawn used=262799 delta=+53
+arthur> hello world
+vocab_load tokens=248320 bytes=15690043
+model_load start path=/neofs/model-qwen3.5-0.8b.neom
+model_open path=/neofs/model-qwen3.5-0.8b.neom
+model_open path=/neofs/model-qwen3.5-0.8b.neom size=725171456
+qwen35_model_weight phase=begin index=0 count=321 bytes=4096
+qwen35_model_weight phase=resident index=0 count=321 bytes=4096
+qwen35_model_weight phase=begin index=1 count=321 bytes=208588800
+qwen35_model_weight phase=resident index=1 count=321 bytes=208588800
+qwen35_model_weight phase=begin index=2 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=2 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=3 count=321 bytes=4096
+qwen35_model_weight phase=resident index=3 count=321 bytes=4096
+qwen35_model_weight phase=begin index=4 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=4 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=5 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=5 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=6 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=6 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=7 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=7 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=8 count=321 bytes=4096
+qwen35_model_weight phase=resident index=8 count=321 bytes=4096
+qwen35_model_weight phase=begin index=9 count=321 bytes=64
+qwen35_model_weight phase=resident index=9 count=321 bytes=64
+qwen35_model_weight phase=begin index=10 count=321 bytes=9216
+qwen35_model_weight phase=resident index=10 count=321 bytes=9216
+qwen35_model_weight phase=begin index=11 count=321 bytes=9216
+qwen35_model_weight phase=resident index=11 count=321 bytes=9216
+qwen35_model_weight phase=begin index=12 count=321 bytes=98304
+qwen35_model_weight phase=resident index=12 count=321 bytes=98304
+qwen35_model_weight phase=begin index=13 count=321 bytes=64
+qwen35_model_weight phase=resident index=13 count=321 bytes=64
+qwen35_model_weight phase=begin index=14 count=321 bytes=512
+qwen35_model_weight phase=resident index=14 count=321 bytes=512
+qwen35_model_weight phase=begin index=15 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=15 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=16 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=16 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=17 count=321 bytes=4096
+qwen35_model_weight phase=resident index=17 count=321 bytes=4096
+qwen35_model_weight phase=begin index=18 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=18 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=19 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=19 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=20 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=20 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=21 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=21 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=22 count=321 bytes=4096
+qwen35_model_weight phase=resident index=22 count=321 bytes=4096
+qwen35_model_weight phase=begin index=23 count=321 bytes=64
+qwen35_model_weight phase=resident index=23 count=321 bytes=64
+qwen35_model_weight phase=begin index=24 count=321 bytes=9216
+qwen35_model_weight phase=resident index=24 count=321 bytes=9216
+qwen35_model_weight phase=begin index=25 count=321 bytes=9216
+qwen35_model_weight phase=resident index=25 count=321 bytes=9216
+qwen35_model_weight phase=begin index=26 count=321 bytes=98304
+qwen35_model_weight phase=resident index=26 count=321 bytes=98304
+qwen35_model_weight phase=begin index=27 count=321 bytes=64
+qwen35_model_weight phase=resident index=27 count=321 bytes=64
+qwen35_model_weight phase=begin index=28 count=321 bytes=512
+qwen35_model_weight phase=resident index=28 count=321 bytes=512
+qwen35_model_weight phase=begin index=29 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=29 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=30 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=30 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=31 count=321 bytes=4096
+qwen35_model_weight phase=resident index=31 count=321 bytes=4096
+qwen35_model_weight phase=begin index=32 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=32 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=33 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=33 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=34 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=34 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=35 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=35 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=36 count=321 bytes=4096
+qwen35_model_weight phase=resident index=36 count=321 bytes=4096
+qwen35_model_weight phase=begin index=37 count=321 bytes=64
+qwen35_model_weight phase=resident index=37 count=321 bytes=64
+qwen35_model_weight phase=begin index=38 count=321 bytes=9216
+qwen35_model_weight phase=resident index=38 count=321 bytes=9216
+qwen35_model_weight phase=begin index=39 count=321 bytes=9216
+qwen35_model_weight phase=resident index=39 count=321 bytes=9216
+qwen35_model_weight phase=begin index=40 count=321 bytes=98304
+qwen35_model_weight phase=resident index=40 count=321 bytes=98304
+qwen35_model_weight phase=begin index=41 count=321 bytes=64
+qwen35_model_weight phase=resident index=41 count=321 bytes=64
+qwen35_model_weight phase=begin index=42 count=321 bytes=512
+qwen35_model_weight phase=resident index=42 count=321 bytes=512
+qwen35_model_weight phase=begin index=43 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=43 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=44 count=321 bytes=294912
+qwen35_model_weight phase=resident index=44 count=321 bytes=294912
+qwen35_model_weight phase=begin index=45 count=321 bytes=1024
+qwen35_model_weight phase=resident index=45 count=321 bytes=1024
+qwen35_model_weight phase=begin index=46 count=321 bytes=4096
+qwen35_model_weight phase=resident index=46 count=321 bytes=4096
+qwen35_model_weight phase=begin index=47 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=47 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=48 count=321 bytes=2359296
+qwen35_model_weight phase=resident index=48 count=321 bytes=2359296
+qwen35_model_weight phase=begin index=49 count=321 bytes=1024
+qwen35_model_weight phase=resident index=49 count=321 bytes=1024
+qwen35_model_weight phase=begin index=50 count=321 bytes=430080
+qwen35_model_weight phase=resident index=50 count=321 bytes=430080
+qwen35_model_weight phase=begin index=51 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=51 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=52 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=52 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=53 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=53 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=54 count=321 bytes=4096
+qwen35_model_weight phase=resident index=54 count=321 bytes=4096
+qwen35_model_weight phase=begin index=55 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=55 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=56 count=321 bytes=4096
+qwen35_model_weight phase=resident index=56 count=321 bytes=4096
+qwen35_model_weight phase=begin index=57 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=57 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=58 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=58 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=59 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=59 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=60 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=60 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=61 count=321 bytes=4096
+qwen35_model_weight phase=resident index=61 count=321 bytes=4096
+qwen35_model_weight phase=begin index=62 count=321 bytes=64
+qwen35_model_weight phase=resident index=62 count=321 bytes=64
+qwen35_model_weight phase=begin index=63 count=321 bytes=9216
+qwen35_model_weight phase=resident index=63 count=321 bytes=9216
+qwen35_model_weight phase=begin index=64 count=321 bytes=9216
+qwen35_model_weight phase=resident index=64 count=321 bytes=9216
+qwen35_model_weight phase=begin index=65 count=321 bytes=98304
+qwen35_model_weight phase=resident index=65 count=321 bytes=98304
+qwen35_model_weight phase=begin index=66 count=321 bytes=64
+qwen35_model_weight phase=resident index=66 count=321 bytes=64
+qwen35_model_weight phase=begin index=67 count=321 bytes=512
+qwen35_model_weight phase=resident index=67 count=321 bytes=512
+qwen35_model_weight phase=begin index=68 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=68 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=69 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=69 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=70 count=321 bytes=4096
+qwen35_model_weight phase=resident index=70 count=321 bytes=4096
+qwen35_model_weight phase=begin index=71 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=71 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=72 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=72 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=73 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=73 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=74 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=74 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=75 count=321 bytes=4096
+qwen35_model_weight phase=resident index=75 count=321 bytes=4096
+qwen35_model_weight phase=begin index=76 count=321 bytes=64
+qwen35_model_weight phase=resident index=76 count=321 bytes=64
+qwen35_model_weight phase=begin index=77 count=321 bytes=9216
+qwen35_model_weight phase=resident index=77 count=321 bytes=9216
+qwen35_model_weight phase=begin index=78 count=321 bytes=9216
+qwen35_model_weight phase=resident index=78 count=321 bytes=9216
+qwen35_model_weight phase=begin index=79 count=321 bytes=98304
+qwen35_model_weight phase=resident index=79 count=321 bytes=98304
+qwen35_model_weight phase=begin index=80 count=321 bytes=64
+qwen35_model_weight phase=resident index=80 count=321 bytes=64
+qwen35_model_weight phase=begin index=81 count=321 bytes=512
+qwen35_model_weight phase=resident index=81 count=321 bytes=512
+qwen35_model_weight phase=begin index=82 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=82 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=83 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=83 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=84 count=321 bytes=4096
+qwen35_model_weight phase=resident index=84 count=321 bytes=4096
+qwen35_model_weight phase=begin index=85 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=85 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=86 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=86 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=87 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=87 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=88 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=88 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=89 count=321 bytes=4096
+qwen35_model_weight phase=resident index=89 count=321 bytes=4096
+qwen35_model_weight phase=begin index=90 count=321 bytes=64
+qwen35_model_weight phase=resident index=90 count=321 bytes=64
+qwen35_model_weight phase=begin index=91 count=321 bytes=9216
+qwen35_model_weight phase=resident index=91 count=321 bytes=9216
+qwen35_model_weight phase=begin index=92 count=321 bytes=9216
+qwen35_model_weight phase=resident index=92 count=321 bytes=9216
+qwen35_model_weight phase=begin index=93 count=321 bytes=98304
+qwen35_model_weight phase=resident index=93 count=321 bytes=98304
+qwen35_model_weight phase=begin index=94 count=321 bytes=64
+qwen35_model_weight phase=resident index=94 count=321 bytes=64
+qwen35_model_weight phase=begin index=95 count=321 bytes=512
+qwen35_model_weight phase=resident index=95 count=321 bytes=512
+qwen35_model_weight phase=begin index=96 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=96 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=97 count=321 bytes=294912
+qwen35_model_weight phase=resident index=97 count=321 bytes=294912
+qwen35_model_weight phase=begin index=98 count=321 bytes=1024
+qwen35_model_weight phase=resident index=98 count=321 bytes=1024
+qwen35_model_weight phase=begin index=99 count=321 bytes=4096
+qwen35_model_weight phase=resident index=99 count=321 bytes=4096
+qwen35_model_weight phase=begin index=100 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=100 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=101 count=321 bytes=2359296
+qwen35_model_weight phase=resident index=101 count=321 bytes=2359296
+qwen35_model_weight phase=begin index=102 count=321 bytes=1024
+qwen35_model_weight phase=resident index=102 count=321 bytes=1024
+qwen35_model_weight phase=begin index=103 count=321 bytes=430080
+qwen35_model_weight phase=resident index=103 count=321 bytes=430080
+qwen35_model_weight phase=begin index=104 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=104 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=105 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=105 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=106 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=106 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=107 count=321 bytes=4096
+qwen35_model_weight phase=resident index=107 count=321 bytes=4096
+qwen35_model_weight phase=begin index=108 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=108 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=109 count=321 bytes=4096
+qwen35_model_weight phase=resident index=109 count=321 bytes=4096
+qwen35_model_weight phase=begin index=110 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=110 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=111 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=111 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=112 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=112 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=113 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=113 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=114 count=321 bytes=4096
+qwen35_model_weight phase=resident index=114 count=321 bytes=4096
+qwen35_model_weight phase=begin index=115 count=321 bytes=64
+qwen35_model_weight phase=resident index=115 count=321 bytes=64
+qwen35_model_weight phase=begin index=116 count=321 bytes=9216
+qwen35_model_weight phase=resident index=116 count=321 bytes=9216
+qwen35_model_weight phase=begin index=117 count=321 bytes=9216
+qwen35_model_weight phase=resident index=117 count=321 bytes=9216
+qwen35_model_weight phase=begin index=118 count=321 bytes=98304
+qwen35_model_weight phase=resident index=118 count=321 bytes=98304
+qwen35_model_weight phase=begin index=119 count=321 bytes=64
+qwen35_model_weight phase=resident index=119 count=321 bytes=64
+qwen35_model_weight phase=begin index=120 count=321 bytes=512
+qwen35_model_weight phase=resident index=120 count=321 bytes=512
+qwen35_model_weight phase=begin index=121 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=121 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=122 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=122 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=123 count=321 bytes=4096
+qwen35_model_weight phase=resident index=123 count=321 bytes=4096
+qwen35_model_weight phase=begin index=124 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=124 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=125 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=125 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=126 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=126 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=127 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=127 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=128 count=321 bytes=4096
+qwen35_model_weight phase=resident index=128 count=321 bytes=4096
+qwen35_model_weight phase=begin index=129 count=321 bytes=64
+qwen35_model_weight phase=resident index=129 count=321 bytes=64
+qwen35_model_weight phase=begin index=130 count=321 bytes=9216
+qwen35_model_weight phase=resident index=130 count=321 bytes=9216
+qwen35_model_weight phase=begin index=131 count=321 bytes=9216
+qwen35_model_weight phase=resident index=131 count=321 bytes=9216
+qwen35_model_weight phase=begin index=132 count=321 bytes=98304
+qwen35_model_weight phase=resident index=132 count=321 bytes=98304
+qwen35_model_weight phase=begin index=133 count=321 bytes=64
+qwen35_model_weight phase=resident index=133 count=321 bytes=64
+qwen35_model_weight phase=begin index=134 count=321 bytes=512
+qwen35_model_weight phase=resident index=134 count=321 bytes=512
+qwen35_model_weight phase=begin index=135 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=135 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=136 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=136 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=137 count=321 bytes=4096
+qwen35_model_weight phase=resident index=137 count=321 bytes=4096
+qwen35_model_weight phase=begin index=138 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=138 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=139 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=139 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=140 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=140 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=141 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=141 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=142 count=321 bytes=4096
+qwen35_model_weight phase=resident index=142 count=321 bytes=4096
+qwen35_model_weight phase=begin index=143 count=321 bytes=64
+qwen35_model_weight phase=resident index=143 count=321 bytes=64
+qwen35_model_weight phase=begin index=144 count=321 bytes=9216
+qwen35_model_weight phase=resident index=144 count=321 bytes=9216
+qwen35_model_weight phase=begin index=145 count=321 bytes=9216
+qwen35_model_weight phase=resident index=145 count=321 bytes=9216
+qwen35_model_weight phase=begin index=146 count=321 bytes=98304
+qwen35_model_weight phase=resident index=146 count=321 bytes=98304
+qwen35_model_weight phase=begin index=147 count=321 bytes=64
+qwen35_model_weight phase=resident index=147 count=321 bytes=64
+qwen35_model_weight phase=begin index=148 count=321 bytes=512
+qwen35_model_weight phase=resident index=148 count=321 bytes=512
+qwen35_model_weight phase=begin index=149 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=149 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=150 count=321 bytes=294912
+qwen35_model_weight phase=resident index=150 count=321 bytes=294912
+qwen35_model_weight phase=begin index=151 count=321 bytes=1024
+qwen35_model_weight phase=resident index=151 count=321 bytes=1024
+qwen35_model_weight phase=begin index=152 count=321 bytes=4096
+qwen35_model_weight phase=resident index=152 count=321 bytes=4096
+qwen35_model_weight phase=begin index=153 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=153 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=154 count=321 bytes=2359296
+qwen35_model_weight phase=resident index=154 count=321 bytes=2359296
+qwen35_model_weight phase=begin index=155 count=321 bytes=1024
+qwen35_model_weight phase=resident index=155 count=321 bytes=1024
+qwen35_model_weight phase=begin index=156 count=321 bytes=430080
+qwen35_model_weight phase=resident index=156 count=321 bytes=430080
+qwen35_model_weight phase=begin index=157 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=157 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=158 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=158 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=159 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=159 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=160 count=321 bytes=4096
+qwen35_model_weight phase=resident index=160 count=321 bytes=4096
+qwen35_model_weight phase=begin index=161 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=161 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=162 count=321 bytes=4096
+qwen35_model_weight phase=resident index=162 count=321 bytes=4096
+qwen35_model_weight phase=begin index=163 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=163 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=164 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=164 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=165 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=165 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=166 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=166 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=167 count=321 bytes=4096
+qwen35_model_weight phase=resident index=167 count=321 bytes=4096
+qwen35_model_weight phase=begin index=168 count=321 bytes=64
+qwen35_model_weight phase=resident index=168 count=321 bytes=64
+qwen35_model_weight phase=begin index=169 count=321 bytes=9216
+qwen35_model_weight phase=resident index=169 count=321 bytes=9216
+qwen35_model_weight phase=begin index=170 count=321 bytes=9216
+qwen35_model_weight phase=resident index=170 count=321 bytes=9216
+qwen35_model_weight phase=begin index=171 count=321 bytes=98304
+qwen35_model_weight phase=resident index=171 count=321 bytes=98304
+qwen35_model_weight phase=begin index=172 count=321 bytes=64
+qwen35_model_weight phase=resident index=172 count=321 bytes=64
+qwen35_model_weight phase=begin index=173 count=321 bytes=512
+qwen35_model_weight phase=resident index=173 count=321 bytes=512
+qwen35_model_weight phase=begin index=174 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=174 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=175 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=175 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=176 count=321 bytes=4096
+qwen35_model_weight phase=resident index=176 count=321 bytes=4096
+qwen35_model_weight phase=begin index=177 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=177 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=178 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=178 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=179 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=179 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=180 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=180 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=181 count=321 bytes=4096
+qwen35_model_weight phase=resident index=181 count=321 bytes=4096
+qwen35_model_weight phase=begin index=182 count=321 bytes=64
+qwen35_model_weight phase=resident index=182 count=321 bytes=64
+qwen35_model_weight phase=begin index=183 count=321 bytes=9216
+qwen35_model_weight phase=resident index=183 count=321 bytes=9216
+qwen35_model_weight phase=begin index=184 count=321 bytes=9216
+qwen35_model_weight phase=resident index=184 count=321 bytes=9216
+qwen35_model_weight phase=begin index=185 count=321 bytes=98304
+qwen35_model_weight phase=resident index=185 count=321 bytes=98304
+qwen35_model_weight phase=begin index=186 count=321 bytes=64
+qwen35_model_weight phase=resident index=186 count=321 bytes=64
+qwen35_model_weight phase=begin index=187 count=321 bytes=512
+qwen35_model_weight phase=resident index=187 count=321 bytes=512
+qwen35_model_weight phase=begin index=188 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=188 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=189 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=189 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=190 count=321 bytes=4096
+qwen35_model_weight phase=resident index=190 count=321 bytes=4096
+qwen35_model_weight phase=begin index=191 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=191 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=192 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=192 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=193 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=193 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=194 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=194 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=195 count=321 bytes=4096
+qwen35_model_weight phase=resident index=195 count=321 bytes=4096
+qwen35_model_weight phase=begin index=196 count=321 bytes=64
+qwen35_model_weight phase=resident index=196 count=321 bytes=64
+qwen35_model_weight phase=begin index=197 count=321 bytes=9216
+qwen35_model_weight phase=resident index=197 count=321 bytes=9216
+qwen35_model_weight phase=begin index=198 count=321 bytes=9216
+qwen35_model_weight phase=resident index=198 count=321 bytes=9216
+qwen35_model_weight phase=begin index=199 count=321 bytes=98304
+qwen35_model_weight phase=resident index=199 count=321 bytes=98304
+qwen35_model_weight phase=begin index=200 count=321 bytes=64
+qwen35_model_weight phase=resident index=200 count=321 bytes=64
+qwen35_model_weight phase=begin index=201 count=321 bytes=512
+qwen35_model_weight phase=resident index=201 count=321 bytes=512
+qwen35_model_weight phase=begin index=202 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=202 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=203 count=321 bytes=294912
+qwen35_model_weight phase=resident index=203 count=321 bytes=294912
+qwen35_model_weight phase=begin index=204 count=321 bytes=1024
+qwen35_model_weight phase=resident index=204 count=321 bytes=1024
+qwen35_model_weight phase=begin index=205 count=321 bytes=4096
+qwen35_model_weight phase=resident index=205 count=321 bytes=4096
+qwen35_model_weight phase=begin index=206 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=206 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=207 count=321 bytes=2359296
+qwen35_model_weight phase=resident index=207 count=321 bytes=2359296
+qwen35_model_weight phase=begin index=208 count=321 bytes=1024
+qwen35_model_weight phase=resident index=208 count=321 bytes=1024
+qwen35_model_weight phase=begin index=209 count=321 bytes=294912
+qwen35_model_weight phase=resident index=209 count=321 bytes=294912
+qwen35_model_weight phase=begin index=210 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=210 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=211 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=211 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=212 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=212 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=213 count=321 bytes=4096
+qwen35_model_weight phase=resident index=213 count=321 bytes=4096
+qwen35_model_weight phase=begin index=214 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=214 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=215 count=321 bytes=4096
+qwen35_model_weight phase=resident index=215 count=321 bytes=4096
+qwen35_model_weight phase=begin index=216 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=216 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=217 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=217 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=218 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=218 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=219 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=219 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=220 count=321 bytes=4096
+qwen35_model_weight phase=resident index=220 count=321 bytes=4096
+qwen35_model_weight phase=begin index=221 count=321 bytes=64
+qwen35_model_weight phase=resident index=221 count=321 bytes=64
+qwen35_model_weight phase=begin index=222 count=321 bytes=9216
+qwen35_model_weight phase=resident index=222 count=321 bytes=9216
+qwen35_model_weight phase=begin index=223 count=321 bytes=9216
+qwen35_model_weight phase=resident index=223 count=321 bytes=9216
+qwen35_model_weight phase=begin index=224 count=321 bytes=98304
+qwen35_model_weight phase=resident index=224 count=321 bytes=98304
+qwen35_model_weight phase=begin index=225 count=321 bytes=64
+qwen35_model_weight phase=resident index=225 count=321 bytes=64
+qwen35_model_weight phase=begin index=226 count=321 bytes=512
+qwen35_model_weight phase=resident index=226 count=321 bytes=512
+qwen35_model_weight phase=begin index=227 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=227 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=228 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=228 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=229 count=321 bytes=4096
+qwen35_model_weight phase=resident index=229 count=321 bytes=4096
+qwen35_model_weight phase=begin index=230 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=230 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=231 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=231 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=232 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=232 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=233 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=233 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=234 count=321 bytes=4096
+qwen35_model_weight phase=resident index=234 count=321 bytes=4096
+qwen35_model_weight phase=begin index=235 count=321 bytes=64
+qwen35_model_weight phase=resident index=235 count=321 bytes=64
+qwen35_model_weight phase=begin index=236 count=321 bytes=9216
+qwen35_model_weight phase=resident index=236 count=321 bytes=9216
+qwen35_model_weight phase=begin index=237 count=321 bytes=9216
+qwen35_model_weight phase=resident index=237 count=321 bytes=9216
+qwen35_model_weight phase=begin index=238 count=321 bytes=98304
+qwen35_model_weight phase=resident index=238 count=321 bytes=98304
+qwen35_model_weight phase=begin index=239 count=321 bytes=64
+qwen35_model_weight phase=resident index=239 count=321 bytes=64
+qwen35_model_weight phase=begin index=240 count=321 bytes=512
+qwen35_model_weight phase=resident index=240 count=321 bytes=512
+qwen35_model_weight phase=begin index=241 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=241 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=242 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=242 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=243 count=321 bytes=4096
+qwen35_model_weight phase=resident index=243 count=321 bytes=4096
+qwen35_model_weight phase=begin index=244 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=244 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=245 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=245 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=246 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=246 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=247 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=247 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=248 count=321 bytes=4096
+qwen35_model_weight phase=resident index=248 count=321 bytes=4096
+qwen35_model_weight phase=begin index=249 count=321 bytes=64
+qwen35_model_weight phase=resident index=249 count=321 bytes=64
+qwen35_model_weight phase=begin index=250 count=321 bytes=9216
+qwen35_model_weight phase=resident index=250 count=321 bytes=9216
+qwen35_model_weight phase=begin index=251 count=321 bytes=9216
+qwen35_model_weight phase=resident index=251 count=321 bytes=9216
+qwen35_model_weight phase=begin index=252 count=321 bytes=98304
+qwen35_model_weight phase=resident index=252 count=321 bytes=98304
+qwen35_model_weight phase=begin index=253 count=321 bytes=64
+qwen35_model_weight phase=resident index=253 count=321 bytes=64
+qwen35_model_weight phase=begin index=254 count=321 bytes=512
+qwen35_model_weight phase=resident index=254 count=321 bytes=512
+qwen35_model_weight phase=begin index=255 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=255 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=256 count=321 bytes=294912
+qwen35_model_weight phase=resident index=256 count=321 bytes=294912
+qwen35_model_weight phase=begin index=257 count=321 bytes=1024
+qwen35_model_weight phase=resident index=257 count=321 bytes=1024
+qwen35_model_weight phase=begin index=258 count=321 bytes=4096
+qwen35_model_weight phase=resident index=258 count=321 bytes=4096
+qwen35_model_weight phase=begin index=259 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=259 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=260 count=321 bytes=2359296
+qwen35_model_weight phase=resident index=260 count=321 bytes=2359296
+qwen35_model_weight phase=begin index=261 count=321 bytes=1024
+qwen35_model_weight phase=resident index=261 count=321 bytes=1024
+qwen35_model_weight phase=begin index=262 count=321 bytes=294912
+qwen35_model_weight phase=resident index=262 count=321 bytes=294912
+qwen35_model_weight phase=begin index=263 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=263 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=264 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=264 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=265 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=265 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=266 count=321 bytes=4096
+qwen35_model_weight phase=resident index=266 count=321 bytes=4096
+qwen35_model_weight phase=begin index=267 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=267 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=268 count=321 bytes=4096
+qwen35_model_weight phase=resident index=268 count=321 bytes=4096
+qwen35_model_weight phase=begin index=269 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=269 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=270 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=270 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=271 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=271 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=272 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=272 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=273 count=321 bytes=4096
+qwen35_model_weight phase=resident index=273 count=321 bytes=4096
+qwen35_model_weight phase=begin index=274 count=321 bytes=64
+qwen35_model_weight phase=resident index=274 count=321 bytes=64
+qwen35_model_weight phase=begin index=275 count=321 bytes=9216
+qwen35_model_weight phase=resident index=275 count=321 bytes=9216
+qwen35_model_weight phase=begin index=276 count=321 bytes=9216
+qwen35_model_weight phase=resident index=276 count=321 bytes=9216
+qwen35_model_weight phase=begin index=277 count=321 bytes=98304
+qwen35_model_weight phase=resident index=277 count=321 bytes=98304
+qwen35_model_weight phase=begin index=278 count=321 bytes=64
+qwen35_model_weight phase=resident index=278 count=321 bytes=64
+qwen35_model_weight phase=begin index=279 count=321 bytes=512
+qwen35_model_weight phase=resident index=279 count=321 bytes=512
+qwen35_model_weight phase=begin index=280 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=280 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=281 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=281 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=282 count=321 bytes=4096
+qwen35_model_weight phase=resident index=282 count=321 bytes=4096
+qwen35_model_weight phase=begin index=283 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=283 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=284 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=284 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=285 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=285 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=286 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=286 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=287 count=321 bytes=4096
+qwen35_model_weight phase=resident index=287 count=321 bytes=4096
+qwen35_model_weight phase=begin index=288 count=321 bytes=64
+qwen35_model_weight phase=resident index=288 count=321 bytes=64
+qwen35_model_weight phase=begin index=289 count=321 bytes=9216
+qwen35_model_weight phase=resident index=289 count=321 bytes=9216
+qwen35_model_weight phase=begin index=290 count=321 bytes=9216
+qwen35_model_weight phase=resident index=290 count=321 bytes=9216
+qwen35_model_weight phase=begin index=291 count=321 bytes=98304
+qwen35_model_weight phase=resident index=291 count=321 bytes=98304
+qwen35_model_weight phase=begin index=292 count=321 bytes=64
+qwen35_model_weight phase=resident index=292 count=321 bytes=64
+qwen35_model_weight phase=begin index=293 count=321 bytes=512
+qwen35_model_weight phase=resident index=293 count=321 bytes=512
+qwen35_model_weight phase=begin index=294 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=294 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=295 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=295 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=296 count=321 bytes=4096
+qwen35_model_weight phase=resident index=296 count=321 bytes=4096
+qwen35_model_weight phase=begin index=297 count=321 bytes=4325376
+qwen35_model_weight phase=resident index=297 count=321 bytes=4325376
+qwen35_model_weight phase=begin index=298 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=298 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=299 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=299 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=300 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=300 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=301 count=321 bytes=4096
+qwen35_model_weight phase=resident index=301 count=321 bytes=4096
+qwen35_model_weight phase=begin index=302 count=321 bytes=64
+qwen35_model_weight phase=resident index=302 count=321 bytes=64
+qwen35_model_weight phase=begin index=303 count=321 bytes=9216
+qwen35_model_weight phase=resident index=303 count=321 bytes=9216
+qwen35_model_weight phase=begin index=304 count=321 bytes=9216
+qwen35_model_weight phase=resident index=304 count=321 bytes=9216
+qwen35_model_weight phase=begin index=305 count=321 bytes=98304
+qwen35_model_weight phase=resident index=305 count=321 bytes=98304
+qwen35_model_weight phase=begin index=306 count=321 bytes=64
+qwen35_model_weight phase=resident index=306 count=321 bytes=64
+qwen35_model_weight phase=begin index=307 count=321 bytes=512
+qwen35_model_weight phase=resident index=307 count=321 bytes=512
+qwen35_model_weight phase=begin index=308 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=308 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=309 count=321 bytes=294912
+qwen35_model_weight phase=resident index=309 count=321 bytes=294912
+qwen35_model_weight phase=begin index=310 count=321 bytes=1024
+qwen35_model_weight phase=resident index=310 count=321 bytes=1024
+qwen35_model_weight phase=begin index=311 count=321 bytes=4096
+qwen35_model_weight phase=resident index=311 count=321 bytes=4096
+qwen35_model_weight phase=begin index=312 count=321 bytes=1179648
+qwen35_model_weight phase=resident index=312 count=321 bytes=1179648
+qwen35_model_weight phase=begin index=313 count=321 bytes=2359296
+qwen35_model_weight phase=resident index=313 count=321 bytes=2359296
+qwen35_model_weight phase=begin index=314 count=321 bytes=1024
+qwen35_model_weight phase=resident index=314 count=321 bytes=1024
+qwen35_model_weight phase=begin index=315 count=321 bytes=430080
+qwen35_model_weight phase=resident index=315 count=321 bytes=430080
+qwen35_model_weight phase=begin index=316 count=321 bytes=3010560
+qwen35_model_weight phase=resident index=316 count=321 bytes=3010560
+qwen35_model_weight phase=begin index=317 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=317 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=318 count=321 bytes=2064384
+qwen35_model_weight phase=resident index=318 count=321 bytes=2064384
+qwen35_model_weight phase=begin index=319 count=321 bytes=4096
+qwen35_model_weight phase=resident index=319 count=321 bytes=4096
+qwen35_model_weight phase=begin index=320 count=321 bytes=208588800
+qwen35_model_weight phase=resident index=320 count=321 bytes=208588800
+config layer_count=24 head_dim=256 rope_theta=10000000 hidden=1024 intermediate=3584 q_heads=8 kv_heads=2 vocab=248320 context=4096 rms_norm_eps_bits=0x358637bd
+model_load_resident bytes=725171456 heap_cap=1073741824 ms=92120
+prompt_tokenize n=21
+conversation tokenize returned
+conversation context pushed
+conversation generate call
+forward generate enter
+model_kind=inventory(real-lm)
+generate sys_generate enter
+prompt_ids=1 [9419]
+qwen35_runtime_oracle=ok walker=executed attention_layers=6 gdn_layers=18 tokens_processed=32 gdn_min_steps=32 cross_token_state_carried=true
+forward0 top5=[(11,12),(13,10),(0,10),(579,9),(198,9)]
+sample step=0 tok=11 is_eos=false
+sample step=1 tok=353 is_eos=false
+sample step=2 tok=1044 is_eos=false
+sample step=3 tok=264 is_eos=false
+sample step=4 tok=5286 is_eos=false
+sample step=5 tok=506 is_eos=false
+sample step=6 tok=264 is_eos=false
+sample step=7 tok=11759 is_eos=false
+sample step=8 tok=13 is_eos=false
+sample step=9 tok=353 is_eos=false
+sample step=10 tok=1044 is_eos=false
+sample step=11 tok=4237 is_eos=false
+sample step=12 tok=264 is_eos=false
+sample step=13 tok=5392 is_eos=false
+sample step=14 tok=383 is_eos=false
+sample step=15 tok=279 is_eos=false
+sample step=16 tok=8282 is_eos=false
+sample step=17 tok=314 is_eos=false
+sample step=18 tok=328 is_eos=false
+sample step=19 tok=760 is_eos=false
+sample step=20 tok=14955 is_eos=false
+sample step=21 tok=314 is_eos=false
+sample step=22 tok=279 is_eos=false
+sample step=23 tok=3130 is_eos=false
+sample step=24 tok=303 is_eos=false
+sample step=25 tok=279 is_eos=false
+sample step=26 tok=10499 is_eos=false
+sample step=27 tok=314 is_eos=false
+sample step=28 tok=279 is_eos=false
+sample step=29 tok=36317 is_eos=false
+sample step=30 tok=3158 is_eos=false
+sample step=31 tok=353 is_eos=false
+qwen35_token_oracle=ok prompt=Hello tokens=32
+generated_ids=32 [11,353,1044,264,5286,506,264,11759,13,353,1044,4237,264,5392,383,279,8282,314,328,760,14955,314,279,3130,303,279,10499,314,279,36317,3158,353]
+decode done tokens=32 ms=10 per_token_ms=0
+reply=", I am a student at a university. I am writing a paper on the topic of \"The Role of the State in the Development of the Economy\". I"
+, I am a student at a university. I am writing a paper on the topic of "The Role of the State in the Development of the Economy". I
+arthur> exit
+arthur: bye
+model_drop start
+model_drop done
+[ kernel ] proc: user thread exited with code 0
+[ kernel ] sched: reaped 'user-process' (id=14)
+[ kernel ] proc: deregistered 'user-process' (pid=3)
+[ frame ] phase=post-natural-exit used=292894 delta=+30095
+[ kernel ] pmap: dropped — freed 30147 frames + 1 PML4
+[ neo-shell ] arthur exit=0
+neo> exit
+[ neo-shell ] exit
+[ kernel ] proc: user thread exited with code 0
+[ kernel ] sched: reaped 'user-process' (id=13)
+[ kernel ] proc: deregistered 'user-process' (pid=2)
+[ frame ] phase=post-natural-exit used=262746 delta=-30148
+[ kernel ] pmap: dropped — freed 55 frames + 1 PML4
+[ neo-init ] arthur console shell exited; init continues
+[ kernel ] proc: user thread exited with code 0
+[ kernel ] sched: reaped 'neo-init' (id=12)
+[ kernel ] pmap: dropped — freed 24 frames + 1 PML4
+[ kernel ] proc: deregistered 'neo-init' (pid=1)
+[ frame ] phase=post-natural-exit used=262665 delta=-81
+[ kernel ] proc: neo-init reaped — back in kernel-only mode
+[ kernel ] proc: neo-init exit code 0
+[ frame ] phase=final-post-reap used=262665 delta=+0
+[ kernel ] frame: leak audit clean (baseline=262665 final=262665)
+NEO_TEST/1 event=PASS name=arthur_real_brain_boot_qwen35 arthur_real_brain_boot_qwen35=ok real_neom=loaded_from_neofs walker=executed gdn_layers=18 attention_layers=6 cross_token_state_carried=true token_oracle=32

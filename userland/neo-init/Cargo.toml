@@ -1,0 +1,381 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-init"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "NeoPlutarch init service: first userspace process (Phase 1.4+)"
+
+[[bin]]
+name = "neo-init"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libneo = { path = "../libneo" }
+# Enabled only by the `vault-phase-b` feature (optional dep): the vault wire
+# protocol (envelope encode/decode + status codes). neo-init is the caller; it
+# does no crypto itself, only frames operations and checks coarse statuses.
+vault-core = { path = "../vault-core", optional = true }
+login-core = { path = "../login-core", optional = true }
+# OT-88 S1 (feature `atrium-settings-store`): the NEOSET1 settings record.
+settings-core = { path = "../settings-core", optional = true }
+# L2.1 (feature `arthur-action-log`): the NAL1 action-log record and chain.
+action-log-core = { path = "../action-log-core", optional = true }
+# Desktop S3 (feature `desktop-glass`): the glass chrome scene.
+neo-atrium = { path = "../neo-atrium", optional = true }
+
+[features]
+default = []
+# Phase-B vault caller/driver (ADR-075). Spawns the vault (neo-worker built with
+# its `vault-phase-b` role), proves no-network-cap via SYS_INSPECT, and drives
+# unlock/store/retrieve(least-rights grant)/lock + the wrong-password,
+# mutated-header, and weak-params negative checks.
+vault-phase-b = ["dep:vault-core"]
+atrium-slice1 = []
+atrium-surface-protocol = []
+atrium-input-routing = []
+dw1-desktop-wm = []
+dw2-scene-policy = ["libneo/dw2-scene-policy"]
+atrium-slice3 = []
+atrium-interactive = []
+atrium-interactive-baremetal = []
+gpu-glass-slice6 = []
+arthur-compositor = ["arthur-memory"]
+arthur-compositor-baremetal = ["arthur-compositor"]
+# OT-78 product driver: run the proved DW-1 desktop, then the Arthur G1 client,
+# then a direct NeoFS persistence probe in one init process.
+product-integration = ["arthur-memory"]
+product-integration-baremetal = ["product-integration"]
+# Desktop S1: neo-init stays resident as the session compositor/WM
+# (`desktop_session`) and spawns Arthur as its client. Production feature; the
+# `-boot-test` marker ends the session after its scripted round (S1/S3:
+# Arthur's first answer; with Home: back at Home) and adds the witnesses, so
+# the QEMU scenario can read the framebuffer back.
+desktop-session = ["arthur-memory", "libneo/atrium-damage"]
+desktop-session-boot-test = ["desktop-session"]
+# Desktop S3: the WM paints the neo-atrium Threshold backdrop + frosted-glass
+# chrome. Off ⇒ the S1+S2 scene bit-for-bit (the kill-switch).
+desktop-glass = ["desktop-session", "dep:neo-atrium"]
+# The Reduce-Transparency floor forced at build time (a11y + kill-switch).
+# Without it the WM still honours the boot-time preference file.
+reduce-transparency = ["desktop-glass"]
+# Scenario markers (end the session after Arthur's first answer).
+desktop-glass-boot-test = ["desktop-glass", "desktop-session-boot-test"]
+desktop-glass-rt-boot-test = ["reduce-transparency", "desktop-session-boot-test"]
+# DS-1 (feature `desktop-home`): the session boots into Home — the intent
+# field, lit while the WM holds its OWN input focus; Enter launches Arthur with
+# the typed intent, and Arthur's exit returns the keyboard to Home.
+desktop-home = ["desktop-glass", "libneo/atrium-yield", "libneo/atrium-launch"]
+desktop-home-rt = ["desktop-home", "reduce-transparency"]
+desktop-home-boot-test = ["desktop-home", "desktop-session-boot-test"]
+# Chad #177 item 4: the Home boot test, after DESKTOP_HOME_CYCLE_ROUNDS
+# silent Home -> Arthur -> Home rounds (desktop_home_cycle).
+desktop-home-cycle-test = ["desktop-home-boot-test"]
+# OT-66 K1b: desktop_arthur_scope, DS-1's Home session on a `cap-rooted-open`
+# kernel, the WM spawning Arthur with his scopes only.
+desktop-arthur-scope-test = ["desktop-home-boot-test", "cap-rooted-open"]
+# DI-1a B-ref (kernel `atrium-pointer-forward`): the WM claims the pointer
+# route, draws the sprite, forwards clicks in Arthur's client area, and the
+# SAK / a Spine click / a window click move the keyboard. Off = DS-1 exactly.
+desktop-pointer = ["desktop-home"]
+desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
+# DS-1c: Arthur's `list /` blooms the Lens — a second client (neo-worker
+# `desktop-lens`) lent `/` read-only — beside the window; its Spine chip
+# switches to it (keyboard via Home; a click with `desktop-pointer`).
+# Off = DS-1b / DI-1a exactly (no Lens layout, no sixth blur, LaunchCap
+# allowlist probe only).
+desktop-lens = ["desktop-home"]
+desktop-lens-pointer = ["desktop-lens", "desktop-pointer"]
+desktop-lens-boot-test = ["desktop-lens", "desktop-home-boot-test"]
+desktop-lens-pointer-boot-test = ["desktop-lens", "desktop-pointer-boot-test"]
+# Chad DS-1c F1 discriminator (boot test): the first two Lens blooms fail
+# late (after the Lens committed); the WM's handles and mappings must be back
+# at their baseline before the third, which shows the Lens.
+desktop-lens-fault-test = ["desktop-lens-boot-test"]
+# DI-1b resize: edge/corner drags; the WM publishes the size in the client's
+# configure mailbox and shows it when the client acks OP_CONFIGURE. Arthur's
+# buffer is then 1280x800 (neo-arthur `desktop-resize`). Off = DI-1b move.
+desktop-resize = ["desktop-pointer", "libneo/atrium-configure"]
+desktop-resize-boot-test = ["desktop-resize", "desktop-pointer-boot-test"]
+# DL-1: every desktop feature on: the Lens docked to Arthur's window, moving
+# and resizing with it (the group stays inside the workfield; a bloom slides
+# the window when the Lens would not fit). Docking is compiled only with the
+# Lens and resize together: `desktop-lens-pointer` alone keeps the window put
+# while a Lens is up (DS-1c x DI-1b), `desktop-resize` alone has no Lens.
+desktop-full = ["desktop-lens-pointer", "desktop-resize", "desktop-motion"]
+desktop-full-boot-test = ["desktop-full", "desktop-lens-pointer-boot-test", "desktop-resize-boot-test"]
+# DM-1: every view, Lens and focus-light change plays as a short transition
+# over its own damage rects, ending on the change's unchanged present. Off =
+# the presents alone (DL-1 exactly). Reduce Motion (6-frame cross-fades, no
+# spatial motion) from the boot-time preference file or `reduce-motion`.
+desktop-motion = ["desktop-home"]
+reduce-motion = ["desktop-motion"]
+# Scenario markers: the Lens session with motion; the first hold stops at its
+# mid frame until a key (the scenario's mid-transition capture).
+desktop-motion-boot-test = ["desktop-motion", "desktop-lens-boot-test"]
+desktop-motion-rm-boot-test = ["desktop-motion-boot-test", "reduce-motion"]
+# OT-22 rung 1 (kernel `wait-multiplex`): every WM loop that polled in a
+# spin (the session loop, Home, the Lens view, the proof wait) parks in
+# SYS_WAIT_ANY on its channel, input route, SAK latch and focus instead.
+# Off: the loops spin exactly as before (the kill-switch).
+desktop-park = ["desktop-pointer"]
+# OT-22 idle witness: log the BSP's idle ticks across the first quiet gap
+# between Arthur's requests (kernel `neo-test-desktop-idle`). The parked
+# build must idle most of it; the spinning control almost none.
+desktop-idle-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
+desktop-park-boot-test = ["desktop-park", "desktop-idle-boot-test"]
+desktop-spin-boot-test = ["desktop-idle-boot-test"]
+# Arthur's first-boot introduction (NOTE-2026-10-20, PL-approved): a card
+# under Home's intent field at session start (every session on a machine
+# that keeps nothing; until seen once where NeoFS persists), the help card
+# (`help` typed in the field, or a click on the hint under it — the WM
+# answers, never the model) and the hint. On the 0.1 desktop (`desktop-full`):
+# the help card lists only what that build does. Off = DS-1's Home exactly.
+desktop-intro = ["desktop-full"]
+desktop-intro-boot-test = ["desktop-intro", "desktop-home-boot-test"]
+# OT-85 wall clock (kernel `rtc-epoch`): Home shows a quiet date-and-time
+# readout above the intent field (no panel, no bar), refreshed when the minute
+# changes (Home's park deadline is the next minute boundary: one wake a
+# minute, the readout's box alone repainted). With `desktop-intro` the card's
+# greeting follows the hour and carries the date and time. Off = Home and the
+# intro exactly as without it (the kill-switch).
+desktop-clock = ["desktop-home"]
+# The intro session with the clock: the boot test also logs the probe's boot
+# instant and every readout it draws, for the host's independent check.
+desktop-clock-boot-test = ["desktop-clock", "desktop-intro-boot-test"]
+# A9-D: while Arthur is blocked in a generation, the WM turns the LogansOS
+# ring round its still star in the rect Arthur reserved (OP_BUSY), one frame
+# every 1/12 s on its own clock, until Arthur's next commit. Paired with
+# neo-arthur's `arthur-busy-emblem`; off = the WM exactly as before. Needs
+# DI-1a's polling session loop (`desktop-pointer`): without it the loop
+# blocks in RECV until Arthur's next request, and the emblem never turns.
+desktop-busy = ["desktop-pointer", "libneo/atrium-busy"]
+desktop-busy-boot-test = ["desktop-busy", "desktop-session-boot-test"]
+# The Spine chips draw their app icons (assets/icons, J.c.'s set of
+# 2026-10-29) instead of letters; each keeps its name below the icon. Off =
+# today's lettered chips, bit for bit (the kill-switch). Not yet in the
+# product image: the PM adds it after review and J.c.'s look at the shot.
+atrium-app-icons = ["desktop-home", "neo-atrium/app-icons"]
+atrium-app-icons-boot-test = ["atrium-app-icons", "desktop-home-boot-test"]
+# OT-66 L1: sign-in before Home (THINK-2026-10-27-ot66 §5, §7). On a writable
+# NeoFS with `.system/` (an installed system, the VM image): the first-boot
+# account screen, then the login screen on every later boot; the record is
+# NEOCRED1 (login-core). Without `.system/`, or read-only (Try): straight to
+# Home. Off = today's boot to Home exactly (the kill-switch).
+login = ["desktop-intro", "dep:login-core"]
+# OT-66 K1b: with `cap-rooted-open`, as the product's WM (the kernel side is
+# `neo-test-login`'s).
+login-boot-test = ["login", "desktop-session-boot-test", "cap-rooted-open"]
+# OT-88 S1: the settings store (`.system/settings.a`/`.b`, NEOSET1), with the
+# WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
+# time come from it and are set live by OP_SETTING. Off => the presence
+# files, as today.
+atrium-settings-store = ["login", "desktop-home", "dep:settings-core", "libneo/atrium-settings"]
+# L1.3a (THINK-2026-10-30-l1.3): Arthur's actions behind the WM's permission
+# prompt. The WM is the grant authority: the record is .system/arthur-grants.json
+# (WM-only), caps are lent on demand over the client's channel, "Allow once" is
+# revoked at OP_PERMISSION_DONE, "Always" is recorded. Read-only (writes refused
+# before any prompt) unless `arthur-actions-write`. Off = today's session.
+arthur-actions = ["login", "desktop-home", "libneo/atrium-permission", "libneo/arthur-grant-rerequest"]
+# L1.3b: writes go through the same prompt (J.c.'s decision 4 is open; off).
+arthur-actions-write = ["arthur-actions"]
+# Control (test only): the lent cap is not revoked at OP_PERMISSION_DONE.
+arthur-actions-revoke-control = ["arthur-actions"]
+# L2.1 (THINK-2026-10-30-l2): every request, answer, lend, refusal and done
+# is appended to the WM-only, hash-chained log /neofs/.system/actions.log
+# (NAL1, action-log-core), with the intent Arthur sent. Off = no log.
+arthur-action-log = ["arthur-actions", "dep:action-log-core"]
+# Control (test only): every record's chain link is zero.
+arthur-action-log-chain-control = ["arthur-action-log"]
+# `login_arthur_permission` (L1.3a, L2.1): two files to act on are seeded
+# after sign-in, the log is verified at the end, and the boot ends at the
+# first unlock.
+arthur-actions-test = ["arthur-actions", "arthur-action-log", "lock-boot-test"]
+# OT-66 L1 acceptance (Zenbook image A, OptiPlex): the sign-in KDF at the
+# floor three times, shown and logged; no account, nothing opened for
+# writing, no session. The shipped parameters are chosen from it.
+login-kdf-timing = ["login"]
+login-kdf-timing-boot-test = ["login-kdf-timing", "login-boot-test"]
+# Boot test (login_below_floor): seed both record files with a below-floor
+# slot; the gate must refuse them and show the first-boot screen.
+login-below-floor-test = ["login-boot-test"]
+# Boot test (login_cut_steps): the password change under a power cut after
+# each device write and flush (kernel neo-test-login-cut); no screens.
+login-cut-test = ["login-boot-test"]
+# OT-66 L2 boot tests (`lock_session`, `lock_idle`): the session goes on
+# past sign-in, the lock logs its prompts, and neo-init exits once the
+# scenario's last unlock is done.
+lock-boot-test = ["login-boot-test"]
+# `login_record_guard` (Dexter #186 item 4): after the account exists, the WM
+# opens the record itself, then spawns a no-caps probe (neo-worker
+# `record-guard-probe`) that must get EPERM for every `.system/` open.
+login-record-guard-test = ["login-boot-test"]
+# `login_backoff_reboot` (Dexter #186 item 2): the boot ends after the
+# fourth wrong password, so the next boot must start from the persisted
+# count. `login-attempts-per-boot-control` (test only) restores the pre-fix
+# per-boot counter; the scenario must FAIL with it.
+login-backoff-test = ["login-boot-test"]
+login-attempts-per-boot-control = ["login-backoff-test"]
+# `lock_session`: Home, locked, launches Arthur once, so a client is spawned
+# (and draws, and asks for its busy emblem) under the lock.
+lock-spawn-test = ["lock-boot-test"]
+# `lock_idle`: the idle time is 6 s instead of 10 min.
+lock-idle-test = ["lock-boot-test"]
+# `lock_stall` (AAG F3): Arthur stalls in its handshake; Super+L must lock.
+lock-stall-test = ["lock-boot-test"]
+# `lock_park` (L2b): Arthur never receives the WM's reply; Super+L must lock.
+lock-park-test = ["lock-boot-test"]
+# `login_settings_store` (OT-88 S1): the store's boot test. A setting's minute is
+# four seconds (the idle lock fires at the chosen time, scaled); the session
+# ends at the first unlock.
+settings-boot-test = ["atrium-settings-store", "lock-boot-test", "settings-standin-test"]
+# The boot tests' stand-in for the settings app (OT-88 §5.3, the PM's #222
+# bounce): the WM takes OP_SETTING from Arthur as if it were the settings app,
+# and sets the idle lock (WM-only) itself. Test only, never in an image.
+settings-standin-test = ["atrium-settings-store"]
+# `login_settings_refused` (the PM's #222 bounce): Arthur, not the settings
+# app, asks for the idle lock off and Reduce Transparency on; the WM refuses
+# both and the store is unchanged, so the idle lock fires at the default.
+settings-refused-test = ["atrium-settings-store", "lock-boot-test"]
+# Controls (test only; each must FAIL its scenario): every client may send
+# OP_SETTING (`login_settings_refused`); a client may set a WM-only key
+# (`login_settings_store`).
+settings-authority-control = ["settings-refused-test"]
+settings-wm-only-control = ["settings-boot-test"]
+# `login_settings_cut` (OT-88 S1): no screens; a settings write is cut after
+# each device write and flush (kernel neo-test-settings-cut).
+settings-cut-test = ["atrium-settings-store", "login-cut-test"]
+# A9-C2 (kernel `atrium-pointer-wheel`): a wheel record goes to the window
+# under the pointer: Arthur's client gets a kind-5 event there, anywhere else
+# it is dropped. Off = wheel records are never minted, today's WM exactly.
+desktop-wheel = ["desktop-pointer"]
+cap-mint-and-use = []
+cap-derive-subset = []
+cap-derive-rights-violation = []
+cap-derive-missing-meta = []
+cap-grant-basic = []
+cap-grant-missing-meta = []
+cap-revoke-local = []
+cap-graph-revoke = ["libneo/neo-test"]
+cap-revoke-cross-process = []
+cap-revoke-descendants-walk = []
+cap-revoke-spawn-inheritance-descendants = []
+cap-survive-exit = []
+file-cap-derive-grant = []
+# OT-66 K1a: the cap_rooted_open scenario driver.
+cap-rooted-open-test = []
+# OT-61 C2.2: the mem_quota scenario driver (a `mem-quota` kernel).
+mem-quota-test = []
+# OT-93: the kill_ready_in_kernel scenario driver.
+kill-ready-in-kernel-test = []
+# OT-61 C2.2b: the obj_quota scenario driver (an obj-quota kernel).
+obj-quota-test = []
+# The user_copy_bounds scenario: oversized user copies are refused.
+user-copy-bounds-test = []
+# The socket_teardown scenario: exit, kill and revoke free a socket's port.
+socket-teardown-test = []
+# OT-91: the exit_codes_bounded scenario.
+exit-codes-test = []
+# Dexter #187 item 3a: the mount_authority scenario.
+mount-authority-test = []
+# OT-66 K1a: hand Arthur and the shell a derived RootDirCap at spawn (for a
+# `cap-rooted-open` kernel).
+cap-rooted-open = ["libneo/cap-rooted-open"]
+# Phase 7.5 CB-3 (ISC-4): the interface-capability live proof. neo-init opens
+# /net/if/eth0 (a synthetic Handle::File), derives an attenuated read-only cap, then
+# revokes the parent and asserts the descendant dies — proving the interface cap is a
+# first-class I-15 file cap. Selected by the kernel scenario's user_feature.
+interface-cap-derive-revoke = []
+# OT-18 E3-revoke (kernel-level transitive-revoke proof). Drives the file-cap
+# derivation graph by syscall: open -> derive a 2-deep child chain -> revoke the
+# parent -> assert every descendant dies (EBADF) while a sibling scope + the
+# ancestor survive. Self-contained in neo-init (no worker).
+arthur-grant-revoke = []
+sys-wait-blocking = []
+sys-wait-wnohang = []
+sys-wait-already-exited = []
+sys-wait-multiple-waiters = []
+sys-inspect-running = []
+sys-inspect-exited = []
+sys-inspect-rights-gate = []
+sched-ready-queue-capacity-pressure = []
+kernel-observability = []
+kernel-observability-disabled = []
+neo-shell-repl = []
+neo-shell-builtins = []
+arthur-action-surface = []
+arthur-converse = []
+arthur-boots-thinking = []
+arthur-act = []
+arthur-grants = ["net-dial-cap"]
+arthur-console = []
+# OT-87 R4.4: hand the shell the Installer cap (kernel `installer`), for
+# the console installer. Used with `arthur-console`.
+installer = ["neo-atrium?/install-chip"]
+v1-console-liveness = []
+arthur-memory = []
+boot-neofs-userland-persistence = ["arthur-memory"]
+# Marker feature for the M2 (encrypted) scenario driver. neo-init does no crypto
+# itself; this just selects the extended falsifiable driver (multi-record,
+# cross-restart recall, ciphertext tamper, crypto-erase) over the M1 driver.
+arthur-memory-encryption = ["arthur-memory"]
+arthur-memory-delegation = ["arthur-memory-encryption"]
+arthur-memory-forgetting = ["arthur-memory-delegation"]
+# OT-29 regression driver: loops heavy spawn->reap->spawn of Arthur to reproduce
+# the SMP exit/reap thread-slab UAF. Implies arthur-memory only to reuse the
+# default-arm exclusion (the driver itself just spawns Arthur over IPC).
+sched-spawn-reap-spawn-heavy = ["arthur-memory"]
+ipc-rendezvous-translate-fault = []
+vfs-testfs-open-read-close = []
+vfs-testfs-write-readback = []
+vfs-type-vs-rights-errors = []
+vfs-stdout-compat = []
+vfs-block-smoke = []
+# OT-61 browser C1.0: neo-init runs the VM+clock primitive battery.
+vm-primitives = []
+# OT-85 gate (kernel `neo-test-wallclock-rtc`): the wall-clock probe. Reads
+# CLOCK_REALTIME and CLOCK_MONOTONIC, formats the boot instant (realtime -
+# monotonic) with libneo::civil, and exits 0 iff it reads the pinned QEMU RTC
+# (Wednesday, October 21, 2026, 5:48 PM) with the base stable within a tick.
+wallclock-probe = []
+# ...the forced-invalid clock (kernel `rtc-epoch-force-invalid`): exits 0 iff
+# realtime stayed boot-relative (== monotonic).
+wallclock-probe-fallback = ["wallclock-probe"]
+# OT-61 browser C1.1: the in-process threads+futex concurrency battery.
+threads-futex = ["libneo/neo-test"]
+# OT-61 C1.2: the TLS battery (threads_tls): key isolation, FS.base across a
+# switch and a cross-CPU wake, iterated destructors, EPERM, generation check.
+threads-tls = ["libneo/neo-test"]
+# OT-61 C1.3b (CP-86): the cross-CPU process-retire battery (threads_exit_group).
+threads-exit-group = ["libneo/neo-test"]
+# OT-61 browser C1.1: cap-confinement + refcount + guard-fault containment
+# (spawns the worker child twice: no-cap EPERM, with-cap fault-kill).
+threads-guard-fault = []
+# CP-46: the same driver; the worker parks its futex sibling with a deadline.
+threads-guard-fault-timed = ["threads-guard-fault"]
+# OT-61 browser C1.1 (blocker D): composed root-cap battery driver.
+threads-cap-compose = []
+vfs-readdir-testfs-root = []
+vfs-readdir-requires-right = []
+vfs-readdir-regular-is-enotdir = []
+vfs-directory-read-is-eisdir = []
+readdir-cursor-eof-stable = []
+readdir-buffer-too-small = []
+tensor-create-query-drop = []
+model-load-cascade = []
+infer-mlp-forward = []
+infer-transformer-forward = []
+inference-preemptible-liveness = ["infer-transformer-forward"]
+infer-embedding-forward = []
+infer-embedding-oob-rejected = []
+swapgs-irq-ring3 = []
+# CP-41: hostile MXCSR/x87 control word across a kernel-float syscall.
+syscall-mxcsr-entry = ["libneo/neo-test"]
+phase4-socket-udp-loopback = []
+phase4-slaac-udp-ipv6-loopback = []
+net-dial-cap = []
+phase4-https-fetch = ["net-dial-cap"]
+net-dial-cap-kill-switch = []

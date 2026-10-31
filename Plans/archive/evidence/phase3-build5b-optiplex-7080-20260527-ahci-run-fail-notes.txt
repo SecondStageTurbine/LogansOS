@@ -1,0 +1,18 @@
+Phase 3 BUILD-5b AHCI bare-metal run failed.
+
+Scenario:
+phase3_ahci_neofs_mount_and_readwrite
+
+Observed terminal marker:
+NEO_TEST/1 event=FAIL name=phase3_ahci_neofs_mount_and_readwrite reason=kernel_panic
+
+Panic:
+panicked at kernel/src/arch/x86_64/apic.rs:125:5
+assertion left != right failed: apic: local APIC base not initialized
+left: 0
+right: 0
+
+Extractor:
+Found NEO_LOG_v1 header at offset 0x10000000
+Scenario: phase3_ahci_neofs_mount_and_readwrite
+Captured bytes: 0

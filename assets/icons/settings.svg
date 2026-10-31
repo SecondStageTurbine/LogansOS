@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <title>Settings</title>
+  <path d="M6 11 H34 M6 20 H34 M6 29 H34" stroke="#a8adb2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="26" cy="11" r="4" fill="#1a2332" stroke="#a8adb2" stroke-width="3"/>
+  <!-- the one being moved: lit -->
+  <circle cx="13" cy="20" r="4" fill="#3c8ef4" stroke="#a8adb2" stroke-width="3"/>
+  <circle cx="22" cy="29" r="4" fill="#1a2332" stroke="#a8adb2" stroke-width="3"/>
+</svg>

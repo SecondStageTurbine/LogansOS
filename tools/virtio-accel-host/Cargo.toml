@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "virtio-accel-host"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[features]
+default = []
+phase9-quantized-matmul = []
+# Kill-switch of the path-`mod`'d kernel `soft_f32.rs`: integer add/sub/mul only.
+soft-f32-only = []
+phase9-avx2-matmul = ["phase9-quantized-matmul"]
+phase9-real-quant = []
+
+[dependencies]
+# rust-vmm vhost-user protocol messages and backend feature negotiation.
+vhost = { version = "0.16.0", features = ["vhost-user-backend"] }
+# rust-vmm backend event loop for serving the QEMU vhost-user socket.
+vhost-user-backend = "0.22.0"
+# rust-vmm virtqueue descriptor-chain parser; avoids hand-rolling queue walking.
+virtio-queue = "0.17.0"
+# rust-vmm guest-memory views used by vhost-user-backend and virtio-queue.
+vm-memory = { version = "0.17.1", features = [
+    "backend-mmap",
+    "backend-atomic",
+    "backend-bitmap",
+] }
+# rust-vmm epoll event-set type required by VhostUserBackendMut.
+vmm-sys-util = "0.15.0"

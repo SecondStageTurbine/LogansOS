@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-shell"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Minimal capability-aware NeoPlutarch REPL"
+
+[[bin]]
+name = "neo-shell"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libneo = { path = "../libneo" }
+
+[features]
+default = []
+# OT-66 K1a: pass Arthur a derived RootDirCap at spawn (cap-rooted-open kernels).
+cap-rooted-open = ["libneo/cap-rooted-open"]
+console-interactive = []
+v1-console-surface = []
+arthur-memory = []
+arthur-real-brain-boot = []
+arthur-real-brain-boot-15b = ["arthur-real-brain-boot"]
+arthur-real-brain-boot-3b = ["arthur-real-brain-boot"]
+arthur-real-brain-boot-qwen35 = ["arthur-real-brain-boot"]
+# arthur-grants (OT-18) is the whole grant lifecycle: derive/grant at spawn
+# (E1b), and now revoke (E3). It pulls libneo's `arthur-grant-revoke` so the
+# `/revoke` command can rewrite grants.json via `grant_store::revoke_grant`.
+# Off ⇒ no grant wiring at all (≡ pre-E, bit-for-bit).
+arthur-grants = ["libneo/arthur-grant-revoke", "net-dial-cap"]
+# Userland half of NetDialCap enforcement. Enabled by cap-routed network/grant
+# scenarios; off leaves the prior shell handle layout and grant loop unchanged.
+net-dial-cap = []
+# OT-87 R4.4: the `install` command (kernel `installer`; it needs the
+# Installer cap neo-init hands the shell).
+installer = []

@@ -1,0 +1,161 @@
+# SPDX-License-Identifier: MPL-2.0
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+    "userland/libneo",
+    "userland/neo-init",
+    "userland/neo-worker",
+    "userland/neo-shell",
+    "userland/neo-arthur",
+    "userland/neo-atrium",
+    "userland/neo-text",
+    "userland/neo-edit-core",
+    "userland/vault-core",
+    "userland/login-core",
+    "userland/settings-core",
+    "userland/action-log-core",
+    "userland/template-app",
+    "userland/fault-probe",
+    "userland/neo-std-pal",
+    "userland/std-pal-smoke",
+    "tools/neofs-mkfs",
+    "tools/neo-extract-log",
+    "tools/model-logic-tests",
+    "tools/tensor-logic-tests",
+    "tools/ai-ops-tests",
+    "tools/neo-shell-logic-tests",
+    "tools/action-logic-tests",
+    "tools/arthur-logic-tests",
+    "tools/arthur-grant-logic-tests",
+    "tools/frame-guard-logic-tests",
+    "tools/heap-policy-logic-tests",
+    "tools/module-reclaim-logic-tests",
+    "tools/install-claim-logic-tests",
+    "tools/block-guard-logic-tests",
+    "tools/install-bundle-logic-tests",
+    "tools/neofs-tree-logic-tests",
+    "tools/install-state-logic-tests",
+    "tools/neofs-commit-logic-tests",
+    "tools/fb-progress-logic-tests",
+    "tools/apic-logic-tests",
+    "tools/lapic-timer-logic-tests",
+    "tools/acpi-timer-logic-tests",
+    "tools/acpi-power-logic-tests",
+    "tools/acpi-aml-grade",
+    "tools/file-cap-logic-tests",
+    "tools/atrium-logic-tests",
+    "tools/icon-raster",
+    "tools/swgl-atrium-oracle",
+    "tools/interface-identity-logic-tests",
+    "tools/boot-eth0-logic-tests",
+    "tools/rtl8125-logic-tests",
+    "tools/rtc-logic-tests",
+    "tools/ntls-logic-tests",
+    "tools/handle-info-logic-tests",
+    "tools/install-ui-abi-tests",
+    "tools/limine-file-logic-tests",
+    "tools/cap-graph-logic-tests",
+    "tools/mem-account-logic-tests",
+    "tools/net-rx-logic-tests",
+    "tools/xhci-silicon-logic-tests",
+    "tools/i2c-hid-logic-tests",
+    "tools/observability-abi-tests",
+    "tools/slab-magazine-tests",
+    "tools/neomc",
+    "tools/virtio-accel-host",
+    "tools/xtask",
+]
+exclude = [
+    # Std-only benchmark harness; keep it out of the no_std workspace graph.
+    "tools/bench-harness",
+    # Host-only inference timing (Arthur latency NOTE); a measurement tool.
+    "tools/inference-latency-bench",
+    # OT-61 C0.5: the real-std-linked smoke targets x86_64-unknown-neoplutarch
+    # with -Z build-std=std (+ restricted_std); it must NOT build for the host
+    # workspace (clippy/test). xtask builds it standalone via its own config.
+    "userland/std-real-smoke",
+    # OT-86 Fix 1: vendored rust-osdev `acpi` 6.1.1 (upstream MIT/Apache-2.0
+    # licence and formatting). A path dependency of tools/acpi-aml-grade only;
+    # kept out of the workspace so first-party lints and fmt don't apply to it.
+    "third_party/acpi-loganfy",
+    # OT-87 R4.2: vendored rafalh/rust-fatfs (MIT) at 38b3a795. A path
+    # dependency of tools/xtask only (the host ESP-template builder); the
+    # kernel never links it.
+    "third_party/fatfs",
+    # Reserved for future phases:
+    # "services/neo-inference",
+    # "services/neo-models",
+    # "services/neo-intent",
+    # "services/neo-compositor",
+    # "ml/candle-backend",
+    # "apps/world-launcher",
+    # "apps/mail",
+    # "apps/feed",
+    # "apps/neo-privacy",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+authors = ["NeoPlutarch Project"]
+license = "MPL-2.0"
+repository = "https://github.com/SecondStageTurbine/NeoPlutarch"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.dev]
+panic = "abort"
+
+# Optimize the vault's crypto dependencies even in dev builds. Unoptimized
+# Argon2id / ChaCha20-Poly1305 block-compression call chains keep tens of KiB of
+# 1 KiB `Block` temporaries live on the stack, overflowing the 64 KiB userland
+# stack in the debug QEMU build (the vault is the first userland Argon2 consumer).
+# opt-level shrinks their stack footprint well under that bound — and speeds the
+# KDF — without touching any first-party code or the kernel's stack size.
+# Desktop S3: the WM paints and blurs full 1080p planes on the CPU at boot and
+# on focus changes. Unoptimized per-pixel loops would cost seconds under TCG;
+# this scopes optimization to the one pure scene crate (no other code changes).
+[profile.dev.package.neo-atrium]
+opt-level = 3
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+# Desktop S2: same reason for the text stack. Debug `ttf_parser::Face::parse`
+# plus Arthur's own deep frames overflowed the 64 KiB userland stack in the
+# debug QEMU build (product_integration #PF at Face::parse, rsp ~66 KiB down).
+# Zenbook ask-freeze: the kernel hashes boot models (485 MB) and every weight
+# with BLAKE3. Its x86 compression is prebuilt assembly, but the tree driver
+# around it is Rust, recursion-deep and unoptimized in a dev build (39.5 KB of
+# stack at 485 MB, CP-74).
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+[profile.dev.package.neo-text]
+opt-level = 3
+# Zenbook A6: Arthur's vocab parse (151,936 tokens, 5.4 MB) took most of the
+# 34 s from its spawn to its model handle. A `build-std` dev build compiles
+# `core`, `alloc` and `compiler_builtins` (memcmp/memcpy, from_utf8, the
+# BTreeMap internals) unoptimized, unlike a host's prebuilt std, and Arthur's
+# own generic collection code with them. In QEMU the parse went from 171 s
+# to 2.8 s with these four optimized. (Host builds don't use build-std, so
+# cargo notes that the last three match no package there.)
+[profile.dev.package.neo-arthur]
+opt-level = 3
+[profile.dev.package.core]
+opt-level = 3
+[profile.dev.package.alloc]
+opt-level = 3
+[profile.dev.package.compiler_builtins]
+opt-level = 3

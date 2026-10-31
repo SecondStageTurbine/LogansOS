@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-atrium"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Desktop S3: the WM's Threshold backdrop, CPU frosted glass, craft chrome and Reduce-Transparency floor (no_std, pure)"
+
+[lib]
+name = "neo_atrium"
+path = "src/lib.rs"
+doctest = false
+
+[features]
+# The Spine chips draw their app icons (`src/icons.rs`) instead of letters.
+# Off: today's lettered chips, bit for bit. neo-init's `atrium-app-icons`.
+app-icons = []
+# OT-87 R4.4b: the third Spine chip, Install LogansOS (`BaseScene::set_install`).
+# Off: no chip and no code for it, bit for bit. neo-init's `installer`.
+install-chip = []
+
+[dependencies]
+# Exact-area corner coverage (sqrt/asin) and the focus-light distance field.
+# Already in the tree via neo-text. MIT.
+libm = "0.2"
+# Plex labels on the chrome (Desktop S2 engine).
+neo-text = { path = "../neo-text", features = ["inter"] }
+
+[build-dependencies]
+# A9-D: the busy emblem's frames are rotated in build.rs; libm keeps the
+# trigonometry identical on every host.
+libm = "0.2"

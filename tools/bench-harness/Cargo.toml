@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "bench-harness"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[[bin]]
+name = "bench-harness"
+path = "src/main.rs"
+
+[dependencies]
+sha2 = "0.10"

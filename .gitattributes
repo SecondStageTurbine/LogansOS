@@ -1,0 +1,17 @@
+# Normalize line endings: text is LF in the repo on every platform
+# (fixes the Windows worker-tree CRLF flips — eol=lf overrides core.autocrlf).
+* text=auto eol=lf
+
+# Binary assets — never normalize.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.ico  binary
+*.gif  binary
+*.rgba binary
+*.iso  binary
+*.neom binary
+*.bin  binary
+*.ttf  binary
+*.otf  binary
+*.woff binary

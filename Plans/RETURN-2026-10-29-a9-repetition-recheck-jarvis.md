@@ -1,0 +1,16 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# RETURN: relay #125 — repetition-guard re-check (#177)
+
+Reviewed `953a27d3f0550452d14ff9aeb96315fb0aa00f60` on `origin/main` at `b69b5ee2fa151974e4831b6b3a24cbd250c30611`. RAG health: healthy. **FAIL: one remaining contradiction in the revised module wording. The NaN fix, requested 8-token examples and unchanged oracle pass.**
+
+1. **PASS — item 1, penalty 1.0 preserves every bit.** `penalize` returns at `penalty == 1.0` before slicing generated tokens or loading/storing logits (`kernel/src/ai/repetition_logic.rs:43-48`). The new KAT compares both signalling NaNs and the finite value bit-for-bit (`kernel/src/ai/repetition_logic.rs:108-124`). The native test and a separate probe both pass, preserving `0x7f800001` and `0xff800001`.
+
+2. **FAIL — item 2's new wording still contains a false absolute claim.** The description of a period-p tail with 16 tokens beyond the retained copy matches the unchanged algorithm under token-at-a-time decoding. However, the next sentence says a phrase **of any length** said twice is never cut (`kernel/src/ai/repetition_logic.rs:13-18`). **Concrete input:** `let g: Vec<u32> = (0..32).map(|i| i % 16).collect(); loop_end(&g, 16)` returns `Some(16)`, cutting a 16-token phrase said twice. The existing first-full-repeat KAT already expects that result (`kernel/src/ai/repetition_logic.rs:178-190`), and the separate probe reproduced it. Remove or correct the blanket two-copy sentence while keeping the PM's decision to retain the algorithm and oracle. This is a documentation correction; the overlapping-repeat behavior is accepted by the revised contract.
+
+3. **PASS — item 2's requested 8-token examples.** `[0..8]` three times returns `Some(8)` and twice returns `None`. The new KAT also checks first firing at `16 + p` with p tokens retained for each distinct-token period 1 through 15 (`kernel/src/ai/repetition_logic.rs:126-141`). The native KAT and separate probe pass.
+
+4. **PASS — item 2's oracle is unchanged.** #177 changes no executable `loop_end` code (`kernel/src/ai/repetition_logic.rs:71-80`). The Git blobs before/after #177 match for `inventory_ref.py` (`f986eaf3…`), `expected_guard_tokens.txt` (`4fa5d7e1…`) and `expected_tokens.txt` (`f7f64330…`). I reran the independent Python calculation: `inventory_ref.py --check` reports both committed token files match (`tools/real-lm-oracle/inventory_ref.py:169-194,230-246`). The guarded oracle remains `11,0,3,4,10,3` at p=1.3 and `11,0,3` at p=1.0 (`tools/real-lm-oracle/expected_guard_tokens.txt:3-9`).
+
+Validation: `cargo test -p ai-ops-tests repetition_logic --locked` — 9 passed. The standalone Rust probe mounted the production module and printed `NaN bits: [7f800001, ff800001]`, `period=8 copies=2 => None`, `period=8 copies=3 => Some(8)`, and `period=16 copies=2 => Some(16)`. The system Python lacked NumPy; I ran the successful oracle check with NumPy in an isolated virtual environment under ignored `target/jarvis-review-bundle/`. Production source and oracle files are unchanged.
+
+Existing gate evidence: [batch 12b run 40787440872](https://github.com/SecondStageTurbine/LogansOS/actions/runs/40787440872) is successful. The reviewed main and that gate's `679fd739fe73777537198f6a3d6a76607b8f13ee` have identical `kernel`, `userland`, `tools`, `Cargo.toml` and `Cargo.lock` Git object IDs.

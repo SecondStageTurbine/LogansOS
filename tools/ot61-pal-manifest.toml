@@ -1,0 +1,213 @@
+# SPDX-License-Identifier: CC-BY-4.0
+#
+# OT-61 browser — the AUTHORITATIVE PAL surface manifest (C0, step A5.1).
+#
+# The definitive, falsifiable inventory of what a hosted Rust `std` (and, per
+# A3, SpiderMonkey's native pthread port) demands from the LogansOS platform
+# layer — grounded in TWO independent sources this build checked directly:
+#   (1) the pinned toolchain's real `library/std/src/sys/*` module set
+#       (nightly-2026-04-16 / rustc 1.97), read from rust-src;
+#   (2) the concrete `-Z build-std=std,panic_abort` probe for
+#       target_os="neoplutarch" (the undefined-symbol collection) — the
+#       exact PAL gaps it surfaced are recorded per-row as `probe = "..."`.
+#
+# FINDING (A5): the surface is NOT materially larger than the FINDINGS modeled.
+# It is exactly the gap-table surfaces; the std overlay is bounded (route most
+# `sys/*` to `unsupported`, plus 3 custom modules: stdio, alloc, process).
+#
+# This file is BOTH the human inventory AND the A4 build-breaking gate input:
+# `xtask pal-manifest-check` fails the build if `userland/neo-std-pal` issues a
+# raw syscall not in `[gate].allowed_syscalls` — the anti-compat-island guard.
+
+[meta]
+target = "x86_64-unknown-neoplutarch"
+toolchain = "nightly-2026-04-16"
+std_sys_root = "library/std/src/sys"
+# The real sys/* module set enumerated from rust-src this build:
+std_sys_modules = [
+  "fs", "io", "net", "os_str", "path", "personality", "pipe", "process",
+  "random", "stdio", "sync", "thread", "thread_local", "time", "pal",
+]
+
+# ── The A4 gate contract ──────────────────────────────────────────────────────
+# C0 closes exactly THREE primitives on the existing syscall surface. Any raw
+# SYS_* the PAL references outside this list fails `xtask pal-manifest-check`.
+# Adding a syscall to the PAL later REQUIRES adding it here WITH its capability
+# provenance + a negative gate in the same change (A4). Tightest discipline is
+# reserved for the eventual C++/libc++ surface at C3.
+#
+# C1.3 (std threads) adds the ten C1 thread-runtime calls std's threads, sync,
+# thread-locals and Instant issue, all from the overlay's one trampoline
+# (std::sys::neoplutarch_rt::syscall4). Each has a provenance line below and a
+# negative test in tools/xtask/src/ot61_c05_tests.rs
+# (a4_g1_refuses_each_c13_syscall_once_unlisted).
+#
+# C2.1b adds std::fs's file calls (SYS_OPEN, SYS_READ, SYS_CLOSE, SYS_FSYNC;
+# writes reuse SYS_WRITE on the handle index), SYS_PROCESS_SELF for
+# process::id and SYS_HANDLE_INFO for std::os::neoplutarch. Same rules: a
+# provenance line each, and the G1 sweep plus a G2 test.
+[gate]
+allowed_syscalls = ["SYS_WRITE", "SYS_MAP_REGION", "SYS_EXIT", "SYS_CLOCK_GETTIME", "SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_THREAD_CREATE", "SYS_THREAD_EXIT", "SYS_THREAD_JOIN", "SYS_THREAD_DETACH", "SYS_THREAD_GET_INFO", "SYS_THREAD_SET_TLS", "SYS_SCHED_YIELD", "SYS_GETRANDOM", "SYS_OPEN", "SYS_READ", "SYS_CLOSE", "SYS_FSYNC", "SYS_PROCESS_SELF", "SYS_HANDLE_INFO"]
+pal_crate = "userland/neo-std-pal"
+
+[gate.provenance]
+SYS_WRITE = "stdout/stderr → serial/console; no ambient fd table (C0)"
+SYS_MAP_REGION = "R+W+NX monotonic user heap; NO executable memory (A1); no unmap/protect in C0 (A2 quota rides the C1 region tracker)"
+SYS_EXIT = "clean process exit / abort_internal; crash containment reaps the Pmap"
+SYS_CLOCK_GETTIME = "C1.0 P4: std Instant + futex deadlines; CLOCK_MONOTONIC only (SystemTime stays unsupported: CLOCK_REALTIME is wall time only under rtc-epoch). No capability: reads a counter."
+SYS_FUTEX_WAIT = "C1.1 P1: std's futex Mutex/Condvar/RwLock/Once/Parker and thread::sleep. Waits only on the caller's own address space (physical-address key); browser-runtime kernels only."
+SYS_FUTEX_WAKE = "C1.1 P1: the wake half of the above; reaches only waiters on the same physical word."
+SYS_THREAD_CREATE = "C1.1 P2: std::thread::spawn. Gated on the process's BrowserRuntime THREAD_SPAWN capability (EPERM without it, no self-mint); kernel-allocated stack with a guard page."
+SYS_THREAD_EXIT = "C1.1 P2: the end of every std-spawned thread, after its TLS key destructors."
+SYS_THREAD_JOIN = "C1.1 P2: JoinHandle::join; joins only threads of the caller's own process."
+SYS_THREAD_DETACH = "C1.1 P2: dropping an unjoined std thread; own process only."
+SYS_THREAD_GET_INFO = "C1.1 P2: a new thread's own stack bounds, where its control block goes before any std code; read-only."
+SYS_THREAD_SET_TLS = "C1.2 P3: a thread's FS.base → its control block (the key-only TLS route). Same capability gate as thread create (EPERM); kernel-half bases refused (EFAULT)."
+SYS_SCHED_YIELD = "C1.1: thread::yield_now; no capability, no state."
+SYS_OPEN = "C2.1b: std::fs::File::open, the root form only. Fail-closed twice: std refuses unless the process holds a RootDirCap (SYS_HANDLE_INFO), and a cap-rooted-open kernel refuses (EPERM) without one and with rights beyond it (EACCES). The opened file is the cap's child, so revoking the cap reaches it (OT-66 K1a)."
+SYS_READ = "C2.1b: File::read on a handle the process holds; READ right enforced by the kernel."
+SYS_CLOSE = "C2.1b: File drop; closes only the caller's own handle (its derivation edge re-parents, K1a-0)."
+SYS_FSYNC = "C2.1b: File::sync_all/sync_data on a handle the process holds."
+SYS_PROCESS_SELF = "C2.1b: std::process::id. Reads the caller's own pid; a pid is not a capability."
+SYS_HANDLE_INFO = "C2.1b: std::os::neoplutarch::handles and std::fs's RootDirCap check. Reads kind and rights of the caller's own handles; grants nothing."
+SYS_GETRANDOM = "C2.0: std fill_bytes (HashMap RandomState, std randomness). The kernel CSPRNG (ChaCha20 DRBG seeded from RDRAND), whole fills only, 64 KiB per call; ENOSYS without kernel-rng, which std turns into a loud abort (no weaker fallback). No capability yet: the sealed-entropy-handle option is a later rung."
+
+# ── The surface inventory, grouped by gap-table surface ───────────────────────
+# status: closed-c0 | c1 | c2 | c3 | reserved-a1 | reserved-a2 | compile-out
+# a3: the SpiderMonkey/pthread consumer the same C1 primitive must also serve.
+
+[[surface]]
+sys = "stdio"
+gap = "print/serial"
+status = "closed-c0"
+via = "SYS_WRITE (neo_std_pal::write_fd)"
+note = "Stdout/Stderr::write → SYS_WRITE. C0's first wired primitive."
+
+[[surface]]
+sys = "alloc (global allocator)"
+gap = "heap/VM"
+status = "closed-c0"
+via = "SYS_MAP_REGION (neo_std_pal::SyscallHeap)"
+probe = "not a build-std sys/* module — the #[global_allocator] path; closed by SyscallHeap"
+note = "malloc/free over the monotonic R+W+NX map. A1: NX (no W^X). A2: no per-process ceiling yet — reserved rung."
+
+[[surface]]
+sys = "process (exit)"
+gap = "process"
+status = "closed-c0"
+via = "SYS_EXIT (neo_std_pal::exit)"
+note = "exit / abort_internal. Command/spawn is the embedder seam (see below), NOT ambient."
+
+[[surface]]
+sys = "io"
+gap = "process/panic"
+status = "c1"
+probe = "unresolved crate::sys::io::{decode_error_kind,errno,error_string,is_interrupted}"
+via = "errno mapping table"
+note = "error-kind decode: a pure LogansOS-errno→io::ErrorKind table; small, lands with C1."
+
+[[surface]]
+sys = "thread"
+gap = "threads"
+status = "closed-c1.3"
+via = "std overlay thread/neoplutarch.rs over SYS_THREAD_CREATE/EXIT/JOIN/DETACH/GET_INFO + SYS_SCHED_YIELD"
+probe = "sys/thread cfg_select has no neoplutarch arm (C0; closed by the C1.3 arm)"
+a3 = "SpiderMonkey js/src/threading/posix/PosixThread.cpp create/join/detach/name"
+note = "user thread lifecycle ABI (create/join/detach/stack-bounds). One ABI for std + pthread."
+
+[[surface]]
+sys = "thread_local"
+gap = "TLS"
+status = "closed-c1.3"
+probe = "unresolved sys::thread_local::key::{Key,LazyKey,get,set}"
+a3 = "SpiderMonkey/Mozilla Mutex.cpp TLS + GC-root TLS (correctness-critical)"
+note = "TLS keys + destructors-at-exit. GC rooting depends on it — not an optimization. C1.2: key-only (no PT_TLS; the xtask key-only gate rejects native TLS in any staged user ELF). Kernel: per-thread FS.base + SYS_THREAD_SET_TLS (0x4F, issued by libneo, not this PAL). The key layer is libneo::ntls (iterated <=4 destructor passes, generation check). C1.3: one key layer (userland/neoplutarch-std-overlay/std/neoplutarch_rt/tls.rs) serves std's os key route and libneo::ntls; std threads install their control block before any std code and run the key destructors at exit."
+
+[[surface]]
+sys = "sync"
+gap = "sync/waits"
+status = "closed-c1.3"
+via = "std's own futex Mutex/Condvar/RwLock/Once/Parker over neoplutarch_rt::futex (SYS_FUTEX_WAIT/WAKE, absolute monotonic deadlines)"
+probe = "sys/sync (Mutex/Condvar/RwLock) has no neoplutarch arm (C0; closed by the C1.3 arms)"
+a3 = "SpiderMonkey mozglue/misc/ConditionVariable_posix.cpp monotonic-deadline waits"
+note = "blocking wait/wake + timed. One wait-on-address + monotonic-timeout primitive; a spin mutex is not a substitute."
+
+[[surface]]
+sys = "time"
+gap = "time"
+status = "closed-c1.3 (Instant); SystemTime unsupported"
+via = "Instant: SYS_CLOCK_GETTIME(CLOCK_MONOTONIC). SystemTime: std's unsupported (CLOCK_REALTIME is wall time only on rtc-epoch kernels, and a process cannot tell)"
+probe = "sys/time (Instant/SystemTime) has no neoplutarch arm (C0; Instant closed by the C1.3 arm)"
+a3 = "SpiderMonkey mozglue/misc/TimeStamp_posix.cpp monotonic + realtime"
+note = "separate monotonic + realtime clocks with a defined resolution/monotonicity contract."
+
+[[surface]]
+sys = "vm (unmap/protect/reserve) — under alloc/os"
+gap = "heap/VM"
+status = "c1"
+a3 = "SpiderMonkey GC js/src/gc/Memory.cpp reserve/commit/decommit/protect + guard pages"
+note = "the DEEP MM rung: a real region tracker. A2 per-process quota lands with it. C0 has only monotonic map."
+
+[[surface]]
+sys = "fs"
+gap = "files/resources"
+status = "closed-c2.1b (File open/read/write/sync over a RootDirCap); the rest unsupported"
+via = "std overlay fs/neoplutarch.rs over SYS_OPEN/SYS_READ/SYS_WRITE/SYS_FSYNC/SYS_CLOSE; std::os::neoplutarch FromRawHandle for handed-in files"
+probe = "sys/fs has no neoplutarch arm (C0; closed by the C2.1b arm)"
+note = "no ambient namespace: File::open needs a RootDirCap the process was handed (fail-closed in std and, on cap-rooted-open kernels, in the kernel). Directories, metadata, seek, rename and links stay unsupported. Scoped per-directory caps (open_at) are OT-66 K1b."
+
+[[surface]]
+sys = "net"
+gap = "network"
+status = "c2"
+probe = "sys/net has no neoplutarch arm"
+note = "renderer gets NO dial cap (cross-check + Chad). Broker holds attenuated NetDialCap; ambient std::net MUST fail closed."
+
+[[surface]]
+sys = "random"
+gap = "entropy"
+status = "closed-c2.0"
+via = "std overlay random/neoplutarch.rs fill_bytes over SYS_GETRANDOM (kernel-rng)"
+probe = "cannot find function fill_bytes in module sys"
+note = "C2.0: fill_bytes is the kernel CSPRNG via SYS_GETRANDOM, so HashMap RandomState works. Without kernel-rng it aborts loudly (134), as the C0.5 stub did. A capability-sealed entropy handle stays an option for a later rung."
+
+[[surface]]
+sys = "process (Command/spawn/env)"
+gap = "process"
+status = "c2 (env: closed-c2.1b, empty and immutable; process::id: closed-c2.1b via SYS_PROCESS_SELF)"
+note = "C2.1b: std::env is empty (vars() yields nothing, var() is NotPresent, set_var errors) instead of std's panicking unsupported env(); process::id is SYS_PROCESS_SELF. Servo multiprocess: replace Command with the embedder fixed-module sys_spawn manifest + an allowlisted immutable env. NOT ambient fork/exec/PATH/cwd."
+
+[[surface]]
+sys = "pipe"
+gap = "process/IPC"
+status = "c2"
+note = "cross-process channels map to libneo IPC handles, not anonymous OS pipes."
+
+[[surface]]
+sys = "personality (unwind)"
+gap = "panic/unwind"
+status = "compile-out"
+note = "target is panic=abort. Abort across the C++ boundary; do NOT unwind Rust through C++. Servo catch_unwind sites patched to explicit-error. Rust unwind reconsidered only post-C1 with a QEMU personality gate."
+
+[[surface]]
+sys = "os_str / path"
+gap = "files/resources"
+status = "c1"
+note = "byte-oriented OsStr/Path; trivial once fs preopens exist. No ambient path resolution."
+
+[[surface]]
+sys = "c++/libc++ CRT"
+gap = "C/C++ runtime"
+status = "c3"
+note = "SpiderMonkey + SWGL need a private static libc/libc++ subset atop the SAME PAL primitives (A3). NO exported POSIX ABI. A4's TIGHTEST manifest discipline is reserved for this surface — the highest compat-island-leak risk."
+
+# ── Reserved invariant rungs (NAME, do not build in C0) ───────────────────────
+[reserved.a1_wx_jit]
+status = "reserved"
+rung = "post-correctness (C3+)"
+note = "LogansOS user memory is R+W+NX; there is NO runtime-executable-code primitive. C0 introduces NONE (heap is NX). JIT is the FIRST such primitive = a new cross-cutting invariant (docs/complexity-governance.md budget): must be named, justified, guarded, and KILL-SWITCHABLE (JIT-off == interpreter, provably) in the build that adds it. Interpreter-first is honest for CORRECTNESS; JIT gates the USABLE end-state."
+
+[reserved.a2_memory_quota]
+status = "built (kernel, OT-61 C2.2, `mem-quota`); not yet called by the std overlay"
+rung = "C2.2 (docs/DESIGN-2026-10-27-ot61-c2.2-mem-quota.md); kernel-heap objects are C2.2b"
+note = "no per-process frame ceiling today (sys_map_region caps only per-call). Adversarial content can DoS the whole system before its process dies. 'OOM kills only that process' becomes deliverable only when a per-content-process memory quota trips before global exhaustion. A kernel VM change, NOT C0."

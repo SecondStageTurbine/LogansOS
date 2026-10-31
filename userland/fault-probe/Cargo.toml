@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "fault-probe"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "OT-83: ring-3 probes that raise one CPU exception each (the kill-the-process containment scenarios)"
+
+[lib]
+path = "src/lib.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-ud"
+path = "src/bin/ud.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-de"
+path = "src/bin/de.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-gp"
+path = "src/bin/gp.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-ss"
+path = "src/bin/ss.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-db"
+path = "src/bin/db.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-xm"
+path = "src/bin/xm.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-mf"
+path = "src/bin/mf.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "fault-probe-ok"
+path = "src/bin/ok.rs"
+test = false
+bench = false
+
+[dependencies]
+libneo = { path = "../libneo" }

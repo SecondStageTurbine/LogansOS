@@ -1,0 +1,35 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Vendored copy of rust-osdev/acpi 6.1.1 (crates.io), carrying the Loganfy (OT-86)
+# patches. Upstream licence kept: LICENCE-MIT, LICENCE-APACHE (dual MIT/Apache-2.0).
+# The package is renamed `acpi-loganfy` so the grading harness can link it next to
+# the stock `acpi` =6.1.1 and grade both. Upstream's manifest is `Cargo.toml.upstream`;
+# the only manifest differences are the name, the `publish = false` guard and dropping
+# upstream's tool workspace. `src/` starts byte-identical to the crates.io 6.1.1 tarball
+# (see VENDORED.md for the check).
+[package]
+name = "acpi-loganfy"
+version = "6.1.1"
+authors = ["Isaac Woods"]
+repository = "https://github.com/rust-osdev/acpi"
+description = "rust-osdev/acpi 6.1.1 with the LogansOS Loganfy (OT-86) patches"
+categories = ["hardware-support", "no-std"]
+license = "MIT OR Apache-2.0"
+edition = "2024"
+publish = false
+
+[lib]
+name = "acpi"
+path = "src/lib.rs"
+
+[dependencies]
+bit_field = "0.10.2"
+bitflags = "2.5.0"
+log = "0.4.20"
+spinning_top = "0.3.0"
+pci_types = "0.10.0"
+byteorder = { version = "1.5.0", default-features = false }
+
+[features]
+default = ["alloc", "aml"]
+alloc = []
+aml = ["alloc"]

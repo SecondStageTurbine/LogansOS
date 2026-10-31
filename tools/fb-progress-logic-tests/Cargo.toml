@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "fb-progress-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+# The kernel font's extra glyphs are compiled with `fb-progress-console` and
+# `xhci-silicon` (or `freeze-watchdog`); the mounted `font.rs` sees this
+# crate's features of the same names.
+[features]
+default = ["fb-progress-console", "xhci-silicon"]
+fb-progress-console = []
+xhci-silicon = []
+freeze-watchdog = []
+i2c-hid-touchpad = []

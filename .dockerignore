@@ -1,0 +1,12 @@
+# Keep the build context tiny — the repo is mounted as a volume at
+# runtime, so the image itself doesn't need any of these files baked in.
+target/
+**/target/
+.cargo-home/
+*.iso
+*.img
+*.bin
+.git/
+.idea/
+.vscode/
+.DS_Store

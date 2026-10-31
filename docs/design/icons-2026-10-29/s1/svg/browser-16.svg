@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>Browser</title>
+  <!-- the orbit behind the planet, then the planet, then the orbit's near half over it -->
+  <path d="M1.66 10.96 A7 2.5 -25 0 0 14.34 5.04 A7 2.5 -25 0 0 1.66 10.96 Z" fill="none" stroke="#a8adb2" stroke-width="1.25"/>
+  <circle cx="8" cy="8" r="4" fill="#1a2332" stroke="#a8adb2" stroke-width="1.5"/>
+  <path d="M1.66 10.96 A7 2.5 -25 0 0 14.34 5.04" fill="none" stroke="#a8adb2" stroke-width="1.25" stroke-linecap="round"/>
+</svg>

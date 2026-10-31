@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "std-pal-smoke"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 C0 gate: proves the LogansOS PAL primitives (write/heap/exit) on-target + the deterministic loud-absence of an unsupported PAL entry"
+
+[[bin]]
+name = "std-pal-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+neo-std-pal = { path = "../neo-std-pal" }
+
+[features]
+default = []
+# Flip the smoke to deliberately call an unsupported (C1) PAL entry, proving the
+# LOUD, NAMED, deterministic failure (exit 90 + the symbol) — a PASS of the
+# "loud absence" property, not a defect.
+unsupported-demo = []

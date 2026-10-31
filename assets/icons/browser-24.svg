@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>Browser</title>
+  <!-- Shape: Jarvis (Codex), docs/design/icons-2026-10-29/jarvis/. Redrawn by S1 at the set's
+       weights and colour rule: Silver or White carries the shape, Electric Blue is the accent. -->
+  <circle cx="12" cy="12" r="8.5" fill="#1a2332" stroke="#a8adb2" stroke-width="2"/>
+  <path d="M12 3.5 C9 6 8 9 8 12 S9 18 12 20.5 M12 3.5 C15 6 16 9 16 12 S15 18 12 20.5" fill="none" stroke="#a8adb2" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M3.5 12 H20.5" stroke="#3c8ef4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

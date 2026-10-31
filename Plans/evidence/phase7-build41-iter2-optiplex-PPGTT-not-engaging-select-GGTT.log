@@ -1,0 +1,354 @@
+NEO_TEST/1 event=INFO name=accel_intel_ppgtt_bringup bare_metal_log_sink=installed target_driver=nvme offset=0x10000000 size=16777216
+NEO_TEST/1 event=INFO name=accel_intel_ppgtt_bringup bare_metal_log_sink_selftest=begin
+NEO_TEST/1 event=INFO name=accel_intel_ppgtt_bringup bare_metal_log_sink_selftest=ok cursor=222
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] pci: Intel Gen9.5 iGPU candidate 00:02.0 vendor=0x8086 device=0x9bc8 class=0x030000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-map
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=gt-bar-mapped offset=0x0 width=16777216
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_RENDER_GEN9 offset=0xa278 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_ACK_RENDER_GEN9 offset=0xd84 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_GT_GEN9 offset=0xa188 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_ACK_GT_GEN9 offset=0x130044 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_HEAD offset=0x2034 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_TAIL offset=0x2030 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_START offset=0x2038 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_CTL offset=0x203c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_MODE offset=0x229c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_ACTHD_UDW offset=0x205c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_INSTDONE offset=0x206c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_ACTHD offset=0x2074 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_R_PWR_CLK_STATE offset=0x20c8 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GEN8_RING_FAULT_REG_RCS offset=0x4094 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GEN6_GT_CORE_STATUS offset=0x138060 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GGTT_PTE_BASE offset=0x800000 width=8 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GGTT_SEQNO_PTE offset=0x800998 width=8 mapped_len=0x1000000
+[ kernel ] accel: registered device index=2 driver=accel_intel name=accel_intel_gen9_0 device=0x80000003
+[ kernel ] accel-intel: attached UHD630 candidate bdf=00:02.0 device_id=0x9bc8 gttmmadr_len=0x1000000
+[ kernel ] accel: intel scan complete functions=18 candidates=1 probe_ok=1
+[ kernel ] accel: init complete attached_devices=3
+[ kernel ] smp: Limine reports 12 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=2
+[ kernel ] smp: starting cpu_id=2 lapic_id=4
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=3 lapic_id=6
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=4 lapic_id=8
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffdfbb6e80 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffdfbb6f00 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=5 lapic_id=10
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffdfbb6f80 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=6 lapic_id=1
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=7 lapic_id=3
+[ kernel ] per_cpu: PER_CPU[6] at 0xffffffffdfbb7100 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=8 lapic_id=5
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffdfbb6f00 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffdfbb6e80 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[7] at 0xffffffffdfbb7180 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=9 lapic_id=7
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffdfbb6f80 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] apic: cpu=3 lapic_id=6 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[9] at 0xffffffffdfbb7280 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] gdt: cpu=9 loaded (tss_sel=0x30)
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffffe0200bc8
+[ kernel ] apic: cpu=1 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] gdt: cpu=7 loaded (tss_sel=0x30)
+[ kernel ] apic: cpu=2 lapic_id=4 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[5] at 0xffffffffdfbb7080 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[7] at 0xffffffffdfbb7180 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=6, processor_id=4)
+[ kernel ] per_cpu: PER_CPU[9] at 0xffffffffdfbb7280 → IA32_GS_BASE (AP)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffffe0201048
+[ kernel ] apic: cpu=9 lapic_id=7 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=2, processor_id=2)
+[ kernel ] apic: cpu=7 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[8] at 0xffffffffdfbb7200 → IA32_GS_BASE (AP)
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffffe0200e08
+[ kernel ] gdt: cpu=8 loaded (tss_sel=0x30)
+[ kernel ] slab: initialized per-CPU state cpu=7 at 0xffffffffe0201dc8
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[8] at 0xffffffffdfbb7200 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=4, processor_id=3)
+[ kernel ] apic: cpu=8 lapic_id=5 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] gdt: cpu=5 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=6 loaded (tss_sel=0x30)
+[ kernel ] smp: starting cpu_id=10 lapic_id=9
+[ kernel ] per_cpu: PER_CPU[6] at 0xffffffffdfbb7100 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=11 lapic_id=11
+[ kernel ] apic: cpu=6 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: started 11 AP(s)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[5] at 0xffffffffdfbb7080 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[11] at 0xffffffffdfbb7380 → IA32_GS_BASE (AP)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] gdt: cpu=11 loaded (tss_sel=0x30)
+[ kernel ] apic: cpu=5 lapic_id=10 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[11] at 0xffffffffdfbb7380 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] apic: cpu=11 lapic_id=11 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] slab: initialized per-CPU state cpu=5 at 0xffffffffe0202b48
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: AP cpu_id=5 ready (lapic_id=10, processor_id=6)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: AP cpu_id=7 ready (lapic_id=3, processor_id=8)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=6 at 0xffffffffe02037a8
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] smp: AP cpu_id=6 ready (lapic_id=1, processor_id=7)
+[ kernel ] sched: spawned 'ping' (id=6)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=6, bootstrap='ap-6-main', ready_queue empty)
+[ kernel ] sched: spawned 'pong' (id=8)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=7, bootstrap='ap-7-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=5, bootstrap='ap-5-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=11 at 0xffffffffe0202d88
+[ kernel ] sched: spawned 'hog' (id=9)
+[ kernel ] slab: initialized per-CPU state cpu=8 at 0xffffffffe0203568
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: AP cpu_id=11 ready (lapic_id=11, processor_id=12)
+[ kernel ] slab: initialized per-CPU state cpu=9 at 0xffffffffe0210630
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=11, bootstrap='ap-main', ready_queue empty)
+[ kernel ] smp: AP cpu_id=8 ready (lapic_id=5, processor_id=9)
+[ ping ] 1
+[ pong ] 1
+[ kernel ] smp: AP cpu_id=9 ready (lapic_id=7, processor_id=10)
+[ ping ] 2
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=8, bootstrap='ap-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=9, bootstrap='ap-main', ready_queue empty)
+[ kernel ] per_cpu: PER_CPU[4] at 0xffffffffdfbb7000 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=4 loaded (tss_sel=0x30)
+[ pong ] 2
+[ ping ] 3
+[ kernel ] per_cpu: PER_CPU[4] at 0xffffffffdfbb7000 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[10] at 0xffffffffdfbb7300 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=4 lapic_id=8 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] gdt: cpu=10 loaded (tss_sel=0x30)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[10] at 0xffffffffdfbb7300 → IA32_GS_BASE (AP)
+[ kernel ] slab: initialized per-CPU state cpu=4 at 0xffffffffe0211950
+[ kernel ] apic: cpu=10 lapic_id=9 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: AP cpu_id=4 ready (lapic_id=8, processor_id=5)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffdf924b0c), SFMASK=IF|TF|AC|DF)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=4, bootstrap='ap-4-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=10 at 0xffffffffe0212130
+[ kernel ] smp: AP cpu_id=10 ready (lapic_id=9, processor_id=11)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=10, bootstrap='ap-main', ready_queue empty)
+[ pong ] 3
+[ hog  ] preempted at least 5 ticks (start=5, now=12)
+[ ping ] 4
+[ pong ] 4
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=6)
+[ kernel ] sched: reaped 'pong' (id=8)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=9)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=21)
+NEO_TEST/1 event=BEGIN name=accel_intel_ppgtt_bringup phase=dispatch
+[ kernel ] accel-intel: ppgtt built root(pml4)=0x000000047a38a000 pdp=0x000000047a38b000 pd=0x000000047a38c000 pt=0x000000047a38d000 lhs_va=0x130000->0x000000047a382000 rhs_va=0x131000->0x000000047a383000 out_va=0x132000->0x000000047a384000
+[ kernel ] accel-intel: indirect-heap op=add curbe_ggtt=0x134000 indirect_len=320 work_items=2 cross_a=0x0000000000130000 local_id_lane1=1 (cross[0,96) + per_thread[96,288))
+[ kernel ] accel-intel: kernel-eot op=add eot_present=true
+[ kernel ] accel-intel: interface-descriptor kernel_start=0x00120000 expected_kernel_ggtt=0x00120000 kernel_ptr_matches=true thread_group_threads=1 cross_thread_read_grf=3 per_thread_read_grf=6 stateless=true(no sampler/binding-table)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=submit-add-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-map-begin
+[ kernel ] accel-intel: ggtt-pte label=ring ggtt=0x100000 phys=0x47a386000 flags=0x3 pte=0x000000047a386003 offset=0x800800
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800800 width=8
+[ kernel ] accel-intel: ggtt-pte label=state ggtt=0x110000 phys=0x47a387000 flags=0x3 pte=0x000000047a387003 offset=0x800880
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800880 width=8
+[ kernel ] accel-intel: ggtt-pte label=kernel ggtt=0x120000 phys=0x47a388000 flags=0x3 pte=0x000000047a388003 offset=0x800900
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800900 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=lhs ggtt=0x130000 pte=0x0000000000000000 offset=0x800980 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800980 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=rhs ggtt=0x131000 pte=0x0000000000000000 offset=0x800988 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800988 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=output ggtt=0x132000 pte=0x0000000000000000 offset=0x800990 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800990 width=8
+[ kernel ] accel-intel: ppgtt data buffers CLEARED from GGTT (lhs/rhs/output VAs 0x130000/0x131000/0x132000 resolve via PPGTT only; stale GGTT invalidated)
+[ kernel ] accel-intel: ggtt-pte label=seqno ggtt=0x133000 phys=0x47a385000 flags=0x3 pte=0x000000047a385003 offset=0x800998
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800998 width=8
+[ kernel ] accel-intel: ggtt-pte label=curbe ggtt=0x134000 phys=0x47a389000 flags=0x3 pte=0x000000047a389003 offset=0x8009a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8009a0 width=8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-map-end
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-mode-write offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-ctl-disable offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-head-reset offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-tail-reset offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-start-write offset=0x2038 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-ctl-enable offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-state-verify
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-mode-read offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-ctl-read offset=0x203c width=4
+[ kernel ] accel-intel: legacy-ring mode ring_mode=0x00000000 execlist_enabled=false ring_ctl=0x00000001 expected_ring_ctl=0x00000001
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ppgtt-gfx-mode-48b offset=0x229c width=4
+[ kernel ] accel-intel: ppgtt-root-load token=1 pdp_root(pml4)=0x000000047a38a000 gfx_mode_48b=0x00800080 lri_in_ring=true select_expected=PPGTT
+[ kernel ] accel-intel: submit add token=1 bdf=0x000200 device_id=0x9bc8 ring=0x100000 seqno_ggtt=0x133000
+[ kernel ] accel-intel: ring-batch mode=compute token=1 ring_ggtt=0x100000 byte_offset=0x0 command_len=300 tail=0x12c
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: pre-kick-status token=1 RING_HEAD=0x00000000 RING_TAIL=0x00000000 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00000080 execlist_enabled=false INSTDONE=0xfffffffe ACTHD=0x0000000000000000 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x00000000 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode pre-kick-status token=1 INSTDONE=0xfffffffe busy_mask=0x00000001 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit pre-kick-status token=1 bit=0 unit=command-streamer
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=submit
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ring-tail-write offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: post-kick-status token=1 RING_HEAD=0x00000128 RING_TAIL=0x00000128 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00000080 execlist_enabled=false INSTDONE=0xffddffff ACTHD=0x0000000000000128 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000009e1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode post-kick-status token=1 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit post-kick-status token=1 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit post-kick-status token=1 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode post-kick-status token=1 RING_FAULT=0x000009e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=GGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000010 in_build4a_window=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=wait-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+[ kernel ] accel-intel: wait-mid-status token=1 RING_HEAD=0x00000128 RING_TAIL=0x00000128 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00000080 execlist_enabled=false INSTDONE=0xffddffff ACTHD=0x0000000000000128 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000009e1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode wait-mid-status token=1 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit wait-mid-status token=1 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit wait-mid-status token=1 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode wait-mid-status token=1 RING_FAULT=0x000009e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=GGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000010 in_build4a_window=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+[ kernel ] accel-intel: wait-timeout token=1 RING_HEAD=0x00000128 RING_TAIL=0x00000128 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00000080 execlist_enabled=false INSTDONE=0xffddffff ACTHD=0x0000000000000128 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000009e1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode wait-timeout token=1 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit wait-timeout token=1 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit wait-timeout token=1 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode wait-timeout token=1 RING_FAULT=0x000009e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=GGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000010 in_build4a_window=true
+NEO_TEST/1 event=FAIL name=accel_intel_ppgtt_bringup reason=accel_intel_ppgtt_add_wait_failed

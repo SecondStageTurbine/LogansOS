@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+# `key-autorepeat`: the mounted i8042 decoder (`i8042_tests.rs`) sees this
+# crate's feature of the same name (its typematic counter); on by default so
+# the KAT runs.
+[features]
+default = ["key-autorepeat"]
+key-autorepeat = []
+
+[dependencies]
+# A small tool — keep dependencies to a minimum so it builds fast on every
+# developer's machine. B1c (F8, PM-approved): `blake3` so `iso --with-model`
+# checks the model and vocab against the kernel's pins before staging.
+# `default-features = false` is load-bearing: with `std` on, workspace feature
+# unification would enable it for the no_std kernel's blake3 too.
+blake3 = { version = "1.8.2", default-features = false }
+# OT-87 R4.2: the ESP templates (THINK §4.3), formatted on the host. Vendored
+# (third_party/fatfs/VENDORED.md); no `chrono`: the builder stamps a fixed
+# time, so a template build is reproducible.
+# L2.1: the NAL1 action-log chain, recomputed for `login_arthur_permission`.
+action-log-core = { path = "../../userland/action-log-core" }
+fatfs = { path = "../../third_party/fatfs", default-features = false, features = ["std", "alloc", "lfn"] }
+# OT-88 S1: the settings store scenario checks the WM's store writes against
+# the record's own encoder (no_std, no dependencies beyond blake3).
+settings-core = { path = "../../userland/settings-core" }

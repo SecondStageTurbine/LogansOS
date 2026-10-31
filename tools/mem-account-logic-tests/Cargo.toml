@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "mem-account-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[features]
+# The kernel's object counter (OT-61 C2.2b) is cfg'd on this feature; the
+# KATs always test it.
+default = ["obj-quota"]
+obj-quota = []

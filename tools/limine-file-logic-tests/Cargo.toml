@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "limine-file-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dev-dependencies]
+# The crate the kernel uses, to pin the field offset its `File` gets wrong.
+limine = "=0.6.3"

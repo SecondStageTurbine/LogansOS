@@ -1,0 +1,165 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-arthur"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Arthur userland assistant process"
+
+[[bin]]
+name = "neo-arthur"
+path = "src/main.rs"
+test = false
+bench = false
+
+[lib]
+name = "neo_arthur_lib"
+path = "src/arthur_lib.rs"
+test = false
+bench = false
+doctest = false
+
+[dependencies]
+libneo = { path = "../libneo" }
+chacha20poly1305 = { version = "0.10", default-features = false, optional = true }
+# Desktop S2 text engine (pure no_std). Only the compositor surface references
+# it, so non-showcase builds link none of its code or font data.
+neo-text = { path = "../neo-text", features = ["inter", "plex-mono"] }
+
+[features]
+default = []
+console-interactive = []
+v1-console-surface = []
+arthur-real-infer = []
+arthur-act = []
+agentic-actions = ["arthur-act"]
+agentic-actions-a2 = ["agentic-actions"]
+agentic-actions-a3 = ["agentic-actions-a2"]
+agentic-ipc-frequency = ["agentic-actions-a2", "libneo/action-observability"]
+arthur-reversibility = ["agentic-actions-a2", "chacha20poly1305"]
+arthur-reversibility-stakes = ["arthur-reversibility"]
+arthur-memory = []
+arthur-grants = ["arthur-act", "net-dial-cap"]
+net-dial-cap = []
+arthur-memory-encryption = ["arthur-memory", "chacha20poly1305"]
+arthur-memory-delegation = ["arthur-memory-encryption"]
+arthur-memory-forgetting = ["arthur-memory-delegation"]
+arthur-real-vocab = []
+arthur-real-brain-boot = ["arthur-real-infer", "arthur-real-vocab"]
+# Integrated showcase: Arthur is an ADR-073 G1 client surface and owns the
+# ADR-074 InputFocus RECEIVE root. This deliberately does not enable the direct
+# framebuffer console.
+arthur-compositor = ["arthur-real-brain-boot", "arthur-memory"]
+arthur-compositor-baremetal = ["arthur-compositor"]
+# QEMU-only input-driving marker for OT-78. The production Arthur/compositor
+# implementation is reused; only the source of the already-routed keystrokes
+# differs from the physical-HID bare-metal variant.
+arthur-compositor-product-integration = ["arthur-compositor"]
+# Desktop S1: Arthur as the resident client of the session WM. Reuses the
+# showcase surface/InputFocus; tolerates a missing model; never exits unless
+# the scenario-only `desktop-session-boot-test` marker ends it after one line.
+desktop-session = ["arthur-compositor", "libneo/atrium-damage"]
+desktop-session-boot-test = ["desktop-session"]
+# DS-1: the WM sends the Home intent field's line after the session handshake;
+# Arthur answers it as its first input line.
+desktop-home = ["desktop-session", "libneo/atrium-yield", "libneo/atrium-launch"]
+# Chad #177 item 4: desktop_home_cycle's Arthur, which ends a session launched
+# with the intent "cycle" after its one answer.
+desktop-home-cycle-test = ["desktop-home", "desktop-session-boot-test"]
+# OT-66 K1b: desktop_arthur_scope's Arthur logs, at session start, whether a
+# root-form open outside its scopes (`/neofs`) and inside one (its memory
+# directory) open.
+arthur-scope-probe-test = ["desktop-home", "desktop-session-boot-test"]
+# DI-1a boot-test probe: log the pointer events the WM forwards, and prove the
+# DI-1 syscalls refuse a client (EPERM).
+desktop-pointer-probe = ["desktop-home"]
+# DS-1c: a listing of `/` blooms the Lens through the LaunchCap instead of
+# going to the model. Off = DS-1b exactly.
+desktop-lens = ["desktop-home"]
+# L1.3a (THINK-2026-10-30-l1.3): an explicit `read`, `list` or `write` line is
+# done through the WM's permission prompt (OP_PERMISSION): the WM lends a cap
+# for that one action and revokes it at OP_PERMISSION_DONE. Needs the WM's
+# `arthur-actions`. Off = such a line is chat, as before.
+desktop-actions = ["desktop-home", "libneo/atrium-permission"]
+# Boot test only: after each action, read through the lent cap again and log
+# the result (the WM's revoke must have taken it).
+desktop-actions-probe = ["desktop-actions"]
+# Chad DS-1c F1 boot test: ask for the Lens again after a refused bloom (the
+# WM's `desktop-lens-fault-test` fails the first two).
+desktop-lens-fault-test = ["desktop-lens"]
+# DI-1b resize: the surface lives in a 1280x800 buffer (created 640x400) and
+# re-lays itself out at the size the WM publishes in its configure mailbox,
+# acking with OP_CONFIGURE. Off = a fixed 640x400 buffer, DI-1b move exactly.
+desktop-resize = ["desktop-home", "libneo/atrium-configure"]
+# OT-22 rung 1 (kernel `wait-multiplex`): while idle, park in SYS_WAIT_ANY on
+# the input focus (and, with a configure mailbox, until the next tick)
+# instead of spinning. Off: the loops spin exactly as before.
+desktop-park = ["desktop-home"]
+# A9-D: while a generation runs, the WM turns the LogansOS emblem in a rect
+# right of "Arthur> " (OP_BUSY) instead of Arthur writing "Thinking...";
+# Arthur's reply commit ends it. Needs the WM's `desktop-busy`. Off =
+# "Thinking..." exactly as before (the kill-switch). Not with the legacy grid.
+arthur-busy-emblem = ["desktop-session", "libneo/atrium-busy"]
+# A9-D test only (desktop_busy_boot, Janus #96): before the first emblem,
+# Arthur sends a valid OP_BUSY, one past the surface's right edge and one on
+# the wrong channel, and logs the WM's reply statuses.
+arthur-busy-refusal-test = ["arthur-busy-emblem", "desktop-session-boot-test"]
+# OT-66 L2 (`lock_session`): Arthur draws a full-surface picture and sends
+# OP_BUSY after its handshake, and, from the first key typed to it, every
+# 300 ms forever without reading another key (a client that holds the focus
+# and never yields). Not with `desktop-session-boot-test`: no launch probes.
+arthur-lock-probe-test = ["arthur-busy-emblem", "desktop-home"]
+# OT-66 L2 (`login_lock_stall`, AAG F3): Arthur waits 8 s before its 'M'.
+arthur-lock-stall-test = ["desktop-home"]
+# OT-66 L2b (`login_lock_park`): from the first key typed to it, Arthur sends
+# a commit and polls its keys for 12 s before it receives the WM's reply, so
+# the WM is parked in that send meanwhile.
+arthur-lock-park-test = ["desktop-home"]
+# OT-88 S1 (`login_settings_store`): after its handshake, Arthur (the boot
+# test's stand-in for the settings app) asks the WM to set settings, some it
+# must refuse, and a burst the rate limit cuts (OP_SETTING).
+arthur-setting-test = ["desktop-home", "libneo/atrium-settings"]
+# `login_settings_refused`: Arthur, not the settings app, asks for the idle
+# lock off and Reduce Transparency on; both must be refused.
+arthur-setting-refused-test = ["desktop-home", "libneo/atrium-settings"]
+# Boot test only (desktop_resize_boot): after the footer commit, Arthur sends
+# one request per client-error arm of the WM's session loop (a stale commit,
+# damage outside the surface, a destroy and a yield on the wrong channel, a
+# focus request, an unpublished configure ack, a truncated request, bytes
+# with no header) and, before its first real configure ack, an ack of the
+# wrong serial; it logs the WM's reply statuses.
+arthur-refusal-probe-test = ["desktop-resize", "desktop-session-boot-test"]
+# A9-C: scroll back through Arthur's transcript: PgUp/PgDn, and Up/Down on
+# an empty input line; the view follows new text unless scrolled up, and
+# typing brings it back. Keeps the last 512 finished lines. Off = today's
+# transcript exactly (the kill-switch). Not with the legacy grid.
+arthur-scrollback = ["desktop-session"]
+# A9-C boot test only (desktop_scroll_boot): 20 numbered lines before the
+# greeting, so the 12-row transcript has something to scroll back through.
+arthur-scroll-seed-test = ["arthur-scrollback", "desktop-session-boot-test"]
+# Desktop S2 kill-switch: render the TEXT surface with the pre-S2 5x7 uppercase
+# grid (and its full-surface damage) instead of neo-text. Host KATs in
+# tools/arthur-logic-tests prove this path is bit-for-bit the old renderer.
+arthur-legacy-5x7-font = ["arthur-compositor"]
+# B1b: the 0.5B and its vocab come from boot modules (/boot/models, /boot/vocab),
+# and a missing or damaged model degrades Arthur instead of exiting.
+arthur-boot-module = ["arthur-real-brain-boot"]
+# A9-D test only (desktop_busy_boot): Arthur loads the kv-persist KAT's
+# inventory LM (`/boot/models/kv-persist-kat.neom`, pinned for test kernels)
+# instead of the 0.5B, so a QEMU answer is a real multi-token generation.
+arthur-boot-model-kat = ["arthur-boot-module"]
+# Kill-switch for the prebuilt binary vocab (NEOVOCB1,
+# Plans/NOTE-2026-10-26-arthur-binary-vocab-design-s1.md): read
+# /boot/vocab/<model>.vocb and use it in place instead of parsing the text
+# sidecar. Off = the text sidecar exactly as before. On, a missing or invalid
+# .vocb is the vocab's state (absent/damaged/unparseable); no fallback.
+arthur-vocab-binary = ["arthur-boot-module"]
+# OT-87 R2: the installed NeoFS volume as the second source. With no model (or
+# no vocab) boot module at all, Arthur reads /neofs/model-qwen2.5-0.5b.{vocb,neom},
+# which the kernel holds to the same pins; the state line names the source, and
+# absent/damaged name the disk. Off: the boot modules only, as before.
+arthur-model-from-neofs = ["arthur-vocab-binary"]
+arthur-real-brain-boot-15b = ["arthur-real-brain-boot"]
+arthur-real-brain-boot-3b = ["arthur-real-brain-boot"]
+arthur-real-brain-boot-qwen35 = ["arthur-real-brain-boot"]

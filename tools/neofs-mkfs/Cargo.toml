@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neofs-mkfs"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "neofs-mkfs"
+path = "src/main.rs"
+
+[dependencies]
+blake3 = { version = "1.8.2", default-features = false }

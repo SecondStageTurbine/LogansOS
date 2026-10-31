@@ -1,0 +1,957 @@
+name: CI
+
+on:
+  # Manual branch dispatch is the pre-merge QEMU close-gate for branches that
+  # touch kernel/, tools/xtask/, scenario definitions, or Cargo.*. Routine branch
+  # pushes stay cheap; the coder/PM triggers this on the branch ref before merge.
+  workflow_dispatch:
+  # Nightly schedule REMOVED 2026-10-17 (PL decision): it re-ran CI on an
+  # unchanged `main` daily — including through months with no work — and the
+  # QEMU half has had no runner since ~2026-10-13. The QEMU gate now runs only
+  # on manual dispatch. The `schedule` branches below (nightly-skip, the
+  # neo-test `if`) are inert without the trigger; re-add a cron here to restore.
+  # PRs run once when opened/reopened/marked ready, not on every push
+  # (2026-10-18): each lane rebases + force-pushes right before its
+  # `workflow_dispatch` gate, so a `synchronize` run duplicated the gate's host
+  # jobs on the same two self-hosted runners and queued ahead of it. The gate
+  # (required before every merge) runs the full host + QEMU set on the exact
+  # head, so nothing merges unchecked.
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+    paths-ignore:
+      - 'Plans/**'
+      - 'docs/**'
+      - 'tests/**'
+      - '**.md'
+      - 'LICENSE*'
+      - '.gitignore'
+  # Branch pushes do NOT run CI (2026-10-18): every branch with work in flight
+  # has a PR, whose `pull_request` run checks the same commit, and the
+  # pre-merge `workflow_dispatch` gate runs the full set again. Host jobs now
+  # share the two self-hosted qemu-shard runners (CI_RUNNER_LABELS), so the
+  # duplicate push+PR runs were queuing ahead of gates. `main` still runs on
+  # push as the post-merge check.
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'Plans/**'
+      - 'docs/**'
+      - 'tests/**'
+      - '**.md'
+      - 'LICENSE*'
+      - '.gitignore'
+
+# Cargo network settings for every job, including the in-container cargo of
+# the QEMU step (passed through with `-e` on its `docker compose run`).
+# 2026-10-26, crates.io index downloads failing before anything compiled, on
+# the mini-PCs only (ryzen was not hit): m910q-1 twice in two minutes with
+# `curl [16] Error in the HTTP2 framing layer` (product-real-lm and
+# real-lm-generate, runs 40415735441 / 40415784574), and m75q-1 once with
+# `[56] Connection reset by peer` (gpu-iommu, run 40415784574 attempt 1).
+# Plain HTTP/1.1 sidesteps the HTTP/2 framing failure; more retries cover the
+# resets. Cost: no request multiplexing, which only matters on a cold
+# registry cache.
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_RETRY: "10"
+
+# Concurrency: cancel stale runs on the same branch so the queue self-drains.
+# Same event + same ref = same group → newer run cancels older.
+# workflow_dispatch and schedule use distinct event_name so they can't be
+# cancelled by branch pushes and vice-versa.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  # NIGHTLY SKIP: a scheduled run on a main SHA that already had a green
+  # scheduled run is pure runner load, so every job below skips. Fails open:
+  # any API error leaves skip=false and the nightly runs as before. A red
+  # nightly is never "green", so it keeps re-running until main changes.
+  # RUNNER SWITCH (2026-10-17): every job except the QEMU `neo-test` gate runs on
+  # the JSON label list in the repository variable CI_RUNNER_LABELS, defaulting to
+  # GitHub-hosted "ubuntu-latest" — the self-hosted fleet went offline
+  # (~2026-10-13) and every run sat queued until cancelled.
+  #   unset                       -> "ubuntu-latest" (billable hosted minutes:
+  #                                  ~7 job-instances x ~7-8 min per run)
+  #   ["self-hosted","light"]     -> only runners carrying the `light` label
+  #                                  (every runner; the fleet and its labels are in
+  #                                  docs/runbook-ci-runner-capacity.md, "Current fleet")
+  # Use a label list, not bare "self-hosted": that would also match the
+  # `qemu-shard` runners and queue QEMU shards behind host jobs.
+  # `neo-test` stays on [self-hosted, qemu-shard]: it needs the per-runner RAM
+  # guard (32 GiB unless the runner has its own floor) and runs on
+  # workflow_dispatch only.
+  nightly-skip:
+    name: Nightly Skip Check
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          skip=false
+          if [ "${{ github.event_name }}" = schedule ]; then
+            url="${{ github.api_url }}/repos/${{ github.repository }}/actions/workflows/ci.yml/runs?event=schedule&status=success&per_page=1"
+            last=$(curl -fsL -H "Authorization: Bearer $GH_TOKEN" "$url" | grep -m1 -o '"head_sha": *"[0-9a-f]*"' | grep -o '[0-9a-f]\{40\}' || true)
+            echo "last green nightly: ${last:-none}, now: ${{ github.sha }}"
+            [ "$last" = "${{ github.sha }}" ] && skip=true
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+  neo-test:
+    name: QEMU Integration Tests (shard ${{ matrix.shard }}/4)
+    needs: [nightly-skip, host-checks, product-build]
+    # HERMETICITY (gate invariant): every scenario in this 4-shard QEMU gate
+    # MUST be hermetic — no dependence on the live internet or any other
+    # host-variable input. A scenario that needs real external network is
+    # reclassified out of the gate as a bare-metal/network-gated scenario (the
+    # mt7601u_scan_baremetal precedent in tools/xtask). RDRAND-dependent
+    # scenarios run under `-cpu max` (see run_qemu_test_invocation in
+    # tools/xtask/src/main.rs) so a TCG-only runner can't starve them. A green
+    # gate must mean "the code is correct," never "the runner cooperated."
+    #
+    # QEMU-GATE POLICY (revised 2026-07-09, PL-approved — the redundant-main-gate fix):
+    # The full 4-shard QEMU gate runs on **manual branch dispatch** (the coder/PM
+    # pre-merge close-gate, at the exact tree) and the **nightly schedule** (the
+    # main integration net). It does NOT run on push-to-main. Rationale: every
+    # branch is already QEMU-gated via workflow_dispatch at its exact tree before
+    # the PM merges it, so a per-commit main-push re-run was ~a full redundant gate
+    # per merge — on a ~3-runner box where that load is the binding constraint, it
+    # caused main-push gates to cancel/fail each other under merge cadence (see
+    # docs/runbook-ci-runner-capacity.md "PM merges are gate-firing events").
+    # The coder gate + PM cherry-pick inspection + the nightly schedule cover
+    # cherry-pick integration. Host-only / docs merges now cost ZERO QEMU.
+    # (A per-commit "run-on-main-only-if-kernel-changed" refinement was evaluated
+    # and rejected: Cargo.lock churns for host-crate additions too, so path-based
+    # kernel detection is leaky in the exact host-only case this fix targets.)
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    # Public repo: GitHub-hosted by default. A self-hosted pool can be opted in with the
+    # QEMU_RUNNER_LABELS repo variable (e.g. ["self-hosted","qemu-shard"]); never for fork PRs.
+    runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    # History: 45 min was too tight once the Phase 6 accel scenarios + the
+    # source-built QEMU 10.2.3 image (~13 min) landed — the serial 189-scenario
+    # suite ran right up to the limit and the job was cancelled mid-run
+    # (CI #127-#132). A cancelled job also skips the cache-save post-step, so
+    # every timeout rebuilt QEMU next run: a vicious cycle. The 90-min band-aid
+    # let a run finally complete; this is the durable fix.
+    #
+    # The suite is now sharded 4 ways across parallel jobs via
+    # `cargo neo-test --shard i/4`. xtask uses a deterministic cost-aware
+    # partition so timeout-heavy scenarios do not pile onto one shard when the
+    # suite order changes. The dev container is reused from the buildx layer
+    # cache (keyed on the Dockerfile only, so a kernel/doc commit does NOT
+    # recompile QEMU). The shard-coverage gate in the host-checks job proves the
+    # 4-way partition is complete + disjoint — KEEP that gate's N in sync with
+    # this matrix. Cargo caches are restored below, but not saved from these QEMU
+    # jobs: self-hosted target uploads can run for 30+ min after a shard has
+    # already passed.
+    #
+    # OT-16 B3 close-gate measurement (2026-07-11): after serial scripts became
+    # strictly prompt-driven (no blind input during boot), all four cold-cache
+    # shards were still compiling/running passing scenarios when the old 70-min
+    # ceiling cancelled them. 240 min covers the measured 60/69-scenario shard
+    # slopes, honest interaction cost, and a cold dependency graph without
+    # weakening any per-scenario timeout.
+    strategy:
+      # One shard's failure must not cancel the others — we want every shard's
+      # result so a real failure isn't masked by a sibling shard dying first.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    timeout-minutes: 240
+
+    steps:
+      # Pre-flight RAM guard (INFRA, not a test). Fails FAST with correct
+      # attribution instead of thrashing to a mystery ~70-min timeout under an
+      # under-provisioned WSL2/Docker memory cap. Reads the runner-VM MemTotal
+      # (== the cap the shard's container experiences). NOT continue-on-error.
+      # THRESHOLD = 32 GiB by default (restored 2026-07-19): the main Ryzen box has
+      # 128 GB physical with WSL2 capped at 96 GiB (memory=96GB in
+      # %USERPROFILE%\.wslconfig), and its runners share that one WSL2 VM. 32 GiB is the
+      # documented hard minimum there: 2x the demonstrated 16 GiB thrash point, which was
+      # three concurrent shards on one multi-runner WSL2 box. The M75q (m75q-1, bare-metal
+      # Ubuntu, 62,221 MiB) passes the default with no arm of its own.
+      # m910q-1 = 14 GiB (2026-10-26): ONE bare-metal runner on a 15.5 GiB host, so one
+      # shard at a time and no shared VM; the 16 GiB thrash point does not apply to it.
+      # Measured (Plans/NOTE-2026-10-26-qemu-capacity-trials-m75q-m910q.md): QEMU RSS
+      # peaked at 1,024 MiB (M910q shard 1) and 1,049 MiB (M75q, all four shards); whole-
+      # host memory in use peaked at 1,865 MiB on the M910q and 6,777 MiB on the M75q with
+      # its second runner's light jobs alongside. 14 GiB is 2x that worst use.
+      # The ryzen-5/6 28 GiB arm is gone: those were the M75q's old WSL2 runners, replaced
+      # by m75q-1/2. Floors are listed in docs/runbook-ci-runner-capacity.md ("Current
+      # fleet"); an xtask test keeps that table and these arms in step.
+      - name: Pre-flight — runner memory capacity
+        env:
+          RUNNER_NAME: ${{ runner.name }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          case "$RUNNER_NAME" in
+            m910q-1) REQUIRED_GIB=14 ;;
+            *) REQUIRED_GIB=32 ;;
+          esac
+          # GitHub-hosted standard runners have ~16 GiB (the M910q passes with 14).
+          if [ "$RUNNER_ENVIRONMENT" = "github-hosted" ]; then REQUIRED_GIB=14; fi
+          OBSERVED_KIB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+          OBSERVED_GIB=$(awk "BEGIN{printf \"%.1f\", ${OBSERVED_KIB}/1024/1024}")
+          echo "runner MemTotal: ${OBSERVED_GIB} GiB (required >= ${REQUIRED_GIB} GiB, this runner's floor)"
+          if [ "$OBSERVED_KIB" -lt $((REQUIRED_GIB * 1024 * 1024)) ]; then
+            echo "::error title=INFRA under-provisioned (not a test failure)::Runner memory ${OBSERVED_GIB} GiB < required ${REQUIRED_GIB} GiB. HOST provisioning problem, NOT a code failure. Check this runner's floor in docs/runbook-ci-runner-capacity.md (\"Current fleet\"); on a WSL2 host apply its .wslconfig cap, run 'wsl --shutdown', and verify container-visible MemTotal before retrying."
+            exit 1
+          fi
+
+      # Pre-flight — Docker disk hygiene. Two facts from the 2026-07-10 incident
+      # (docs/runbook-ci-runner-capacity.md): (1) buildx builder state volumes
+      # (~2.9 GiB EACH) leak whenever a job is killed/cancelled before its post
+      # step runs — self-heal by pruning stale ones here (in-use volumes refuse
+      # removal, so concurrent jobs on the shared daemon are safe); (2) when the
+      # Docker Desktop host disk hits 100% the docker CLI SIGBUS-crashes
+      # mid-setup ("panic during panic") — fail FAST with correct infra
+      # attribution instead.
+      # GitHub-hosted runners start with ~14 GiB free; drop preinstalled toolchains this job
+      # never uses so the disk floor below holds. A no-op on self-hosted runners.
+      - name: Free disk space (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Pre-flight — Docker disk hygiene
+        run: |
+          docker volume ls -q --filter "name=buildx_buildkit_builder-" \
+            | xargs -r -n1 docker volume rm || true
+          REQUIRED_GIB=15
+          DISK_PATH=/mnt/c; [ -d "$DISK_PATH" ] || DISK_PATH=/
+          AVAIL_KIB=$(df -k "$DISK_PATH" | awk 'NR==2 {print $4}')
+          AVAIL_GIB=$(awk "BEGIN{printf \"%.1f\", ${AVAIL_KIB}/1024/1024}")
+          echo "docker host disk (${DISK_PATH}) available: ${AVAIL_GIB} GiB (required >= ${REQUIRED_GIB} GiB)"
+          if [ "$AVAIL_KIB" -lt $((REQUIRED_GIB * 1024 * 1024)) ]; then
+            echo "::error title=INFRA disk full (not a test failure)::Docker host disk has ${AVAIL_GIB} GiB free < required ${REQUIRED_GIB} GiB. At 0 bytes the docker CLI SIGBUS-crashes at setup-buildx (2026-07-10 incident) — this is a RUNNER provisioning problem, NOT a code failure. Remediation: docker system prune -af + the targeted buildx volume prune on the runner box; NEVER delete altimitneo-qdrant-storage. See docs/runbook-ci-runner-capacity.md."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare container cache directories
+        run: mkdir -p .docker .home .rustup-home .cargo-home
+
+      # Disk-usage probe: baseline on the self-hosted runner. Keeps the
+      # before/after numbers visible in the log for future tuning.
+      - name: Probe disk usage (after checkout)
+        run: |
+          echo "--- df -h ---"
+          df -h
+          echo "--- du -sh workspace ---"
+          du -sh "${{ github.workspace }}" 2>/dev/null || true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Buildx layer cache, keyed on the Dockerfile ALONE (no commit SHA).
+      # The QEMU-10.2.3 build layer is immutable for a given Dockerfile, so the
+      # cache only needs to change when the Dockerfile does. A SHA-suffixed key
+      # (the previous design) minted a brand-new entry every commit and relied
+      # on restore-keys to find the old one — which silently failed whenever a
+      # timeout cancelled the save. Keying on the Dockerfile hash makes reuse
+      # deterministic: same Dockerfile -> exact key hit -> QEMU image restored,
+      # not recompiled. Each runner gets its own cache dir to avoid Permission
+      # denied collisions when 3 runners fight over the same /tmp/.buildx-cache
+      # (root-owned from svc.sh install as root).
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-${{ runner.name }}
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Probe disk usage (after buildx cache restore)
+        run: |
+          echo "--- df -h ---"
+          df -h
+          echo "--- du -sh /tmp/.buildx-cache* ---"
+          du -sh /tmp/.buildx-cache-${{ runner.name }}* 2>/dev/null || true
+
+      - name: Build dev container (with buildx cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.name }}
+          cache-to: type=local,dest=/tmp/.buildx-cache-new-${{ runner.name }},mode=max
+
+      - name: Probe disk usage (after build)
+        run: |
+          echo "--- df -h ---"
+          df -h
+          echo "--- du -sh /tmp/.buildx-cache* ---"
+          du -sh /tmp/.buildx-cache-${{ runner.name }}* 2>/dev/null || true
+          echo "--- docker images ---"
+          docker images --format 'table {{.Repository}}:{{.Tag}}\t{{.Size}}'
+
+      # Move the new cache over the old one to prevent unbounded growth.
+      # docker/build-push-action writes to a separate dir to avoid the
+      # known cache-overwrite issue.
+      - name: Rotate buildx cache
+        run: |
+          rm -rf /tmp/.buildx-cache-${{ runner.name }}
+          mv /tmp/.buildx-cache-new-${{ runner.name }} /tmp/.buildx-cache-${{ runner.name }}
+
+      # Per-shard cargo/target cache. Each shard builds a DIFFERENT subset of
+      # scenario kernels (distinct feature sets -> distinct target artifacts),
+      # so the `-shard${{ matrix.shard }}` segment keeps restore candidates
+      # shard-local. This is restore-only: remote target uploads are too large
+      # to run after every passing QEMU shard on the self-hosted runner.
+      - name: Restore cargo registry, git, and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.rustup-home
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            ${{ github.workspace }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-shard${{ matrix.shard }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-shard${{ matrix.shard }}-
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Bootstrap pinned Rust toolchain on cache miss
+        run: |
+          TOOLCHAIN=nightly-2026-04-16-x86_64-unknown-linux-gnu
+          if [ ! -x ".rustup-home/toolchains/${TOOLCHAIN}/bin/cargo" ]; then
+            echo "rustup cache miss on ${RUNNER_NAME}; installing the pinned toolchain"
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview,rustfmt,clippy \
+                --target x86_64-unknown-none,aarch64-unknown-none
+          fi
+
+      - name: Probe disk usage (before QEMU tests)
+        run: |
+          echo "--- df -h ---"
+          df -h
+          echo "--- du -sh cached dirs ---"
+          du -sh /tmp/.buildx-cache-${{ runner.name }} 2>/dev/null || true
+          du -sh "${{ github.workspace }}/.cargo-home/registry" 2>/dev/null || true
+          du -sh "${{ github.workspace }}/.cargo-home/git" 2>/dev/null || true
+          du -sh "${{ github.workspace }}/target" 2>/dev/null || true
+
+      - name: Run QEMU integration tests
+        run: |
+          # Sidecar that prints disk usage every 60s while the test runs.
+          # If the runner dies from disk exhaustion, the last printed snapshot
+          # tells us how close we were to the cliff and what was eating space.
+          (
+            while true; do
+              echo "--- DISK_SNAPSHOT $(date -u +%H:%M:%S) ---"
+              df -h / 2>/dev/null | tail -1
+              du -sh "${{ github.workspace }}/target" 2>/dev/null || true
+              sleep 60
+            done
+          ) &
+          PROBE_PID=$!
+          trap "kill $PROBE_PID 2>/dev/null || true" EXIT
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e LIMINE_DIR=/opt/limine \
+            -e NEO_SMP=4 \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            neo \
+            cargo neo-test --shard ${{ matrix.shard }}/4
+
+      - name: Dump neo-test serial logs on failure
+        if: failure()
+        run: |
+          shopt -s nullglob
+          logs=(target/neo-test/*.serial.log)
+          if [ "${#logs[@]}" -eq 0 ]; then
+            echo "No neo-test serial logs found under target/neo-test."
+            exit 0
+          fi
+
+          for log in "${logs[@]}"; do
+            echo "::group::${log}"
+            tail -n 240 "${log}"
+            echo "::endgroup::"
+          done
+
+      # An artifact/storage-upload failure is infra, never a test verdict: a
+      # full GitHub artifact-storage quota must NOT flip a shard whose tests
+      # already passed to red. `continue-on-error` makes this step's outcome
+      # advisory. retention-days is 3 (enough to debug a recent failure)
+      # because these logs only exist on failure and never need long-term
+      # retention — short retention is the recurrence fix for quota bloat (the
+      # one-time prune of the existing backlog is a separate ops action).
+      - name: Upload neo-test serial logs on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-test-serial-logs
+          path: target/neo-test/*.serial.log
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Probe disk usage (after QEMU tests)
+        if: always()
+        run: |
+          echo "--- df -h ---"
+          df -h
+          du -sh "${{ github.workspace }}/target" 2>/dev/null || true
+
+
+  spdx-lint:
+    name: SPDX License Headers
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check SPDX headers on source files
+        run: |
+          echo "Checking SPDX-License-Identifier headers..."
+          missing=0
+
+          # Rust source files (MPL-2.0)
+          for f in $(find kernel/ userland/ tools/ -name '*.rs' 2>/dev/null); do
+            if ! head -5 "$f" | grep -q 'SPDX-License-Identifier'; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
+            fi
+          done
+
+          # TOML config files (MPL-2.0)
+          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './target/*' 2>/dev/null); do
+            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier'; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
+            fi
+          done
+
+          if [ $missing -gt 0 ]; then
+            echo ""
+            echo "ERROR: $missing file(s) missing SPDX-License-Identifier header."
+            echo "Every first-party source file must start with:"
+            echo "  // SPDX-License-Identifier: MPL-2.0  (for .rs)"
+            echo "  # SPDX-License-Identifier: MPL-2.0   (for .toml/.sh/.ps1)"
+            exit 1
+          fi
+
+          echo "All source files have SPDX headers."
+
+  monolithic-identity:
+    name: Monolithic Identity Guard
+    # Catches the recurring drift where first-party docs call NeoPlutarch a
+    # "microkernel" (we are monolithic — Bible Article 4.1, ADR-001). This has
+    # recurred 3x; this mechanical guard stops the 4th. Lightweight, no Docker,
+    # runs on every push/PR/schedule. Checks docs/ and Plans/ (excluding archive/
+    # and the authoritative Bible/ADR-001 which are already correct).
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 2
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check monolithic identity in docs
+        run: |
+          echo "Checking for microkernel-identity drift..."
+          bash scripts/check-monolithic-identity.sh
+
+  host-checks:
+    name: Host Tests, Format & Lint
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    # RUNNER HISTORY — read both halves before moving this again.
+    #   2026-07-22 (d6dc133): self-hosted -> ubuntu-latest, dropping the
+    #     Docker-compose wrapper. Correct at the time: runner capacity was the
+    #     binding constraint and GH-hosted minutes were effectively free.
+    #   2026-08-10: ubuntu-latest -> self-hosted. The constraint INVERTED. The
+    #     account hit ~90% of its 3000 free GH-hosted minutes with three weeks
+    #     left in the cycle, and the PL will not buy paid minutes. SEVEN billable
+    #     job-instances per run (this job + product-build + the FIVE-arm
+    #     feature-gated matrix) at ~7-8 min was ~13 branch iterations of runway.
+    #     Self-hosted minutes are free and unlimited even on a private repo.
+    #     Capacity to absorb it existed because the M75q had left the QEMU shard
+    #     pool (Plans/DECISION-2026-08-02-m75q-out-of-qemu-shard-pool.md, about its
+    #     old WSL2 setup). Since 2026-10-26 m75q-1 is back in the pool on bare metal
+    #     (Plans/NOTE-2026-10-26-qemu-capacity-trials-m75q-m910q.md).
+    # The bare-cargo steps from the 2026-07-22 migration are KEPT — the Docker
+    # wrapper is not being restored. Only the runner changes.
+    timeout-minutes: 60
+
+    # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
+    # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
+    # (/home/neo), so a shared ~/.rustup made concurrent jobs fight: rustup has
+    # no cross-process lock, and jobs requesting different --component sets
+    # actively REMOVE each other's components. product-build's `--profile
+    # minimal` stripped rustfmt/clippy out from under host-checks and died on
+    # "detected conflict: lib/rustlib/.../bin/llc". github.workspace is
+    # per-runner, so this restores the isolation ubuntu-latest gave for free
+    # (and matches the pre-2026-07-22 Docker layout's .rustup-home/.cargo-home).
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # dtolnay/rust-toolchain drives `rustup` and does not install it. That is
+      # safe on ubuntu-latest (preinstalled) but NOT guaranteed on a self-hosted
+      # WSL2 box, where the toolchain historically lived inside the dev
+      # container. Idempotent: a no-op wherever rustup already exists.
+      - name: Ensure rustup is present (self-hosted runners)
+        run: |
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview,rustfmt,clippy
+          targets: x86_64-unknown-none,aarch64-unknown-none
+
+      # NO actions/cache on self-hosted. The runner workspace and ~/.cargo
+      # persist between runs, so the incremental target/ is already warm — and
+      # uploading a multi-GB target/ to the GitHub cache is actively harmful
+      # here: the neo-test job carries the same note ("self-hosted target
+      # uploads can run for 30+ min after a shard has already passed") and the
+      # 10 GB repo cache quota is shared. A run that lands on a cold runner pays
+      # a full rebuild in WALL-CLOCK, which is free; the cache paid for it in
+      # minutes and quota, which are not.
+
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      - name: cargo test --workspace (host crates, blocking)
+        run: cargo test --workspace --exclude neoplutarch-kernel
+
+      # The quantized-forward host KATs. ai-ops-tests gates its real-quant and
+      # AVX2 tests behind these features (they mirror the kernel's), so the
+      # plain workspace run above never compiled them. Among them: the Arthur
+      # latency fixes' proofs (the lm_head prefill skip is bit-identical; the
+      # cached AVX2 decision agrees with CPUID/XCR0).
+      - name: cargo test -p ai-ops-tests (real-quant + AVX2 KATs, blocking)
+        run: cargo test -p ai-ops-tests --features phase9-real-quant,phase9-avx2-matmul
+
+      # The soft_f32 kill-switch build (`soft-f32-only`: the integer add/mul
+      # path, bit-for-bit the pre-lever-1 layer). Its tests assert the
+      # configuration they run in (relay #71: the MXCSR entry-check oracle
+      # expects no check under the integer path), so CI runs that
+      # configuration too, not only the default.
+      - name: cargo test -p ai-ops-tests (soft-f32-only kill-switch, blocking)
+        run: cargo test -p ai-ops-tests --features soft-f32-only
+
+      # `atrium-app-icons` (neo-atrium's `app-icons`): the icon chips' exact
+      # compositing in both materials and the Rust-vs-scene-oracle digest of
+      # the icon box build only with the feature; the plain workspace run
+      # covers the lettered chips (the kill-switch side).
+      - name: cargo test -p neo-atrium --features app-icons (blocking)
+        run: cargo test -p neo-atrium --features app-icons
+
+      # OT-87 R4.4b: neo-atrium's `install-chip` (neo-init's `installer`):
+      # the Install chip's scene-oracle digests, with its letter and with its
+      # icon. The runs above are the chip-off side.
+      - name: cargo test -p neo-atrium --features install-chip (blocking)
+        run: cargo test -p neo-atrium --features install-chip
+      - name: cargo test -p neo-atrium --features install-chip,app-icons (blocking)
+        run: cargo test -p neo-atrium --features install-chip,app-icons
+
+      # Sharding coverage gate: prove the 4-way neo-test partition the QEMU
+      # matrix uses is complete + pairwise-disjoint, so sharding can never
+      # produce a false green by dropping (or double-running) a scenario. The
+      # `4` here MUST match the `matrix.shard` list in the neo-test job above.
+      # Exits non-zero (failing the job) on any gap or overlap.
+      - name: neo-test shard coverage (4-way partition is complete + disjoint)
+        run: cargo run -p xtask -- shard-coverage 4
+
+      - name: cargo clippy --workspace --all-targets (blocking)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # #243 regression guard: the full-workspace clippy step above is the
+      # cross-member feature-unification tripwire; this target-spec check keeps
+      # failures localized to the no_std userland binaries.
+      - name: no_std userland workspace hygiene guard (blocking)
+        run: |
+          cargo check \
+            -Zjson-target-spec \
+            -Zbuild-std=core,compiler_builtins,alloc \
+            -Zbuild-std-features=compiler-builtins-mem \
+            --target userland/x86_64-neoplutarch-user.json \
+            -p neo-init \
+            -p neo-worker \
+            -p neo-shell \
+            -p vault-core
+
+      - name: cargo clippy kernel (blocking)
+        run: |
+          echo "::group::Kernel clippy output (blocking)"
+          cd kernel && cargo clippy -Zjson-target-spec -- -D warnings 2>&1
+          echo "::endgroup::"
+
+      # The step above compiles DEFAULT features, so every
+      # `#[cfg(feature = "neo-test")]` line is invisible to it — a structural
+      # coverage hole of the same class as the pre-`[skip ci]` rot (real lint
+      # failures a green CI cannot see). This step closes it.
+      #
+      # Feature set: `neo-test` is a bare umbrella and cannot be built alone —
+      # test_harness.rs emits `compile_error!("feature 'neo-test' requires
+      # exactly one scenario feature")` — so the umbrella is paired with exactly
+      # one scenario. `neo-test-arthur-agentic-actions` is chosen because it
+      # compiles the largest `#[cfg(neo-test)]` surface of the scenarios
+      # sampled: it surfaced 71 findings where ipc-smoke / vm-primitives /
+      # kaslr-smoke / smep-catch each surfaced an identical 14.
+      #
+      # `-A dead_code` is deliberate, not a workaround. Definitions are gated at
+      # the UMBRELLA level (`#[cfg(feature = "neo-test")]`) while their callers
+      # are gated at the SCENARIO level, and only one scenario compiles at a
+      # time — so cross-scenario scaffolding is unavoidably "never used" in any
+      # single build. Those 66 findings are a cfg-granularity artifact, not rot:
+      # e.g. `reset_irq_entry_test_counters` is umbrella-gated but called only
+      # from `run_swapgs_irq_ring3`, so deleting it would BREAK the swapgs
+      # scenario. Denying dead_code here would force either 66 meaningless
+      # annotations or the deletion of live code. Narrowing each definition's
+      # cfg to match its consumer is the real fix and is its own lane.
+      - name: cargo clippy kernel (neo-test-gated, blocking)
+        run: |
+          echo "::group::Kernel clippy output — cfg(neo-test) surface (blocking)"
+          cd kernel && cargo clippy -Zjson-target-spec \
+            --features neo-test,neo-test-arthur-agentic-actions \
+            -- -D warnings -A dead_code 2>&1
+          echo "::endgroup::"
+
+  # OT-78: the feature set that ships must be a blocking build, not an
+  # operator-only command. Keep this separate from the deliberately
+  # non-blocking OT-69 lint matrix below: a product-only compile regression
+  # must make the workflow red and prevent the expensive QEMU gate from
+  # starting.
+  product-build:
+    name: Product Feature Build (blocking)
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # self-hosted (2026-08-10): free minutes. See the runner-history note on
+    # host-checks for the full rationale.
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+
+    # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
+    # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
+    # (/home/neo), so a shared ~/.rustup made concurrent jobs fight: rustup has
+    # no cross-process lock, and jobs requesting different --component sets
+    # actively REMOVE each other's components. product-build's `--profile
+    # minimal` stripped rustfmt/clippy out from under host-checks and died on
+    # "detected conflict: lib/rustlib/.../bin/llc". github.workspace is
+    # per-runner, so this restores the isolation ubuntu-latest gave for free
+    # (and matches the pre-2026-07-22 Docker layout's .rustup-home/.cargo-home).
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure rustup is present (self-hosted runners)
+        run: |
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none
+
+      # No actions/cache — see the note in host-checks: the self-hosted
+      # workspace is already warm, and a target/ upload costs minutes + quota.
+
+      - name: cargo build kernel --features product (blocking)
+        working-directory: kernel
+        run: cargo build -Zjson-target-spec --bin kernel --features product
+
+      # The kernel the product image ships, built exactly as `xtask iso
+      # --with-model` builds it: the same feature list (one constant in xtask)
+      # and opt-level 3 (Arthur latency NOTE, fix 1). The clippy matrix checks
+      # these features but never codegens at the shipped opt-level; this does.
+      - name: xtask image-kernel-build (the shipped kernel, opt-level 3, blocking)
+        run: cargo run -p xtask -- image-kernel-build
+
+      # The FXSAVE build. `inference-preemptible` (in both `default` and
+      # `product`) pulls `xsave-fpu`, and every other kernel build in this
+      # workflow starts from default features, so the
+      # `#[cfg(not(feature = "xsave-fpu"))]` `global_asm!` variants of
+      # `context_switch*`, `syscall_entry` and `timer_isr_entry` were never
+      # assembled anywhere. The close-gate's `cargo check --no-default-features`
+      # does not reach them either: `cargo check` stops before codegen, and the
+      # assembler only runs at codegen. A bad mnemonic planted in the FXSAVE
+      # `syscall_entry` passed the default build and that check, and failed
+      # only this step (2026-10-17).
+      #
+      # A build, not `clippy -D warnings`: the reduced feature set still
+      # carries cfg-granularity dead_code (the same artifact the feature-gated
+      # matrix allows). The point is that the asm assembles and links.
+      # Desktop S1: the shipped session userland. neo-init's resident WM and
+      # Arthur's never-ending session loop are compiled ONLY under these
+      # production features (the QEMU scenario builds the -boot-test variants),
+      # so build them here or a break would pass every gate.
+      - name: cargo build neo-init + neo-arthur --features desktop-session, clippy desktop-glass (blocking)
+        run: |
+          (cd userland/neo-init && cargo build -Zjson-target-spec --bin neo-init --features desktop-session)
+          (cd userland/neo-arthur && cargo build -Zjson-target-spec --bin neo-arthur --features desktop-session)
+          # Desktop S3: the shipped glass and Reduce-Transparency WMs (the
+          # run-desktop default), linted, since QEMU builds only -boot-test.
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-glass -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features reduce-transparency -- -D warnings)
+          # DS-1: the Home shell WM and its Arthur.
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-home -- -D warnings)
+          # OT-88 S1: the settings store in the WM (OP_SETTING, live apply).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features atrium-settings-store -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features atrium-app-icons -- -D warnings)
+          # OT-87 R4.4b: the intro Home with the installer (the Install chip).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)
+          # DI-1a's pointer WM: the polled, deadline-bounded LaunchCap proof
+          # (Janus DS-1b) is compiled only here.
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-pointer -- -D warnings)
+          # DS-1c: the Lens (the worker's read-only instrument role), the WM
+          # that blooms and switches to it (keyboard; with the pointer), and
+          # its Arthur.
+          (cd userland/neo-worker && cargo clippy -Zjson-target-spec --bin neo-worker --features desktop-lens -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-lens -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-lens-pointer -- -D warnings)
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-lens -- -D warnings)
+          # (and the Lens scenarios' boot-test builds, which QEMU compiles but
+          # nothing else lints)
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-lens,desktop-session-boot-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-lens-pointer-boot-test -- -D warnings)
+          # Chad DS-1c F1: the failed-bloom leak discriminator's builds.
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-lens-fault-test -- -D warnings)
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-lens-fault-test,desktop-session-boot-test -- -D warnings)
+          # DI-1b resize: the WM's configure mailbox and Arthur's resizable
+          # surface (QEMU builds only desktop-resize-boot-test).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-resize -- -D warnings)
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-resize -- -D warnings)
+          # DL-1: every desktop feature on (the Lens docked to the moving,
+          # resizing window), and its boot test (QEMU builds only that).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-full -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-full-boot-test -- -D warnings)
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-lens,desktop-resize -- -D warnings)
+          # DM-1: motion alone (shipped surface) and its two boot tests
+          # (`desktop-full` above carries it too).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-motion -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-motion-boot-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-motion-rm-boot-test -- -D warnings)
+
+      - name: cargo build kernel --no-default-features (FXSAVE asm, blocking)
+        working-directory: kernel
+        run: cargo build -Zjson-target-spec --bin kernel --no-default-features
+
+      # The same FXSAVE kernel with one neo-test scenario, so the harness also
+      # compiles and links against it (neo-test scenarios otherwise always
+      # build with default features). threads-futex runs ring-3 threads under
+      # browser-runtime, the closest scenario to the context-switch paths.
+      - name: cargo build kernel --no-default-features + neo-test scenario (FXSAVE asm, blocking)
+        working-directory: kernel
+        run: cargo build -Zjson-target-spec --bin kernel --no-default-features --features neo-test,neo-test-threads-futex
+
+  # OT-69: feature-gated subsystem coverage (BLOCKING since 2026-10-16).
+  # The kernel clippy steps in host-checks run DEFAULT features + one neo-test
+  # scenario. Whole subsystems sit behind non-default #[cfg(feature = "...")]:
+  # the USB stack (~6.5K LoC), Intel GPU driver (~5K), WiFi driver (~3.7K),
+  # Atrium compositor (~1.5K), VT-d/IOMMU (~1.2K), threaded matmul (~700), and
+  # many smaller features. A deliberately planted syntax error in mt7601u/ survived
+  # a green cargo build (proven by Oracle, 2026-08-01).
+  #
+  # This job closes the hole. It ran NON-BLOCKING while the gated surface carried
+  # pre-existing clippy debt; that debt was paid down (the three USB
+  # result_large_err sites are banked by item-level allows pending the CB-4
+  # error-type refactor) and the job was flipped blocking — OT-69's close
+  # condition. The matrix respects mutually-exclusive features:
+  # neo-test scenarios conflict with each other, so the subsystem arms carry
+  # none. The exception is the scenario arms at the end: each is exactly
+  # ONE scenario (so no conflict), added because those scenarios pull in
+  # feature sets (real-lm, inference-stack) that the single neo-test step in
+  # host-checks never compiles, and B1c's scenario landed clippy-red unseen.
+  #
+  # Feature matrix design (7 subsystem builds covering every non-default feature, plus 6 scenario builds):
+  #   wifi-usb:     mt7601u,wpa3-sae          -> mt7601u, wifi, usb-host, wpa3-sae, kernel-rng
+  #   gpu-iommu:    accel-intel,vtd           -> accel-intel, vtd (ACPI/DMAR)
+  #   atrium-ai:    atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
+  #                 -> atrium-compositor-g1, threaded-matmul, phase9-real-quant, gguf, ai-generate,
+  #                    forward-perf, ot16-graph-walker, phase9-data-driven-config
+  #   misc:         browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
+  #                 -> browser-runtime, net-dial-cap, virtio-accel, framebuffer-console, kernel-rng,
+  #                    model-boot-module (B1a: boot-module registry + second allocator zone)
+  #   boot-eth0:    boot-eth0                         -> usb-host, interface-identity
+  #   desktop:      desktop                           -> the shipped desktop set: product +
+  #                 desktop-session (atrium-input-routing, usb-hid, usb-hid-mouse) +
+  #                 SYS_FB_OUTPUT_QUERY + the production session boot path in main.rs
+  #   product-real-lm: desktop,atrium-pointer-forward,real-lm,model-boot-module,boot-model-preload
+  #                 -> the B1c product image's kernel: real-lm (phase9-real-quant, inference-stack,
+  #                 MAX_ORDER 16), and the boot model built once at boot (Zenbook ask-freeze)
+  #   kill-*:       one force-kill scenario each (B1c inference_stack_kill, its
+  #                 control, CP-66's admission_park_kill control and CP-67's
+  #                 ipc_park_kill control; each control is a superset of its
+  #                 base scenario's features)
+  #   real-lm-generate: B1c's real generation scenario (real-lm)
+  #   preemptible-liveness: the inference-preemptible liveness probe
+  #
+  # -A dead_code is deliberate: cross-feature scaffolding gated at the umbrella
+  # level is "never used" when only a subset of features is enabled in one build.
+  # Those findings are a cfg-granularity artifact, not rot (same rationale as the
+  # neo-test-gated step above).
+  feature-gated-coverage:
+    name: Feature-Gated Coverage (blocking, matrix ${{ matrix.name }})
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true'
+    # self-hosted (2026-08-10): free minutes. See the runner-history note on
+    # host-checks. This job was the single largest GH-hosted consumer — 5 matrix
+    # arms per run, all billable (it was NON-BLOCKING at the time).
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      # max-parallel bounds this job's claim on the self-hosted fleet. Without
+      # it, 5 arms can occupy 5 of ~6 runners and starve the host-checks/
+      # product-build jobs that a workflow_dispatch QEMU gate `needs:`. Kept at
+      # 2 after the OT-69 blocking flip: the QEMU gate does not `need` this job,
+      # so it must still never delay the gate.
+      max-parallel: 2
+      matrix:
+        include:
+          - name: wifi-usb
+            features: mt7601u,wpa3-sae
+          - name: gpu-iommu
+            features: accel-intel,vtd
+          - name: atrium-ai
+            features: atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
+          - name: misc
+            features: browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
+          - name: boot-eth0
+            features: boot-eth0
+          - name: desktop
+            features: desktop
+          # B1c: the product image's kernel (real generation from the boot
+          # module) — the cfg-ownership matrix is only enforced if it builds.
+          # Exactly image A's set (`xtask iso --with-model`), including the
+          # Zenbook boot console + LAPIC tick, the freeze watchdog overlay, the
+          # I2C-HID touchpad, key auto-repeat, the RTL8125 driver with its
+          # no-IOMMU opt-in (PL, 2026-10-24), the HWP performance request (in
+          # image A since the Zenbook A/B, 2026-10-25; this arm absorbed the
+          # old `product-real-lm-hwp`) and, through `desktop`, the xHCI
+          # silicon bring-up and USB port service.
+          - name: product-real-lm
+            features: desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick
+          # Force-kill scenarios (one scenario per arm; see the header note).
+          - name: kill-inference
+            features: neo-test-inference-kill
+          - name: kill-inference-control
+            features: neo-test-inference-kill-control
+          - name: kill-admission-park-control
+            features: neo-test-admission-park-kill-control
+          # B1c's real generation probe (the same real-lm feature set, and
+          # the same unseen clippy rot).
+          - name: real-lm-generate
+            features: neo-test-real-lm-generate
+          # CP-67's IPC kill scenario (its control is a superset).
+          - name: kill-ipc-park-control
+            features: neo-test-ipc-park-kill-control
+          # The preemptible-liveness probe (the one consumer of the
+          # instrumentation re-export; it was clippy-red unseen too).
+          - name: preemptible-liveness
+            features: neo-test-inference-preemptible-liveness
+
+    # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
+    # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
+    # (/home/neo), so a shared ~/.rustup made concurrent jobs fight: rustup has
+    # no cross-process lock, and jobs requesting different --component sets
+    # actively REMOVE each other's components. product-build's `--profile
+    # minimal` stripped rustfmt/clippy out from under host-checks and died on
+    # "detected conflict: lib/rustlib/.../bin/llc". github.workspace is
+    # per-runner, so this restores the isolation ubuntu-latest gave for free
+    # (and matches the pre-2026-07-22 Docker layout's .rustup-home/.cargo-home).
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure rustup is present (self-hosted runners)
+        run: |
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview,rustfmt,clippy
+          targets: x86_64-unknown-none,aarch64-unknown-none
+
+      # No actions/cache — see the note in host-checks. Expect cold rebuilds
+      # here specifically: which matrix arm lands on which runner is not
+      # controlled, and a feature-set change forces a full kernel rebuild
+      # regardless. That cost is wall-clock on a lint-only job, which is
+      # exactly the cost we are willing to pay.
+
+      - name: "cargo clippy kernel (feature-gated: ${{ matrix.name }}, blocking)"
+        run: |
+          echo "::group::Feature-gated clippy — ${{ matrix.name }} [features=${{ matrix.features }}] (blocking)"
+          status=0
+          cd kernel && cargo clippy -Zjson-target-spec \
+            --features "${{ matrix.features }}" \
+            -- -D warnings -A dead_code 2>&1 || status=$?
+          echo "::endgroup::"
+          exit $status

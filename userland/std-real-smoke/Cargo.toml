@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): a real-std, restricted_std,
+# no_main binary for x86_64-unknown-neoplutarch — it must not build for the host
+# workspace. xtask builds it in-dir (its .cargo/config selects the target +
+# build-std=std, after the neoplutarch overlay is applied).
+[workspace]
+
+[package]
+name = "std-real-smoke"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 C0.5 runtime gate: REAL std-linked ELFs (print/alloc/errno/loud-stubs/exit + the panic-abort arm) that run on-target via sys_spawn"
+
+[[bin]]
+name = "std-real-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+# The panic arm: panics on purpose; the scenario requires exit 134 (abort).
+name = "std-real-panic"
+path = "src/panic.rs"
+test = false
+bench = false
+
+[[bin]]
+# OT-61 C1.3: std threads, futex sync, thread_local! keys, Instant (std_threads).
+name = "std-real-threads"
+path = "src/threads.rs"
+test = false
+bench = false
+
+[[bin]]
+# OT-61 C1.3: a worker thread's panic must end the whole process (exit 134).
+name = "std-real-thread-abort"
+path = "src/thread_abort.rs"
+test = false
+bench = false
+
+[[bin]]
+# OT-61 C2.0: std randomness (HashMap RandomState) over SYS_GETRANDOM.
+name = "std-real-entropy"
+path = "src/entropy.rs"
+test = false
+bench = false
+
+[[bin]]
+# OT-61 C2.1b: std in a sealed process: std::fs only through a handed-in
+# RootDirCap, an empty env, process::id, std::os::neoplutarch (std_sealed).
+name = "std-real-sealed"
+path = "src/sealed.rs"
+test = false
+bench = false
+
+[[bin]]
+# OT-61 C2.3a: servo-host-smoke, the C2 rung's closing smoke without the
+# third-party crates: threads, TLS, Condvar, heap, a sealed file, three
+# ambient-authority refusals; its OOM twin aborts alone (servo_host_smoke).
+name = "servo-host-smoke"
+path = "src/servo_host.rs"
+test = false
+bench = false
+
+[dependencies]
+# The PAL supplies the #[global_allocator] (SYS_MAP_REGION-backed, NX). std's
+# stdio/exit are the overlay's neoplutarch arm; everything else auto-routes to
+# std's `unsupported` (loud). std can depend on this no_std crate.
+neo-std-pal = { path = "../neo-std-pal" }

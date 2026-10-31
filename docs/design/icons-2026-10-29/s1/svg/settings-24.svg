@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <title>Settings</title>
+  <path d="M3 6 H21 M3 12 H21 M3 18 H21" stroke="#a8adb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="15.5" cy="6" r="2.5" fill="#1a2332" stroke="#a8adb2" stroke-width="2"/>
+  <circle cx="8" cy="12" r="2.5" fill="#3c8ef4" stroke="#a8adb2" stroke-width="2"/>
+  <circle cx="13" cy="18" r="2.5" fill="#1a2332" stroke="#a8adb2" stroke-width="2"/>
+</svg>

@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "ai-ops-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[features]
+default = []
+phase9-quantized-matmul = []
+# Kill-switch of the path-`mod`'d kernel `soft_f32.rs`: integer add/sub/mul only.
+soft-f32-only = []
+phase9-avx2-matmul = ["phase9-quantized-matmul"]
+phase9-real-quant = []
+phase9-data-driven-config = []
+# OT-34: declared (never enabled here) so the `#[cfg(feature = "threaded-matmul")]`
+# gate in the path-`mod`'d `forward_logic.rs` is a known cfg under check-cfg. The
+# host determinism KAT drives the column-partition path directly (sequential),
+# so it never needs the cross-core executor this feature gates.
+threaded-matmul = []
+# Declared (never enabled here) so the `prefill-perf` probe in path-`mod`'d
+# `forward_logic.rs` is a known cfg under check-cfg; the probe itself is
+# kernel-only.
+prefill-perf = []
+# Declared (never enabled here) so lever 2's `par-elementwise` `swiglu_vec` in
+# path-`mod`'d `forward_logic.rs` is a known cfg; the host builds keep the byte path,
+# and `swiglu_split_kat` checks the `f32` op the feature forks.
+par-elementwise = []
+# Declared (never enabled here) so the test-only retained-K corruption hook in
+# path-`mod`'d `forward_logic.rs` remains a known cfg under check-cfg.
+neo-test-sys-generate-kv-persist-equivalence = []
+# Declared (never enabled here) so the `#[cfg(any(feature = "mt7601u", test))]`
+# gate in the path-`mod`'d kernel file `xhci_ring_logic.rs` is a known cfg under
+# check-cfg; the CB-2 endpoint-recovery logic compiles into the host oracle via
+# the `test` arm, not this feature.
+mt7601u = []
+# Declared (never enabled here) so mounted neo-arthur agentic grammar cfgs are
+# known under check-cfg.
+arthur-real-vocab = []
+agentic-actions-a2 = []
+agentic-actions-a3 = []
+
+[dependencies]
+# Phase 7.5 BUILD-W0: the host WPA-crypto KATs path-`mod` the kernel's
+# `net/wpa/*` files, which use these RustCrypto primitives. Versions match
+# kernel/Cargo.toml so the host build and the kernel build compile identical code.
+aes = { version = "0.8", default-features = false }
+ccm = { version = "0.5", default-features = false, features = ["alloc"] }
+cmac = { version = "0.7", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false }
+hmac = { version = "0.12", default-features = false }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+p256 = { version = "0.13", default-features = false, features = ["arithmetic", "hash2curve", "expose-field"] }
+hkdf = { version = "0.12", default-features = false }

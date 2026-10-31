@@ -1,0 +1,20 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: GPU P1 Slice 3 (ocloc SeparableBlur EU kernel) — RE-ASSIGNED → Oracle
+
+**Date:** 2026-07-21
+**From:** PM (Claude)
+**To:** Oracle (main-tier)
+**Status:** DISPATCHED — **re-assignment.** Slice 3 was originally dispatched to Cerebro, but Cerebro is now on the **gaming graphics facet** (the deep-think panel). So the P1 Slice-3 build moves to **you** — a free main-tier seat. **The full, authoritative spec is the Cerebro dispatch — read it in full; this file only re-seats it + names the coordination.**
+
+## Read for the complete spec (do NOT re-derive)
+`git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-21-gpu-p1-slice3-ocloc-blur-kernel-cerebro.md` — the whole build spec lives there: hand-author the r=8 Q16 **separable-Gaussian blur in OpenCL C**, compile via **ocloc on the M75q Linux host** (`<user>@<host>`; the proven Phase-6 path — NOT WGSL/Vello), pin the **real** EU binary + zeinfo ABI **reproducibly** (exact bytes from the actual tool — **never WebFetch**), add the **PRM-derived command-byte oracle** for the two-pass `PIPE_CONTROL`/MOCS coherence (raw PRM source), wire `ComputePipeline::SeparableBlur` to dispatch it (replacing `Unsupported`), kill-switch (GPU-on 8×8 output ≡ the `ORACLE_DST` CPU floor bit-for-bit), kernel-internal (amendment 4), fold the Slice-2 hardening (GPU-wait timeout → degrade to CPU floor). **Real Gen9 EU on silicon = Slice 4; Slice 3 is compile+wire+ABI, host-ocloc + QEMU-sim provable — label the silicon-only split.** Authoritative reference: `git show origin/main:docs/ADR-077-gpu-p1-compute-service.md` (§Slice-3 + amendments), and `…:docs/RESEARCH-2026-07-21-gpu-p2-vello-compiler-closure-FINDINGS.md` (why OpenCL-C/ocloc). Slice 2 is merged (`3472b19`) — build above it.
+
+## Seat / coordination overrides (the only changes from the Cerebro dispatch)
+- **Work in `Workers\oracle`**; branch **`codex/gpu-p1-slice3-ocloc-blur-kernel-oracle`**.
+- **Coordinate GPU design questions with Cerebro** — he owns OT-63/the GPU lane and is right there on the gaming graphics facet. If a load-bearing GPU-design ambiguity arises (the ocloc ABI extraction, the PRM command bytes, the walker geometry), flag it in your RETURN and/or sync with Cerebro rather than guessing.
+- Everything else — the constraints, the close-gate (`scripts/worker-close-gate.sh` + green 4-shard `workflow_dispatch` QEMU URL), the byte-oracle/exact-bytes discipline, the PM AAG + artifact spot-check, disk-reclaim (`Workers/oracle` persistent) — is exactly per the Cerebro dispatch.
+
+## Relay — what to tell Oracle
+- **Read (both):** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-21-gpu-p1-slice3-ocloc-blur-kernel-oracle.md` (this re-seat) **and** `git show origin/main:Plans/DISPATCH-2026-07-21-gpu-p1-slice3-ocloc-blur-kernel-cerebro.md` (the full spec). Work in `Workers\oracle`; branch `codex/gpu-p1-slice3-ocloc-blur-kernel-oracle`.
+- **One-line:** **You're taking P1 Slice 3** (Cerebro's on the gaming think). Build the real **ocloc-compiled SeparableBlur Gen9 EU kernel** per the Cerebro dispatch (full spec there): hand-author the r=8 Q16 separable blur in **OpenCL C**, compile via **ocloc on the M75q** (proven path, not WGSL/Vello), pin the **real** EU binary + zeinfo ABI reproducibly (**exact bytes from the tool, never WebFetch**), add the **PRM command-byte oracle** (two-pass coherence, raw PRM source), wire `SeparableBlur` to dispatch it. Kill-switch: GPU-on 8×8 ≡ `ORACLE_DST` CPU floor bit-for-bit. Kernel-internal (amendment 4); fold the Slice-2 timeout→CPU-floor-degrade. Real Gen9 EU on silicon = Slice 4; Slice 3 is compile+wire+ABI, host-ocloc + QEMU-sim provable. **Coordinate GPU-design questions with Cerebro** (OT-63 owner). Close-gate + green 4-shard QEMU URL + PM AAG + artifact spot-check.
+- **RAG:** `accel intel_gen9 ocloc zeinfo EU kernel opencl`, `GPGPU_WALKER PIPE_CONTROL MOCS coherence`, `gpu_compute submit_compute_pipeline SeparableBlur`, `blur WEIGHTS_R8 Q16 oracle`. Health-check `Invoke-RestMethod http://127.0.0.1:8404/health` first; if down, note it + grep/Read (PL owns RAG startup; never a blocker).

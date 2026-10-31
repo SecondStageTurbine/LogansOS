@@ -1,0 +1,68 @@
+# Phase 7.5 BUILD-B — Stage B PASS (OptiPlex silicon): the Phase-4 stack over a
+# real USB-Ethernet dongle on bare metal.
+# Scenario: usb_ethernet_baremetal (blind hardware — NVMe NEO_LOG_v1 sink at
+#           0x10000000, no JTAG/debugger; this is the extracted sink).
+# Date: 2026-06-12. Branch: codex/phase-7.5-build-B-usb-ethernet-jarvis.
+# Host: Dell OptiPlex 7080, Intel xHCI root port. ISO sha256
+#       1708ed4585f46d4d4341c868d9a2f877558bdecc920040585959f8cc1b5bc473.
+# Adapter: UGREEN AX88179 USB-GbE (0b95:1790), gigabit copper to the LAN.
+#
+# What this run proves (ISC-15/16, ADR-047, ANSPEC §10.7):
+# - Real-device enumeration on silicon: the AX88179 exposes 3 configs; the
+#   driver picks cfg3 (CDC-ECM, class 02/06) BY CONTENT — skipping cfg1 (vendor
+#   0xFF native ASIX) and cfg2 (NCM 02/0D) — and claims it via the 7.5-A seam.
+#   (Two other devices on the bus — a Realtek 0bda:c811 USB-WiFi and the Intel
+#   AX201 BT 8087:0026 — are correctly NOT bound: no ECM function.)
+# - AX88179 native TX bring-up in cfg1 before the ECM switch: AX88179_PHY
+#   physr=0xa400 decodes LINK-UP + GIGABIT + FULL-DUPLEX (0x0400|0x8000|0x2000);
+#   fifo=0x00000000 means the link_reset TX-FIFO-ready handshake armed transmit
+#   (bit 0x40000000 clear); bind_fail=None (the deconfigure→cfg3 path is clean).
+# - The CDC-ECM driver transmits RAW Ethernet frames (per spec — the ASIX TX
+#   header was a disproven detour that corrupted cfg3 TX and was removed).
+# - REAL DORA over the bulk pipes → a REAL LAN lease: <optiplex-ip> /24, router
+#   <router-ip>, dns <dns-ip>; offer=1 ack=1 and a DNS round-trip (udp53=1).
+#   Independently wire-confirmed by a netsh/etl2pcapng capture on the segment:
+#   the full DISCOVER/OFFER/REQUEST/ACK + a post-lease gratuitous ARP.
+# - The unlock was a NeoPlutarch DHCP-client fix (BOOTP chaddr was empty +
+#   broadcast flag clear — real servers drop that; QEMU/slirp had masked it).
+# - I-14(c1) intact on the device's live DMA: fence_admits=322 fence_refusals=0.
+#
+# net/kernel diff for the data path stayed empty — the Phase-4 stack ran
+# unmodified over USB; only the AX88179 vendor TX bring-up + the DHCP chaddr fix
+# were added. extract: BUILD-5b neo-extract-log path / dd of the 0x10000000 sink.
+
+NEO_TEST/1 event=INFO name=usb_ethernet_baremetal bare_metal_log_sink=installed target_driver=nvme offset=0x10000000 size=16777216
+NEO_TEST/1 event=INFO name=usb_ethernet_baremetal bare_metal_log_sink_selftest=begin
+NEO_TEST/1 event=INFO name=usb_ethernet_baremetal bare_metal_log_sink_selftest=ok cursor=216
+NEO_TEST/1 event=BEGIN name=usb_ethernet_baremetal phase=dispatch
+[ kernel ] usb-eth-probe: port=6 vid=0b95 pid=1790 class=00 configs=3
+[ kernel ] usb-eth-probe:   cfg=1 if=0 alt=0 class=ff/ff/00 eps=4 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=2 if=0 alt=0 class=02/0d/00 eps=1 ecm_func=true
+[ kernel ] usb-eth-probe:   cfg=2 if=1 alt=0 class=0a/00/01 eps=0 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=2 if=1 alt=1 class=0a/00/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=3 if=0 alt=0 class=02/06/00 eps=1 ecm_func=true
+[ kernel ] usb-eth-probe:   cfg=3 if=1 alt=0 class=0a/00/00 eps=0 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=3 if=1 alt=1 class=0a/00/00 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe: port=10 vid=0bda pid=c811 class=00 configs=1
+[ kernel ] usb-eth-probe:   cfg=1 if=0 alt=0 class=ff/ff/ff eps=5 ecm_func=false
+[ kernel ] usb-eth-probe: port=14 vid=8087 pid=0026 class=e0 configs=1
+[ kernel ] usb-eth-probe:   cfg=1 if=0 alt=0 class=e0/01/01 eps=3 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=0 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=1 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=2 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=3 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=4 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=5 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe:   cfg=1 if=1 alt=6 class=e0/01/01 eps=2 ecm_func=false
+[ kernel ] usb-eth-probe: AX88179_DIAG flags=0b11111 cfg1_read=0x0003 medium_readback=0x0133 bind_fail=None
+[ kernel ] usb-eth-probe: AX88179_PHY physr=0xa400 final_medium=0x0133 linkwait=0 fifo=0x00000000
+[ kernel ] usb-eth-probe: bound mac=xx:xx:xx:xx:xx:xx mtu=1500
+cdc-ecm: link notification connected=false
+[ kernel ] usb-eth-probe: link-settle pumps=1 frames=3 link_state=Down (E3 evidence)
+[ kernel ] usb-eth-probe: dhcp discover attempt=0 tx_submitted=1 tx_completed=0
+[ kernel ] usb-eth-probe: attempt=0 end tx_submitted=1 tx_completed=1 rx=224 ep_errors=0 frames=224 offer=0 arp=52
+[ kernel ] usb-eth-probe: dhcp discover attempt=1 tx_submitted=2 tx_completed=1
+[ kernel ] usb-eth-probe: LEASE ip=<optiplex-ip> mask=255.255.255.0 router=Some(<router-ip>) dns=Some(<dns-ip>)
+[ kernel ] usb-eth pump(dns-roundtrip): frames=229 arp=54 ipv4=76 offer=1 ack=1 dhcp_refused=0 udp53=1 other=99 (E4 census)
+[ kernel ] usb-eth-probe: done lease=<optiplex-ip> tx=5 tx_completed=5 rx=229 notifications=2 ep_errors=0 cmds=10/10 irqs=283 drained=293 passes=1345613 max_burst=4 fence_admits=322 fence_refusals=0
+NEO_TEST/1 event=PASS name=usb_ethernet_baremetal usb_ethernet_baremetal=ok adapter=claimed lease=real_lan dns_roundtrip=ok e_bank=breadcrumbed fence_refusals=0 opens=adr-047

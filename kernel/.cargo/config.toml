@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+[build]
+target = "x86_64-neoplutarch.json"
+
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+# Linker script is emitted by build.rs as `-T<absolute>/linker.ld` so rustc's
+# linker (rust-lld) finds it regardless of where it's invoked from. Other
+# kernel-specific link args go here. Note: `-nostartfiles` and `-nodefaultlibs`
+# are gcc driver flags — rust-lld rejects them. Don't add them back.
+[target.x86_64-neoplutarch]
+rustflags = [
+    "-C", "relocation-model=pic",
+    "-C", "link-arg=-pie",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]

@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MPL-2.0
+[build]
+target = "../x86_64-neoplutarch-user.json"
+
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-neoplutarch-user]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]

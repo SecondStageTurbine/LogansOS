@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "install-bundle-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+# The module under test hashes each part with BLAKE3, as the kernel does.
+blake3 = { version = "1.8.2", default-features = false }

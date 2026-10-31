@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>Terminal</title>
+  <path d="M3 4 L7 8 L3 12" fill="none" stroke="#a8adb2" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="9" y="11" width="5" height="2" fill="#3c8ef4"/>
+</svg>

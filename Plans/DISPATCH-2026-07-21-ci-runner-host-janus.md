@@ -1,0 +1,39 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Bring up <runner-host> as a Docker-based CI runner host → Janus
+
+**Date:** 2026-07-21
+**From:** PM (Claude)
+**To:** Janus (main-tier)
+**Status:** DISPATCHED — **infra/ops, NO kernel gate** (the deliverable is live runners + a runbook update; the "gate" is a real end-to-end proof that the gate fans out onto the new runners). Adds CI-runner capacity — **the project's binding throughput constraint** (CLAUDE.md: the merge funnel + ~3-runner QEMU contention is what actually limits concurrency; gate #985 just ran ~43 min wall with shard 3 alone at 38 min because the shards contend). Another runner host widens the funnel and lets us keep 2-3 concurrent kernel-touching gates in flight without the exit-137/thrash risk.
+
+## The machine
+- **<runner-host>** — Lenovo ThinkCentre M75q Tiny (`11A4001WUS`). AMD Ryzen 5 PRO 3400GE (4c/8t), 32 GB RAM, 256 GB Toshiba NVMe, **Windows 11 Pro** (build 26200), LAN `<m75q-ip>`.
+- **SSH:** `<runner-host>\<user>@<host>`.
+- **The GPU (Vega 11) is irrelevant** — QEMU runs under TCG (software CPU emulation), so the host iGPU never enters the gate. What matters is CPU/RAM/disk.
+
+## The model (PL-decided): keep Windows, runners in Docker
+The existing `ryzen-1..4` runners run as **self-hosted GitHub Actions runners in Docker on a Windows host** (the gate builds and runs a **Linux dev container** — Docker Buildx + the repo's dev image — under Docker Desktop / WSL2). **Do NOT reimage.** Replicate that exact model on this Lenovo.
+
+## Task
+1. **Derive the template from the working reference.** Inspect how `ryzen-1..4` are set up on the current runner host (container image / base, `actions/runner` version, the `self-hosted` label set the gate targets, the registration-token mechanism, per-container CPU/mem/disk caps, how the Linux dev-container build/run is wired under Docker-on-Windows/WSL2). That working config is the authoritative template — match it; don't invent a new scheme.
+2. **Prep the Lenovo.** Confirm **Docker Desktop with the WSL2 Linux-container backend** is installed and running (virtualization enabled in BIOS/UEFI; WSL2 enabled). Verify it can **build and run the repo's Linux dev container** (the same image the QEMU shards use) — a from-scratch `docker build` of the dev image + a trivial `cargo` invocation inside it is the readiness check *before* registering any runner.
+3. **Register the runners.** Register self-hosted runners against `SecondStageTurbine/NeoPlutarch` with the **`self-hosted` label** the workflow targets (see `.github/workflows/ci.yml` — the QEMU-shard jobs run on `labels: ["self-hosted"]`). Give them **distinct names** continuing the convention (propose `ryzen-5`, `ryzen-6`, … — **PL to confirm the naming/count**). **The registration token comes from repo Settings → Actions → Runners (repo admin) — the PL provides it; NEVER commit a token/secret to git or paste one into the runbook.**
+4. **Right-size the runner count to the hardware.** 4c/8t + 32 GB, and a QEMU-in-Docker shard is RAM- and CPU-hungry (the gate carries a **"Pre-flight — runner memory capacity"** step that *fails the job* if RAM is short). Do **not** blindly copy "4 runners" if 4 concurrent QEMU shards would OOM this box — **cap each runner container's CPU/mem** so the configured count fits in 32 GB with headroom. Recommend starting at **2 concurrent runners** on this box (2×~8-12 GB QEMU shards fits 32 GB comfortably) and only raising it if a real gate shows headroom. Confirm the chosen count against how `ryzen-1..4`'s host is provisioned.
+5. **Disk headroom (the tight resource).** 256 GB NVMe is small for Docker layers + cargo `target` caches + QEMU images. Ensure Docker's disk allocation + the container caches have headroom, and that the gate's **"Pre-flight — Docker disk hygiene"** reclaim actually runs here (the same discipline that keeps `ryzen-1..4` from filling). Note the disk ceiling explicitly.
+
+## Verification / close-gate (this replaces the kernel gate)
+- **Runners ONLINE + idle** in the repo's Actions runner pool (GitHub → Settings → Actions → Runners), correctly labeled `self-hosted`.
+- **Real end-to-end proof (not "runner shows online"):** fire a **`workflow_dispatch` of `ci.yml`** and confirm the **new runners actually pick up QEMU shard job(s) and those shards go GREEN** on this box — i.e., the Linux dev container builds and the QEMU scenarios pass on the Lenovo. A registered-but-never-took-a-job runner is not done. Paste the run URL + which shard(s) landed on the new runner(s).
+- **No regression to `ryzen-1..4`** — the existing pool stays healthy (fire the test gate at a quiet time so you can see the new box take load; stagger per CLAUDE.md so you don't thrash the pool).
+- **Deliverable doc:** update **`docs/runbook-ci-runner-capacity.md`** with this host — specs, IP/SSH, the Docker-on-Windows/WSL2 runner setup steps, runner names, per-container CPU/mem caps, the disk-hygiene note, and the "register a new runner host" checklist so the *next* box is turnkey. **No secrets/tokens in the doc.** Push to `codex/ci-runner-host-janus`; PM cherry-picks the runbook update. The live runners are the real deliverable; the doc records how.
+
+## Expected-failure modes + discriminators (ops version)
+- **WSL2/virtualization off** → Docker can't run Linux containers. Discriminator: `docker run --rm hello-world` (Linux) fails before any runner work; fix is BIOS virtualization + WSL2 enable.
+- **Runner registers but the gate skips it** → label mismatch. Discriminator: the runner is ONLINE but no job lands on it; check the label set equals what `ci.yml` targets.
+- **RAM OOM under concurrent shards** → the "runner memory capacity" preflight fails or QEMU is killed. Discriminator: the preflight step's red output / an OOM-killed QEMU; fix is fewer concurrent runners or lower per-container mem.
+- **Disk fills mid-build** → "no space left on device" during the dev-container build or cargo. Discriminator: the disk-hygiene preflight / a build-time ENOSPC; fix is reclaim + a lower cache ceiling.
+
+## Relay — what to tell Janus
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-21-ci-runner-host-janus.md`. Reference the workflow the runners serve: `git show origin/main:.github/workflows/ci.yml` (the `self-hosted` label + the QEMU-shard jobs), and the capacity runbook you'll update: `git show origin/main:docs/runbook-ci-runner-capacity.md`. Work on `codex/ci-runner-host-janus`.
+- **One-line:** Bring up **<runner-host>** (`<user>@<host>`, Windows 11, keep it) as another **Docker-based self-hosted CI runner host**, replicating the `ryzen-1..4` model (self-hosted runners in Docker/WSL2 running the Linux dev container). **Inspect the existing `ryzen-1..4` setup as the template** first; verify Docker-Linux-containers work; register runners labeled `self-hosted` with new names (`ryzen-5..`, PL confirms count) — **right-sized to 32 GB (start ~2, cap per-container mem; don't OOM the "runner memory capacity" preflight)**; mind the 256 GB disk. **Close proof = a real `workflow_dispatch` gate that lands GREEN shard(s) on the new runner(s)**, not just "runner online," with no regression to `ryzen-1..4`. Registration token comes from the PL (repo Settings → Actions) — **no secrets in git/the runbook.** Deliverable: live runners + a `docs/runbook-ci-runner-capacity.md` update with the onboarding checklist.
+- **RAG:** repo-side references you'll want — `ci workflow self-hosted runner qemu shard`, `dev container dockerfile`, `runner capacity disk hygiene`. Health-check `Invoke-RestMethod http://127.0.0.1:8404/health` first; if down, note it + grep/Read (PL owns RAG startup; never a blocker). (Most of this task is on the remote box, not in the repo — RAG is only for locating `ci.yml`/the dev-container Dockerfile/the runbook.)

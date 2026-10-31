@@ -1,0 +1,104 @@
+  hp-elitedesk-800-g6-mini-s21-02.27.00    dsdt.dat     OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt.dat     OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt1.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt10.dat   OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt2.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt3.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt4.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt5.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt6.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt7.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt8.dat    OK
+  hp-elitedesk-800-g6-mini-s21-02.27.00    ssdt9.dat    OK
+hp-elitedesk-800-g6-mini-s21-02.27.00 -> ('OK', 'dsdt.dat', '0x20516', [7, 0])
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    dsdt.dat     OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt.dat     OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt1.dat    OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt2.dat    OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt3.dat    OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt4.dat    OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt5.dat    OK
+  lenovo-thinkcentre-m75q-gen1-m2fkt21a    ssdt6.dat    OK
+lenovo-thinkcentre-m75q-gen1-m2fkt21a -> ('OK', 'dsdt.dat', '0x3aeb', [5, 0])
+  lenovo-thinkcentre-m910q-m1akt5aa        dsdt.dat     OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt.dat     OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt1.dat    OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt2.dat    OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt3.dat    OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt4.dat    OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt5.dat    OK
+  lenovo-thinkcentre-m910q-m1akt5aa        ssdt6.dat    OK
+lenovo-thinkcentre-m910q-m1akt5aa -> ('OK', 'dsdt.dat', '0xa6ce', [7, 0])
+  msi-ms-7e57-1.a70                        dsdt.dat     OK
+  msi-ms-7e57-1.a70                        ssdt.dat     OK
+  msi-ms-7e57-1.a70                        ssdt1.dat    OK
+  msi-ms-7e57-1.a70                        ssdt10.dat   OK
+  msi-ms-7e57-1.a70                        ssdt11.dat   OK
+  msi-ms-7e57-1.a70                        ssdt12.dat   OK
+  msi-ms-7e57-1.a70                        ssdt13.dat   OK
+  msi-ms-7e57-1.a70                        ssdt14.dat   OK
+  msi-ms-7e57-1.a70                        ssdt2.dat    OK
+  msi-ms-7e57-1.a70                        ssdt3.dat    OK
+  msi-ms-7e57-1.a70                        ssdt4.dat    OK
+  msi-ms-7e57-1.a70                        ssdt5.dat    OK
+  msi-ms-7e57-1.a70                        ssdt6.dat    OK
+  msi-ms-7e57-1.a70                        ssdt7.dat    OK
+  msi-ms-7e57-1.a70                        ssdt8.dat    OK
+  msi-ms-7e57-1.a70                        ssdt9.dat    OK
+msi-ms-7e57-1.a70 -> ('OK', 'dsdt.dat', '0x3698', [5, 0])
+  optiplex-7080-1.37.0                     dsdt.dat     OK
+  optiplex-7080-1.37.0                     ssdt.dat     OK
+  optiplex-7080-1.37.0                     ssdt1.dat    OK
+  optiplex-7080-1.37.0                     ssdt3.dat    OK
+optiplex-7080-1.37.0 -> ('OK', 'dsdt.dat', '0x59b0', [7, 0])
+  optiplex-7080-linux-1.37.0               dsdt         OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt10 OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt11 OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt12 OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt13 OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt7 OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt8 OK
+  optiplex-7080-linux-1.37.0               dynamic-ssdt9 OK
+  optiplex-7080-linux-1.37.0               ssdt1        OK
+  optiplex-7080-linux-1.37.0               ssdt2        OK
+  optiplex-7080-linux-1.37.0               ssdt3        OK
+  optiplex-7080-linux-1.37.0               ssdt4        OK
+  optiplex-7080-linux-1.37.0               ssdt5        OK
+  optiplex-7080-linux-1.37.0               ssdt6        OK
+optiplex-7080-linux-1.37.0 -> ('OK', 'dsdt', '0x59b0', [7, 0])
+  qemu-q35-ovmf-smp1                       dsdt.dat     OK
+qemu-q35-ovmf-smp1 -> ('OK', 'dsdt.dat', '0x1eaa', [0, 0])
+  qemu-q35-ovmf-smp4-viommu                dsdt.dat     OK
+qemu-q35-ovmf-smp4-viommu -> ('OK', 'dsdt.dat', '0x1fa9', [0, 0])
+  qemu-q35-seabios-smp1                    dsdt.dat     OK
+qemu-q35-seabios-smp1 -> ('OK', 'dsdt.dat', '0x1eaa', [0, 0])
+  zenbook-s14-ux5406aa-303                 dsdt.dat     OK
+  zenbook-s14-ux5406aa-303                 ssdt.dat     OK
+  zenbook-s14-ux5406aa-303                 ssdt1.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt10.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt11.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt12.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt13.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt14.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt15.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt16.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt17.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt18.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt19.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt2.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt20.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt21.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt22.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt23.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt24.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt25.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt26.dat   OK
+  zenbook-s14-ux5406aa-303                 ssdt3.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt4.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt5.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt6.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt7.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt8.dat    OK
+  zenbook-s14-ux5406aa-303                 ssdt9.dat    OK
+zenbook-s14-ux5406aa-303 -> ('OK', 'dsdt.dat', '0x9a46', [7, 0])
+tables walked to end: 93/93; sets decoded: 10/10

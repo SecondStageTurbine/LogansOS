@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "arthur-grant-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+# `arthur-grant-revoke` is default-ON so the E3-revoke KATs run under the
+# standing `cargo test --workspace` close-gate (no extra flags needed). The
+# others stay opt-in to match how E2 / E3-audit were authored.
+[features]
+default = ["arthur-grant-revoke"]
+action-observability = []
+# OT-18 E2: gates the re-request + writer tests. Off ⇒ only E1a tests compile.
+arthur-grant-rerequest = []
+# OT-18 E3-audit: gates the audit/listing/log tests. Off ⇒ E1a/E2 tests only.
+arthur-grant-audit = []
+# OT-18 E3-revoke: gates the `revoke_grant` store-rewrite KATs (remove / idempotent
+# / minimal / byte-oracle / malformed). Mounts grant_store with revoke enabled.
+arthur-grant-revoke = []

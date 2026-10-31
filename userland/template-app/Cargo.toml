@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "template-app"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Minimal Hello-LogansOS template — starting point for userland applications"
+
+[[bin]]
+name = "template-app"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libneo = { path = "../libneo" }

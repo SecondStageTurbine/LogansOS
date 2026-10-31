@@ -1,0 +1,831 @@
+NEO_LOG_v1    unknown-build-idaccel_intel_execlist_negative_bringup    NEO_TEST/1 event=INFO name=accel_intel_execlist_negative_bringup bare_metal_log_sink=installed target_driver=nvme offset=0x10000000 size=16777216
+NEO_TEST/1 event=INFO name=accel_intel_execlist_negative_bringup bare_metal_log_sink_selftest=begin
+NEO_TEST/1 event=INFO name=accel_intel_execlist_negative_bringup bare_metal_log_sink_selftest=ok cursor=246
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-map
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=gt-bar-mapped offset=0x0 width=16777216
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_RENDER_GEN9 offset=0xa278 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_ACK_RENDER_GEN9 offset=0xd84 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_GT_GEN9 offset=0xa188 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=FORCEWAKE_ACK_GT_GEN9 offset=0x130044 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_HEAD offset=0x2034 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_TAIL offset=0x2030 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_START offset=0x2038 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_CTL offset=0x203c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_MODE offset=0x229c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_ACTHD_UDW offset=0x205c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_INSTDONE offset=0x206c width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_ACTHD offset=0x2074 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=RING_R_PWR_CLK_STATE offset=0x20c8 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GEN8_RING_FAULT_REG_RCS offset=0x4094 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GEN6_GT_CORE_STATUS offset=0x138060 width=4 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GGTT_PTE_BASE offset=0x800000 width=8 mapped_len=0x1000000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=mmio-offset-ok reg=GGTT_SEQNO_PTE offset=0x800998 width=8 mapped_len=0x1000000
+[ kernel ] accel-intel: attached UHD630 candidate bdf=00:02.0 device_id=0x9bc8 gttmmadr_len=0x1000000
+NEO_TEST/1 event=BEGIN name=accel_intel_execlist_negative_bringup phase=dispatch
+[ kernel ] accel-intel: execlist-pml4 built kind=add root(pml4)=0x000000047a3a2000 pt=0x000000047a3a5000 leaf_pages=8 lhs=rw output=rw lhs_va=0x130000 output_va=0x132000 pt_idx_state=0x110
+[ kernel ] accel-intel: execlist-kernel-eot kind=add eot_present=true
+[ kernel ] accel-intel: interface-descriptor kernel_start=0x00120000 expected_kernel_ggtt=0x00120000 kernel_ptr_matches=true thread_group_threads=1 cross_thread_read_grf=3 per_thread_read_grf=6 stateless=true(no sampler/binding-table)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-begin
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x200000 phys=0x47a380000 flags=0x3 pte=0x000000047a380003 offset=0x801000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801000 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x201000 phys=0x47a381000 flags=0x3 pte=0x000000047a381003 offset=0x801008
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801008 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x202000 phys=0x47a382000 flags=0x3 pte=0x000000047a382003 offset=0x801010
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801010 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x203000 phys=0x47a383000 flags=0x3 pte=0x000000047a383003 offset=0x801018
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801018 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x204000 phys=0x47a384000 flags=0x3 pte=0x000000047a384003 offset=0x801020
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801020 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x205000 phys=0x47a385000 flags=0x3 pte=0x000000047a385003 offset=0x801028
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801028 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x206000 phys=0x47a386000 flags=0x3 pte=0x000000047a386003 offset=0x801030
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801030 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x207000 phys=0x47a387000 flags=0x3 pte=0x000000047a387003 offset=0x801038
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801038 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x208000 phys=0x47a388000 flags=0x3 pte=0x000000047a388003 offset=0x801040
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801040 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x209000 phys=0x47a389000 flags=0x3 pte=0x000000047a389003 offset=0x801048
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801048 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20a000 phys=0x47a38a000 flags=0x3 pte=0x000000047a38a003 offset=0x801050
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801050 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20b000 phys=0x47a38b000 flags=0x3 pte=0x000000047a38b003 offset=0x801058
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801058 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20c000 phys=0x47a38c000 flags=0x3 pte=0x000000047a38c003 offset=0x801060
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801060 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20d000 phys=0x47a38d000 flags=0x3 pte=0x000000047a38d003 offset=0x801068
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801068 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20e000 phys=0x47a38e000 flags=0x3 pte=0x000000047a38e003 offset=0x801070
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801070 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20f000 phys=0x47a38f000 flags=0x3 pte=0x000000047a38f003 offset=0x801078
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801078 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x210000 phys=0x47a390000 flags=0x3 pte=0x000000047a390003 offset=0x801080
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801080 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x211000 phys=0x47a391000 flags=0x3 pte=0x000000047a391003 offset=0x801088
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801088 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x212000 phys=0x47a392000 flags=0x3 pte=0x000000047a392003 offset=0x801090
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801090 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x213000 phys=0x47a393000 flags=0x3 pte=0x000000047a393003 offset=0x801098
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801098 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x214000 phys=0x47a394000 flags=0x3 pte=0x000000047a394003 offset=0x8010a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x215000 phys=0x47a395000 flags=0x3 pte=0x000000047a395003 offset=0x8010a8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a8 width=8
+[ kernel ] accel-intel: ggtt-pte label=hwsp ggtt=0x240000 phys=0x47a379000 flags=0x3 pte=0x000000047a379003 offset=0x801200
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801200 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-ring ggtt=0x100000 phys=0x47a37e000 flags=0x3 pte=0x000000047a37e003 offset=0x800800
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800800 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-state ggtt=0x110000 phys=0x47a37f000 flags=0x3 pte=0x000000047a37f003 offset=0x800880
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800880 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-kernel ggtt=0x120000 phys=0x47a3a0000 flags=0x3 pte=0x000000047a3a0003 offset=0x800900
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800900 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-lhs ggtt=0x130000 pte=0x0000000000000000 offset=0x800980 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800980 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-rhs ggtt=0x131000 pte=0x0000000000000000 offset=0x800988 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800988 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-output ggtt=0x132000 pte=0x0000000000000000 offset=0x800990 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800990 width=8
+[ kernel ] accel-intel: execlist-add data buffers CLEARED from GGTT (lhs/rhs/output VAs 0x130000/0x131000/0x132000 resolve via per-context PPGTT only)
+[ kernel ] accel-intel: ggtt-pte label=xl-curbe ggtt=0x134000 phys=0x47a3a1000 flags=0x3 pte=0x000000047a3a1003 offset=0x8009a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8009a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-seqno ggtt=0x133000 phys=0x47a37d000 flags=0x3 pte=0x000000047a37d003 offset=0x800998
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800998 width=8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-end
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ring-fault-clear offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hwstam offset=0x2098 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-enable offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-unstop offset=0x209c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-pga offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-engine-configured
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-read offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-read offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-read offset=0x209c width=4
+[ kernel ] accel-intel: execlist-engine mode=0x00008000 execlist_enabled=true mi_mode=0x00000200 ring_stopped=false hws_pga=0x00240000 expected_hws=0x240000
+[ kernel ] accel-intel: execlist-submit token=1 descriptor=0x0000000100200119 lrca=0x200000 ctx_id=1 ring_tail=0x11c pml4_root=0x000000047a3a2000 oracle_match=true
+[ kernel ] accel-intel: elsp-write token=1 slot=0 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=1 slot=1 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=1 slot=2 value=0x00000001 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=1 slot=3 value=0x00200119 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb post-elsp token=1 EXECLIST_STATUS=0x0000000000000302 CSB_PTR=0x00000001 write_idx=1 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=2 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=3 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary post-elsp token=1 nonzero_entries=2 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: execlist-complete-status token=1 RING_HEAD=0x00000118 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000000 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xfffffffe ACTHD=0x0000000000000118 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x00000000 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000001
+[ kernel ] accel-intel: instdone-decode execlist-complete-status token=1 INSTDONE=0xfffffffe busy_mask=0x00000001 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-complete-status token=1 bit=0 unit=command-streamer
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb complete token=1 EXECLIST_STATUS=0x0000000000000302 CSB_PTR=0x00000001 write_idx=1 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=1 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=1 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=1 i=2 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=1 i=3 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=1 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=1 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary complete token=1 nonzero_entries=2 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+[ kernel ] accel-intel: execlist-add output=[00, 00, 80, 40, 00, 00, c0, 40] expected=[00, 00, 80, 40, 00, 00, c0, 40] match=true (data resolved via PPGTT; buffers absent from GGTT)
+[ kernel ] accel-intel: execlist-bringup complete token=1 execlist-seqno=0x00000001 csb_switch_events=2 verdict=execlist_submission_runs_a_context
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-complete
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+[ kernel ] accel-intel: negative-gate positive-control OK (B's own Add = [4,6])
+[ kernel ] accel-intel: execlist-pml4 built kind=add-ro-read root(pml4)=0x000000047a3a2000 pt=0x000000047a3a5000 leaf_pages=8 lhs=ro output=rw lhs_va=0x130000 output_va=0x132000 pt_idx_state=0x110
+[ kernel ] accel-intel: execlist-kernel-eot kind=add-ro-read eot_present=true
+[ kernel ] accel-intel: interface-descriptor kernel_start=0x00120000 expected_kernel_ggtt=0x00120000 kernel_ptr_matches=true thread_group_threads=1 cross_thread_read_grf=3 per_thread_read_grf=6 stateless=true(no sampler/binding-table)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-begin
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x200000 phys=0x47a380000 flags=0x3 pte=0x000000047a380003 offset=0x801000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801000 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x201000 phys=0x47a381000 flags=0x3 pte=0x000000047a381003 offset=0x801008
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801008 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x202000 phys=0x47a382000 flags=0x3 pte=0x000000047a382003 offset=0x801010
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801010 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x203000 phys=0x47a383000 flags=0x3 pte=0x000000047a383003 offset=0x801018
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801018 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x204000 phys=0x47a384000 flags=0x3 pte=0x000000047a384003 offset=0x801020
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801020 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x205000 phys=0x47a385000 flags=0x3 pte=0x000000047a385003 offset=0x801028
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801028 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x206000 phys=0x47a386000 flags=0x3 pte=0x000000047a386003 offset=0x801030
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801030 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x207000 phys=0x47a387000 flags=0x3 pte=0x000000047a387003 offset=0x801038
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801038 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x208000 phys=0x47a388000 flags=0x3 pte=0x000000047a388003 offset=0x801040
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801040 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x209000 phys=0x47a389000 flags=0x3 pte=0x000000047a389003 offset=0x801048
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801048 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20a000 phys=0x47a38a000 flags=0x3 pte=0x000000047a38a003 offset=0x801050
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801050 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20b000 phys=0x47a38b000 flags=0x3 pte=0x000000047a38b003 offset=0x801058
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801058 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20c000 phys=0x47a38c000 flags=0x3 pte=0x000000047a38c003 offset=0x801060
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801060 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20d000 phys=0x47a38d000 flags=0x3 pte=0x000000047a38d003 offset=0x801068
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801068 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20e000 phys=0x47a38e000 flags=0x3 pte=0x000000047a38e003 offset=0x801070
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801070 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20f000 phys=0x47a38f000 flags=0x3 pte=0x000000047a38f003 offset=0x801078
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801078 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x210000 phys=0x47a390000 flags=0x3 pte=0x000000047a390003 offset=0x801080
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801080 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x211000 phys=0x47a391000 flags=0x3 pte=0x000000047a391003 offset=0x801088
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801088 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x212000 phys=0x47a392000 flags=0x3 pte=0x000000047a392003 offset=0x801090
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801090 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x213000 phys=0x47a393000 flags=0x3 pte=0x000000047a393003 offset=0x801098
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801098 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x214000 phys=0x47a394000 flags=0x3 pte=0x000000047a394003 offset=0x8010a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x215000 phys=0x47a395000 flags=0x3 pte=0x000000047a395003 offset=0x8010a8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a8 width=8
+[ kernel ] accel-intel: ggtt-pte label=hwsp ggtt=0x240000 phys=0x47a379000 flags=0x3 pte=0x000000047a379003 offset=0x801200
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801200 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-ring ggtt=0x100000 phys=0x47a37e000 flags=0x3 pte=0x000000047a37e003 offset=0x800800
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800800 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-state ggtt=0x110000 phys=0x47a37f000 flags=0x3 pte=0x000000047a37f003 offset=0x800880
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800880 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-kernel ggtt=0x120000 phys=0x47a3a0000 flags=0x3 pte=0x000000047a3a0003 offset=0x800900
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800900 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-lhs ggtt=0x130000 pte=0x0000000000000000 offset=0x800980 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800980 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-rhs ggtt=0x131000 pte=0x0000000000000000 offset=0x800988 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800988 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-output ggtt=0x132000 pte=0x0000000000000000 offset=0x800990 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800990 width=8
+[ kernel ] accel-intel: execlist-add-ro-read data buffers CLEARED from GGTT (lhs/rhs/output VAs 0x130000/0x131000/0x132000 resolve via per-context PPGTT only)
+[ kernel ] accel-intel: ggtt-pte label=xl-curbe ggtt=0x134000 phys=0x47a3a1000 flags=0x3 pte=0x000000047a3a1003 offset=0x8009a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8009a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-seqno ggtt=0x133000 phys=0x47a37d000 flags=0x3 pte=0x000000047a37d003 offset=0x800998
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800998 width=8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-end
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ring-fault-clear offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hwstam offset=0x2098 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-enable offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-unstop offset=0x209c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-pga offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-engine-configured
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-read offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-read offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-read offset=0x209c width=4
+[ kernel ] accel-intel: execlist-engine mode=0x00008000 execlist_enabled=true mi_mode=0x00000200 ring_stopped=false hws_pga=0x00240000 expected_hws=0x240000
+[ kernel ] accel-intel: execlist-submit token=2 descriptor=0x0000000100200119 lrca=0x200000 ctx_id=1 ring_tail=0x11c pml4_root=0x000000047a3a2000 oracle_match=true
+[ kernel ] accel-intel: elsp-write token=2 slot=0 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=2 slot=1 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=2 slot=2 value=0x00000001 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=2 slot=3 value=0x00200119 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb post-elsp token=2 EXECLIST_STATUS=0x0000000000000302 CSB_PTR=0x00000003 write_idx=3 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=2 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=2 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=2 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=2 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=2 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=2 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary post-elsp token=2 nonzero_entries=4 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: execlist-complete-status token=2 RING_HEAD=0x00000118 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000000 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xfffffffe ACTHD=0x0000000000000118 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x00000000 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000002
+[ kernel ] accel-intel: instdone-decode execlist-complete-status token=2 INSTDONE=0xfffffffe busy_mask=0x00000001 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-complete-status token=2 bit=0 unit=command-streamer
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb complete token=2 EXECLIST_STATUS=0x0000000000000302 CSB_PTR=0x00000003 write_idx=3 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=2 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=2 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=2 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=2 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=2 i=4 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry complete token=2 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary complete token=2 nonzero_entries=4 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+[ kernel ] accel-intel: execlist-add-ro-read output=[00, 00, 80, 40, 00, 00, c0, 40] expected=[00, 00, 80, 40, 00, 00, c0, 40] match=true (data resolved via PPGTT; buffers absent from GGTT)
+[ kernel ] accel-intel: execlist-bringup complete token=2 execlist-seqno=0x00000002 csb_switch_events=4 verdict=execlist_submission_runs_a_context
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-complete
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+[ kernel ] accel-intel: negative-gate ro-read OK (read through an RO PTE = [4,6])
+[ kernel ] accel-intel: execlist-pml4 built kind=add-cross-tenant root(pml4)=0x000000047a3a2000 pt=0x000000047a3a5000 leaf_pages=7 lhs=omitted output=rw lhs_va=0x130000 output_va=0x132000 pt_idx_state=0x110
+[ kernel ] accel-intel: execlist-kernel-eot kind=add-cross-tenant eot_present=true
+[ kernel ] accel-intel: interface-descriptor kernel_start=0x00120000 expected_kernel_ggtt=0x00120000 kernel_ptr_matches=true thread_group_threads=1 cross_thread_read_grf=3 per_thread_read_grf=6 stateless=true(no sampler/binding-table)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-begin
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x200000 phys=0x47a380000 flags=0x3 pte=0x000000047a380003 offset=0x801000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801000 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x201000 phys=0x47a381000 flags=0x3 pte=0x000000047a381003 offset=0x801008
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801008 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x202000 phys=0x47a382000 flags=0x3 pte=0x000000047a382003 offset=0x801010
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801010 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x203000 phys=0x47a383000 flags=0x3 pte=0x000000047a383003 offset=0x801018
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801018 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x204000 phys=0x47a384000 flags=0x3 pte=0x000000047a384003 offset=0x801020
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801020 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x205000 phys=0x47a385000 flags=0x3 pte=0x000000047a385003 offset=0x801028
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801028 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x206000 phys=0x47a386000 flags=0x3 pte=0x000000047a386003 offset=0x801030
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801030 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x207000 phys=0x47a387000 flags=0x3 pte=0x000000047a387003 offset=0x801038
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801038 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x208000 phys=0x47a388000 flags=0x3 pte=0x000000047a388003 offset=0x801040
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801040 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x209000 phys=0x47a389000 flags=0x3 pte=0x000000047a389003 offset=0x801048
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801048 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20a000 phys=0x47a38a000 flags=0x3 pte=0x000000047a38a003 offset=0x801050
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801050 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20b000 phys=0x47a38b000 flags=0x3 pte=0x000000047a38b003 offset=0x801058
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801058 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20c000 phys=0x47a38c000 flags=0x3 pte=0x000000047a38c003 offset=0x801060
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801060 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20d000 phys=0x47a38d000 flags=0x3 pte=0x000000047a38d003 offset=0x801068
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801068 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20e000 phys=0x47a38e000 flags=0x3 pte=0x000000047a38e003 offset=0x801070
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801070 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20f000 phys=0x47a38f000 flags=0x3 pte=0x000000047a38f003 offset=0x801078
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801078 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x210000 phys=0x47a390000 flags=0x3 pte=0x000000047a390003 offset=0x801080
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801080 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x211000 phys=0x47a391000 flags=0x3 pte=0x000000047a391003 offset=0x801088
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801088 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x212000 phys=0x47a392000 flags=0x3 pte=0x000000047a392003 offset=0x801090
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801090 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x213000 phys=0x47a393000 flags=0x3 pte=0x000000047a393003 offset=0x801098
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801098 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x214000 phys=0x47a394000 flags=0x3 pte=0x000000047a394003 offset=0x8010a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x215000 phys=0x47a395000 flags=0x3 pte=0x000000047a395003 offset=0x8010a8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a8 width=8
+[ kernel ] accel-intel: ggtt-pte label=hwsp ggtt=0x240000 phys=0x47a379000 flags=0x3 pte=0x000000047a379003 offset=0x801200
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801200 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-ring ggtt=0x100000 phys=0x47a37e000 flags=0x3 pte=0x000000047a37e003 offset=0x800800
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800800 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-state ggtt=0x110000 phys=0x47a37f000 flags=0x3 pte=0x000000047a37f003 offset=0x800880
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800880 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-kernel ggtt=0x120000 phys=0x47a3a0000 flags=0x3 pte=0x000000047a3a0003 offset=0x800900
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800900 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-lhs ggtt=0x130000 pte=0x0000000000000000 offset=0x800980 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800980 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-rhs ggtt=0x131000 pte=0x0000000000000000 offset=0x800988 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800988 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-output ggtt=0x132000 pte=0x0000000000000000 offset=0x800990 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800990 width=8
+[ kernel ] accel-intel: execlist-add-cross-tenant data buffers CLEARED from GGTT (lhs/rhs/output VAs 0x130000/0x131000/0x132000 resolve via per-context PPGTT only)
+[ kernel ] accel-intel: ggtt-pte label=xl-curbe ggtt=0x134000 phys=0x47a3a1000 flags=0x3 pte=0x000000047a3a1003 offset=0x8009a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8009a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-seqno ggtt=0x133000 phys=0x47a37d000 flags=0x3 pte=0x000000047a37d003 offset=0x800998
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800998 width=8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-end
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ring-fault-clear offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hwstam offset=0x2098 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-enable offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-unstop offset=0x209c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-pga offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-engine-configured
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-read offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-read offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-read offset=0x209c width=4
+[ kernel ] accel-intel: execlist-engine mode=0x00008000 execlist_enabled=true mi_mode=0x00000200 ring_stopped=false hws_pga=0x00240000 expected_hws=0x240000
+[ kernel ] accel-intel: execlist-submit token=3 descriptor=0x0000000100200119 lrca=0x200000 ctx_id=1 ring_tail=0x11c pml4_root=0x000000047a3a2000 oracle_match=true
+[ kernel ] accel-intel: elsp-write token=3 slot=0 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=3 slot=1 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=3 slot=2 value=0x00000001 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=3 slot=3 value=0x00200119 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb post-elsp token=3 EXECLIST_STATUS=0x0000000100044032 CSB_PTR=0x00000004 write_idx=4 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=3 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=3 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=3 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=3 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=3 i=4 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=3 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary post-elsp token=3 nonzero_entries=5 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: execlist-mid-status token=3 RING_HEAD=0x00000110 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xffddffff ACTHD=0x0000000000000110 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000001e1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode execlist-mid-status token=3 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-mid-status token=3 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit execlist-mid-status token=3 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode execlist-mid-status token=3 RING_FAULT=0x000001e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=PPGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000000 in_build4a_window=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb mid token=3 EXECLIST_STATUS=0x0000000100044032 CSB_PTR=0x00000004 write_idx=4 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=3 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=3 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=3 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=3 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=3 i=4 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=3 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary mid token=3 nonzero_entries=5 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: execlist-timeout-status token=3 RING_HEAD=0x00000110 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xffddffff ACTHD=0x0000000000000110 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x000001e1 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode execlist-timeout-status token=3 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-timeout-status token=3 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit execlist-timeout-status token=3 bit=21 unit=eu-instruction-fetch(row0)
+[ kernel ] accel-intel: ring-fault-decode execlist-timeout-status token=3 RING_FAULT=0x000001e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=PPGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000000 in_build4a_window=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb timeout token=3 EXECLIST_STATUS=0x0000000100044032 CSB_PTR=0x00000004 write_idx=4 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=3 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=3 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=3 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=3 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=3 i=4 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=3 i=5 status=0x00000000 ctxid=0x00000000 switch_in=false went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-summary timeout token=3 nonzero_entries=5 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+[ kernel ] accel-intel: execlist-bringup timeout token=3 execlist-seqno=0x00000000 csb_switch_events=5 execlist_enabled=true ring_head=0x00000110 ring_mode=0x00008000 fault_valid=true fault_space=PPGTT branch=treeC_csb+fault_PPGTT=>bad_LRC_image_or_PML4_root
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-timeout
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+[ kernel ] accel-intel: negative-gate cross-tenant ran_ok=false fault_valid=true select_ppgtt=true fault_va=0x000000130000 expected_va=0x130000 pml4_root=0x000000047a3a2000
+[ kernel ] accel-intel: execlist-pml4 built kind=add-ro-write root(pml4)=0x000000047a3a2000 pt=0x000000047a3a5000 leaf_pages=8 lhs=rw output=ro lhs_va=0x130000 output_va=0x132000 pt_idx_state=0x110
+[ kernel ] accel-intel: execlist-kernel-eot kind=add-ro-write eot_present=true
+[ kernel ] accel-intel: interface-descriptor kernel_start=0x00120000 expected_kernel_ggtt=0x00120000 kernel_ptr_matches=true thread_group_threads=1 cross_thread_read_grf=3 per_thread_read_grf=6 stateless=true(no sampler/binding-table)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-begin
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-write offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000001 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-begin
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x200000 phys=0x47a380000 flags=0x3 pte=0x000000047a380003 offset=0x801000
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801000 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x201000 phys=0x47a381000 flags=0x3 pte=0x000000047a381003 offset=0x801008
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801008 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x202000 phys=0x47a382000 flags=0x3 pte=0x000000047a382003 offset=0x801010
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801010 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x203000 phys=0x47a383000 flags=0x3 pte=0x000000047a383003 offset=0x801018
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801018 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x204000 phys=0x47a384000 flags=0x3 pte=0x000000047a384003 offset=0x801020
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801020 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x205000 phys=0x47a385000 flags=0x3 pte=0x000000047a385003 offset=0x801028
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801028 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x206000 phys=0x47a386000 flags=0x3 pte=0x000000047a386003 offset=0x801030
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801030 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x207000 phys=0x47a387000 flags=0x3 pte=0x000000047a387003 offset=0x801038
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801038 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x208000 phys=0x47a388000 flags=0x3 pte=0x000000047a388003 offset=0x801040
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801040 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x209000 phys=0x47a389000 flags=0x3 pte=0x000000047a389003 offset=0x801048
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801048 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20a000 phys=0x47a38a000 flags=0x3 pte=0x000000047a38a003 offset=0x801050
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801050 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20b000 phys=0x47a38b000 flags=0x3 pte=0x000000047a38b003 offset=0x801058
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801058 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20c000 phys=0x47a38c000 flags=0x3 pte=0x000000047a38c003 offset=0x801060
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801060 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20d000 phys=0x47a38d000 flags=0x3 pte=0x000000047a38d003 offset=0x801068
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801068 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20e000 phys=0x47a38e000 flags=0x3 pte=0x000000047a38e003 offset=0x801070
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801070 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x20f000 phys=0x47a38f000 flags=0x3 pte=0x000000047a38f003 offset=0x801078
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801078 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x210000 phys=0x47a390000 flags=0x3 pte=0x000000047a390003 offset=0x801080
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801080 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x211000 phys=0x47a391000 flags=0x3 pte=0x000000047a391003 offset=0x801088
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801088 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x212000 phys=0x47a392000 flags=0x3 pte=0x000000047a392003 offset=0x801090
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801090 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x213000 phys=0x47a393000 flags=0x3 pte=0x000000047a393003 offset=0x801098
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801098 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x214000 phys=0x47a394000 flags=0x3 pte=0x000000047a394003 offset=0x8010a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=lrc ggtt=0x215000 phys=0x47a395000 flags=0x3 pte=0x000000047a395003 offset=0x8010a8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8010a8 width=8
+[ kernel ] accel-intel: ggtt-pte label=hwsp ggtt=0x240000 phys=0x47a379000 flags=0x3 pte=0x000000047a379003 offset=0x801200
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x801200 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-ring ggtt=0x100000 phys=0x47a37e000 flags=0x3 pte=0x000000047a37e003 offset=0x800800
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800800 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-state ggtt=0x110000 phys=0x47a37f000 flags=0x3 pte=0x000000047a37f003 offset=0x800880
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800880 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-kernel ggtt=0x120000 phys=0x47a3a0000 flags=0x3 pte=0x000000047a3a0003 offset=0x800900
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800900 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-lhs ggtt=0x130000 pte=0x0000000000000000 offset=0x800980 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800980 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-rhs ggtt=0x131000 pte=0x0000000000000000 offset=0x800988 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800988 width=8
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-output ggtt=0x132000 pte=0x0000000000000000 offset=0x800990 (invalidate stale mapping for ppgtt-only buffer)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-clear offset=0x800990 width=8
+[ kernel ] accel-intel: execlist-add-ro-write data buffers CLEARED from GGTT (lhs/rhs/output VAs 0x130000/0x131000/0x132000 resolve via per-context PPGTT only)
+[ kernel ] accel-intel: ggtt-pte label=xl-curbe ggtt=0x134000 phys=0x47a3a1000 flags=0x3 pte=0x000000047a3a1003 offset=0x8009a0
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x8009a0 width=8
+[ kernel ] accel-intel: ggtt-pte label=xl-seqno ggtt=0x133000 phys=0x47a37d000 flags=0x3 pte=0x000000047a37d003 offset=0x800998
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=ggtt-pte-write offset=0x800998 width=8
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ggtt-map-end
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-ring-fault-clear offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hwstam offset=0x2098 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-enable offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-unstop offset=0x209c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-pga offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-engine-configured
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mode-read offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-hws-read offset=0x2080 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-mi-mode-read offset=0x209c width=4
+[ kernel ] accel-intel: execlist-engine mode=0x00008000 execlist_enabled=true mi_mode=0x00000000 ring_stopped=false hws_pga=0x00240000 expected_hws=0x240000
+[ kernel ] accel-intel: execlist-submit token=4 descriptor=0x0000000100200119 lrca=0x200000 ctx_id=1 ring_tail=0x11c pml4_root=0x000000047a3a2000 oracle_match=true
+[ kernel ] accel-intel: elsp-write token=4 slot=0 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=4 slot=1 value=0x00000000 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=4 slot=2 value=0x00000001 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+[ kernel ] accel-intel: elsp-write token=4 slot=3 value=0x00200119 reg=0x2230
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=elsp-write offset=0x2230 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb post-elsp token=4 EXECLIST_STATUS=0x0000000100024049 CSB_PTR=0x00000005 write_idx=5 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=4 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=4 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=4 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=4 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=4 i=4 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=4 i=5 status=0x00008002 ctxid=0x00000001 switch_in=false went_idle=false complete=false ctxid_matches_ours=true
+[ kernel ] accel-intel: execlist-csb-summary post-elsp token=4 nonzero_entries=6 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: execlist-mid-status token=4 RING_HEAD=0x00000110 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xffddffff ACTHD=0x0000000000000110 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x00000000 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode execlist-mid-status token=4 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-mid-status token=4 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit execlist-mid-status token=4 bit=21 unit=eu-instruction-fetch(row0)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb mid token=4 EXECLIST_STATUS=0x0000000100024049 CSB_PTR=0x00000005 write_idx=5 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=4 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=4 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=4 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=4 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=4 i=4 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry mid token=4 i=5 status=0x00008002 ctxid=0x00000001 switch_in=false went_idle=false complete=false ctxid_matches_ours=true
+[ kernel ] accel-intel: execlist-csb-summary mid token=4 nonzero_entries=6 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_HEAD offset=0x2034 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_TAIL offset=0x2030 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_CTL offset=0x203c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_MODE offset=0x229c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-INSTDONE offset=0x206c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD offset=0x2074 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ACTHD_UDW offset=0x205c width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-R_PWR_CLK_STATE offset=0x20c8 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-RING_FAULT offset=0x4094 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA0 offset=0x4b10 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FAULT_TLB_DATA1 offset=0x4b14 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SC_INSTDONE offset=0x7100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-SAMPLER_INSTDONE offset=0xe160 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-ROW_INSTDONE offset=0xe100 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-TD_CTL offset=0xe400 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-GT_CORE_STATUS offset=0x138060 width=4
+[ kernel ] accel-intel: execlist-timeout-status token=4 RING_HEAD=0x00000110 RING_TAIL=0x00000118 FORCEWAKE_ACK=0x00000001 GT_FORCEWAKE_ACK=0x00000001 RING_CTL=0x00000001 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xffddffff ACTHD=0x0000000000000110 R_PWR_CLK_STATE=0x00000000 RING_FAULT=0x00000000 GT_CORE_STATUS=0x00800000 SC_INSTDONE=0xffffffff SAMPLER_INSTDONE=0xffffffff ROW_INSTDONE=0x00008040 TD_CTL=0x00000000 seqno=0x00000000
+[ kernel ] accel-intel: instdone-decode execlist-timeout-status token=4 INSTDONE=0xffddffff busy_mask=0x00220000 compute_ref_match=false
+[ kernel ] accel-intel: instdone-busy-bit execlist-timeout-status token=4 bit=17 unit=eu-area-bit
+[ kernel ] accel-intel: instdone-busy-bit execlist-timeout-status token=4 bit=21 unit=eu-instruction-fetch(row0)
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_LO offset=0x2234 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-EXECLIST_STATUS_HI offset=0x2238 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB_STATUS_PTR offset=0x23a0 width=4
+[ kernel ] accel-intel: execlist-csb timeout token=4 EXECLIST_STATUS=0x0000000100024049 CSB_PTR=0x00000005 write_idx=5 reset_quirk=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2370 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2374 width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=4 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2378 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x237c width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=4 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2380 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2384 width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=4 i=2 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2388 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x238c width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=4 i=3 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2390 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x2394 width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=4 i=4 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-status offset=0x2398 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-CSB-ctxid offset=0x239c width=4
+[ kernel ] accel-intel: execlist-csb-entry timeout token=4 i=5 status=0x00008002 ctxid=0x00000001 switch_in=false went_idle=false complete=false ctxid_matches_ours=true
+[ kernel ] accel-intel: execlist-csb-summary timeout token=4 nonzero_entries=6 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+[ kernel ] accel-intel: execlist-ro-write did_not_complete output=[00, 00, 00, 00, 00, 00, 00, 00] unmodified(blocked)=true (Gen9 wedges the EU on a write-permission fault; no RING_FAULT)
+[ kernel ] accel-intel: execlist-bringup timeout token=4 execlist-seqno=0x00000000 csb_switch_events=6 execlist_enabled=true ring_head=0x00000110 ring_mode=0x00008000 fault_valid=false fault_space=PPGTT branch=treeE_csb+head_moved_no_seqno=>ring_ran_but_batch_wrong
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=execlist-bringup-timeout
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa188 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_GT offset=0x130044 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0x130044 value=0x00000000 matched=true
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-release offset=0xa278 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-begin offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=read-FORCEWAKE_ACK_RENDER offset=0xd84 width=4
+NEO_TEST/1 event=INFO name=accel_intel_add_bringup accel_intel_breadcrumb=forcewake-ack-poll-end offset=0xd84 value=0x00000000 matched=true
+[ kernel ] accel-intel: negative-gate rw-on-ro ran_ok=false output_unmodified(blocked)=true (Gen9: write-permission fault wedges the EU, no RING_FAULT)
+[ kernel ] accel-intel: negative-gate ALL PASS     own=succeeds ro_read=succeeds cross=faults(select=PPGTT,addr=A's_VA,B's_root) rw_on_ro=blocked(output_unmodified)     device boundary silicon-enforced
+NEO_TEST/1 event=PASS name=accel_intel_execlist_negative_bringup accel_intel_execlist_negative=ok stage=4X-3 own_access=succeeds[4,6] ro_read=succeeds cross_tenant=page_faulted select=PPGTT addr=A_tensor_VA pml4_root=B rw_on_ro=write_blocked(output_unmodified) boundary=silicon_enforced governance_line=device_isolation_REAL closes=9.8+9.7

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+# Host-only timing of the production kernel inference code (Arthur latency
+# lane, Plans/NOTE-2026-10-23-arthur-prefill-latency.md). Excluded from the
+# workspace like tools/bench-harness: it is a measurement tool, not a gate.
+[package]
+name = "inference-latency-bench"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+[features]
+phase9-avx2-matmul = []
+phase9-quantized-matmul = []
+# Kill-switch of the path-`mod`'d kernel `soft_f32.rs`: integer add/sub/mul only.
+soft-f32-only = []
+phase9-real-quant = []
+
+[workspace]

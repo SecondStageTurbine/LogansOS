@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <title>Files</title>
+  <path d="M2 13 V3.5 H6 L7.5 5 H14 V13 Z" fill="#2d3748" stroke="#a8adb2" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,98 @@
+LogansOS
+Copyright (c) 2026 LogansOS project contributors.
+
+================================================================================
+Licensing summary (authoritative terms are in the referenced license files)
+================================================================================
+
+SOURCE CODE  ->  Mozilla Public License 2.0 (MPL-2.0)
+  Applies to all source code in this repository, including but not limited to:
+    kernel/        userland/        tools/        tests/
+  and all build scripts and Rust (.rs) sources therein.
+  Full text: ./LICENSE
+  Per-file marker: SPDX-License-Identifier: MPL-2.0
+
+DOCUMENTATION  ->  Creative Commons Attribution 4.0 International (CC-BY-4.0)
+  Applies to project documentation and governance artifacts, including:
+    docs/          (the Bible, ANSPEC specs, ADRs, phase documents)
+    Plans/         (planning, dispatch, return, disposition, ratification artifacts)
+    *.md documentation at the repository root authored by the project
+  Full text: https://creativecommons.org/licenses/by/4.0/legalcode
+  Marker (where applied): SPDX-License-Identifier: CC-BY-4.0
+  Rationale: documentation is prose, not code; MPL-2.0 is ill-suited to prose.
+  CC-BY-4.0 keeps specs and decision records freely shareable and quotable with
+  attribution.
+
+THIRD-PARTY DEPENDENCIES  ->  retain their own upstream licenses
+  Vendored or fetched dependencies (e.g., crates under any local registry cache)
+  are licensed by their respective authors under their own terms (commonly
+  MIT/Apache-2.0). Nothing in this NOTICE alters those terms. The contents of
+  any dependency cache directory (e.g., .cargo-home/) are NOT LogansOS code
+  and are NOT covered by ./LICENSE.
+
+VENDORED DEVICE FIRMWARE  ->  retains its upstream redistribution terms
+  kernel/assets/firmware/mediatek/mt7601u.bin (Phase 7.5 BUILD-W1, ADR-054)
+    MediaTek MT7601U WiFi MAC firmware, from the linux-firmware project
+    (mediatek/mt7601u.bin, version 34, 45,412 bytes,
+     sha256 4511b1d840e22aea2bf5fdca419c91c0d94cbfb291b9ac4f8be6d9100d1a7046).
+    License: "Redistributable" per the linux-firmware WHENCE entry
+    (LICENCE.ralink_a_mediatek_company_firmware); (c) Ralink/MediaTek.
+    This is a third-party BINARY BLOB. It is NOT LogansOS source, NOT MPL-2.0,
+    and carries NO SPDX first-party header (it is excluded from the SPDX header
+    gate). OT-27a (2026-06-21): it is NO LONGER committed to git and is NOT
+    compiled into the kernel — it is provided out-of-band on disk and staged as a
+    Limine boot module (/modules/mt7601u-fw) for WiFi ISOs, looked up at runtime.
+    The redistribution terms above continue to apply to the blob wherever it is
+    distributed (e.g. inside a built WiFi ISO).
+
+BUNDLED FONTS  ->  SIL Open Font License 1.1 (OFL-1.1)
+  assets/fonts/Inter-Regular.ttf  (Inter Regular 4.001, release v4.1)
+    Copyright (c) 2016 The Inter Project Authors (https://github.com/rsms/inter).
+    Full licence text: ./assets/fonts/OFL-Inter.txt
+  assets/fonts/IBMPlexMono-Regular.ttf  (IBM Plex Mono Regular 2.005)
+    Copyright (c) 2017 IBM Corp. with Reserved Font Name "Plex".
+    Full licence text: ./assets/fonts/OFL-IBM-Plex.txt
+    Provenance (rsms/inter GitHub release v4.1; IBM/plex GitHub release
+    @ibm/plex-mono@2.5.0; the canonical TTFs) and sha256 sums:
+    ./assets/fonts/README.md. Shipped byte-for-byte unmodified (not converted,
+    subset or renamed). They are compiled into the neo-arthur binary (and Inter
+    into the window manager and the Lens) via userland/neo-text (Desktop S2).
+    Every boot image carries this NOTICE and both OFL texts as
+    /licenses/NOTICE, /licenses/OFL-Inter.txt and /licenses/OFL-IBM-Plex.txt.
+    They are NOT LogansOS source, NOT MPL-2.0, and carry no SPDX first-party
+    header.
+
+MODEL WEIGHTS  ->  retain their upstream licence (B1b)
+  model-qwen2.5-0.5b.neom  (Qwen2.5-0.5B-Instruct, Q4_K_M, imported to .neom)
+    Upstream: Qwen/Qwen2.5-0.5B-Instruct-GGUF, file
+    qwen2.5-0.5b-instruct-q4_k_m.gguf. Copyright (c) Alibaba Cloud (Qwen team).
+    License: Apache License 2.0. Full text: ./assets/licenses/Apache-2.0.txt,
+    shipped as /licenses/Apache-2.0.txt in every image that carries the model.
+    .neom: 485,489,152 bytes, blake3
+    a32e4a1ba94a850724c15d840f3ae2c44902d9f1f34d8069bac5fcb37e1ccafe (the digest
+    the kernel pins; it refuses any other bytes under that name).
+    GGUF sha256 74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
+    (491,400,032 bytes, upstream revision 9217f5db79a29953eb74d5343926648285ec7e67),
+    equal to the upstream LFS oid. Two independent neomc imports of it are
+    byte-identical (B1-1, Plans/RETURN-2026-10-20-b1-1-model-import-janus.md).
+    The weights are third-party content. They are NOT LogansOS source, NOT
+    MPL-2.0, and are NOT in git: they are provided out-of-band and staged as a
+    Limine boot module (/models/model-qwen2.5-0.5b.neom), with the tokenizer
+    vocabulary derived from the same GGUF (/vocab/model-qwen2.5-0.5b.vocab,
+    7,990,862 bytes, blake3
+    e89741214838ae7af6277122c1093e899138884ea3bea4f83ff5671e76c05265, also
+    pinned by the kernel).
+
+================================================================================
+Notes
+================================================================================
+
+- MPL-2.0 is file-level copyleft: modifications to MPL-licensed files must be
+  made available under MPL-2.0, while the files may be combined with code under
+  other licenses in a larger work. See ADR-026 for the decision rationale.
+- This NOTICE is informational. The binding terms are the license texts named
+  above. Where a per-file SPDX-License-Identifier is present, it governs that
+  file.
+- Copyright holder identity and contributor terms (DCO/CLA) are tracked as open
+  questions in ADR-026 and will be finalized before public release per Bible
+  Article 26.

@@ -1,0 +1,1633 @@
+limine: Loading executable `boot():/boot/kernel`...
+limine: Loading module `boot():/modules/neo-init`...
+limine: Loading module `boot():/modules/neo-worker`...
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=0 loaded (tss_sel=0x30)
+[ kernel ] idt: loaded (18 exception handlers + timer at vector 32 + AHCI MSI at vector 240 + NVMe MSI/MSI-X at vector 241 + TLB shootdown IPI at vector 252 + resched IPI at vector 253)
+[ kernel ] per_cpu: PER_CPU[0] at 0xffffffff95f7d600 → IA32_GS_BASE (BSP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95df2570), SFMASK=IF|TF|AC|DF)
+
+================================================
+  LOGANSOS  v0.0.1
+  Intelligence as a kernel primitive.
+================================================
+
+[ kernel ] entered _kernel_start, long mode, ring 0 (limine rev: supported=true, actual=Some(3))
+[ kernel ] limine: executable phys=0x000000001db43000 virt=0xffffffff95c64000
+[ kernel ] interrupts: enabled
+[ trap  ] BREAKPOINT (#BP) InterruptStackFrame { instruction_pointer: VirtAddr(0xffffffff95dc47c1), code_segment: SegmentSelector { index: 1, rpl: Ring0 }, cpu_flags: RFlags(INTERRUPT_FLAG | SIGN_FLAG | 0x2), stack_pointer: VirtAddr(0xffff80001fecbc58), stack_segment: SegmentSelector { index: 2, rpl: Ring0 } }
+[ kernel ] breakpoint smoke test: returned cleanly
+[ kernel ] mm: hhdm_offset=0xffff800000000000, memmap_entries=21
+[ kernel ] mm: usable physical memory = 434 MiB
+[ kernel ] mm: hhdm_phys_end=0x000000001e276000
+[hhdm] required_end=0x1e276000 exec=[0x1db43000,0x1e276000) modules=[module0=[0x1c780000,0x1db31870),module1=[0x1b3cb000,0x1c77b6e0)] repair_pages=0
+[ kernel ] paging: CR4.PGE was not set; enabled it.
+[ kernel ] paging: GLOBAL fixup complete - 4K leaves: 5270, 2M leaves: 251, 1G leaves: 0
+[ kernel ] paging: sanity OK - kernel .text sample virt VirtAddr(0xffffffff95dc9310) -> phys PhysAddr(0x1dca8310) (global=true)
+[ kernel ] heap: ready (4 MiB at VirtAddr(0xffffffff96600000), 1024 pages mapped)
+[ kernel ] heap: smoke test passed (Box, Vec, String)
+[ kernel ] mm: kernel PML4 phys = 0x000000001febb000
+[ kernel ] slab: initialized per-CPU state cpu=0 at 0xffffffff96600180
+[ kernel ] apic: cpu=0 lapic_id=0 enabled xAPIC (BSP, base_phys=0x00000000fee00000)
+[ kernel ] block: init (generic block-device substrate)
+[ kernel ] pci: virtio-blk modern 00:03.0 vendor=0x1af4 device=0x1042
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=5 bar=0 offset=0x0 length=0x0
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=2 bar=4 offset=0x3000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=4 bar=4 offset=0x2000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=3 bar=4 offset=0x1000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=1 bar=4 offset=0x0 length=0x1000
+[ kernel ] block: registered device index=0 driver=virtio-blk name=virtio-blk0 pci_bdf=Some((0, 3, 0))
+[ kernel ] virtio-blk: feature-policy bdf=00:03.0 offered=0x0000010130007e54 driver=0x0000000100000200 F_FLUSH_offered=true F_FLUSH_negotiated=true F_CONFIG_WCE_negotiated=false queue_size=8 capacity_sectors=262144 attach=rw
+[ kernel ] pci: AHCI controller 00:1f.2 vendor=0x8086 device=0x2922 class=0x010601
+[ kernel ] block: pci scan complete functions=7 virtio_blk=1 ahci=1 ahci_ok=0 nvme=0 nvme_ok=0 attached_devices=1
+[ kernel ] net: init (generic link-device substrate)
+[ kernel ] net: pci scan complete functions=7 virtio_net=0 virtio_net_ok=0 attached_devices=0
+[ kernel ] framebuffer: 1280x800 @ 32 bpp, pitch 5120 addr 0xffff8000fd000000
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] accel: init complete attached_devices=2
+[ kernel ] smp: Limine reports 4 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=1
+[ kernel ] smp: starting cpu_id=2 lapic_id=2
+[ kernel ] smp: starting cpu_id=3 lapic_id=3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffff95f7d680 → IA32_GS_BASE (AP)
+[ kernel ] smp: started 3 AP(s)
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffff95f7d700 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffff95f7d780 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffff95f7d680 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] apic: cpu=1 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffff95f7d780 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95df2570), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffff95f7d700 → IA32_GS_BASE (AP)
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffff966009a0
+[ kernel ] apic: cpu=3 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=1, processor_id=1)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95df2570), SFMASK=IF|TF|AC|DF)
+[ kernel ] apic: cpu=2 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffff966011d8
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=3, processor_id=3)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffff95df2570), SFMASK=IF|TF|AC|DF)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffff96601f18
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=2, processor_id=2)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] sched: spawned 'ping' (id=4)
+[ kernel ] sched: spawned 'pong' (id=5)
+[ kernel ] sched: spawned 'hog' (id=6)
+[ ping ] 1
+[ pong ] 1
+[ ping ] 2
+[ pong ] 2
+[ ping ] 3
+[ pong ] 3
+[ ping ] 4
+[ pong ] 4
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=4)
+[ kernel ] sched: reaped 'pong' (id=5)
+[ hog  ] preempted at least 5 ticks (start=4, now=11)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=6)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=13)
+NEO_TEST/1 event=BEGIN name=accel_residency_daemon phase=dispatch
+[ kernel ] sched: spawned 'virtio-blk-completion' (id=7)
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] fs: mounted NeoFS readonly at /neofs selected_superblock=0 generation=1
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] sched: enqueued kthread 'residency-daemon' (id=8)
+[ kernel ] sched: spawned 'daemon-b-accessor' (id=9)
+[ kernel ] accel-daemon: iter=0 phase=setup
+placement: op=Gelu principal=PID1000 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1000 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1000 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1000 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=0 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1001 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1001 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=14 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1001 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=15 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1001 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=0 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=1 phase=setup
+placement: op=Gelu principal=PID1004 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1004 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1004 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1004 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=1 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1005 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1005 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=24 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1005 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=25 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1005 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=1 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=2 phase=setup
+placement: op=Gelu principal=PID1008 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1008 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1008 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1008 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=2 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1009 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1009 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=34 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1009 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=35 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1009 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=2 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=3 phase=setup
+placement: op=Gelu principal=PID1012 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1012 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1012 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1012 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=3 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1013 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1013 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=44 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1013 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=45 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1013 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=3 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=4 phase=setup
+placement: op=Gelu principal=PID1016 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1016 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1016 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1016 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=4 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1017 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1017 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=54 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1017 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=55 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1017 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=4 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=5 phase=setup
+placement: op=Gelu principal=PID1020 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1020 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1020 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1020 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=5 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1021 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1021 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=64 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1021 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=65 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1021 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=5 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=6 phase=setup
+placement: op=Gelu principal=PID1024 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1024 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1024 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1024 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=6 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1025 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1025 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=74 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1025 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=75 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1025 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=6 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=7 phase=setup
+placement: op=Gelu principal=PID1028 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1028 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1028 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1028 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=7 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1029 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1029 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=84 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1029 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=85 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1029 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=7 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=8 phase=setup
+placement: op=Gelu principal=PID1032 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1032 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1032 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1032 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=8 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1033 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1033 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=94 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1033 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=95 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1033 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=8 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=9 phase=setup
+placement: op=Gelu principal=PID1036 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1036 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1036 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1036 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=9 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1037 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1037 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=104 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1037 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=105 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1037 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=9 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=10 phase=setup
+placement: op=Gelu principal=PID1040 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1040 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1040 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1040 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=10 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1041 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1041 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=114 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1041 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=115 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1041 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=10 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=11 phase=setup
+placement: op=Gelu principal=PID1044 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1044 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1044 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1044 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=11 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1045 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1045 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=124 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1045 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=125 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1045 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=11 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=12 phase=setup
+placement: op=Gelu principal=PID1048 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1048 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1048 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1048 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=12 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1049 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1049 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=134 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1049 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=135 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1049 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=12 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=13 phase=setup
+placement: op=Gelu principal=PID1052 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1052 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1052 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1052 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=13 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1053 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1053 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=144 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1053 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=145 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1053 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=13 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=14 phase=setup
+placement: op=Gelu principal=PID1056 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1056 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1056 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1056 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=14 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1057 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1057 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=154 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1057 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=155 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1057 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=14 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=15 phase=setup
+placement: op=Gelu principal=PID1060 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1060 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1060 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1060 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=15 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1061 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1061 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=164 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1061 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=165 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1061 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=15 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=16 phase=setup
+placement: op=Gelu principal=PID1064 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1064 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1064 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1064 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=16 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1065 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1065 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=174 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1065 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=175 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1065 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=16 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=17 phase=setup
+placement: op=Gelu principal=PID1068 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1068 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1068 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1068 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=17 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1069 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1069 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=184 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1069 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=185 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1069 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=17 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=18 phase=setup
+placement: op=Gelu principal=PID1072 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1072 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1072 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1072 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=18 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1073 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1073 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=194 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1073 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=195 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1073 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=18 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=19 phase=setup
+placement: op=Gelu principal=PID1076 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1076 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1076 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1076 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=19 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1077 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1077 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=204 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1077 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=205 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1077 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=19 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=20 phase=setup
+placement: op=Gelu principal=PID1080 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1080 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1080 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1080 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=20 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1081 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1081 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=214 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1081 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=215 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1081 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=20 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=21 phase=setup
+placement: op=Gelu principal=PID1084 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1084 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1084 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1084 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=21 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1085 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1085 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=224 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1085 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=225 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1085 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=21 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=22 phase=setup
+placement: op=Gelu principal=PID1088 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1088 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1088 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1088 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=22 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1089 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1089 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=234 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1089 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=235 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1089 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=22 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=23 phase=setup
+placement: op=Gelu principal=PID1092 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1092 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1092 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1092 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=23 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1093 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1093 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=244 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1093 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=245 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1093 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=23 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=24 phase=setup
+placement: op=Gelu principal=PID1096 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1096 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1096 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1096 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=24 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1097 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1097 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=254 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1097 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=255 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1097 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=24 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=25 phase=setup
+placement: op=Gelu principal=PID1100 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1100 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1100 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1100 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=25 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1101 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1101 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=264 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1101 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=265 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1101 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=25 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=26 phase=setup
+placement: op=Gelu principal=PID1104 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1104 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1104 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1104 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=26 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1105 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1105 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=274 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1105 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=275 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1105 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=26 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=27 phase=setup
+placement: op=Gelu principal=PID1108 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1108 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1108 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1108 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=27 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1109 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1109 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=284 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1109 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=285 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1109 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=27 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=28 phase=setup
+placement: op=Gelu principal=PID1112 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1112 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1112 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1112 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=28 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1113 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1113 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=294 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1113 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=295 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1113 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=28 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=29 phase=setup
+placement: op=Gelu principal=PID1116 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1116 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1116 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1116 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=29 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1117 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1117 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=304 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1117 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=305 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1117 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=29 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=30 phase=setup
+placement: op=Gelu principal=PID1120 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1120 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1120 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1120 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=30 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1121 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1121 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=314 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1121 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=315 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1121 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=30 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=31 phase=setup
+placement: op=Gelu principal=PID1124 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1124 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1124 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1124 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=31 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1125 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1125 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=324 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1125 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=325 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1125 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=31 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=32 phase=setup
+placement: op=Gelu principal=PID1128 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1128 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1128 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1128 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=32 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1129 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1129 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=334 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1129 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=335 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1129 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=32 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=33 phase=setup
+placement: op=Gelu principal=PID1132 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1132 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1132 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1132 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=33 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1133 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1133 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=344 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1133 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=345 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1133 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=33 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=34 phase=setup
+placement: op=Gelu principal=PID1136 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1136 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1136 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1136 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=34 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1137 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1137 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=354 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1137 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=355 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1137 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=34 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=35 phase=setup
+placement: op=Gelu principal=PID1140 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1140 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1140 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1140 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=35 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1141 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1141 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=364 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1141 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=365 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1141 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=35 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=36 phase=setup
+placement: op=Gelu principal=PID1144 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1144 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1144 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1144 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=36 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1145 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1145 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=374 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1145 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=375 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1145 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=36 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=37 phase=setup
+placement: op=Gelu principal=PID1148 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1148 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1148 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1148 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=37 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1149 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1149 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=384 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1149 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=385 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1149 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=37 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=38 phase=setup
+placement: op=Gelu principal=PID1152 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1152 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1152 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1152 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=38 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1153 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1153 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=394 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1153 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=395 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1153 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=38 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=39 phase=setup
+placement: op=Gelu principal=PID1156 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1156 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1156 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1156 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=39 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1157 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1157 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=404 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1157 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=405 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1157 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=39 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=40 phase=setup
+placement: op=Gelu principal=PID1160 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1160 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1160 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1160 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=40 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1161 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1161 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=414 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1161 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=415 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1161 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=40 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=41 phase=setup
+placement: op=Gelu principal=PID1164 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1164 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1164 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1164 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=41 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1165 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1165 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=424 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1165 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=425 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1165 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=41 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=42 phase=setup
+placement: op=Gelu principal=PID1168 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1168 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1168 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1168 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=42 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1169 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1169 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=434 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1169 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=435 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1169 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=42 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=43 phase=setup
+placement: op=Gelu principal=PID1172 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1172 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1172 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1172 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=43 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1173 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1173 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=444 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1173 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=445 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1173 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=43 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=44 phase=setup
+placement: op=Gelu principal=PID1176 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1176 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1176 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1176 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=44 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1177 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1177 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=454 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1177 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=455 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1177 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=44 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=45 phase=setup
+placement: op=Gelu principal=PID1180 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1180 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1180 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1180 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=45 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1181 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1181 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=464 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1181 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=465 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1181 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=45 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=46 phase=setup
+placement: op=Gelu principal=PID1184 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1184 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1184 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1184 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=46 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1185 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1185 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=474 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1185 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=475 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1185 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=46 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=47 phase=setup
+placement: op=Gelu principal=PID1188 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1188 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1188 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1188 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=47 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1189 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1189 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=484 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1189 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=485 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1189 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=47 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=48 phase=setup
+placement: op=Gelu principal=PID1192 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1192 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1192 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1192 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=48 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1193 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1193 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=494 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1193 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=495 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1193 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=48 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=49 phase=setup
+placement: op=Gelu principal=PID1196 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1196 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1196 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1196 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=49 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1197 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1197 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=504 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1197 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=505 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1197 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=49 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=50 phase=setup
+placement: op=Gelu principal=PID1200 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1200 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1200 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1200 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=50 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1201 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1201 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=514 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1201 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=515 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1201 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=50 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=51 phase=setup
+placement: op=Gelu principal=PID1204 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1204 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1204 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1204 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=51 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+placement: op=Gelu principal=PID1205 → device=Accel(1) reason=operands-resident migrated=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Relu principal=PID1205 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=524 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1205 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=525 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1205 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=51 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=52 phase=setup
+placement: op=Gelu principal=PID1208 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1208 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1208 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1208 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=52 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1209 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1209 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=534 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1209 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=535 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1209 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=52 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=53 phase=setup
+placement: op=Gelu principal=PID1212 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1212 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1212 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1212 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=53 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1213 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1213 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=544 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1213 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=545 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1213 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=53 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=54 phase=setup
+placement: op=Gelu principal=PID1216 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1216 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1216 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1216 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=54 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1217 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1217 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=554 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1217 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=555 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1217 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=54 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=55 phase=setup
+placement: op=Gelu principal=PID1220 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1220 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1220 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1220 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=55 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1221 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1221 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=564 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1221 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=565 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1221 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=55 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=56 phase=setup
+placement: op=Gelu principal=PID1224 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1224 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1224 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1224 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=56 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1225 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1225 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=574 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1225 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=575 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1225 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=56 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=57 phase=setup
+placement: op=Gelu principal=PID1228 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1228 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1228 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1228 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=57 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1229 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1229 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=584 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1229 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=585 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1229 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=57 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=58 phase=setup
+placement: op=Gelu principal=PID1232 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1232 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1232 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1232 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=58 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1233 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1233 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=594 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1233 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=595 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1233 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=58 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] accel-daemon: iter=59 phase=setup
+placement: op=Gelu principal=PID1236 → device=Accel(1) reason=operands-resident migrated=0
+eviction: device=Accel(1) reason=no-room-cpu-fallback (resident=147456/262144, need=147456, evictable=0)
+placement: op=Relu principal=PID1236 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Gelu principal=PID1236 → device=cpu reason=cpu-fallback migrated=0
+placement: op=Relu principal=PID1236 → device=cpu reason=cpu-fallback migrated=0
+[ kernel ] accel-daemon: iter=59 phase=baseline critical=1 p3_seams=0
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=147456/262144 low=147456)
+residency: device=Accel(1) → cpu reason=bg-demote (daemon, resident=98304/262144 low=147456)
+placement: op=Gelu principal=PID1237 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID1237 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=604 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Gelu principal=PID1237 → device=Accel(1) reason=operands-resident migrated=0
+residency: tensor=605 device=Accel(1) → cpu reason=cold-demote (resident=147456/262144, headroom-target=147456)
+placement: op=Relu principal=PID1237 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-daemon: iter=59 phase=daemon critical=0 p3_seams=2
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: cpu → device=Accel(1) reason=prefetch (daemon, headroom ok, bytes=49152)
+residency: device=Accel(1) → cpu reason=mispredict-rollback (daemon, prediction withdrawn)
+[ kernel ] sched: reaped 'residency-daemon' (id=8)
+[ kernel ] accel-daemon: gate iterations=60 bg_demotes=120 prefetches=120 mispredict_rollbacks=60 kicks_heartbeat=686 reads=27130 parks=33 (critical path paid 0 with the daemon awake vs >=1 paused, every iteration)
+NEO_TEST/1 event=PASS name=accel_residency_daemon accel_residency_daemon=ok iterations=60 critical_path=0_vs_baseline>=1_every_iteration bg_demotes>=60 prefetches=120 mispredicts=60 teardown=drained output=byte_identical kernel_manages_memory_while_it_works opens=9.12

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "rtl8125-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]

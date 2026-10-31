@@ -1,0 +1,104 @@
+# NeoPlutarch — Docker Compose dev environment.
+#
+# One image, three usage patterns:
+#
+#   1. Interactive shell (build, edit, debug):
+#        docker compose run --rm neo
+#
+#   2. Boot the kernel with VNC (recommended — see the framebuffer):
+#        docker compose up neo-vnc
+#      Then connect a VNC client to localhost:5901.
+#
+#   2b. Boot the live DESKTOP session (full-screen WM + Arthur, live keyboard
+#       and mouse) and watch/drive it over VNC:
+#        docker compose up neo-desktop
+#      Then connect a VNC viewer to localhost:5901 (docs/HOWTO-run-desktop.md).
+#
+#   3. Boot the kernel headless (CI, quick smoke tests, just see serial):
+#        docker compose run --rm neo cargo neo-tty
+#
+# First-time build of the image takes 5-10 minutes (rustup + Limine).
+# Cargo registry and target/ are persisted in the bind-mounted workspace,
+# so they survive container restarts. (We avoid named volumes here
+# because they get created with root ownership and conflict with the
+# non-root `neo` user inside the container — bind-mount cache is simpler
+# and works on Docker Desktop / WSL2 / native Linux without ceremony.)
+
+services:
+  # Interactive dev shell. Default service when you `docker compose run`.
+  neo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: neoplutarch-dev:latest
+    container_name: neoplutarch-dev
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    # Override the default cargo home to live inside the workspace, so
+    # the cargo registry cache persists between runs without needing
+    # named volumes.
+    environment:
+      CARGO_HOME: /workspace/.cargo-home
+      # Trust the bind mount for git (its owner is often another uid), so the
+      # kernel's build id is the real commit, not `unknown-build-id`.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace
+      NEO_SMP: ${NEO_SMP:-1}
+    stdin_open: true
+    tty: true
+
+  # Boots the kernel with VNC output. This is the recommended way to
+  # actually watch the boot sequence from your host.
+  neo-vnc:
+    image: neoplutarch-dev:latest
+    container_name: neoplutarch-vnc
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      CARGO_HOME: /workspace/.cargo-home
+      # Trust the bind mount for git (its owner is often another uid), so the
+      # kernel's build id is the real commit, not `unknown-build-id`.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace
+      NEO_SMP: ${NEO_SMP:-1}
+    ports:
+      - "5901:5901"
+    command: ["cargo", "neo-vnc"]
+
+  # Desktop S1: the live desktop session (neo-init as the resident compositor/WM,
+  # Arthur as its client, real USB keyboard + mouse) at 1920x1080 over VNC.
+  # Arthur's memory lives on a persistent NeoFS disk under target/desktop/.
+  neo-desktop:
+    image: neoplutarch-dev:latest
+    container_name: neoplutarch-desktop
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      CARGO_HOME: /workspace/.cargo-home
+      # Trust the bind mount for git (its owner is often another uid), so the
+      # kernel's build id is the real commit, not `unknown-build-id`.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: /workspace
+      NEO_SMP: ${NEO_SMP:-4}
+      # Optional: a real Qwen2.5-0.5B .neom (path inside the container) so Arthur
+      # can answer; without it Arthur says politely that no model is installed.
+      NEO_STAGE_B_NEOM: ${NEO_STAGE_B_NEOM:-}
+      # Desktop material: glass (default), reduce-transparency, or classic.
+      NEO_DESKTOP_MATERIAL: ${NEO_DESKTOP_MATERIAL:-}
+    # Loopback only: the VNC session is unauthenticated and carries live
+    # keyboard input to Arthur, so it must not be reachable from the LAN.
+    ports:
+      - "127.0.0.1:5901:5901"
+    command: ["cargo", "xtask", "run-desktop", "--vnc"]

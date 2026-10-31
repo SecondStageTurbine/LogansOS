@@ -1,0 +1,34 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# RETURN (relay #110): NFS-W1 kernel NeoFS large-file writes
+
+**Reviewer:** GPT-6-Luna, high effort  
+**Reviewed commit:** `fa99f551c5938b3faaecd32f8bc2a1513c84d626` (PR #167 squash)  
+**Branch:** `codex/nfs-w1-review-chad`  
+**Overall:** FAIL — recommend revert-first pending correction of the returned-error reservation leak.
+
+## Checklist
+
+1. **PASS — on-disk tree matches the spec.** `tools/neofs-tree-logic-tests/src/tests.rs:17-52` has hand-laid single- and double-indirect byte oracles. Its independent `resolve` walk (`:76-108`) follows the kernel reader's direct/single/double/triple layout. The max file is 524,288 logical 4 KiB blocks; triple-indirect starts after `8 + 512 + 512² = 262,664` blocks, so it is reachable below the 2 GiB limit. `the_triple_level_resolves_too` and `the_largest_file_resolves` (`:171-185`) exercise triple and resolve every logical block at the 2 GiB maximum. Ran `cargo test -p neofs-tree-logic-tests -- --nocapture`: 7 passed.
+
+2. **FAIL — allocation refusal is clean, but a later write error leaks the reservation on the live mount.** `create_file_from_bytes` takes the namespace lock, then reserves `n + k` under the metadata lock before writing (`kernel/src/fs/neofs/inode.rs:279-305`). `allocate_from_free_map` marks bits dirty only after finding a complete run (`:2353-2381`); if neither a free-map run nor a bump range fits, allocation returns `NoSpace` before any device writes. A fragmented volume with sufficient total free blocks but neither one sufficiently long free run nor sufficient contiguous bump space is refused; it does not compact or scatter the allocation. However, after a successful reservation, any data/pointer write or flush error returns via `?` without restoring the in-memory free map. Concrete sequence: create a new 40,960-byte file (10 data blocks and one single-indirect pointer block), inject a device error on its first data write, then successfully call ordinary `create_regular` on the same mounted filesystem. The first API call returns an error, but its reservation remains marked dirty; the second operation reaches `commit_root_entries` and `publish_superblock` (`:1037, :1105-1133`) and writes that dirty map. The failed file's blocks are then unavailable after remount. This contradicts the public method's “on any error nothing” contract in `kernel/src/fs/neofs/mount.rs:125-147`. The test-only stop is followed by dropping the mount, so it does not exercise continued use after an I/O error.
+
+3. **PASS — crash/cut ordering, with the returned-error case above kept distinct.** The function writes data and pointer blocks to the device and flushes before creating/caching the inode and committing the directory/superblock (`kernel/src/fs/neofs/inode.rs:295-352`). The test hook fires after that flush but before commit. In `run_neofs_large_write` (`kernel/src/test_harness.rs:29143-29175`), the test drops the mount, remounts read-only, and verifies the cut file absent, the first file intact, and free-map stats unchanged. Thus an actual cut/remount before commit leaves the new run free. On in-tree AHCI, NVMe, and virtio block devices `supports_flush()` is true; the writer conditionally skips the flush for a device that reports false (`inode.rs:317-319`), so the ordering guarantee depends on a flush-capable device.
+
+4. **PASS — guarded device and cache coherence.** Every data and pointer request calls `write_fs_blocks(&self.device, ...)` (`kernel/src/fs/neofs/inode.rs:303-315, 2066-2093`); the mounted device is the `GuardedDevice`, whose `write_block` checks the allowed range before forwarding (`kernel/src/drivers/block/mod.rs:452-485`). The writer pauses cache writeback and forgets the newly allocated range before direct writes (`inode.rs:279-289`; `kernel/src/fs/neofs/cache.rs:300-307`), so no stale cached block can later drain over the new bytes. I found no call to the inner device or an alternate unguarded write path in this writer.
+
+5. **PASS — bounded writer buffers and test-only heap change.** The writer allocates one 64 KiB run buffer and one boxed 4 KiB pointer buffer (`kernel/src/fs/neofs/inode.rs:295, 313`); `write_fs_blocks` makes one same-sized DMA copy (`:2087-2091`). Thus the size-dependent writer payload is 135,168 bytes, independent of file length. The pointer block is heap allocated. `kernel/src/mm/heap.rs:38-45` changes the heap floor to 32 MiB only under `neo-test-neofs-large-write`, because that scenario holds a 9 MiB input vector; with the feature off, `HEAP_SIZE` remains the prior `POLICY_HEAP_SIZE` expression. This change does not alter other heap users or non-test builds.
+
+6. **PASS — streamed hash.** Each immutable source slice is fed to BLAKE3 and copied into the same run before that run is written (`kernel/src/fs/neofs/inode.rs:298-305`); the resulting digest is stored in the inode (`:332-344`). Safe Rust cannot mutate the borrowed `[u8]` concurrently during the call, so a safe caller cannot create a source/hash mismatch. The QEMU scenario reads the file back and compares its independently computed digest (`kernel/src/test_harness.rs:29115-29138`).
+
+7. **PASS — host cross-check is wired to independent readers.** `host_check_neofs_large_write` in `tools/xtask/src/main.rs:12664-12740` runs `neofs-inspect.py --verify --force-slow --extract`, checks the extracted bytes against the scenario pattern, checks free-map and root hashes and absence of `cut.bin`, then runs `neofs-mkfs verify`. The PR's merged-gate evidence reports both readers passing on the QEMU-written disk. I did not rerun QEMU locally.
+
+8. **PASS — kill-switch evidence.** The PR evidence records identical `.text` hashes for the baseline and feature-off desktop, product, and image-A builds; the normal build remains behind `neofs-large-write`. The 32 KiB direct-write refusal in `commit_regular_write` remains unchanged. CI's product and feature-gated builds passed; I relied on the measured hash evidence in PR #167 rather than rebuilding all three variants locally.
+
+9. **PASS — prior art.** PR #167 documents ext2/3/4 (GPL-2.0), FreeBSD FFS (BSD-2-Clause/BSD-3-Clause), OpenZFS (CDDL-1.0), and RedoxFS (MIT), with checked commit dates and a principle-only/no-copy statement. No vendored or copied prior-art code appears in the reviewed diff.
+
+## Verification and scope
+
+- RAG health was healthy; queried `neofs indirect tree large write tree_logic commit` as specified by the dispatch.
+- `cargo test -p neofs-tree-logic-tests -- --nocapture`: 7 passed, including the 2 GiB walk.
+- The review found no edits to the product code. The single failure is a live-mount reservation leak on returned I/O/flush errors; allocation refusal itself is clean, and the cut/remount KAT passes.
+- Because this is a post-merge review and the leak contradicts the API's stated error contract, the recommendation is revert-first until reservation rollback or mount invalidation is addressed.

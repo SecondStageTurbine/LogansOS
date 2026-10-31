@@ -1,0 +1,58 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: OT-16 B2b — GDN ring-0 EXECUTION + the mandatory in-kernel QEMU scenario → Jarvis
+
+**Date:** 2026-07-10
+**From:** PM (Claude)
+**To:** Jarvis. **Branch:** `codex/ot16-b2b-gdn-ring0-execution-jarvis`, cut from CURRENT `origin/main`.
+**Status:** DISPATCHED — completes OT-16 B2. **Kernel-touching + QEMU-gated** (main-tier lane; B1 was Cerebro's, so read the B1 walker + ADR-072 first to get oriented — pointers below).
+
+## Why this exists (read first — you are finishing B2, not starting it)
+B2 was dispatched to Prometheus as a scope-expansion experiment. Its **host op work is done and good** — `kernel/src/ai/ops/gdn.rs` ports the four HF Gated-DeltaNet ops with independent per-op byte-oracle KATs, and the `.neom` v3 schedule now parses/validates the GDN layer kind + per-layer `config_ref` + the two load invariants (state-budget, weight-presence). **Keep all of that as-is — do NOT reimplement the ops or the KATs.** They are the proven, mergeable core.
+
+What B2 did **not** deliver — and what B2b is — is the **load-bearing thing**: the ops are never wired into the ring-0 forward path, and no QEMU scenario executes a GDN layer in-kernel. Concretely, in `kernel/src/ai/qwen_inventory.rs::next_logits_for_token`, the walker's GDN runner is a **stub**:
+
+```rust
+|_layer_idx, _h, _gdn_state| {
+    // B2: GDN layer execution — dispatched when the schedule contains ...
+    Err(InferenceError::InvalidGraph)   // <-- STUB: no ring-0 code calls the gdn.rs ops
+},
+```
+
+I grep-confirmed: **no ring-0 kernel code calls any `gdn.rs` op** — they are dead code from the kernel's view; only the host test crates exercise them. A GDN layer walked in-kernel today returns `InvalidGraph`. This is the **B1 completeness lesson repeating**: ops correct in isolation, the in-kernel behavior neither wired nor exercised. B2b closes exactly that gap.
+
+## Base your branch on Prometheus's ops (don't redo them)
+Prometheus's work is one commit, `c424d00`, on `prometheus/ot16-forward-graph-b2-deltanet-ops` (STALE base — docs-only staleness). Bring it onto fresh `main` and build on top:
+```
+git fetch origin
+git checkout -B codex/ot16-b2b-gdn-ring0-execution-jarvis origin/main
+git cherry-pick 5b1270a..c424d00        # Prometheus's B2 host ops + walker-accept + validation (docs-only delta => no conflict)
+# now implement B2b on top
+```
+(If you'd rather eyeball it first: `git show origin/main:Plans/DISPATCH-2026-07-08-ot16-b2-deltanet-ops-prometheus.md` is the original B2 spec — the ISCs there are the authoritative op/KAT reference; this dispatch is the ring-0 + scenario delta.)
+
+## ISCs — the ring-0 execution + the scenario (this is the whole job)
+- **ISC-1 — implement the real `run_gdn_layer` in ring 0** (`qwen_inventory.rs::next_logits_for_token`). Replace the stub with a closure that actually runs a GDN layer: look up the per-layer `GdnLayerConfig` via the schedule entry's `config_ref`; load the layer's tensors from the model (the four projections `in_proj_qkv`/`z`/`b`/`a`, the causal-conv weights, the Q/K L2-norm + `RMSNormGated` params — match the exact tensor-name scheme the `.neom` uses for a GDN layer); run the ops in HF order (`gdn_causal_conv1d_update` → projections → `gdn_l2norm` on Q/K → `gdn_recurrent_step` → `gdn_rmsnorm_gated` output gate), threading the recurrent state; return the new `hidden`. Use the existing `gdn.rs` ops verbatim — no new math.
+- **ISC-2 — the recurrent-state lifetime (the real design point — do NOT get this wrong).** The GDN state `S` (shape `(heads, k_dim, v_dim)`) must **persist across the token-decode loop** exactly like the KV cache — position `t+1` reads the `S` that position `t` wrote. Today `walk_qwen2_schedule` allocates `let mut gdn_state = Vec::new()` as a **per-call local** (empty, thrown away each forward) and its doc-comment even claims "the caller provides the correctly-sized buffer" — which the caller does NOT. Fix the ownership: the GDN state must live in (or beside) the model's per-layer cache structure (the same place `caches.layer_mut(layer_idx)` lives), sized from the `GdnLayerConfig` at load, and be threaded into the walker so it persists across tokens. State that persists correctly across ≥2 tokens is the load-bearing correctness of a recurrent layer — prove it (see ISC-4).
+- **ISC-3 — the mandatory in-kernel QEMU scenario (the completeness gate — the B1 lesson, baked in).** Add a neo-test QEMU scenario that **actually dispatches a `GatedDeltaNetLinear` layer through the walker in ring 0** — a synthetic `.neom` with a GDN layer in its schedule + synthetic GDN weights is fine (no real model needed; that's B3). The scenario MUST assert a **real observable** tied to the recurrent step actually running: e.g. the GDN layer's in-kernel output bytes against a small host-precomputed expected vector, AND a two-token assertion that the state carried (token-2 output differs from a stateless recompute). A `gdn_layer_executed=ok` breadcrumb alone is not enough — assert the math. If any part can't run in-kernel, relabel honestly and say what defers to B3 — **no misleading green** (B1 bounced for exactly this).
+- **ISC-4 — host end-to-end walker test.** Add a host test that drives `walk_qwen2_schedule` with a **real** `run_gdn_layer` closure (calling the gdn.rs ops) over a 2-layer mixed schedule `[Qwen2AttentionFFN, GatedDeltaNetLinear]` and asserts the GDN layer's output + the cross-token state carry. This is the host mirror of ISC-3 and catches the stub class before QEMU.
+- **ISC-5 — kill-switch INTACT (unchanged from B1/B2, re-prove it).** `ot16-graph-walker` **off** ≡ hardcoded Qwen2 forward bit-for-bit; a Qwen2-only schedule is byte-identical whether or not the GDN ops are reachable (no GDN layer in the schedule ⇒ the GDN path is never entered). Prove the Qwen2-schedule byte-identity is unchanged. (There is no "disabled ≡ previous layer" for GDN *execution* itself — it's newly reachable; the switch is walker-off ≡ hardcoded + Qwen2-schedule byte-identity, same framing as B2.)
+- **ISC-6 — I-14 fault-containment (state it, it's quick).** The GDN ops are pure forward-path math on kernel heap: (a) **lock isolation** — the GDN path takes **no** AI-governance lock (`INFLIGHT`/`RECENCY`/`ARENA`/reservation/`TABLE`) beyond the existing forward path; confirm. (b) **liveness** — sequential recurrent decode, no CPU monopoly beyond a normal forward. (c) **memory** — the GDN state cache is **bounded kernel memory** (enforce the ISC-6 state-budget load invariant Prometheus already added), **no device DMA** (this is compute, not a driver). Confirm all three in the RETURN.
+- **ISC-7 — determinism.** The recurrent decode is inherently **sequential** in the state dim (position `t+1` depends on `t`) — deterministic by construction, no OT-34 threading, no new nondeterminism. Prefill chunking stays deferred (future op). State it.
+
+## Scope guard
+B2b = ring-0 GDN execution + state-lifetime fix + the in-kernel QEMU scenario + the host end-to-end test. Keep Prometheus's ops + per-op KATs + load-validation as-is. **NOT B3** (no GGUF import, no real Qwen3.5 bring-up, no OT-30 top-1 parity on a real model, no vision tower, no prefill chunking). Don't collide with other lanes. If ADR-072's config-ref layout needs a clarifying line for the ring-0 lookup, amend ADR-072 (byte-oracle any new on-disk field).
+
+## Close-gate — NON-NEGOTIABLE
+Run **`scripts/worker-close-gate.sh`** (the one command — rebase-freshness first, then the full CI host set in CI order via Docker, SPDX, self-`git diff --stat`). The two hard rules:
+1. **"Green" without a CI URL is not done.** Your RETURN pastes **both** green URLs on the **exact head SHA** you ask me to merge: the **push-CI** run **AND** the **`workflow_dispatch` 4-shard QEMU** run (all 4 shards + host + SPDX + identity). A local pass is not the gate.
+2. **No false infra-attribution.** A red shard is investigated and localized with the log signature, not asserted as "infra." (Context: B2's two QEMU attempts went red on *different* shards while the memory pre-flight *passed* — that was never diagnosed. If you hit a contention flake, re-gate solo on drained runners and cite the evidence; don't hand-wave.) **Stagger** your QEMU gate — one heavy gate at a time (~3 runners, contention-sensitive).
+
+**Merge (PM):** I verify (`pm-merge-check` + own `git show --stat` + independent CI check on your head_sha) and run the **adversarial-audit gate** (kernel-touching): concurrency/dispatcher, interrupt-EOI+I-14, ABI/byte-oracle (the config-ref + any `.neom` field), memory-safety/unsafe, and the **completeness lens** (does the QEMU scenario actually execute the GDN recurrent step in-kernel and prove the cross-token state carry — the exact thing that bounced B2). A confirmed finding bounces with the repro.
+
+**Disk reclaim (after PM confirms merge):** once B2b is on `origin/main`, delete this build's working tree to reclaim its `target/` (`git worktree remove <path>` or delete the clone). Never delete an unpushed/unmerged tree — verify it's on `origin/main` first. Interim: `cargo clean` reclaims the bulk.
+
+---
+## Relay — what to tell Jarvis
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-10-ot16-b2b-gdn-ring0-execution-jarvis.md` (+ `git show origin/main:Plans/DISPATCH-2026-07-08-ot16-b2-deltanet-ops-prometheus.md` for the op/KAT ISC reference, and `git show origin/main:docs/OPEN-THREADS.md` **OT-16**). **Branch:** `codex/ot16-b2b-gdn-ring0-execution-jarvis` off current `origin/main`; base on Prometheus's ops via `git cherry-pick 5b1270a..c424d00`.
+- **One-line:** **Finish OT-16 B2 — make `GatedDeltaNetLinear` actually EXECUTE in ring 0.** Prometheus shipped the GDN ops + per-op byte-oracle KATs + load-validation (keep as-is), but the ring-0 walker's GDN runner is a **stub returning `InvalidGraph`** and no QEMU scenario runs a GDN layer in-kernel. Implement the real `run_gdn_layer` (look up `GdnLayerConfig` via `config_ref`, load the layer tensors, run the gdn.rs ops in HF order); **fix the recurrent-state lifetime so `S` persists across the token-decode loop like the KV cache** (today it's a thrown-away per-call local — the real design point); add the **mandatory in-kernel QEMU scenario** that dispatches a synthetic GDN layer through the walker and asserts the recurrent-step output + the two-token state carry (a breadcrumb alone is not enough — B1 bounced for that); add the host end-to-end walker test; keep the kill-switch intact (walker-off ≡ hardcoded Qwen2, Qwen2-schedule byte-identical); confirm I-14 (no governance lock, no DMA, bounded state) + determinism (sequential recurrence). NOT B3 (no real model). Close-gate ritual, **both** green CI URLs (push + `workflow_dispatch` QEMU) on the exact head, no false infra-attribution, stagger the gate.
+- **RAG:** RAG (semantic code search) is available — use it for conceptual "where is X done?" (faster/more semantic than grep; grep still wins for exact symbols). Health-check first: `Invoke-RestMethod http://127.0.0.1:8404/health` → expect `{"status":"healthy",...}`. If down/degraded: the PL manages RAG infra — note it in your RETURN and continue with direct file reads (never a blocker). Optional self-serve (PowerShell): `powershell -File "E:\AI Automation\RAG\start-rag-ollama.ps1"` then `cd "E:\AI Automation\RAG\AltimitNeo"; .\start-rag.ps1 -SkipIngest`. Query e.g. `$body=@{query='ring-0 forward pass KV cache per-layer state qwen_inventory'; top_k=5}|ConvertTo-Json; Invoke-RestMethod -Uri http://127.0.0.1:8404/search -Method POST -Body $body -ContentType "application/json"`.

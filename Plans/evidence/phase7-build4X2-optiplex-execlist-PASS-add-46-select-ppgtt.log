@@ -1,0 +1,32 @@
+# Phase 7 BUILD-4X-2 — Stage B PASS (OptiPlex UHD 630, 2026-06-09)
+# Source: serial console capture (the OptiPlex booted on NVMe; durable block-sink
+# extractable later via ssh dd once back on the live-USB). The earlier two boots
+# stopped during SMP bring-up (intermittent LAPIC/IPI flake) before the dispatch;
+# this cold boot (ticks=19) got past it and ran the Add to completion.
+#
+# Self-proving gate: the Add's data buffers (lhs/rhs/output) are ACTIVELY CLEARED
+# from GGTT (ggtt-pte-clear), mapped ONLY in the per-context 48-bit PML4. A correct
+# [4.0, 6.0] is therefore only possible if the EU's A64 data accesses resolved
+# through the per-context PPGTT — BUILD-4-1's select=PPGTT device boundary, achieved
+# on the execlist context proven by 4X-1.
+
+NEO_TEST/1 event=BEGIN name=accel_intel_execlist_data_bringup phase=dispatch
+[ kernel ] accel-intel: execlist-pml4 built kind=add root(pml4)=0x000000047a3a2000 pdp=0x000000047a3a3000 pd=0x000000047a3a4000 pt=0x000000047a3a5000 leaf_pages=8 maps=ring/state/kernel/lhs/rhs/output/seqno/curbe pt_idx_state=0x110
+[ kernel ] accel-intel: execlist-kernel-eot kind=add eot_present=true
+[ kernel ] accel-intel: interface-descriptor kernel_start=0x00120000 expected_kernel_ggtt=0x00120000 kernel_ptr_matches=true thread_group_threads=1 cross_thread_read_grf=3 per_thread_read_grf=6 stateless=true(no sampler/binding-table)
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-lhs ggtt=0x130000 pte=0x0000000000000000 offset=0x800980 (invalidate stale mapping for ppgtt-only buffer)
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-rhs ggtt=0x131000 pte=0x0000000000000000 offset=0x800988 (invalidate stale mapping for ppgtt-only buffer)
+[ kernel ] accel-intel: ggtt-pte-clear label=xl-output ggtt=0x132000 pte=0x0000000000000000 offset=0x800990 (invalidate stale mapping for ppgtt-only buffer)
+[ kernel ] accel-intel: execlist-add data buffers CLEARED from GGTT (lhs/rhs/output VAs 0x130000/0x131000/0x132000 resolve via per-context PPGTT only)
+[ kernel ] accel-intel: ggtt-pte label=xl-curbe ggtt=0x134000 phys=0x47a3a1000 flags=0x3 pte=0x000000047a3a1003 offset=0x8009a0
+[ kernel ] accel-intel: execlist-engine mode=0x00008000 execlist_enabled=true mi_mode=0x00000200 ring_stopped=false hws_pga=0x00240000 expected_hws=0x240000
+[ kernel ] accel-intel: execlist-submit token=1 descriptor=0x0000000100200119 lrca=0x200000 ctx_id=1 ring_tail=0x11c pml4_root=0x000000047a3a2000 oracle_match=true
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=0 status=0x00000001 ctxid=0x00000000 switch_in=true went_idle=false complete=false ctxid_matches_ours=false
+[ kernel ] accel-intel: execlist-csb-entry post-elsp token=1 i=1 status=0x00000018 ctxid=0x00000001 switch_in=false went_idle=true complete=true ctxid_matches_ours=true
+[ kernel ] accel-intel: execlist-csb-summary post-elsp token=1 nonzero_entries=2 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+[ kernel ] accel-intel: execlist-complete-status token=1 RING_HEAD=0x00000118 RING_TAIL=0x00000118 RING_MODE=0x00008000 execlist_enabled=true INSTDONE=0xfffffffe RING_FAULT=0x00000000 seqno=0x00000001
+[ kernel ] accel-intel: execlist-csb-summary complete token=1 nonzero_entries=2 switch_in_seen=true idle_seen=true switch_in_then_idle=true
+[ kernel ] accel-intel: execlist-add output=[00, 00, 80, 40, 00, 00, c0, 40] expected=[00, 00, 80, 40, 00, 00, c0, 40] match=true (data resolved via PPGTT; buffers absent from GGTT)
+[ kernel ] accel-intel: execlist-bringup complete token=1 execlist-seqno=0x00000001 csb_switch_events=2 verdict=execlist_submission_runs_a_context
+[ kernel ] accel-intel: execlist-data-gate seqno=0x00000001 csb_switch_events=2 pml4_root=0x000000047a3a2000 output=[4,6] data_buffers=ppgtt_only_unmapped_in_ggtt select_expected=PPGTT
+NEO_TEST/1 event=PASS name=accel_intel_execlist_data_bringup accel_intel_execlist_data=ok stage=4X-2 add=[4,6] data_buffers=ppgtt_only_unmapped_in_ggtt resolved_via=per_context_ppgtt select_expected=PPGTT self_proving=correct_result_iff_ppgtt context=execlist next=4X-3

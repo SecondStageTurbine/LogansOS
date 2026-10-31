@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <title>Terminal</title>
+  <!-- the neo> chevron, unframed: the only arrow pointing right -->
+  <path d="M8 9 L19 20 L8 31" fill="none" stroke="#a8adb2" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- the cursor: a small block of light -->
+  <rect x="22" y="27" width="12" height="4" rx="1" fill="#3c8ef4"/>
+</svg>

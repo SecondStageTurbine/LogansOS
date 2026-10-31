@@ -1,0 +1,23 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# RETURN — #193: refused install handle drop / #237
+
+MODEL: GPT-6.1-Sol. EFFORT: high (the requested bundle). Worktree: `E:\AI Automation\workers\janus`. Delivery branch: `codex/b26-recheck-janus`.
+Reviewed #237 `aa6ee59957464f7a83cd1280d3aa8fbffc40d00c`; initial review base `origin/main` `bf2fc858c1d56ad5aa9bed94c643b9c775265ba9`. RAG healthy. Source citations are at #237 unless labeled composition.
+
+**Verdict: CLOSED for the refused-handle destruction finding.** The caller-owned refusal slot survives the CAP_GRAPH section, and no requested production refusal was found that destroys its owned handle under that lock. #226's separate Process-Arc context findings remain in its RETURN.
+
+1. **CLOSED — every install_minted_locked refusal moves ownership out.** `kernel/src/sched/process.rs:3008` takes a caller-owned Option slot. The first recipient-exiting check moves the handle into it (`:3019`), as do the parent-gone check after cap_is_live (`:3032`), the second recipient-exiting check (`:3037`), and object-quota failure (`:3043`). None of those branches installs the handle. Success alone consumes it into the table (`:3048`) and records the derivation, leaving the refusal slot empty. A call writes the initially empty slot once; there is no overwrite of an earlier refused handle and no double installation/drop.
+
+2. **CLOSED — both helper callers drop the slot after the graph guard.** `install_cap` declares refused outside without_interrupts (`process.rs:2976`), acquires g inside (`:2992`), and drops the slot after the closure (`:3000`). The deliberate control-only under-lock drop is `:2996`. `complete_grant` has the same outer slot/inner guard shape (`:3534`, `:3546`); its child goes through the helper (`:3578`–`:3587`), and error propagation out of the closure happens before drop(refused) (`:3590`), not before it. The outer question-mark occurs only at `:3591`. Earlier grant failures precede creation of the child; source-handle lookup clones still have their source table owner while CAP_GRAPH serializes source removal. The requested refused child itself always leaves the locked section.
+
+3. **CLOSED — install_cap_excluding's inline refusals.** The outer slot is `process.rs:3061`, and all four error branches move the handle to it (`:3067`, `:3076`, `:3081`, `:3087`). The only install is `:3090`, and the slot drops after the closure at `:3095`. Quota refusal occurs before retain/install, so dropping that raw Handle must not release a table claim or tensor count it never acquired; the fix preserves that distinction.
+
+4. **CLOSED — guard and falsifier construction.** `kernel/src/atrium/focus.rs:785` asserts no CAP_GRAPH holder before taking DELIVERY in InputFocus::drop. F3 constructs the sole Arc of a focus and attempts installation with a gone parent (`kernel/src/test_harness.rs:42991`, refusal check `:43003`, owner check `:43006`), then requires ParentGone and zero retained owners. The control drops refused.take while g is alive (`process.rs:2996`), so it must trip this witness. This runtime leg covers the parent-gone branch of install_cap; recipient-gone, quota, complete_grant and excluding are covered by the explicit ownership-path inspection above, not separate dynamic legs.
+
+5. **Composition note.** The pairwise merge-tree with #226 auto-merges process.rs cleanly, retaining both get_pinned Process lookups and these refusal slots. Its tree is `81c4a2c6e50ad2670505300604a4b4b4aeffc9f2`; the overall merge has content conflicts in kernel/Cargo.toml and kernel/src/test_harness.rs. Preserve both feature additions and both sets of lifetime legs when resolving them; this is not a claim of a successful combined build/gate. #237 alone does not replace #226's direct-lookup pin fix.
+
+6. **Validation.** Exact head, `NEO_SMP=4`, `NEO_TEST_ATTEMPTS=1`: `cap_graph_revoke` **PASS**, QEMU 9.9 s, status 33; serial reports F3's last InputFocus dropped after unlock. With `neo-test-install-cap-drop-control`, **expected FAIL**, QEMU 8.7s, status 35, `reason=kernel_panic`: `an InputFocus dropped under CAP_GRAPH (DELIVERY would nest in it)`. Logs/serials: `target/b26-review-janus/install-{positive,control}.{log,serial.log}` (local ignored evidence). No full PM batch gate or combined guest build is claimed.
+
+Only this RETURN is committed for relay #193. No implementation fix or target PR update is included.
+
+Delivery base: `origin/main` at `63fc2faa83732a77dd98c6f22968074c38e301bb`. The delivery branch adds only the four requested RETURNs; all source citations and guest runs above remain pinned to the reviewed PR heads.

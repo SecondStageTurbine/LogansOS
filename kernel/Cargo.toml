@@ -1,0 +1,2012 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neoplutarch-kernel"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+# Limine bootloader protocol bindings.
+# Pinned to 0.6: 0.2 / 0.4.0 are yanked, and the API was significantly
+# rewritten between 0.5 and 0.6. Our main.rs targets the 0.6 surface:
+# limine::request::{FramebufferRequest, RequestsStartMarker, RequestsEndMarker}
+# plus limine::BaseRevision.
+limine = "0.6"
+
+# Spinlocks (no_std synchronization primitives)
+spin = "0.9"
+
+# Volatile memory access for MMIO
+volatile = "0.5"
+
+# x86_64-specific structures: GDT, IDT, paging, port I/O
+x86_64 = "0.15"
+
+# UART driver for the 16550 serial port (kernel debug output)
+uart_16550 = "0.3"
+
+# Logging facade
+log = "0.4"
+
+# Heap allocator backing the kernel's `#[global_allocator]`. Phase 1.1 wires
+# it up against a 4 MiB virtual range we map ourselves.
+linked_list_allocator = "0.10"
+
+# NeoFS v1 checksums/content hashes. BUILD-2 uses this in no_std mode for
+# read-only mount validation.
+blake3 = { version = "1.8.2", default-features = false }
+
+# Phase 4 BUILD-1a: link-layer TCP/IP substrate. Keep default features off;
+# smoltcp 0.13.1 also requires one protocol and socket family to compile.
+smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv6", "socket-raw"] }
+
+# Phase 4 BUILD-5c: kTLS record protection delegates AEAD to audited crypto.
+chacha20poly1305 = { version = "0.10", default-features = false }
+
+# Phase 10.1 BUILD-10.1: the kernel CSPRNG core — ChaCha20 DRBG + SHA-256 seed-mix.
+# The bare chacha20 crate (not the AEAD combiner) for the DRBG keystream.
+# Reuses the shared sha2 dep (same as wifi) — no rename, no collision.
+# Both no_std, default-features = false, optional.
+chacha20 = { version = "0.9", default-features = false, optional = true }
+
+# Phase 7.5 BUILD-W0: WPA2/3 supplicant crypto. The kTLS RustCrypto-reuse
+# precedent (never hand-roll AES/SHA/HMAC/ECC — Article 15.7). All no_std,
+# default-off; pulled only by the `wifi` feature so a non-WiFi kernel is
+# bit-for-bit today.
+aes = { version = "0.8", default-features = false, optional = true }
+ccm = { version = "0.5", default-features = false, optional = true, features = ["alloc"] }
+cmac = { version = "0.7", default-features = false, optional = true }
+sha1 = { version = "0.10", default-features = false, optional = true }
+sha2 = { version = "0.10", default-features = false, optional = true }
+hmac = { version = "0.12", default-features = false, optional = true }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
+# p256: WPA3 SAE (BUILD-W0b) needs the field element exposed (`expose-field`) and
+# the RFC 9380 SSWU hash-to-element map (`hash2curve`), on top of `arithmetic`.
+p256 = { version = "0.13", default-features = false, optional = true, features = ["arithmetic", "hash2curve", "expose-field"] }
+# HKDF-Extract/Expand for the SAE H2E PT derivation (BUILD-W0b). RustCrypto, no_std.
+hkdf = { version = "0.12", default-features = false, optional = true }
+
+[features]
+default = ["kernel-diagnostic", "accel-sim", "inference-preemptible"]
+kernel-diagnostic = []
+accel-sim = []
+virtio-accel = []
+accel-intel = []
+boot-neofs = []
+# File-capability unification (I-15): brings `Handle::File` into the CapRights
+# derivation/grant graph (derivable/attenuable/grantable/inheritable, with
+# FileRights subset-checking). OFF by default ⇒ `Handle::File::rights()` returns
+# `(0,0)`, `with_cap` ignores the requested rights, and `sys_open` adds no meta
+# bits — the kernel is bit-for-bit pre-unification (the Rule-1 kill-switch, ISC-6).
+file-caps = []
+# OT-66 K1a (OT-61 C2.1a): capability-rooted open. The root form of SYS_OPEN
+# (and SYS_MODEL_LOAD) resolves only through a RootDirCap the caller holds:
+# an ordinary directory file handle on "/", minted once for init. EPERM
+# without one; the requested rights must lie within the cap's; a file opened
+# through it is its child, so revoking the cap reaches it. Spawn inheritance
+# admits a directory cap carrying GRANT. Implies file-caps (derive, grant and
+# revoke of file handles). OFF by default: the root form stays open to all,
+# bit-for-bit the previous layer.
+cap-rooted-open = ["file-caps"]
+# OT-66 L1 (Dexter #186 item 4): the sign-in record's store. Every root-form
+# path under a mount's `.system/` (the credential and account files) opens,
+# and loads as a model, only for a holder of the `SystemStore` authority,
+# which the kernel mints into the session root (neo-init) alone and which
+# can't be derived, granted or inherited. EPERM for every other process,
+# whatever the root form allows them elsewhere. Off: no handle kind, no check.
+system-store = []
+# Dexter #187 item 3a (J.c., option A): mounting and unmounting need the
+# `MountAuthority`, which the kernel mints into the session root (neo-init)
+# alone and which can't be derived, granted or inherited. SYS_MOUNT and
+# SYS_UMOUNT are EPERM for every other process, whatever MOUNT right a
+# directory handle carries, and a plain open no longer carries MOUNT.
+# Off: no handle kind, no check.
+mount-authority = []
+# OT-61 C2.2 (A2, I-18): per-process memory accounts. A budgeted spawn
+# (SYS_SPAWN_BUDGETED) gets its own account nested under the spawner's; every
+# frame its Pmap owns and every Atrium buffer it creates is charged before it
+# is allocated, and a charge over any limit up the chain is a local ENOMEM. A
+# budgeted process may not allocate tensor storage. Default-off: the kernel is
+# unchanged without it.
+mem-quota = []
+# OT-61 C2.2b (I-19): a per-account budget for kernel-heap objects (handles,
+# spawns, threads), on the mem-quota account tree. Off: no field, no charge.
+obj-quota = ["mem-quota"]
+# Phase 7.5 CB-3 (7.5-D identity): the runtime InterfaceId registry — runtime
+# eth0/wlan0 names + hotplug link-state replacing the baked &'static str literals,
+# multi-interface RFC-6724 select_source replacing get_device(0), and the
+# /net/if/<name> Handle::File capability path. OFF by default ⇒ the net stack
+# collapses to the proven 7.5-C2 single-device behavior (index semantics, ambient
+# get_device(0), the &'static str names) bit-for-bit (the Rule-1 kill-switch, ISC-5a).
+interface-identity = []
+# Phase 7.5 CB-3 (ISC-5b): a SECOND, separately-default-off sub-switch (depends on
+# interface-identity) gating whether network egress *requires* presenting an
+# interface capability. OFF by default ⇒ ambient access exactly as today, so
+# identity/naming lands and bakes before access is ever gated.
+interface-caps = ["interface-identity"]
+# Product eth0-at-boot flow. Default-off kill-switch: when disabled, no USB
+# host path or boot DHCP code is compiled into production boot. When enabled,
+# boot enumerates USB, binds CDC-ECM/AX88179 through the existing class driver,
+# names the Ethernet-class interface through ADR-068 (`eth0` on the product
+# bare-metal path), and runs bounded DHCPv4.
+boot-eth0 = ["usb-host", "interface-identity"]
+# Explicit product feature-set, rather than silently widening `default`. It
+# composes the default posture with the independent boot NeoFS and Ethernet
+# flows, so neither product capability displaces the other.
+product = [
+    "kernel-diagnostic",
+    "accel-sim",
+    "inference-preemptible",
+    "boot-neofs",
+    # OT-92: the boot NeoFS mount's cache stays bounded.
+    "neofs-cache-evict",
+    "boot-eth0",
+]
+# Desktop stage S1: a production (non-neo-test) session boot. neo-init stays
+# resident as the trusted userland compositor/WM owner instead of halting after
+# the splash: the kernel arms the Atrium runtime switch, hands neo-init the
+# scarce GpuSubmit scanout authority, and exposes the output size to that
+# authority holder only (SYS_FB_OUTPUT_QUERY). Default-off kill-switch: when
+# disabled none of this is compiled and every build is bit-for-bit today's
+# (the Atrium runtime switch stays scenario-only, neo-init is not handed a
+# scanout cap, and the boot path still runs-to-exit then draws the splash).
+desktop-session = ["atrium-input-routing", "usb-hid-mouse", "ps2-keyboard"]
+# The i8042 (PS/2) keyboard: a laptop's built-in keyboard (the Zenbook's
+# EC-emulated `ATK3001`). Probes ports 0x60/0x64 (the FADT "8042 present" bit
+# is logged, not trusted), routes IRQ1 through the I/O APIC (MADT override
+# honoured) and decodes set 1 (translated) into the USB HID keyboard's key
+# events, delivered through the same focus path. Coexists with USB HID. On in
+# `desktop-session`; off ⇒ not compiled, bit-for-bit today.
+ps2-keyboard = []
+# Software key auto-repeat (`atrium/key_repeat_logic.rs`) for every keyboard
+# (i8042 and USB HID): after 500 ms held, 30 repeats a second, sent as the
+# key's press with flag bit 1 (`KEY_REPEAT`). Ends on release, another key, a
+# modifier change, a focus move or 20 s; modifiers, locks, Pause, Print
+# Screen, Escape and Enter never repeat. Run by the pumps, never the ISR. A
+# repeat never queues behind an unread repeat. The i8042 counts the
+# keyboard's own typematic makes (`typematic=`), which it drops as before.
+# Enabled in the product ISO (xtask); off => not compiled, bit-for-bit today.
+key-autorepeat = ["atrium-input-routing"]
+# The Zenbook S14 touchpad, rung 1: HID over I2C on Intel Serial-IO I2C5, the
+# touchpad's mouse collection fed to the USB mouse's pointer path
+# (Plans/DISPATCH-2026-10-23-zenbook-i2c-hid-touchpad.md). Matched by a
+# platform quirk entry (the DSDT's own description of the touchpad, plus PCI
+# 00:19.1 = 8086:E351); any other machine prints one "no match" line and is
+# never touched. PIO only (the LPSS DMA engine stays in reset), the level
+# GSI masked by the ISR and drained by a kernel thread. Off => not compiled,
+# bit-for-bit today.
+i2c-hid-touchpad = []
+# The touchpad controller's BAR0 when firmware left it unassigned (image A4:
+# `bar0=0x00000004`, a 64-bit BAR at 0): size it, pick the lowest naturally
+# aligned slot at or above the lowest firmware 64-bit BAR (and >= 4 GiB) that
+# clears every function's BARs (each excluded up to its alignment, so never
+# undersized), every bridge window and every memory-map entry, read the slot
+# with nothing claimed (all-ones or rejected, a few tries), then program it.
+# PIO only, bus mastering off. Off => the driver stops at `bar0 unassigned by
+# firmware`, as before.
+i2c-hid-bar-assign = ["i2c-hid-touchpad"]
+# Zenbook lane: mirror every kernel log line onto the framebuffer from early
+# boot until the desktop session takes it (a photo of the screen is the boot
+# log on a target with no serial port). Enabled by `xtask iso --with-model`
+# and bare-metal bundles; feature-off ⇒ not compiled (byte-identical).
+fb-progress-console = []
+# Zenbook bring-up evidence holds (kill-switch): before the desktop takes the
+# framebuffer, wait 5 s for a USB keyboard or mouse to bind and hold the USB
+# summary up to 30 s (or run a 6 s input check), and run the touchpad's 6 s
+# check and its 30 s hold, so a photo of the boot console can be taken. OFF
+# (image A): the same summary lines are printed (serial, and the boot console
+# until the desktop replaces it) and the boot does not wait. Image A installs no
+# log sink and the Zenbook has no serial port, so there the lines are not kept:
+# a bring-up run that needs them turns this on. ON restores the holds exactly.
+boot-evidence-holds = []
+# CP-68 kill-switch: keep the pre-x2APIC Limine MP request (no x2APIC flag).
+# Limine then disables x2APIC before handoff wherever firmware allows it, and
+# every APIC access is xAPIC MMIO, bit-for-bit today's path. On firmware with
+# x2APIC locked on, Limine refuses to boot this build ("Kernel does not
+# support x2APIC, but machine requires it"), exactly as before CP-68.
+xapic-only = []
+# Zenbook lane (NOTE §4a, CP-69): the BSP's kernel tick from the local APIC
+# timer (TSC-deadline, else periodic), calibrated from CPUID 0x15 or against
+# the HPET / ACPI PM timer (the PIT only cross-checks; CPUID 0x16 is never
+# used), for platforms whose 8254 is gated or whose 8259 route is gone. Same
+# vector (32) and timer entry; only the EOI differs. Falls back to a verified
+# PIT/PIC tick when nothing calibrates, else halts with NO TICK SOURCE.
+# Enabled by `xtask iso --with-model` and bare-metal bundles; feature off ⇒
+# the PIT/PIC tick, unchanged.
+lapic-timer = []
+# The shipping desktop feature-set: `product` plus the live session and the
+# substrates Arthur needs to answer when a model is provisioned. Composed here
+# rather than silently widening `product` (that is a PM/PL call).
+desktop = [
+    "product",
+    "desktop-session",
+    "usb-hotplug",
+    "rtc-epoch",
+    "kernel-sysstat",
+    "phase9-real-quant",
+    "threaded-matmul",
+    "phase9-avx2-matmul",
+    "forward-perf",
+]
+# OT-61 NetDialCap: require an explicit, scope-matching kernel capability for
+# SYS_NET_DIAL. OFF by default leaves the original three-argument ambient dial
+# implementation compiled unchanged (the Rule-1 kill-switch).
+net-dial-cap = []
+ai-generate = []
+# OT-40: re-enable interrupts around long in-kernel inference compute windows.
+# OFF restores the previous syscall-body IF=0 behavior for the kill switch.
+inference-preemptible = ["xsave-fpu"]
+gguf = []
+# Phase 9 BUILD-9.1: scalar Q4_K x Q8_K quantized matmul helpers. OFF by
+# default; 9.2 wires the feature into the forward path after the standalone KATs.
+phase9-quantized-matmul = []
+# Phase 9 BUILD-9.3: host-gated AVX2 Q4_K x Q8_K dot. OFF by default and
+# depends on the scalar/helper surface; runtime CPUID/XCR0 still gates execution.
+phase9-avx2-matmul = ["phase9-quantized-matmul"]
+# Lever 1 kill-switch (Plans/NOTE-2026-10-25-arthur-non-matvec-cost.md): `soft_f32` add/sub/mul
+# use SSE by default, byte-identical to the integer path (host oracles in tools/ai-ops-tests).
+# ON compiles the integer path only, bit-for-bit the previous layer.
+soft-f32-only = []
+# OT-28 F1: correctness-first mixed-quant forward path. When ON, quantized
+# Qwen2 weight tensors (q4_K/q5_0/q6_K/q8_0) stream through the landed
+# dequant-to-f32 primitives and then the f32 matmul. OFF keeps the existing
+# q4_K native/f32 fixture behavior.
+phase9-real-quant = ["gguf", "ai-generate"]
+# OT-28 F2: derive Qwen2 config values from a loaded `.neom` model's tensor
+# inventory plus v2 header config metadata. OFF keeps the hardcoded 0.5B
+# fixture config bit-for-bit.
+phase9-data-driven-config = []
+# OT-34: thread the forward matmul across cores. Deterministic column-partition
+# fork-join (output columns split across CPUs; each core runs the identical F4
+# kernel over a disjoint range, so the result is byte-identical regardless of
+# core count). Implies the real-quant forward path (the only matmul it threads).
+# OFF (default) ⇒ the forward is single-threaded, bit-for-bit the pre-OT-34 path;
+# ON with `thread_count == 1` (the default even when enabled) is also
+# single-threaded — the kill-switch is proven at both layers.
+threaded-matmul = ["phase9-real-quant"]
+# Lever 2 (Plans/NOTE-2026-10-25-arthur-lever2-design.md): fork the per-element
+# soft work across the `threaded-matmul` executor: SwiGLU by element range, and
+# the cached decode step's attention by q-head range (past a work threshold). Every
+# partition writes a disjoint output range and no reduction crosses one, so the
+# bytes are the single-threaded path's at any core count (the
+# `threaded_matmul_parity` scenario checks it, with its perturbation control).
+# OFF => the previous byte-view SwiGLU, bit-for-bit; ON with `thread_count == 1`
+# runs the same arithmetic on one core.
+par-elementwise = ["threaded-matmul"]
+# Arthur perf lane: the TSC forward-latency instrumentation (kernel/src/ai/
+# forward_perf.rs). Correctness-neutral (read_tsc is a pure register read), so a
+# build with it is byte-identical to one without; the showcase pulls it in to
+# replace the Milestone-A ms=0 with an honest per-forward-ms / tok_per_s read.
+forward-perf = []
+# Arthur answer-latency lane: per-generation breakdown of where a
+# `sys_generate` spends its time (prefill vs decode, the layer stack vs the
+# lm_head, quantized matvec vs the rest, the par_matmul barrier and steals),
+# the timeline (the surface commit before it, the WM's presents during and
+# after it), and per CPU the partitions run and the effective clock from
+# APERF/MPERF, plus the generating CPU's HWP state; lines 4-6 of the
+# freeze-watchdog overlay. Relaxed TSC/MSR reads only; logits unchanged. In
+# image A's kernel (PRODUCT_IMAGE_KERNEL_FEATURES, round 2); off => not
+# compiled, bit-for-bit today.
+# A9-B: greedy decoding kept out of degenerate loops, deterministically: a
+# repetition penalty over the last 64 generated tokens (repetition_logic::
+# DECODE_PENALTY, 1.0 until Qwen2.5's published value is read) and a loop
+# stop (a reply whose last 16 tokens repeat an earlier run ends before the
+# repeat). Off = today's tokens exactly (the kill-switch).
+decode-repetition-guard = []
+prefill-perf = ["forward-perf", "threaded-matmul"]
+# Arthur latency round 2: enable HWP (IA32_PM_ENABLE) on every CPU that has
+# it and request its full range with a performance energy preference
+# (IA32_HWP_REQUEST), from each CPU's `enable_sse`. A CPU without HWP is left
+# alone. In image A's kernel (PRODUCT_IMAGE_KERNEL_FEATURES) since the
+# Zenbook A/B of 2026-10-25 (A6 vs A6-hwp: CPU 0 at 1071 vs 3287 MHz, "What's
+# 2+2?" in 57 s vs about 18 s); off => no power MSR is ever written.
+hwp-performance = []
+# Arthur latency round 2: the par_matmul steal grace in TSC time (50 us from
+# the job's publish) instead of 2M spins, whose length depends on the CPU's
+# PAUSE latency. Needs the calibrated TSC of `lapic-timer`. Off => the spin
+# grace, bit-for-bit.
+matmul-steal-grace-time = ["threaded-matmul", "lapic-timer"]
+# OT-16 B1: the data-driven forward-graph walker. OFF (default) = the hardcoded
+# per-layer forward loop, bit-for-bit (kill-switch 1). ON = walk the layer-kind
+# schedule from the `.neom` (explicit v3, or synthesized n x Qwen2AttentionFFN
+# for v1/v2); byte-identical for a Qwen2 schedule (kill-switch 2). B2b executes
+# GatedDeltaNetLinear through the GDN runner when a GDN schedule entry appears.
+ot16-graph-walker = []
+# OT-23: kernel FPU context images upgraded from FXSAVE to CPUID-sized
+# XSAVE(x87|SSE|AVX). Required by default OT-40 preemptible inference; still
+# disabled when that feature is disabled via the kill-switch/no-default path.
+xsave-fpu = []
+# Phase 7.5 BUILD-V: Intel VT-d / IOMMU (the I-14(c2) hardware DMA fence). When
+# OFF (the default), the ACPI/DMAR parse and the `iommu` driver are not compiled
+# at all — the kernel is bit-for-bit pre-VT-d (the Rule-1 kill-switch, ISC-6).
+vtd = []
+# Phase 7.5 BUILD-W0/W1: the MT7601U WiFi arc. W0 = the host-tier WPA2/3
+# supplicant crypto library (PBKDF2/PRF/PTK-GTK, EAPOL-Key MIC, AES-CCMP,
+# PMKID, SAE). OFF by default ⇒ the crypto deps aren't pulled and the kernel is
+# bit-for-bit today (the kill-switch). W1 (the driver) extends this feature.
+# W2 (OT-2): `wifi` now pulls `kernel-rng` so the 4-way handshake's SNonce is a
+# CSPRNG draw (`crate::rng::fill_random`), not a counter — the difference between
+# "associates" and "is a security boundary". Default-off ⇒ still bit-for-bit today.
+wifi = ["dep:aes", "dep:ccm", "dep:cmac", "dep:sha1", "dep:sha2", "dep:hmac", "dep:pbkdf2", "dep:p256", "dep:hkdf", "kernel-rng"]
+# Phase 7.5 BUILD-W1: the MT7601U USB SoftMAC driver (scan). Extends the WiFi
+# arc umbrella (`wifi`) and rides the 7.5-A/B USB core (`usb-host`). OFF by
+# default ⇒ the driver, the per-channel PHY tables, and the embedded firmware
+# blob are not compiled and the kernel is bit-for-bit today (the Rule-1
+# kill-switch, ISC-6). W2 (the on-air supplicant) will extend this feature.
+mt7601u = ["wifi", "usb-host"]
+# Phase 7.5 CB-5a: the WPA3-SAE on-air connect path (SAE dragonfly + full
+# 802.11w PMF + SAE-PMK 4-way + group-key handshake), built as the
+# `net::wifi::sae_connect` orchestrator over an abstract TX/RX seam. Extends the
+# WiFi arc (`wifi`); the SAE/BIP crypto primitives already ride `wifi`'s deps.
+# OFF by default ⇒ `sae_connect` is not compiled and the driver's associate()
+# path is bit-for-bit CB-2/WPA2 today (the Rule-1 kill-switch, ISC-5).
+wpa3-sae = ["wifi"]
+# The Realtek RTL8125 2.5GbE driver, rung 1 (bind, XID, MAC, PHY link,
+# descriptor rings, NetDevice -> boot DHCP + gateway ARP). Polled. Every DMA
+# buffer is in the fenced arena; bus mastering is granted only when the
+# device is in the VT-d fence domain or `rtl8125-dma-without-iommu` is on.
+# Off (the kill-switch) => not compiled, bit-for-bit today.
+rtl8125 = []
+# The explicit opt-in to let the RTL8125 bus-master on a host with no
+# supported IOMMU (AMD-Vi is not driven; the PL's main PC is AMD): arena-only
+# containment (I-14(c1)), no (c2). Never implied by another feature. The
+# product image (`xtask iso --with-model`, PRODUCT_IMAGE_KERNEL_FEATURES)
+# carries it with `rtl8125`, by PL decision (J.c., 2026-10-24); a device in
+# the VT-d fence domain still takes the IOMMU path (`containment`).
+rtl8125-dma-without-iommu = ["rtl8125"]
+# When enabled, kernel writes verbose diagnostics to serial.
+# Off in release builds.
+verbose-boot = []
+serial-stdin = []
+# Phase 10.1 BUILD-10.1: the kernel CSPRNG core (entropy + ChaCha20 DRBG + KATs).
+# OFF by default ⇒ chacha20/sha2 deps aren't pulled and the kernel is
+# bit-for-bit today (the Rule-1 kill-switch, ISC-4). Keeping optional +
+# default-off prevents dep unification with no_std userland (#243 trap).
+kernel-rng = ["dep:chacha20", "dep:sha2"]
+# OT-90 (THINK docs/THINK-2026-10-27-ot90-shutdown-restart.md): power-off and
+# restart. P2: `acpi::power` decodes \_S5 at boot, caches the plan, and runs the
+# S5 write and the reset chain, entered from the ot90_* scenarios only. OFF by
+# default => no power module, no extra ACPI walk, and the kernel is bit-for-bit
+# today (the kill-switch).
+power-control = []
+# OT-90 P3a (L1.4): a clean shutdown before the S5 write or the reset. A
+# kernel thread terminates the user processes (K1), freezes and drains every
+# writable NeoFS mount with a bounded, reported clean/unclean outcome (K2),
+# and flushes the log (K3), then runs P2's power-off or restart. K1-K3 run in
+# their own thread with a 20 s deadline on the whole: past it the shutdown
+# abandons them (a disk that never completes a request) and powers off or
+# restarts anyway. Off => nothing of it is compiled: P2 exactly (the
+# kill-switch).
+power-clean = ["power-control"]
+# Aggregate-only kernel status syscall for neo-shell `status`. OFF by default;
+# when disabled SYS_SYSSTAT returns ENOSYS and exposes no observability surface.
+kernel-sysstat = []
+# OT-9: read-only kernel observability. OFF by default; when disabled SYS_OBSERVE
+# returns ENOSYS and scheduler/mm/trace producers compile to inline no-ops.
+kernel-observability = []
+# B1a (Plans/DECISION-2026-10-19-arthur-first-boot-model.md, Amendment 1):
+# consumable `/models/*` boot modules — a tombstoned module registry and
+# admission of a consumed module's planned pages as a second allocator zone.
+# Off ≡ today: no admitted zone, every allocator path is the primary zone's.
+model-boot-module = []
+framebuffer-console = []
+usb-hid = ["usb-host"]
+# OT (Milestone-A input): the USB HID boot-protocol MOUSE (the GUI pointer),
+# mirroring the keyboard on the same xHCI arena-fenced stack. Independent
+# kill-switch: off ⇒ hid_mouse + its init are absent ⇒ keyboard-only, bit-for-bit.
+usb-hid-mouse = ["usb-hid"]
+
+# Phase 1.5c BUILD-1 QEMU integration-test harness. `neo-test` enables
+# the common harness; exactly one scenario feature is selected by xtask.
+neo-test = []
+neo-test-instrumentation = []
+neo-test-ipc-smoke = ["neo-test"]
+# OT-61 browser C0.5: spawn the real-std-linked smoke ELF (built with
+# -Z build-std=std against the neoplutarch overlay) via the existing loader/
+# spawn path; PASS iff it prints+allocates+exits 0. Adds no syscall.
+neo-test-std-real-smoke = ["neo-test"]
+# OT-61 C1.3: the real-std threads battery (std-real-threads, same overlay std):
+# std::thread, std's futex Mutex/Condvar/RwLock/Once/Parker, thread_local! on the
+# per-thread key layer, Instant/sleep. Spawned once without the browser-runtime
+# capability (spawn -> PermissionDenied, exit 41) and once with it (exit 0).
+neo-test-std-threads = ["neo-test", "browser-runtime"]
+# OT-61 C2.0: std randomness (HashMap RandomState) over SYS_GETRANDOM: the
+# std-real-entropy ELF must exit 0 on a kernel with the CSPRNG.
+neo-test-std-entropy = ["neo-test", "kernel-rng"]
+# OT-61 C2.1b: std in a sealed process (std_sealed): std::fs only through a
+# handed-in RootDirCap, empty env, process::id, std::os::neoplutarch.
+neo-test-std-sealed = ["neo-test", "cap-rooted-open"]
+# OT-61 C2.3a: servo-host-smoke (ADR-078 §3, the C2 gate without html5ever and
+# Stylo): a budgeted std process with threads and a sealed file, and a
+# budgeted sibling whose OOM aborts only itself.
+neo-test-servo-host-smoke = ["neo-test", "cap-rooted-open", "browser-runtime", "mem-quota"]
+# Its twin on a kernel WITHOUT cap-rooted-open (the root form is ambient):
+# std's own fail-closed check is the only guard, so a no-cap std::fs open
+# must still be PermissionDenied. browser-runtime supplies SYS_HANDLE_INFO.
+neo-test-std-sealed-ambient = ["neo-test", "browser-runtime"]
+# OT-61 C2.3b: upstream html5ever + selectors (the vendored closure) parse and
+# match on-target; the vendored parking_lot_core parker and memchr's SIMD
+# choice under contention. The plain scenario runs on `-cpu max` without
+# xsave-fpu (AVX must stay hidden: memchr takes SSE2); its `-avx` twin adds
+# xsave-fpu (AVX advertised, YMM saved: memchr takes AVX2).
+neo-test-servo-closure-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+neo-test-servo-closure-smoke-avx = ["neo-test-servo-closure-smoke", "xsave-fpu"]
+# OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
+# signal), the kernel stays up, and a second process runs. One scenario per
+# reachable vector. Deliberately WITHOUT browser-runtime: the containment is
+# unconditional, so the default feature set is the one these prove.
+neo-test-ring3-fault-ud = ["neo-test"]
+neo-test-ring3-fault-de = ["neo-test"]
+neo-test-ring3-fault-gp = ["neo-test"]
+neo-test-ring3-fault-ss = ["neo-test"]
+neo-test-ring3-fault-db = ["neo-test"]
+neo-test-ring3-fault-xm = ["neo-test"]
+neo-test-ring3-fault-mf = ["neo-test"]
+# OT-83 control: a ring-0 exception still HALTS (it reaches the kernel-fault
+# halt, never the kill path).
+neo-test-ring0-fault-halts = ["neo-test"]
+# OT-61 browser C1 host-runtime primitives (the depth bottleneck). OFF by
+# default ⇒ SYS_VM_MAP/UNMAP/PROTECT + SYS_CLOCK_GETTIME (0x40..0x43) are NOT
+# compiled into the dispatch (return ENOSYS) and the kernel is bit-for-bit
+# pre-C1 (the Rule-1 kill-switch), except that `page_fault`'s ring-3 swapgs is
+# no longer gated on it (CP-44). C1.0 = VM map/unmap/protect (W^X enforced) +
+# guard pages + a monotonic clock.
+browser-runtime = []
+# OT-85 wall-clock rung: seed CLOCK_REALTIME's epoch once at boot from the
+# MC146818 CMOS RTC (UIP wait, two agreeing reads, BCD/binary and 12/24-hour
+# honoured, the FADT's century byte and "CMOS RTC Not Present" flag), read as
+# local wall time. Realtime = that base + monotonic; monotonic is untouched.
+# Any invalid read keeps boot-relative realtime and logs one line. In the
+# shipping `desktop` set. Off (the kill-switch): realtime is boot-relative,
+# exactly C1.0, and neither the RTC nor the FADT is read.
+rtc-epoch = []
+# OT-85 test hook: every CMOS register reads 0xFF (a floating bus), so the real
+# validator refuses the clock and the seed takes the fallback.
+rtc-epoch-force-invalid = ["rtc-epoch"]
+# OT-85 gate: neo-init's wall-clock probe on a QEMU RTC pinned to
+# 2026-10-21T17:48:00 — the boot instant formats as Wednesday, October 21,
+# 2026, 5:48 PM through libneo::civil; the base is stable within one tick;
+# monotonic is nondecreasing.
+neo-test-wallclock-rtc = ["neo-test", "browser-runtime", "rtc-epoch"]
+# ...and with the forced-invalid clock: the boot completes, realtime stays
+# boot-relative (== monotonic within one tick), one fallback line.
+neo-test-wallclock-rtc-fallback = ["neo-test-wallclock-rtc", "rtc-epoch-force-invalid"]
+# OT-22 rung 1: SYS_WAIT_ANY, a bounded readiness multiplex (channel recv,
+# input focus/route, SAK, deadline) so an idle desktop parks instead of
+# spinning. Off: the syscall does not exist (ENOSYS) and nothing else changes.
+wait-multiplex = []
+# OT-22 test-only control: the channel send/grant/close paths do not fire
+# waiters, so an IPC-only wait can only end at its deadline. The
+# wait_any_core IPC leg must FAIL with it.
+wait-multiplex-no-ipc-fire = ["wait-multiplex"]
+# OT-22 controls for Jarvis rung-1 F1 (wait_any_core's rebind and revoke
+# legs must FAIL with each): the second scan's identity check compiled out,
+# and the handle-removal fire compiled out.
+wait-multiplex-no-identity-check = ["wait-multiplex"]
+wait-multiplex-no-handle-fire = ["wait-multiplex"]
+# OT-22 kernel legs: an IPC-only wait woken by a real channel send, the
+# CP-14 race (a send landing between the readiness check and the park), a
+# deadline, and kill-while-parked.
+neo-test-wait-any-core = ["neo-test", "wait-multiplex", "neo-test-wait-any-race"]
+neo-test-wait-any-race = ["neo-test", "wait-multiplex"]
+# C1.0 gate: neo-init runs the VM+clock battery (map/protect/unmap round-trip,
+# W^X-negative, guard-unmapped, clock-monotonic) and exits 0 on pass.
+neo-test-vm-primitives = ["neo-test", "browser-runtime"]
+# C1.1 gate (threads + futex): neo-init runs the in-process concurrency
+# battery — thread create/join/detach/get_info, futex-mutex contention,
+# condvar/rwlock, absolute-deadline timeout, lost-wakeup-free ping-pong,
+# wake-count preservation, sleep — and exits 0 on pass.
+neo-test-threads-futex = ["neo-test", "browser-runtime"]
+# OT-61 C1.2: the TLS battery (neo-init driver, `threads-tls`): per-thread key
+# isolation, FS.base across a context switch and a migration (the test-only
+# SYS_TEST_TLS_PROBE), the iterated destructors, EPERM without the C1
+# capability, and the cleared-slot generation check.
+neo-test-threads-tls = ["neo-test", "browser-runtime", "tick-sleep"]
+# OT-61 C1.3b (CP-86): a process retire reaches a sibling running on another
+# CPU. A neo-worker child (threads-exit-group) puts a thread spinning in ring 3
+# on CPU 2 (plus a futex-parked one) and calls SYS_EXIT(7), or faults (139); a
+# third role parks a futex waiter after the retire's purge (SYS_TEST_FUTEX_LATE_PARK).
+# Without the cross-CPU retire the parent's sys_wait never returns.
+neo-test-threads-exit-group = ["neo-test", "browser-runtime"]
+# C1.1 gate (AAG blocker A): kernel-level token-wake-under-ready-ring-pressure —
+# fills the ready ring to the admitted cap while a token is parked, then wakes;
+# the live_count reserve makes the re-entry fit (no panic). Kernel-only driver.
+neo-test-token-wake-ring-pressure = ["neo-test", "browser-runtime"]
+# C1.1 gate (AAG blocker D): composed root caps — browser-runtime + net-dial-cap
+# both installed into neo-init; thread_create works AND NetDial derives; no-cap
+# child gets EPERM.
+neo-test-threads-cap-compose = ["neo-test", "browser-runtime", "net-dial-cap"]
+# C1.1 gate (containment + refcount): neo-init spawns the worker child twice —
+# no-cap (thread_create → EPERM, fail-closed) and with-cap (thread refcount
+# join-all, then a guarded-stack overflow → ring-3 #PF → the KERNEL fault-kills
+# ONLY that process, exit 139; neo-init proves the scheduler/governance stayed
+# live afterwards).
+neo-test-threads-guard-fault = ["neo-test", "browser-runtime"]
+# CP-44: the same battery with kernel-observability on. The ring-3 guard
+# overflow #PF then runs `record_page_fault` -> `current_cpu_id()` (a gs:
+# read) before the fault-kill, so it must reach the fault-kill on the kernel
+# GS instead of recursing on the user GS into #DF.
+neo-test-threads-guard-fault-observability = ["neo-test", "browser-runtime", "kernel-observability"]
+# CP-46: the same battery with the futex-parked sibling in a TIMED wait, so the
+# ring-3 fault-kill reaches `purge_pid` -> `recompute_earliest` from the #PF
+# handler. That path must run on a SysV-aligned stack, not #GP.
+neo-test-threads-guard-fault-timed = ["neo-test", "browser-runtime"]
+neo-test-smep-catch = ["neo-test"]
+neo-test-smap-catch = ["neo-test"]
+neo-test-smep-policy = ["neo-test"]
+neo-test-smap-policy = ["neo-test"]
+# CP-49: a `with_user_access` call nested inside another must be refused (the
+# inner `clac` would close the outer window early). Passes on the guard's panic.
+neo-test-user-access-nesting = ["neo-test"]
+neo-test-kaslr-smoke = ["neo-test"]
+neo-test-kaslr-heap-contract = ["neo-test"]
+neo-test-kaslr-heap-synthetic = ["neo-test"]
+neo-test-bare-metal-hhdm-covers-modules = ["neo-test"]
+neo-test-bare-metal-hhdm-repair-path = ["neo-test", "neo-test-hhdm-force-unmap"]
+neo-test-hhdm-force-unmap = []
+# B1a discriminator: take a staged, unaligned `/models/` probe module, admit its
+# planned pages, allocate/write/free/reallocate from the admitted zone, and
+# prove the tombstone (no lookup after take) and the forged-plan refusal.
+neo-test-boot-module-reclaim = ["neo-test", "model-boot-module"]
+neo-test-expect-pass-but-fail = ["neo-test"]
+neo-test-lock-owner-consistent = ["neo-test"]
+neo-test-irqsafe-mutex-if-restore = ["neo-test"]
+neo-test-irqsafe-mutex-bench = ["neo-test"]
+# CP-43: after a syscall returns, ring 3 must see defined values in rcx/r11 (the
+# ones SYSRET would leave: return RIP / RFLAGS), never kernel scratch. A ring-3
+# probe makes five syscalls that leave the kernel by different routes (one of
+# them the test-only SYS_TEST_DIRTY_SCRATCH) and dumps rcx/r11 straight after
+# each `syscall`. `browser-runtime` is for SYS_SCHED_YIELD.
+neo-test-syscall-return-clean-regs = ["neo-test", "browser-runtime"]
+# CP-50: no interrupt between the syscall exit's `swapgs` and `iretq`. A ring-3
+# probe sweeps a one-shot LAPIC timer (test vector, through swapgs_irq_entry)
+# across the exit of a test syscall that returns with IF=1, one instruction at
+# a time; xtask runs it under `-icount` so the interrupt lands on an exact
+# instruction boundary.
+neo-test-syscall-exit-irq-window = ["neo-test"]
+# CP-47: a syscall made with RFLAGS.NT=1 must not leave NT live in the kernel
+# (IRETQ with NT=1 is #GP in 64-bit mode). CP-48: ring 3 must have no 32-bit
+# code segment, and IA32_CSTAR must point at the halt-only sink.
+neo-test-syscall-nt-masked = ["neo-test", "browser-runtime"]
+neo-test-compat-mode-unreachable = ["neo-test", "browser-runtime"]
+# BUILD-LO: the §4 hot-path latency oracle (Tier B). Pulls accel-sim for the
+# CPU-fallback op dispatch in the per-op-total measurement. Pure instrumentation,
+# default-off — the kill-switch is the feature gate (off ⇒ bit-for-bit today).
+neo-test-ai-latency-oracle = ["neo-test", "accel-sim"]
+neo-test-xsave-ymm-context-switch = ["neo-test", "xsave-fpu"]
+# Regression for interrupt-entry state: a test-only vector (swapgs_irq_entry)
+# and the timer stub, entered with AC=1/DF=1 and a hostile MXCSR, must
+# preserve the interrupted xmm0-15/flags/MXCSR and run their bodies with DF=0
+# (CP-39), AC=0 (CP-40) and the default MXCSR (CP-41).
+neo-test-irq-xmm-preserve = ["neo-test"]
+# Same scenario on qemu64 (no XSAVE): covers the FXSAVE fallback inside the
+# xsave-fpu stub, where the DF leg is the only cld on the path.
+neo-test-irq-xmm-preserve-fxsave = ["neo-test-irq-xmm-preserve"]
+# CP-40 at the exception boundary: every present exception gate starts with the
+# AC|DF flags mask, and a ring-0 `int3` taken with AC=1 runs `breakpoint` at AC=0.
+neo-test-exception-entry-flags = ["neo-test"]
+neo-test-phase2-perf-proxy-baseline = ["neo-test", "neo-test-instrumentation"]
+neo-test-q7b-cr3-cache-skip-count = ["neo-test", "neo-test-instrumentation"]
+neo-test-q7c-shootdown-synthetic-round-trip = ["neo-test", "neo-test-instrumentation"]
+neo-test-q7c-shootdown-timeout-panic = ["neo-test", "neo-test-instrumentation"]
+neo-test-swapgs-irq-ring3 = ["neo-test", "neo-test-instrumentation"]
+# CP-41: ring 3 loads a hostile MXCSR/x87 control word and calls a test-only
+# syscall that runs kernel float work (incl. the real qwen2_output_logits, hence
+# phase9-real-quant). The kernel must see the default MXCSR, not #XM, return
+# default-MXCSR results, and give the user's MXCSR/FCW back. Runs -cpu max
+# (XSAVE/XRSTOR around the syscall).
+neo-test-syscall-mxcsr-entry = ["neo-test", "phase9-real-quant"]
+# Same scenario on qemu64: the xsave-fpu stub's FXSAVE/FXRSTOR fallback.
+neo-test-syscall-mxcsr-entry-fxsave = ["neo-test-syscall-mxcsr-entry"]
+# CP-45: a freshly created thread must start from the FPU init state and (ring 3)
+# zeroed GP registers, never from the spawner's live registers (kernel-register
+# leak into ring 3). Covers both user-entry trampolines (`browser-runtime` for
+# the thread_create one) and kernel threads. Runs under -cpu max (XSAVE/YMM).
+neo-test-thread-entry-clean-state = ["neo-test", "browser-runtime"]
+# Same scenario on qemu64 (no XSAVE): the xsave-fpu FXSAVE fallback.
+neo-test-thread-entry-clean-state-fxsave = ["neo-test-thread-entry-clean-state"]
+neo-test-q7c-concurrent-munmap-smp = ["neo-test"]
+neo-test-q7c-process-exit-during-thread-run = ["neo-test"]
+neo-test-q7c-missing-shootdown-detection = ["neo-test", "neo-test-missing-shootdown-negative"]
+neo-test-missing-shootdown-negative = []
+neo-test-q8a-concurrent-install-revoke = ["neo-test"]
+neo-test-q8a-concurrent-install-revoke-negative = [
+    "neo-test",
+    "neo-test-missing-cap-lock-negative",
+]
+neo-test-missing-cap-lock-negative = []
+neo-test-d5-phase-a-coverage = ["neo-test", "neo-test-instrumentation"]
+neo-test-q8b-grant-vs-exit-race = ["neo-test"]
+neo-test-q8b-exit-state-cas = ["neo-test"]
+neo-test-q8c-blocked-kill-walk = ["neo-test"]
+neo-test-q8c-blocked-kill-foreign-parked = ["neo-test"]
+neo-test-q8c-close-peer-my-side-extract = ["neo-test"]
+neo-test-cap-mint-and-use = ["neo-test"]
+neo-test-cap-derive-subset = ["neo-test"]
+neo-test-cap-derive-rights-violation = ["neo-test"]
+neo-test-cap-derive-missing-meta = ["neo-test"]
+neo-test-cap-grant-basic = ["neo-test"]
+neo-test-cap-grant-missing-meta = ["neo-test"]
+neo-test-cap-revoke-local = ["neo-test"]
+neo-test-cap-revoke-cross-process = ["neo-test"]
+neo-test-cap-revoke-descendants-walk = ["neo-test"]
+# K1a-0 (CP-87, CP-88): the cap-graph scenario. A test hook parks between a
+# revoke's walk and its removal (the race leg), plus derive+close and
+# exit laundering legs. Adds SYS_TEST_CAP_GRAPH_RACE (0xF08). NEO_SMP=4 in CI.
+neo-test-cap-graph-revoke = ["neo-test", "atrium-compositor-g1"]
+# Janus #182 item 4 control (test only): the one deferred-drop enqueue
+# without its pending-flag publish; `cap_graph_revoke` must FAIL (F1d).
+neo-test-deferred-pending-control = ["neo-test-cap-graph-revoke"]
+# #226 bounce control (test only): `sched::reap_nested` reaps as a plain
+# `reap` (no nesting mark); `cap_graph_revoke` must FAIL (F1f).
+neo-test-nested-reap-control = ["neo-test-cap-graph-revoke"]
+# Revert-check: install_cap drops a refused handle under CAP_GRAPH again, so
+# cap_graph_revoke's F3 leg trips the InputFocus witness.
+neo-test-install-cap-drop-control = ["neo-test-cap-graph-revoke"]
+# K1a-0 kill-switch: the previous layer (no CAP_GRAPH lock, no parent
+# re-check, no re-parenting on close or exit). Test only: every leg of
+# `cap_graph_revoke` must FAIL with it.
+neo-test-cap-graph-unlocked-control = ["neo-test"]
+# K1a: the capability-rooted open scenario (cap_rooted_open). NEO_SMP=4 in CI.
+neo-test-cap-rooted-open = ["neo-test", "cap-rooted-open"]
+# OT-61 C2.2: the memory-quota scenario (mem_quota). NEO_SMP=4 in CI.
+neo-test-mem-quota = ["neo-test", "mem-quota"]
+# OT-93: kill_ready_in_kernel, a kill of a thread held Ready inside its send.
+neo-test-kill-ready-in-kernel = ["neo-test"]
+# Its falsifier (run by hand): the pre-OT-93 rule, zombify any Ready thread.
+neo-test-kill-ready-in-kernel-control = ["neo-test-kill-ready-in-kernel"]
+# OT-93 F2's falsifier (run by hand): a kill completes its waiters at once,
+# while its survivor is still in the kernel (must FAIL: wait_before_survivor).
+neo-test-kill-wait-early-control = ["neo-test-kill-ready-in-kernel"]
+# OT-61 C2.2b: the object-budget scenario (obj_quota). NEO_SMP=4 in CI.
+# With the Atrium buffer syscalls, for the buffer-map pin charge.
+neo-test-obj-quota = ["neo-test", "obj-quota", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+# The user_copy_bounds scenario: oversized user copies are refused (no panic).
+neo-test-user-copy-bounds = ["neo-test"]
+# The socket_teardown scenario: exit, kill and revoke close a process's sockets.
+neo-test-socket-teardown = ["neo-test"]
+# OT-96 R1+R2: wire RX after bring-up, over two virtio-net NICs on one hub.
+neo-test-wire-rx-demux = ["neo-test", "wire-rx"]
+# OT-95: a dropped loopback TCP segment is retransmitted by the net tick thread.
+neo-test-net-tick-retransmit = ["neo-test", "net-tick"]
+# OT-94: a listener's half-open and accept queues stay bounded (kernel-side).
+neo-test-tcp-listen-bounds = ["neo-test"]
+# OT-91: an exit code is kept only while someone can claim it.
+neo-test-exit-codes-bounded = ["neo-test"]
+# Revert-checks for #171: a sys_wait takes no claim (step 5 gets ESRCH), and a
+# table dropped undrained releases no exit-code claim (the kernel leg fails).
+neo-test-wait-claim-pin-control = ["neo-test-exit-codes-bounded"]
+neo-test-abandoned-table-control = ["neo-test-exit-codes-bounded"]
+# Revert-check for the #238 bounce: the wait holds its claim across the park,
+# so a waiter killed while parked leaks it (step 6 leaves the maps above base).
+neo-test-wait-claim-park-control = ["neo-test-exit-codes-bounded"]
+# Dexter #187 item 3a: a process without the mount authority can neither
+# unmount nor mount; the holder (neo-init) can. NeoFS is mounted at boot.
+neo-test-mount-authority = ["neo-test", "mount-authority"]
+# Revert-check: every process passes the authority check, as before.
+neo-test-mount-authority-control = ["neo-test-mount-authority"]
+neo-test-cap-revoke-spawn-inheritance-descendants = ["neo-test"]
+neo-test-cap-survive-exit = ["neo-test"]
+# File-capability unification (I-15) live proof: a process opens a file (rooted
+# with DERIVE+GRANT), derives a read-only cap, grants it to a child; the child
+# reads OK but writes are denied (live attenuation), and a non-grantable file cap
+# can't be granted. Pulls `file-caps` (the feature under test). NEO_SMP=4 in CI.
+neo-test-file-cap-derive-grant = ["neo-test", "file-caps"]
+# Phase-B cap-bounded vault (ADR-075): neo-init spawns the vault (neo-worker's
+# vault-phase-b role) with only its op channel + no network cap, then drives
+# unlock/store/retrieve(least-rights grant)/lock plus wrong-password, mutated-
+# header, and weak-parameter negative checks. Proves I-14(a) no-network
+# containment via SYS_INSPECT network_handle_count. Pulls `kernel-rng`: the
+# vault draws every nonce/salt from SYS_GETRANDOM (the kernel CSPRNG) and fails
+# closed without it. Runs under `-cpu max` so the DRBG's RDRAND seed works under
+# pure TCG (see scenario_needs_qemu_max in xtask).
+neo-test-vault-phase-b = ["neo-test", "kernel-rng"]
+# OT-18 E3-revoke: transitive revoke through the file-cap derivation graph. The
+# neo-init driver opens a file, derives a 2-deep child chain, revokes the parent,
+# and asserts every descendant dies while a sibling scope + the ancestor survive
+# (the security crux). Pulls `file-caps` (the cap graph under test). NEO_SMP=4 in CI.
+neo-test-arthur-grant-revoke = ["neo-test", "file-caps"]
+neo-test-sys-wait-blocking = ["neo-test"]
+neo-test-sys-wait-wnohang = ["neo-test"]
+neo-test-sys-wait-already-exited = ["neo-test"]
+neo-test-sys-wait-multiple-waiters = ["neo-test"]
+neo-test-sys-inspect-running = ["neo-test"]
+neo-test-sys-inspect-exited = ["neo-test"]
+neo-test-sys-inspect-rights-gate = ["neo-test"]
+neo-test-sched-ready-queue-capacity-pressure = ["neo-test"]
+neo-test-kernel-observability = ["neo-test", "kernel-observability"]
+neo-test-kernel-observability-disabled = ["neo-test"]
+neo-test-neo-shell-repl = ["neo-test", "serial-stdin"]
+neo-test-neo-shell-builtins = ["neo-test", "serial-stdin", "kernel-sysstat"]
+neo-test-arthur-action-surface = ["neo-test"]
+neo-test-arthur-converse = ["neo-test", "serial-stdin"]
+neo-test-arthur-boots-thinking = ["neo-test", "serial-stdin"]
+neo-test-arthur-act = ["neo-test", "serial-stdin"]
+neo-test-arthur-agentic-actions = [
+    "neo-test",
+    "serial-stdin",
+    "kernel-sysstat",
+    "kernel-observability",
+    "phase9-real-quant",
+]
+neo-test-arthur-reversibility = [
+    "neo-test",
+    "serial-stdin",
+    "kernel-sysstat",
+    "kernel-observability",
+    "phase9-real-quant",
+]
+neo-test-arthur-multistep-agentic = [
+    "neo-test",
+    "serial-stdin",
+    "kernel-sysstat",
+    "kernel-observability",
+    "phase9-real-quant",
+    "virtio-blk-irq",
+]
+neo-test-arthur-grants-persist = ["neo-test", "serial-stdin", "file-caps", "net-dial-cap"]
+neo-test-input-path-console = ["neo-test", "framebuffer-console", "usb-hid"]
+neo-test-usb-hid-mouse = ["neo-test", "usb-hid-mouse"]
+# i8042 lane: keys sent to QEMU's PS/2 keyboard (HMP `sendkey`, no USB
+# keyboard present) decode to the expected HID key events, through IRQ1 on
+# the I/O APIC. The control leaves the controller untranslated (set 2 read as
+# set 1) and must FAIL the decode.
+neo-test-ps2-keyboard = ["neo-test", "ps2-keyboard", "atrium-input-routing"]
+neo-test-ps2-keyboard-control = ["neo-test-ps2-keyboard"]
+# Key auto-repeat: Backspace held 1.5 s in QEMU's PS/2 keyboard (HMP
+# `sendkey backspace 1500`) must give one press, repeats (none before 500 ms,
+# at least 3 ticks apart) and one release, with nothing after the release;
+# Escape held as long must not repeat. The control never arms a repeat and
+# must FAIL `key_repeat_none`.
+neo-test-ps2-key-repeat = ["neo-test", "ps2-keyboard", "atrium-input-routing", "key-autorepeat"]
+neo-test-ps2-key-repeat-control = ["neo-test-ps2-key-repeat"]
+# RTL8125 rung 1 (QEMU has no RTL8125). `rtl8125_absent`: the feature is on,
+# no device, and the boot probe reports absent; then a synthetic bind on a
+# stand-in NIC (QEMU's rtl8139, Bus Master Enable pre-set as firmware might
+# leave it) on a host with no IOMMU must leave Bus Master Enable CLEAR.
+# Control: the opt-in forced on => FAIL `bus_master_set`.
+neo-test-rtl8125-absent = ["neo-test", "rtl8125"]
+neo-test-rtl8125-absent-control = ["neo-test-rtl8125-absent"]
+# The VT-d leg on QEMU's intel-iommu: the stand-in is fenced, mode `iommu`,
+# Bus Master Enable clear after bind and set only by the grant.
+neo-test-rtl8125-vtd = ["neo-test", "rtl8125", "vtd"]
+# I2C-HID touchpad lane: the driver on QEMU (no matching firmware): no match,
+# nothing probed, plus the no-controller bounded-timeout proof and the I-14(a)
+# ISR-under-locks check. The control forces the match: the driver must fail
+# closed (no controller, bounded waits, no hang) and the scenario FAILs
+# `i2c_hid_probed_without_match`.
+neo-test-i2c-hid-absent = ["neo-test", "i2c-hid-touchpad", "atrium-input-routing"]
+neo-test-i2c-hid-absent-control = ["neo-test-i2c-hid-absent"]
+neo-test-arthur-console = ["neo-test", "framebuffer-console", "usb-hid"]
+neo-test-v1-console-liveness = ["neo-test", "framebuffer-console", "usb-hid"]
+# Atrium G1 compositor slice-1 (Rung 0, OT-63/OT-52): the two ratified kernel
+# objects (shared pixel buffer + InputFocus), the stride-aware fb present path,
+# and the embedded software present-fence. OFF by default => none of it is
+# compiled and the kernel is bit-for-bit today (the Rule-1 kill-switch; the
+# second layer is the runtime switch, on only inside the compose scenario).
+atrium-compositor-g1 = []
+# Slice-4 delivery kill-switch. Off leaves fd-0's direct HID read byte-for-byte
+# unchanged even when the earlier Atrium objects are compiled.
+atrium-input-routing = ["atrium-compositor-g1"]
+# Kill-switch for the per-client input queue policy (input_queue_logic.rs):
+# ON restores ADR-074's original drop-oldest-of-any-class overflow rule, under
+# which pointer motion can evict keystrokes. Default off. Host KATs prove the
+# two rules are bit-identical on key-only streams.
+atrium-input-queue-legacy = ["atrium-input-routing"]
+# S1-F1 kill-switch: ON restores the direct HID -> route_event path, under
+# which a report drained while DELIVERY is contended is consumed, reposted and
+# lost. Default off: drivers stage decoded events per device (bounded) and
+# flush them under one try_lock on every pump.
+atrium-input-stage-legacy = ["atrium-input-routing"]
+# DI-1 SAK (default off; off = no chord interception, keys exactly as
+# before): Super+Tab / Super+Space / Super+Escape (modifier first) are
+# latched in a lock-free kernel command latch, never queued; the chord key's
+# press and release reach no client.
+atrium-sak = ["atrium-input-routing", "usb-hid"]
+# OT-66 L2: Super+L joins the SAK table (`sak_logic::KEY_L`, latch bit 8),
+# so no client can read the lock chord; the WM locks on it (neo-init `lock`).
+# Off => the table is Tab, Space, Escape, bit-for-bit today.
+sak-lock = ["atrium-sak"]
+# OT-66 L2b: the kernel's half of the lock (`focus::LOCK_ROUTE`). The WM
+# registers its own focus as the lock focus; Super+L locks the route to it in
+# the latch itself, so no client gets input while locked even when the WM is
+# parked in a send (CP-57). Off => `sak-lock` (L2) bit-for-bit.
+sak-lock-route = ["sak-lock", "atrium-pointer-forward"]
+# DI-1a B-ref kill-switch (default off; off = ADR-074 bit-for-bit, the mouse
+# keeps its kind-2 route to the keyboard focus). On: the InputSystem cap is
+# minted into the session root, and SYS_INPUT_POINTER_CLAIM /
+# SYS_INPUT_POINTER_FORWARD / SYS_INPUT_SAK_TAKE exist. Until a route is
+# claimed the mouse still takes the ADR-074 route.
+# A9-C2: the mouse wheel reaches the window under the pointer. The USB mouse
+# and the touchpad's mouse collection pass the wheel they decode; the pointer
+# route mints a WHEEL record for it, and forwarding one delivers a kind-5
+# event whose wheel comes from the kernel's record. Off = every pointer event
+# carries wheel 0, exactly as before (the kill-switch).
+atrium-pointer-wheel = ["atrium-pointer-forward"]
+atrium-pointer-forward = ["atrium-input-routing", "usb-hid-mouse", "atrium-sak"]
+# --- Atrium scenario registration (Rule-4 consolidation, 2026-07-20) ---------
+# Two pure-marker umbrella features collapse the atrium scenario-plumbing sprawl.
+# They enable NO code (empty dep list) — they only let a single `cfg(feature =
+# "neo-test-atrium[-runtime]")` stand in for the hand-maintained `any(feature =
+# ...)` enumerations that every G1/OT-63 slice used to extend by hand (the
+# source of the ATRIUM_RUNTIME_ON comma artifact + the co-residence merge
+# collisions). A new atrium scenario opts into the umbrella(s) HERE, in one
+# append at the end of its own feature line — it never edits a shared `any(...)`
+# list again.
+#   * neo-test-atrium         — every atrium scenario (all 9) enables it; stands
+#                               in for `any(<all atrium scenarios>)`.
+#   * neo-test-atrium-runtime — only the scenarios that flip the runtime switch
+#                               on (slice1/surface-protocol/input-routing/
+#                               interactive/slice3); drives ATRIUM_RUNTIME_ON.
+neo-test-atrium = []
+neo-test-atrium-runtime = ["neo-test-atrium"]
+# The slice-1 compose/fence/focus scenario (also turns the runtime switch on).
+neo-test-atrium-slice1 = ["neo-test", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+# Slice-2: the surface verbs ride existing IPC channels; the feature enables
+# Rung-0 BufferCaps only so the scenario can transfer a real imported buffer.
+neo-test-atrium-surface-protocol = ["neo-test", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+# OT-63 Rung 1 Slice 1: the present() HardwareFlip backend + synthetic-vblank
+# (timer-driven) async fence completion + the bounded-timeout fallback, all
+# QEMU-provable with no GPU. Kernel-side scenario.
+neo-test-atrium-hw-present = ["neo-test", "atrium-compositor-g1", "neo-test-atrium"]
+# Slice-4: kernel-routed keyboard/pointer delivery to the active InputFocus leaf.
+neo-test-atrium-input-routing = ["neo-test", "atrium-input-routing", "usb-hid-mouse", "neo-test-atrium-runtime"]
+# Dexter #185 item 3: the minted ACTIVATE sibling with no parent, as before
+# (must FAIL: atrium_input_routing exits 14, the sibling outlives the revoke).
+neo-test-input-activate-revoke-control = ["neo-test-atrium-input-routing"]
+# Key-eviction discriminator: real usb-kbd + usb-mouse via HMP, a pointer flood
+# while typing, every keystroke required in order.
+neo-test-input-queue-flood = ["neo-test", "atrium-input-routing", "usb-hid-mouse", "neo-test-atrium-runtime"]
+# S1-F1 discriminator: a kthread holds DELIVERY while real usb-kbd reports
+# drain on another CPU; every press and release must arrive, in order.
+# DI-1a B-ref discriminator: an in-kernel "WM" claims the pointer route and
+# forwards / drops / replays real usb-mouse records; reclaim kills the old route.
+neo-test-di1-forward = ["neo-test", "atrium-pointer-forward", "neo-test-atrium-runtime"]
+# OT-66 L2b (Jarvis #160 items 1, 6, 7): the lock route's three cross-CPU
+# schedules, each forced on one CPU by an armed point (`focus::race`) that
+# runs Super+L (or a route read) between a route check and its effect.
+neo-test-lock-route-races = ["neo-test", "sak-lock-route", "neo-test-atrium-runtime"]
+# Control for hid_contention's mixed-IF phase: `PRIMARY` taken with the
+# caller's IF (main's pre-fix shape). Must FAIL reason=hid_primary_mixed_if_deadlock.
+neo-test-hid-mixed-if-control = ["neo-test-hid-contention"]
+# Jarvis N1 control: the HID mouse DEVICE lock taken with the caller's IF
+# (no masking at its sections); `hid_contention`'s IF=1 witness must then
+# FAIL reason=hid_lock_taken_with_interrupts_enabled.
+neo-test-hid-device-if-control = ["neo-test-hid-contention"]
+# CP-56 (#55) control: `InputFocus::drop` takes DELIVERY with IF as its caller
+# has it (the pre-fix shape); `hid_contention` must then FAIL at teardown.
+neo-test-delivery-drop-control = ["neo-test-hid-contention"]
+neo-test-hid-contention = ["neo-test", "atrium-input-routing", "usb-hid", "usb-hid-mouse", "atrium-sak", "neo-test-atrium-runtime"]
+# Slice-5 capstone: real user client input -> cell render -> damage commit ->
+# compositor present. HID injection enters at the production router seam.
+neo-test-atrium-interactive = ["neo-test", "atrium-input-routing", "framebuffer-console", "neo-test-atrium-runtime"]
+neo-test-atrium-interactive-baremetal = ["neo-test", "atrium-input-routing", "framebuffer-console", "usb-hid", "neo-test-atrium-runtime"]
+# DW-1: trusted userland WM with Home/Spine root, two ROLE_TEXT clients,
+# full-scene composition, and keyboard focus switching. QEMU uses the same
+# test injection seam as Slice-5 and the same scarce GpuSubmit scanout gate as
+# the Arthur showcase; no new kernel object or syscall is introduced.
+neo-test-dw1-desktop-wm = ["neo-test", "atrium-input-routing", "framebuffer-console", "neo-test-atrium-runtime"]
+# DW-2: userland scene policy over DW-1's trusted WM substrate. Focus history,
+# Hold/restore, dismissal, and OP_CONFIGURE size-only layout stay entirely in
+# the userland Atrium protocol/WM; no new kernel object or syscall is introduced.
+neo-test-dw2-scene-policy = ["neo-test", "atrium-input-routing", "framebuffer-console", "neo-test-atrium-runtime"]
+# Integrated showcase. Reuse the proven 0.5B inference feature family while
+# composing it with G1 and production USB-HID. The direct framebuffer console is
+# intentionally absent: Arthur is an ADR-073 client surface.
+# Arthur perf lane (2026-07-22): compose the fast forward substrates into the
+# showcase — `threaded-matmul` (OT-34 column-partition fork-join, byte-identical
+# to scalar; set_thread_count(online_cpu_count()) is wired at main.rs:573) +
+# `phase9-avx2-matmul` (AutoAvx2, runtime CPUID/XCR0-guarded fallback to scalar) +
+# `forward-perf` (the TSC wall-clock replacing ms=0). The features ARE the
+# kill-switch: features-off ≡ the exact Milestone-A scalar single-thread showcase,
+# bit-for-bit (the byte-parity KATs + the scenario's 1≡N + AutoAvx2≡Scalar checks).
+neo-test-arthur-compositor = ["neo-test-arthur-real-brain-boot", "atrium-input-routing", "usb-hid", "neo-test-atrium-runtime", "threaded-matmul", "phase9-avx2-matmul", "forward-perf"]
+neo-test-arthur-compositor-baremetal = ["neo-test-arthur-compositor"]
+# OT-78: the shipping feature composition, exercised as one two-boot QEMU
+# scenario. Reuse the proved Arthur/Atrium substrate while adding `product`
+# itself; the scenario-specific userland driver composes DW-1, typed Arthur
+# input, the no-dongle eth0 outcome, and persistent NeoFS read-back.
+neo-test-product-integration = ["neo-test-arthur-compositor", "product"]
+# Item 3a: the same five-rung product composition, exported for one physical
+# boot per invocation. The operator supplies the reboot and the persistent AHCI
+# NeoFS volume; the boot NVMe is reserved for the block log sink.
+neo-test-product-integration-baremetal = ["neo-test-product-integration"]
+# Desktop S1: boot the `desktop` feature set as a QEMU scenario. Asserts the
+# WM's full-screen scene covers every framebuffer pixel (no stale pixels, no
+# phase indicator) and that a live qemu-xhci usb-kbd keystroke reaches Arthur
+# through ADR-074 routing (HMP sendkey -> real HID reports; no test injection).
+neo-test-desktop-session-boot = ["neo-test", "desktop", "neo-test-atrium"]
+# Desktop S3: the same boot with the glass chrome (and its Reduce-Transparency
+# floor). Kernel-identical to desktop_session_boot; only the userland WM build
+# and the readback oracle (independent Python scene digests) differ.
+neo-test-desktop-glass-boot = ["neo-test", "desktop", "neo-test-atrium"]
+neo-test-desktop-glass-rt-boot = ["neo-test", "desktop", "neo-test-atrium"]
+# The DS-1 Home sessions' kernel (a base, not a scenario: every Home-based
+# desktop scenario below enables exactly one `*-boot` feature on top of it).
+neo-test-desktop-home = ["neo-test", "desktop", "neo-test-atrium"]
+# ...and with DI-1a's B-ref pointer (WM-forwarded clicks over a real usb-mouse).
+neo-test-desktop-pointer = ["neo-test-desktop-home", "atrium-pointer-forward"]
+neo-test-desktop-home-boot = ["neo-test-desktop-home"]
+# `atrium-app-icons`: DS-1's Home session with the Spine chips drawing their
+# app icons (the WM's feature). Kernel-identical to desktop_home_boot plus the
+# readback of Arthur's icon box against scripts/desktop/scene_oracle.py's
+# icon-fixture digest.
+neo-test-desktop-icons-boot = ["neo-test-desktop-home"]
+# Chad #177 item 4: desktop_home_cycle, DS-1's session after repeated
+# Home -> Arthur -> Home rounds, with the borrowed-pin cap cut to 8. Control:
+# SYS_BUFFER_UNMAP keeps the pin, as before (must FAIL: the WM's map of a
+# later round's Arthur buffer is refused).
+neo-test-desktop-home-cycle = ["neo-test-desktop-home"]
+neo-test-desktop-home-cycle-control = ["neo-test-desktop-home-cycle"]
+# OT-66 K1b: desktop_arthur_scope, DS-1's session on a `cap-rooted-open`
+# kernel: Arthur holds only his scopes (`/neofs/.arthur`, `/boot`), so his
+# root-form open of `/neofs` is EPERM and of his memory directory opens. Control: a held
+# scope authorizes any path (the containment check reverted), so the open of
+# `/neofs` succeeds.
+neo-test-desktop-arthur-scope = ["neo-test-desktop-home", "cap-rooted-open"]
+neo-test-desktop-arthur-scope-control = ["neo-test-desktop-arthur-scope"]
+# OT-66 L1: the sign-in scenarios' kernel: the desktop (NeoFS mounted at
+# boot, the WM's own focus) with `kernel-rng` (the salts, account id and
+# recovery code come from SYS_GETRANDOM, which `desktop` does not carry),
+# passing when neo-init exits 0, and with `system-store` (the record under
+# `.system/` is the WM's alone), `mount-authority` (only neo-init mounts)
+# and `cap-rooted-open` (OT-66 K1b: a root-form open needs a scope), as the
+# product has them. Each scenario below enables exactly one
+# `neo-test-login-*` feature on top of it.
+neo-test-login = [
+    "neo-test",
+    "desktop",
+    "neo-test-atrium",
+    "kernel-rng",
+    "system-store",
+    "mount-authority",
+    "cap-rooted-open",
+]
+# The sign-in KDF at the floor, timed (no disk, no account).
+neo-test-login-kdf-timing = ["neo-test-login"]
+# The VM image's four boots: the account, sign-in, the recovery code, sign-in.
+neo-test-login-two-boot = ["neo-test-login"]
+# Dexter #186 item 4: the record opens only for the WM (`system-store`).
+neo-test-login-record-guard = ["neo-test-login"]
+# Dexter #186 item 2 (J.c.): the wrong-password count survives a reboot.
+neo-test-login-backoff-reboot = ["neo-test-login"]
+# A below-floor record on the disk is refused.
+neo-test-login-below-floor = ["neo-test-login"]
+# The cut: a power cut after each write and flush of a password change
+# (`drivers::block::login_cut`, armed through SYS_TEST_BLOCK_CUT).
+neo-test-login-cut = ["neo-test-login"]
+# OT-66 L2: lock and unlock on the VM layout, with Super+L and the activity
+# bit in the SAK latch, the WM's pointer route and latch take, and (L2b) the
+# kernel's lock route (`sak-lock-route`): the Home lock with Arthur spawned
+# under it, and the window-view lock of an Arthur that never yields.
+neo-test-lock-session = ["neo-test-login", "sak-lock-route"]
+# The idle lock (6 s idle in the boot test's WM).
+neo-test-lock-idle = ["neo-test-login", "sak-lock-route"]
+# Arthur stalls in its handshake; Super+L still locks (AAG F3).
+neo-test-lock-stall = ["neo-test-login", "sak-lock-route"]
+# Arthur never receives the WM's reply, so the WM parks in its send; Super+L
+# still locks the input (L2b, CP-57).
+neo-test-lock-park = ["neo-test-login", "sak-lock-route"]
+# OT-88 S1: the settings store over two boots (OP_SETTING from a test
+# client, applied live; the idle lock at the chosen time; read back after a
+# reboot). The lock's kernel, as the product's.
+neo-test-settings-store = ["neo-test-login", "sak-lock-route"]
+# The PM's #222 bounce: a client that is not the settings app is refused
+# OP_SETTING and the store is unchanged (the idle lock at the default).
+neo-test-settings-refused = ["neo-test-login", "sak-lock-route"]
+# OT-88 S1: a settings write cut after each device write and flush (L1's
+# cut, `drivers::block::login_cut`).
+neo-test-settings-cut = ["neo-test-login-cut"]
+# L1.3a: Arthur's actions through the WM's permission prompt. `file-caps` so
+# the WM's lent caps are real, revocable kernel caps.
+neo-test-arthur-permission = ["neo-test-login", "sak-lock-route", "file-caps", "atrium-pointer-forward"]
+# A9-D: DS-1's Home session answered by a real generation: Arthur takes the
+# staged boot model, lever 2 forks attention on every decode step (image A's
+# tick and steal grace), and the WM turns the busy emblem meanwhile; its serial
+# witness counts the presents it made. Same Home end view and oracle.
+neo-test-desktop-busy-boot = [
+    # The WM's polling session loop (desktop-pointer) needs SYS_TRY_RECV.
+    "neo-test-desktop-pointer",
+    "model-boot-module",
+    "boot-model-preload",
+    "real-lm",
+    # The KAT's own geometry (not the 0.5B's defaults) from its .neom header.
+    "phase9-data-driven-config",
+    "threaded-matmul",
+    "par-elementwise",
+    "neo-test-par-attention-every-step",
+    "lapic-timer",
+    "matmul-steal-grace-time",
+]
+# A9-C: DS-1's session with Arthur's scrollback: after the first answer the
+# script scrolls the transcript (PgUp, Up, PgDn, PgDn) before going on. Same
+# Home end view and oracle.
+neo-test-desktop-scroll-boot = ["neo-test-desktop-home"]
+# A9-C2: the same session on the pointer kernel with the wheel: after the
+# first answer the script turns the usb-mouse wheel over Arthur's client
+# (the WM's cursor starts at the screen centre, inside it). Same Home end view.
+neo-test-desktop-wheel-boot = ["neo-test-desktop-pointer", "atrium-pointer-wheel"]
+# DI-1a: the DS-1 session with the B-ref pointer (WM-forwarded clicks, the
+# SAK escape, click-to-focus) over a real usb-mouse.
+neo-test-desktop-pointer-boot = ["neo-test-desktop-pointer"]
+# DS-1c: the DS-1 session whose Arthur blooms the read-only Lens (a second
+# client); kernel-identical to desktop_home_boot / desktop_pointer_boot, only
+# the userland build (`desktop-lens`) and the host-side capture checks differ.
+neo-test-desktop-lens-boot = ["neo-test-desktop-home"]
+neo-test-desktop-lens-pointer-boot = ["neo-test-desktop-pointer"]
+# Chad DS-1c F1: the keyboard Lens session with the first two blooms failing
+# late (WM boot-test fault injection); kernel-identical to desktop_home_boot.
+neo-test-desktop-lens-fault-boot = ["neo-test-desktop-home"]
+# DI-1b resize: the pointer scenario with a corner drag (neo-init / neo-arthur
+# `desktop-resize`); the kernel side is desktop_pointer_boot's.
+neo-test-desktop-resize-boot = ["neo-test-desktop-pointer"]
+# DL-1: every desktop feature on (the Lens docked to a moving, resizing
+# window); kernel-identical to desktop_pointer_boot.
+neo-test-desktop-full-boot = ["neo-test-desktop-pointer"]
+# Arthur's first-boot intro (neo-init `desktop-intro`, on `desktop-full`):
+# the intro card at session start, `help` typed and the hint clicked (the
+# help card), then DS-1's round; the final Home is read back with the hint
+# masked and its words held to the exact-area column pattern. Kernel-
+# identical to desktop_full_boot.
+neo-test-desktop-intro-boot = ["neo-test-desktop-pointer"]
+# OT-85: the intro session with the wall clock (neo-init `desktop-clock`) on a
+# QEMU RTC pinned to 2026-10-21T17:48:00 — the time-aware greeting and date
+# row on the card, the Home readout. The final Home is read back with the
+# readout box masked as well as the hint's: its digest must be the intro
+# build's (the clock adds nothing outside its box).
+neo-test-desktop-clock-boot = ["neo-test-desktop-intro-boot"]
+# CP-66 (J3-P): force-kill of graph SYS_INFER_RUN callers inside the
+# accelerator admission section — parked behind a holder (terminate, and in the
+# threaded build the fault-kill sibling path) and, threaded, a holder preempted
+# mid-dispatch. Each must be cancelled, unwind (its model/tensor Arcs dropped)
+# and exit at the boundary; the queue must never admit it; the next graph
+# inference must be served. The control builds the pre-fix behaviour and must
+# show the leak and the wedge.
+neo-test-admission-park-kill = ["neo-test"]
+neo-test-admission-park-kill-threaded = ["neo-test-admission-park-kill", "browser-runtime"]
+neo-test-admission-park-kill-control = ["neo-test-admission-park-kill"]
+# OT-83 F1 (CP-71): a logger holding the log sink is preempted on CPU 0, and a
+# sibling fault-kills (IF=0, same CPU) a process with a parked admission
+# waiter. The kill must progress and every CPU must then ACK a shootdown. The
+# control restores the admission traces' blocking flush and must hang.
+neo-test-admission-park-kill-sink-held = ["neo-test-admission-park-kill-threaded"]
+neo-test-admission-park-kill-sink-held-control = ["neo-test-admission-park-kill-sink-held"]
+# CP-67: threads force-killed while parked in IPC (send / recv / grant /
+# recv_grant) leak nothing: the channel is owned by the thread, not the
+# syscall frame, and a grantor drops its source handle before parking. The
+# control restores both frame-owned shapes (must FAIL: the counts leak).
+neo-test-ipc-park-kill = ["neo-test"]
+neo-test-ipc-park-kill-control = ["neo-test-ipc-park-kill"]
+# OT-98 (CP-98): a kill that races a natural exit, or finds its target parked
+# in sys_wait, completes or returns ESRCH and never panics. Control: claims the
+# natural exit at the reap and skips the sys_wait extraction, as before OT-98
+# (must FAIL: the kill of an exited child wins and returns 0).
+neo-test-kill-at-exit = ["neo-test"]
+neo-test-kill-at-exit-control = ["neo-test-kill-at-exit"]
+# The FAIL-A and FAIL-B legs' controls (run by hand; each must FAIL with
+# terminate's debug_assert): the sys_wait scan skips DYING, and the waiters are
+# woken after their lock is released, as before.
+neo-test-kill-at-exit-control-a = ["neo-test-kill-at-exit"]
+neo-test-kill-at-exit-control-b = ["neo-test-kill-at-exit"]
+# Leg C's, leg D's and the F1 leg's controls (each must FAIL): no survivor
+# count (terminate's debug_assert panics on a target running on another CPU);
+# no check for a thread that left the kernel during the scans (it panics); the
+# exit code stored before the natural claim, whatever its outcome
+# (kae_f1_loser_changed_code).
+neo-test-kill-at-exit-control-c = ["neo-test-kill-at-exit"]
+neo-test-kill-at-exit-control-d = ["neo-test-kill-at-exit"]
+neo-test-kill-at-exit-control-f1 = ["neo-test-kill-at-exit"]
+# The PM's bounce on 66904ae1, legs E, F and G (each must FAIL): the pre-count
+# completion rule (wait for a reap only if the survivor count saw a thread,
+# and only one seen in DYING), so leg E's waiter hangs; no reaping mark, and
+# no endpoint-guard wake in close_peer, so legs F and G each count an
+# unlocated kill.
+neo-test-kill-at-exit-control-e = ["neo-test-kill-at-exit"]
+neo-test-kill-at-exit-control-f = ["neo-test-kill-at-exit"]
+neo-test-kill-at-exit-control-g = ["neo-test-kill-at-exit"]
+# Zenbook lane: an unmarked disk is never written (block write guard + log
+# sink header check). Control: the guard disabled (must FAIL).
+neo-test-block-write-guard = ["neo-test"]
+# OT-87 R4.3: the same scenario on 4096-byte logical-sector virtio disks
+# (virtio-blk-size), so the guard's judgement and the sink see S=4096 through
+# a real device.
+neo-test-block-write-guard-4k = ["neo-test-block-write-guard", "virtio-blk-size"]
+# OT-87 R4.1: the install claim on real drivers (virtio GET_ID, the claimed
+# write past the guard, the refusals).
+neo-test-install-claim = ["neo-test", "installer"]
+# Muse's R4.1 review, item 4: NVMe namespace-attribute notices and a
+# controller reset under the claim, on QEMU's NVMe (a subsystem, namespace 1
+# attached and a twin namespace 2 detached). Test-only hooks in `nvme.rs`.
+neo-test-install-claim-nvme-events = ["neo-test", "installer"]
+neo-test-block-write-guard-control = ["neo-test-block-write-guard"]
+# The judge-contention leg's control: a second caller waits on an unfinished
+# write-guard judgement the pre-fix way, `spin::Once::call_once` at its own IF
+# (IF=0 here), so the leg must FAIL `judge_waiter_spun_with_interrupts_off`
+# (or hang, when the waiter and the judge share a CPU).
+neo-test-write-guard-judge-spin-control = ["neo-test-block-write-guard"]
+# Zenbook lane: the boot log is mirrored on screen (fb-progress-console): a
+# printed line lights its text row, and the first foreign drawer stops it.
+neo-test-fb-progress = ["neo-test", "fb-progress-console"]
+# Janus F4: a panic raised while this CPU holds the serial lock still reaches
+# the screen and the UART. Control: the panic path waits for the lock (hangs:
+# must FAIL by timeout).
+neo-test-fb-panic-holding-serial = ["neo-test", "fb-progress-console"]
+neo-test-fb-panic-holding-serial-control = ["neo-test-fb-panic-holding-serial"]
+# R1-3 control: after the panic another CPU keeps drawing and switches the
+# mirror off (must FAIL other_cpu_still_drawing).
+neo-test-fb-panic-other-cpu-control = ["neo-test-fb-panic-holding-serial"]
+# CP-68: boot in x2APIC mode (xtask: -cpu max,+x2apic on QEMU >= 9) and prove
+# the SMP IPI paths in it: reschedule IPIs to every AP and broadcast TLB
+# shootdowns, all delivered and ACKed. Control: + xapic-only (the pre-CP-68
+# request) must FAIL with apic_mode_not_x2apic on the same CPU model.
+neo-test-x2apic-smp = ["neo-test", "neo-test-instrumentation"]
+# Zenbook lane (NOTE §4a): the kernel tick from the LAPIC timer. Asserts the
+# LAPIC tick is active, ticks at a plausible rate against the calibrated TSC,
+# and PIC IRQ0 stays masked. `_x2apic`: the same on -cpu max,+x2apic.
+# Control: neo-test-lapic-timer-control forces the not-calibrated fallback
+# (the boot must still run on the PIT; the scenario must FAIL timer_not_lapic).
+neo-test-lapic-timer = ["neo-test", "lapic-timer"]
+neo-test-lapic-timer-x2apic = ["neo-test-lapic-timer"]
+# lapic_timer_demote: the first armed mode is silent (masked), so it must be
+# demoted to the PIT. Control: neo-test-lapic-timer-no-verify trusts the
+# armed mode without its first tick; nothing ticks and it must FAIL
+# no_tick_after_unverified_mode (a named marker, not a QEMU timeout).
+neo-test-lapic-timer-demote = ["neo-test-lapic-timer"]
+neo-test-lapic-timer-no-verify = ["neo-test-lapic-timer"]
+# Manual discriminator for the NO TICK SOURCE path: with
+# neo-test-lapic-timer-control (LAPIC refused), the PIT is never programmed,
+# so the fallback check must FAIL no_tick_source (on silicon: halt).
+neo-test-lapic-timer-pit-gated = ["neo-test-lapic-timer"]
+# #84 round 4 (manual control): no HPET and no PM timer, only the PIT. The PIT
+# never calibrates alone, so the run must log "measured by the PIT alone", tick
+# from the verified PIT/PIC, and FAIL timer_not_lapic (lapic=pit-only-clock).
+neo-test-lapic-timer-pit-only = ["neo-test-lapic-timer"]
+neo-test-lapic-timer-control = ["neo-test-lapic-timer"]
+# DM-1: the Lens session with motion (full / Reduce Motion); kernel-identical
+# to desktop_home_boot — only the userland WM build and the host-side
+# mid-transition capture check differ.
+neo-test-desktop-motion-boot = ["neo-test-desktop-home"]
+neo-test-desktop-motion-rm-boot = ["neo-test-desktop-home"]
+# OT-22 rung 1: the pointer session with SYS_WAIT_ANY compiled in and the
+# idle-tick witness syscall. desktop_idle_parks runs it with the userland
+# loops parked (neo-init/neo-arthur `desktop-park`), desktop_idle_spins with
+# them spinning (the control); the kernel is identical.
+neo-test-desktop-idle = ["neo-test-desktop-pointer", "wait-multiplex"]
+neo-test-desktop-idle-parks = ["neo-test-desktop-idle"]
+neo-test-desktop-idle-spins = ["neo-test-desktop-idle"]
+# Slice-3: cross-PROCESS buffer lifetime + the C3 relocated-surface proof. A
+# client (neo-worker) grants a read-only buffer cap to the compositor (neo-init),
+# which maps it RO+NX, composites from the client's pixels, and proves the frames
+# outlive the client (no UAF after client exit). PASS fires in the #PF handler
+# when the compositor's final write to its RO mapping faults (the C3 proof).
+neo-test-atrium-slice3 = ["neo-test", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+# OT-63 Rung 1 Slice 2 + showcase AAG: the scarce GpuSubmit capability gates
+# raw scanout on both Software and HardwareFlip. Proves cap-held ⇒ present
+# proceeds, un-capped + enforce-on ⇒ EPERM/no epoch, and enforce-off preserves
+# both baselines. Also exercises the handle-table authority scan. Kernel-side.
+neo-test-atrium-gpu-submit-cap = ["neo-test", "atrium-compositor-g1", "neo-test-atrium"]
+# OT-63 Rung 1 Slice 3: arena-backed scanout + FencedDmaAddr-only flip arm;
+# out-of-arena/governance spans refuse and synchronously degrade to Software.
+neo-test-atrium-scanout-dma-fence = ["neo-test", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+# Kill-switch equality: deterministic console transcript + pixel digest with the
+# feature COMPILED IN but the runtime switch OFF — must equal the no-feature
+# baseline digest (compositor-off == v1 console, bit-for-bit).
+neo-test-atrium-killswitch = ["neo-test", "atrium-compositor-g1", "framebuffer-console", "neo-test-atrium"]
+# The no-feature baseline for the same transcript/digest (no atrium code at all).
+# NOTE: keeps NO atrium code — neo-test-atrium here is the pure marker only.
+neo-test-atrium-console-digest = ["neo-test", "framebuffer-console", "neo-test-atrium"]
+# OT-63 GPU P1 Slice 1: the CPU glass-blur floor proven on the KERNEL path
+# against the literal r=1 8x8 byte oracle + the Rule-1 kill-switch (blur-off ==
+# solid Reduce-Transparency floor, bit-for-bit). Runtime toggle is flipped
+# inside the scenario, so it uses the plain neo-test-atrium marker.
+neo-test-atrium-glass-blur = ["neo-test", "atrium-compositor-g1", "neo-test-atrium"]
+# OT-63 GPU P1 Slice 2: the kernel-internal compute service + ABI, proven on the
+# accel-sim substrate — the GPU_COMPUTE_ENABLE kill-switch (off == Slice-1 CPU
+# floor bit-for-bit) + the submit->seqno-fence->wait plumbing. Real Gen9 EU
+# dispatch is Slice 3/4 (silicon).
+neo-test-accel-gpu-compute = ["neo-test", "accel-sim", "atrium-compositor-g1"]
+# OT-63 GPU P1 Slice 6: live G1 glass composition and the post-Slice-5
+# userspace three-cap compute ABI. QEMU only: accel-sim proves service wiring,
+# byte equality, attenuation/revocation, and that compute remains a fence.
+neo-test-gpu-glass-slice6 = ["neo-test", "accel-sim", "atrium-compositor-g1", "neo-test-atrium-runtime"]
+neo-test-arthur-memory = ["neo-test"]
+neo-test-boot-neofs-userland-persistence = ["neo-test", "boot-neofs"]
+# OT-87 R3: the same guest on one GPT disk, NeoFS on partition 2.
+neo-test-vm-one-disk = ["neo-test-boot-neofs-userland-persistence", "neofs-partition"]
+# OT-87 R4.3: the same one-disk boots on a 4096-byte logical-sector disk
+# (the GPT, the ESP, the partition view and the NeoFS mount at S=4096).
+neo-test-vm-one-disk-4k = ["neo-test-vm-one-disk", "virtio-blk-size"]
+# OT-78 I-14(b): each boot-degrade outcome is a distinct scenario so reaching
+# the harness proves boot continued, while a runtime outcome latch proves the
+# expected arm (rather than accepting a printed string).
+neo-test-boot-neofs-no-block-device = ["neo-test", "boot-neofs"]
+neo-test-boot-neofs-no-valid-superblock = ["neo-test", "boot-neofs"]
+neo-test-boot-neofs-unexpected-error = ["neo-test", "boot-neofs"]
+neo-test-arthur-memory-io-trace = []
+virtio-blk-irq = []
+# OT-59 #2 kill-switch: disables the device I/O gate, restoring the pre-fix
+# single-in-flight race. TEST-ONLY (compile_error! in virtio_blk.rs forbids it
+# without neo-test) — arms the falsifiable io-gate-contention regression's RED.
+virtio-blk-io-gate-off = []
+# OT-59 #2 falsifiable regression: two kthreads hammer block I/O under NEO_SMP=4,
+# asserting every submitted I/O completes. Greens gate-on; reds (hang) gate-off.
+neo-test-virtio-blk-io-gate-contention = ["neo-test"]
+neo-test-arthur-memory-encrypted = ["neo-test", "kernel-rng", "kernel-sysstat", "neo-test-arthur-memory-io-trace", "virtio-blk-irq"]
+neo-test-arthur-memory-delegation = ["neo-test", "kernel-rng", "kernel-sysstat", "file-caps", "neo-test-arthur-memory-io-trace", "virtio-blk-irq"]
+neo-test-arthur-memory-forgetting = ["neo-test", "kernel-rng", "kernel-sysstat", "file-caps", "neo-test-arthur-memory-io-trace", "virtio-blk-irq"]
+neo-test-arthur-real-vocab = ["neo-test", "serial-stdin"]
+# B1c (Plans/NOTE-2026-10-20-b1c-product-generation-s1.md): a kernel that runs a
+# real LM. Owns the real SYS_GENERATE{,_CONSTRAINED,_MASKED} arms, qwen_inventory,
+# and the resource policy a real forward needs: the 0.5B heap tier, buddy
+# MAX_ORDER 16, the 256 KiB inference stack (thread stacks unchanged). Off = today's build (the stubs
+# return EINVAL, 4 MiB heap, order 14, 32 KiB stacks). The real-brain test
+# features imply it, so their builds are unchanged.
+# B1c (F5): the dedicated 256 KiB inference stack (guarded, canary,
+# high-water) every real-LM forward runs on. Implied by `real-lm`; its own
+# feature so the overflow scenario boots without the real-LM heap tier.
+# xsave-fpu: the owner is preemptible (B1c AAG J1), and the forward's AVX2
+# state must survive a context switch (FXSAVE alone loses the YMM uppers).
+inference-stack = ["xsave-fpu"]
+# Zenbook ask-freeze: verify and build every pinned boot model once at boot, on
+# the inference stack (interrupts on, 256 KiB guarded), before userland; then
+# `sys_model_load` of `/boot/models/` hands out a handle to it. Off: the model
+# loads inside the syscall, at IF=0 on the caller's 32 KiB stack, as before.
+boot-model-preload = ["model-boot-module", "inference-stack"]
+# OT-87 R2 (docs/THINK-2026-10-27-ot87-installer.md §5): Arthur's model from the
+# installed NeoFS volume. A pinned name under /neofs/ is held to its pin through
+# NeoFS's verified content hash (EBADMSG on a mismatch), and the boot preload
+# builds the model from /neofs when no boot module names it. Off: the
+# boot-module path only, as before (`.text` identical for desktop, product and
+# the product image).
+model-from-neofs = ["boot-model-preload"]
+# OT-87 R3 (docs/THINK-2026-10-27-ot87-installer.md §4.2): NeoFS on a GPT
+# partition. The write guard also arms a LogansOS NeoFS partition (a validated
+# GPT, the LogansOS type GUID, a sealed NEOFSv1 superblock at its start, a
+# volume that fits), and the NeoFS mount probes such partitions before whole
+# devices. Off: the guard and the mount are bit-for-bit today's.
+neofs-partition = []
+# NFS-W1: kernel NeoFS writes a file of any size (to the 2 GiB format limit)
+# in one piece: data and pointer blocks in contiguous runs straight to the
+# device (through the guard, or the installer's claim), the single, double and
+# triple indirect tree (docs/specs/neofs-format.md §4.3), the content BLAKE3
+# streamed, one commit at the end. Off: kernel writes stay direct-block only
+# (32 KiB), bit-for-bit today's.
+neofs-large-write = []
+# OT-92: the NeoFS block cache holds at most 256 blocks (1 MiB): an insert
+# past it evicts the least recently used clean block, and a mutation that
+# starts with 128 or more dirty blocks drains first (fsync's drain), since
+# dirty blocks are never evicted. Off: the cache never evicts or throttles,
+# the previous layer.
+neofs-cache-evict = []
+# OT-87 R4 (docs/THINK-2026-10-27-ot87-installer.md §2a, §4): the installer.
+# R4.1: device identity from the drivers (NVMe Identify, ATA IDENTIFY, virtio
+# GET_ID), each driver's media-change reporting, the registry generation and
+# the one-shot install claim, the only path past the write guard. Off: the
+# block layer and drivers are bit-for-bit today's.
+# R4.3: the GPT writer and the W0-W6 state machine (install_logic), the NeoFS
+# seed and grow, the model and the deployment copy written through the claim,
+# the bundle's pin (LOGANSOS_INSTALL_BUNDLE_BLAKE3, set by xtask) and Limine's
+# executable-file request. It needs the partition view and 4096-byte virtio
+# disks. Off: all of it is compiled out.
+installer = ["neofs-partition", "virtio-blk-size", "model-boot-module", "neofs-large-write"]
+# OT-87 R4.3: virtio-blk negotiates VIRTIO_BLK_F_BLK_SIZE and reports a
+# 4096-byte logical sector when the device has one (virtio 1.2 §5.2.4). Off:
+# the driver is bit-for-bit today's (512-byte geometry).
+virtio-blk-size = []
+real-lm = ["phase9-real-quant", "inference-stack"]
+neo-test-arthur-real-brain-boot = ["neo-test", "serial-stdin", "kernel-sysstat", "phase9-real-quant", "real-lm"]
+# B1b: the 0.5B real-brain boot with the model and vocab as boot modules and no
+# NeoFS disk. The model is pinned, hashed before use, then reclaimed (B1a zone).
+# `kernel-observability` puts the heap high-water into the boot census.
+# `-answers` stages the fixture under the 0.5B name (or the real model when
+# NEO_STAGE_B_* is set); `-damaged` stages it with one byte flipped;
+# `-absent` stages no model module at all.
+neo-test-arthur-boot-module = ["neo-test-arthur-real-brain-boot", "model-boot-module", "kernel-observability"]
+neo-test-arthur-boot-module-answers = ["neo-test-arthur-boot-module"]
+neo-test-arthur-boot-module-damaged = ["neo-test-arthur-boot-module"]
+neo-test-arthur-boot-module-absent = ["neo-test-arthur-boot-module"]
+# B1c: the product real-LM path (real-lm + model-boot-module, WITHOUT the
+# real-brain test feature): the tiny inventory LM from the kv-persist KAT,
+# staged as a pinned boot module, generated through the product core and
+# checked against the KAT's token ids; plus the SYS_GENERATE bounds.
+# phase9-data-driven-config derives the tiny model's config (the shipped 0.5B
+# uses its built-in config).
+# B1c (PM ask 1): the inference stack's guard -> #DF fail-closed path, with a
+# deep-but-legal control and a canary control.
+neo-test-inference-stack-overflow = ["neo-test", "inference-stack"]
+# Zenbook ask-freeze (b): BLAKE3 stack depth at the real model's size.
+# `real-lm` for its 768 MiB heap tier: the probe hashes an owned 485 MB buffer.
+neo-test-boot-model-load-stack = ["neo-test", "inference-stack", "real-lm"]
+# B1c AAG J1 (CP-64): a real TLB shootdown from CPU 1 while the inference-stack
+# owner is parked on the BSP, entered at IF=0 like a syscall. The owner must
+# ACK every IPI, keep the BSP timer ticking and be preempted by a co-runner.
+# The control builds the pre-fix owner (caller's IF kept) and must panic with
+# tlb_shootdown_timeout.
+neo-test-inference-shootdown = ["neo-test", "inference-stack", "neo-test-instrumentation"]
+neo-test-inference-shootdown-control = ["neo-test-inference-shootdown"]
+# B1c AAG J3/J4 (CP-65): force-kill of inference participants. Holder A parks
+# on the inference stack (BSP, preemptible); waiter B yields for the stack;
+# CPU 1 terminates B, then A, each while it sits Ready. Both must cancel
+# cooperatively, exit at the syscall boundary, and give back the model Arc,
+# heap and frames; the stack must then serve another call. The control builds
+# the pre-J3 kill rule (only the holder skipped) and must show the leak.
+neo-test-inference-kill = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "neo-test-instrumentation"]
+neo-test-inference-kill-control = ["neo-test-inference-kill"]
+# B1c (F6): the release-gate bundle. On the OptiPlex, the pinned 0.5B from its
+# boot module runs one generate at the full cap (2,048-token prompt, 256 new);
+# the census records the heap and inference-stack high-water and the TSC time.
+neo-test-real-lm-peak = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "kernel-observability", "threaded-matmul"]
+neo-test-real-lm-generate = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "kernel-observability", "neo-test-instrumentation"]
+# A9-B: the product core under the repetition guard, at a test penalty of
+# 1.3, on the KAT inventory LM; its tokens must equal the guarded Python
+# oracle (tools/real-lm-oracle/expected_guard_tokens.txt).
+neo-test-real-lm-generate-guard = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "decode-repetition-guard"]
+# Zenbook ask-freeze discriminator: CPU 0 keeps ticking and a co-runner keeps
+# running while the boot model loads (the preload), and its control (the old
+# load inside an IF=0 syscall) shows both stop. The base selects the scenario.
+neo-test-boot-model-ticks = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config"]
+neo-test-boot-model-load-ticks = ["neo-test-boot-model-ticks", "boot-model-preload"]
+neo-test-boot-model-load-ticks-control = ["neo-test-boot-model-ticks"]
+# A9 freeze class (presents=0 through a 12 s answer): the product generate core
+# runs a long decode with lever 2's fork-join on every CPU (attention forked on
+# every step, image A's tick and steal grace) while a co-runner on CPU 0, where
+# the WM and Arthur run, keeps getting the CPU. Its control runs the same
+# generation at IF=0 off the inference stack, which must starve it.
+neo-test-generate-corunners = [
+    "neo-test",
+    "real-lm",
+    "model-boot-module",
+    "phase9-data-driven-config",
+    "threaded-matmul",
+    "par-elementwise",
+    "neo-test-par-attention-every-step",
+    "lapic-timer",
+    "matmul-steal-grace-time",
+]
+neo-test-generate-corunner-liveness = ["neo-test-generate-corunners"]
+neo-test-generate-corunner-liveness-control = ["neo-test-generate-corunners"]
+# B1c: the vocab staged with one byte flipped; the model intact.
+neo-test-arthur-boot-module-vocab-damaged = ["neo-test-arthur-boot-module"]
+# Zenbook ask-freeze: the answers and vocab-damaged runs with the boot model
+# built at boot (Arthur gets the preloaded handle; a bad vocab still leaves the
+# model untaken).
+neo-test-arthur-boot-module-preload = ["neo-test-arthur-boot-module-answers", "boot-model-preload"]
+neo-test-arthur-boot-module-preload-vocab-damaged = ["neo-test-arthur-boot-module-vocab-damaged", "boot-model-preload"]
+# OT-87 R2 battery: the boot NeoFS disk carries the model and its NEOVOCB1
+# vocab. `-from-neofs` stages no model or vocab module, so Arthur's model comes
+# from the disk; `-damaged` puts a wrong-byte model there (NeoFS's own hash
+# matches it; the pin does not); `-module-wins` also stages the boot modules,
+# which win over the disk's damaged model; `-off` is the kill-switch-off
+# control on the `-from-neofs` disk (absent).
+neo-test-arthur-neofs-model = ["neo-test-arthur-boot-module", "boot-model-preload", "boot-neofs"]
+neo-test-arthur-model-from-neofs = ["neo-test-arthur-neofs-model", "model-from-neofs"]
+neo-test-arthur-model-from-neofs-damaged = ["neo-test-arthur-model-from-neofs"]
+neo-test-arthur-model-from-neofs-module-wins = ["neo-test-arthur-model-from-neofs"]
+neo-test-arthur-model-from-neofs-off = ["neo-test-arthur-neofs-model"]
+# OT-87 R4.3: the install scenarios (`install_fresh`, `install_fresh_4k`,
+# `install_stop_finish`, `install_refusals`). One kernel: booted from a medium
+# that carries the install bundle it installs (`test_harness::run_install`,
+# its plan read from a disk xtask writes); booted from the disk it installed,
+# it is `arthur_model_from_neofs`, the model and vocab from that disk.
+neo-test-install = ["neo-test-arthur-model-from-neofs", "installer"]
+# OT-87 R4.4: the console installer (`install_console`). Booted from the
+# install medium, userland runs: neo-init hands the shell the Installer cap
+# and xtask types `install` at the shell (`test_harness::run_install_console`).
+# Booted from the disk it installed, it is `arthur_model_from_neofs`.
+neo-test-install-console = ["neo-test-arthur-model-from-neofs", "installer"]
+# OT-87 R4.4: the Atrium installer (`install_atrium`): the intro desktop
+# session (its harness, pass line and Home end view) with the installer,
+# booted from the install medium with the install disks attached.
+neo-test-install-atrium = ["neo-test-desktop-intro-boot", "installer"]
+# OT-87 R4.4b: the same session on images that can't install (no bundle;
+# a wrong pin): no Install chip, so the intro's own Home end view.
+neo-test-install-atrium-no-chip = ["neo-test-desktop-intro-boot", "installer"]
+# OT-16 B1 ISC-5: the 0.5B real-brain forward run THROUGH the data-driven walker,
+# with OT-34 threaded matmul — proves walker + threading + OT-30 parity together
+# at NEO_SMP=4 in QEMU. Composes the exact 0.5B forward (same SCENARIO const, same
+# serial ladder + parity assertions) + ot16-graph-walker + threaded-matmul.
+neo-test-arthur-real-brain-boot-ot16-walker = ["neo-test-arthur-real-brain-boot", "ot16-graph-walker", "threaded-matmul"]
+# OT-38 next-brain scale-up: the 1.5B Qwen2.5 real-brain boot. Composes the 0.5B
+# real-brain-boot path (inheriting MAX_ORDER 16 + the 256 KiB syscall stack) plus
+# data-driven config (the 1.5B's dims must come from the .neom, not hardcoded
+# 0.5B constants); lifts only HEAP_SIZE to 1.75 GiB (see mm/heap_policy.rs).
+neo-test-arthur-real-brain-boot-15b = ["neo-test-arthur-real-brain-boot", "phase9-data-driven-config"]
+# OT-38 next-brain 3B: the Qwen2.5-3B real-brain boot — a sibling of -15b (both
+# compose the 0.5B path + data-driven config F2), differing only in the staged
+# model, the validated byte sizes, the derived config values, and the heap tier.
+# Zero new forward math; the dims come from the .neom header, not a per-model
+# kernel branch. Lifts HEAP_SIZE to the 3B tier (see mm/heap_policy.rs).
+neo-test-arthur-real-brain-boot-3b = ["neo-test-arthur-real-brain-boot", "phase9-data-driven-config"]
+# OT-16 B3: real Qwen3.5-0.8B hybrid execution. Unlike the Qwen2-only
+# compatibility feature, this has no hardcoded-loop twin: its 18 GDN layers
+# require the data-driven schedule walker. Threaded matmul remains composed for
+# the six full-attention layers and the GDN projections.
+neo-test-arthur-real-brain-boot-qwen35 = ["neo-test-arthur-real-brain-boot", "phase9-data-driven-config", "ot16-graph-walker", "threaded-matmul"]
+# OT-28: armed fast≡slow token-identity KAT for the sys_generate KV-persist
+# kill-switch. Hermetic — builds a tiny inventory .neom in-kernel and runs the
+# persistent-KV and reprefill-baseline generation paths, asserting identical
+# token ids. phase9-data-driven-config lets the tiny custom config (hidden=128,
+# head_dim=64) drive the forward; phase9-real-quant carries the forward+sampler.
+# Deliberately NO ot16-graph-walker / threaded-matmul: the scalar non-walker path
+# keeps the equivalence deterministic and focused on the Qwen2 attention KV cache.
+# `forward-perf` is REQUIRED, not incidental: this scenario runs the same
+# inventory core as `sys_generate`, so it is the non-vacuous coverage gate for
+# the `InventoryDecodeState::advance` timing bracket (it asserts passes/cycles
+# are nonzero). Dropping it reds the scenario rather than silently un-covering
+# the bracket. Timing is a pure `rdtsc` read, so the equivalence stays exact.
+neo-test-sys-generate-kv-persist-equivalence = ["neo-test", "phase9-real-quant", "phase9-data-driven-config", "forward-perf"]
+# Phase 2 BUILD-2 sub-commit 1: buddy frame allocator scenarios.
+neo-test-buddy-split-coalesce = ["neo-test"]
+neo-test-buddy-max-order = ["neo-test"]
+neo-test-expect-pass-but-alloc-fail = ["neo-test"]
+neo-test-buddy-alloc-free-alloc-returns-same = ["neo-test"]
+# Phase 2 BUILD-2 sub-commit 2: slab allocator scenarios.
+neo-test-slab-local-to-global-promotion = ["neo-test"]
+neo-test-slab-global-to-buddy-overflow = ["neo-test"]
+# Phase 2 BUILD-2 sub-commit 4: Thread migration to slab.
+neo-test-slab-thread-migration = ["neo-test"]
+# Phase 2 BUILD-3 sub-commit 2: SMP per-CPU scheduler scenarios.
+neo-test-smp-per-cpu-scheduler-smoke = ["neo-test"]
+neo-test-smp-same-cpu-ipc = ["neo-test"]
+neo-test-smp-block-release-smoke = ["neo-test"]
+neo-test-smp-send-blocks-first-then-completes = ["neo-test"]
+neo-test-smp-recv-blocks-first-then-completes = ["neo-test"]
+neo-test-smp-grant-cross-cpu = ["neo-test"]
+neo-test-smp-cross-cpu-migration-reap = ["neo-test"]
+neo-test-smp-cross-cpu-rendezvous-stress = ["neo-test"]
+# OT-61 C1.1 (cross-model AAG finding 1): drives REAL cross-CPU IPC rendezvous
+# migrations, then asserts the ready-ring reservation invariant that the
+# pre-existing SMP batteries drove but never checked. browser-runtime, because
+# `live_count` only exists there.
+neo-test-smp-c11-migration-reservation = ["neo-test", "browser-runtime"]
+neo-test-smp-concurrent-reap-after-terminate = ["neo-test"]
+# OT-34: cross-core determinism gate for the threaded forward matmul. Drives a
+# real single-row quantized matmul on real APs at thread_count 1/2/4 within one
+# boot and asserts the output is byte-identical at every count (the AAG
+# centerpiece: threading changes zero matmul bytes ⇒ zero logit bytes ⇒ the OT-30
+# parity oracle is invariant under threading). Needs -smp>=2 (the CI QEMU gate
+# runs NEO_SMP=4).
+neo-test-threaded-matmul-parity = ["neo-test", "threaded-matmul", "par-elementwise"]
+# Lever 2, test only: the attention fork threshold drops to 1, so every cached
+# decode step of a short-context forward scenario forks by q-head range. Run with
+# NEO_TEST_EXTRA_FEATURES=threaded-matmul,par-elementwise,neo-test-par-attention-every-step
+# on `real_lm_generate_boot` (tokens against the Python oracle) and
+# `sys_generate_kv_persist_equivalence` (cached against re-prefill).
+neo-test-par-attention-every-step = ["par-elementwise"]
+# The same parity scenario with image A's `matmul-steal-grace-time` on (Chad,
+# relay #52 item 6), plus a held AP slot the BSP must steal: the steal must
+# come no earlier than the grace after the job's publish (calibrated path), and
+# the output stays byte-identical.
+neo-test-threaded-matmul-parity-grace-time = ["neo-test-threaded-matmul-parity", "lapic-timer", "matmul-steal-grace-time"]
+# Control (Chad, relay #53 R6): the test grace times 0, so the BSP steals on
+# its first look. `threaded_matmul_parity_grace_time` must FAIL
+# `stole_before_grace` (the decision-time check is not vacuous).
+neo-test-threaded-matmul-parity-grace-time-control = ["neo-test-threaded-matmul-parity-grace-time"]
+# OT-29: heavy spawn->reap->spawn thread-slab UB regression. Pulls in the
+# slab free-list poison/assert discriminator so a double-free / UAF / free-list
+# tear becomes a precise panic instead of a downstream `ptr::write` fault.
+neo-test-sched-spawn-reap-spawn-heavy = ["neo-test", "slab-debug-poison"]
+# OT-29 discriminator: poison freed thread-slab nodes + assert-poisoned on
+# alloc. Off in production (zero cost); the regression above turns it on.
+slab-debug-poison = []
+neo-test-ipc-rendezvous-translate-fault = ["neo-test"]
+# Phase 3 BUILD-1 sub-commit 1a: storage probe scenarios.
+neo-test-phase3-pci-virtio-blk-probe-smoke = ["neo-test"]
+# Phase 3 BUILD-1 sub-commit 1B: virtio-blk read/write scenarios.
+neo-test-phase3-virtio-blk-raw-rw-smoke = ["neo-test"]
+neo-test-phase3-virtio-blk-abandoned-io-no-leak = ["neo-test"]
+# Phase 3 BUILD-3 sub-commit 3B: virtio-blk FLUSH scenarios.
+neo-test-phase3-virtio-blk-flush-negotiated-gate = ["neo-test"]
+neo-test-phase3-virtio-blk-flush-command-smoke = ["neo-test"]
+# Phase 3 BUILD-1 sub-commit 1B0: scheduler weak wake-token scenarios.
+neo-test-phase3-sched-wake-token-round-trip = ["neo-test"]
+neo-test-phase3-sched-wake-token-abandon = ["neo-test"]
+# Found by OT-22: tear down, 60 times over, a process whose thread is parked on
+# a scheduler wake token; each dead PML4 frame is reused by the next Pmap.
+neo-test-token-park-teardown-churn = ["neo-test"]
+# CP-60 control: `kernel_cr3()` captured lazily from the live CR3 again (the
+# pre-fix code). token_park_teardown_churn must then FAIL.
+neo-test-kernel-cr3-lazy-control = ["neo-test-token-park-teardown-churn"]
+neo-test-phase3-sched-wake-token-stale-generation = ["neo-test"]
+# Phase 3 BUILD-3 sub-commit 3A: owned kthread lifecycle scenarios.
+neo-test-phase3-kthread-spawn-join-smoke = ["neo-test"]
+neo-test-phase3-kthread-stop-join-smoke = ["neo-test"]
+neo-test-phase3-kthread-stop-wakes-parked-worker = ["neo-test"]
+neo-test-phase3-kthread-detached-worker-smoke = ["neo-test"]
+neo-test-phase3-kthread-no-thread-arc-lifetime = ["neo-test"]
+# Phase 3 BUILD-1 sub-commit 1C: VFS/testfs/file syscall scenarios.
+neo-test-phase3-vfs-testfs-open-read-close = ["neo-test"]
+neo-test-phase3-vfs-testfs-write-readback = ["neo-test"]
+neo-test-phase3-vfs-type-vs-rights-errors = ["neo-test"]
+neo-test-phase3-vfs-stdout-compat = ["neo-test"]
+neo-test-phase3-vfs-readdir-testfs-root = ["neo-test"]
+neo-test-phase3-vfs-readdir-requires-right = ["neo-test"]
+neo-test-phase3-vfs-readdir-regular-is-enotdir = ["neo-test"]
+neo-test-phase3-vfs-directory-read-is-eisdir = ["neo-test"]
+neo-test-phase3-readdir-cursor-eof-stable = ["neo-test"]
+neo-test-phase3-readdir-buffer-too-small = ["neo-test"]
+# Phase 3 BUILD-1 sub-commit 1D: integration and closure scenarios.
+neo-test-phase3-block-vfs-smoke = ["neo-test"]
+neo-test-phase3-storage-completion-cross-cpu-wake = ["neo-test"]
+# OT-49 (AAG B4): deterministic idle-entry demonstration. The sole runnable
+# thread parks until the next timer tick (park_current_until_tick) → empty ready
+# queue → per-CPU idle thread → sti;hlt → tick → on_tick wakes it. Hard-asserts a
+# non-zero idle-entry delta, so a green gate proves the park→idle→wake path fired.
+# No disk / no I/O: virtio-blk completions are too fast to park deterministically.
+neo-test-ot49-idle-entry-wake = ["neo-test"]
+neo-test-ot31-exit-reap-race = ["neo-test"]
+neo-test-phase3-build1-reboot-persistence-smoke = ["neo-test"]
+# Phase 3 BUILD-2 sub-commit 2B: NeoFS read-only mount scenarios.
+neo-test-phase3-neofs-mount-readonly-root = ["neo-test"]
+neo-test-phase3-neofs-mount-selects-highest-generation = ["neo-test"]
+neo-test-phase3-neofs-mount-rejects-bad-superblock = ["neo-test"]
+# Phase 3 BUILD-2 sub-commit 2C: NeoFS create/write/readback scenarios.
+neo-test-phase3-neofs-create-small-file = ["neo-test"]
+neo-test-phase3-neofs-write-readback-same-boot = ["neo-test"]
+neo-test-phase3-neofs-cache-evict = ["neo-test", "neofs-cache-evict", "neofs-large-write"]
+neo-test-phase3-neofs-cache-evict-off = ["neo-test", "neofs-large-write"]
+neo-test-phase3-neofs-allocator-reuse-guard = ["neo-test"]
+neo-test-phase3-neofs-reboot-persistence-small-file = ["neo-test"]
+# Phase 3 BUILD-2 sub-commit 2D: NeoFS CoW/recovery/fsync scenarios.
+neo-test-phase3-neofs-fsync-noop-write-through = ["neo-test"]
+neo-test-phase3-neofs-cow-write-after-write = ["neo-test"]
+neo-test-phase3-neofs-crash-mid-overwrite-recovery = ["neo-test"]
+neo-test-phase3-neofs-superblock-rotation-recovery = ["neo-test"]
+neo-test-phase3-neofs-crash-mid-create-recovery = ["neo-test"]
+# Phase 3 BUILD-2 sub-commit 2E: typed inode and stale FileCap scenarios.
+neo-test-phase3-neofs-2e = []
+neo-test-phase3-neofs-typed-inode-exec-refusal = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-phase3-neofs-regular-exec-policy-stub = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-phase3-neofs-type-vs-rights-policy-errors = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-phase3-neofs-filecap-generation-stale = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-phase3-neofs-reserved-type-refusal = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-phase3-neofs-filerights-u32-forward-bits = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+# Test-only: a commit frees nothing it supersedes but a truncated file's
+# old tree (`main` before the write-leak fix). The 3C GC scenarios sweep the
+# orphans this leaves, and `neofs_overwrite_frees` must fail under it.
+neofs-leak-superseded = []
+# Phase 3 BUILD-3 sub-commit 3C: NeoFS free-space metadata and GC scenarios.
+# Their GC sweeps the orphans an overwrite left before the write-leak fix,
+# so they run with that leak (`neofs-leak-superseded`).
+neo-test-phase3-neofs-3c = ["neofs-leak-superseded"]
+neo-test-phase3-neofs-gc-mark-live-set = [
+    "neo-test",
+    "neo-test-phase3-neofs-3c",
+]
+neo-test-phase3-neofs-gc-reclaims-orphan-after-overwrite = [
+    "neo-test",
+    "neo-test-phase3-neofs-3c",
+]
+neo-test-phase3-neofs-gc-reuses-reclaimed-block = [
+    "neo-test",
+    "neo-test-phase3-neofs-3c",
+]
+neo-test-phase3-neofs-gc-reboot-persistence = [
+    "neo-test",
+    "neo-test-phase3-neofs-3c",
+]
+neo-test-phase3-neofs-gc-crash-before-publish = [
+    "neo-test",
+    "neo-test-phase3-neofs-3c",
+]
+neo-test-phase3-neofs-gc-corrupt-free-map-rejected = [
+    "neo-test",
+    "neo-test-phase3-neofs-3c",
+]
+# Phase 3 BUILD-3 sub-commit 3D: NeoFS mount-owned write-back block cache.
+neo-test-phase3-neofs-3d = ["neo-test-phase3-neofs-3c"]
+neo-test-phase3-neofs-cache-hit-miss-smoke = [
+    "neo-test",
+    "neo-test-phase3-neofs-3d",
+]
+neo-test-phase3-neofs-writeback-dirty-drain = [
+    "neo-test",
+    "neo-test-phase3-neofs-3d",
+]
+neo-test-phase3-neofs-writeback-worker-stop-join = [
+    "neo-test",
+    "neo-test-phase3-neofs-3d",
+]
+neo-test-phase3-neofs-writeback-reboot-after-drain = [
+    "neo-test",
+    "neo-test-phase3-neofs-3d",
+]
+neo-test-phase3-neofs-writeback-crash-before-drain = [
+    "neo-test",
+    "neo-test-phase3-neofs-3d",
+]
+neo-test-phase3-neofs-gc-waits-for-clean-cache = [
+    "neo-test",
+    "neo-test-phase3-neofs-3d",
+]
+# Phase 3 BUILD-3 sub-commit 3E: durable NeoFS fsync.
+neo-test-phase3-neofs-3e = [
+    "neo-test-phase3-neofs-3d",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-phase3-neofs-fsync-dirty-persists-after-crash = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+neo-test-phase3-neofs-unfsynced-dirty-may-be-lost = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+neo-test-phase3-neofs-fsync-issues-flush = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+# CP-56 / CP-82 follow-up: fsync/open/readdir/ftruncate run their VFS body
+# IF-on. The scenario holds NeoFS `entries` from a yielding kthread while each
+# call arrives at IF=0 on the same CPU.
+neo-test-phase3-neofs-syscall-if-on = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+# Kill-switch control: the four bodies run at the caller's IF, as before. The
+# scenario must hang (TIMEOUT) under it. Test only.
+neo-test-vfs-syscall-if-off-control = ["neo-test-phase3-neofs-syscall-if-on"]
+# Control for the scenario itself (Jarvis, relay #58 item 5): each leg claims
+# the holder's gate only after the holder has released, so its call would be
+# uncontended. The scenario must FAIL `entries_released_before_call`.
+neo-test-vfs-syscall-if-on-late-call-control = ["neo-test-phase3-neofs-syscall-if-on"]
+# CP-37 on ARENA: the arena table lock is IRQ-safe; the scenario counts any
+# acquisition that finds interrupts on inside the section (must be 0).
+# Control: the plain SwitchMutex, as before (must FAIL arena_held_with_interrupts_on).
+neo-test-arena-if-off = ["neo-test", "inference-stack"]
+neo-test-arena-mixed-if-control = ["neo-test-arena-if-off"]
+# Skips the model_load leg so the control above hangs on model_query instead
+# (each control run proves only the first leg it reaches). Test only.
+neo-test-vfs-syscall-if-on-skip-model-load = ["neo-test-phase3-neofs-syscall-if-on"]
+neo-test-phase3-neofs-fsync-clean-no-extra-flush = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+neo-test-phase3-neofs-fsync-coordinates-with-writeback-gc = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+neo-test-phase3-neofs-fsync-filecap-stale-regression = [
+    "neo-test",
+    "neo-test-phase3-neofs-3e",
+]
+neo-test-phase3-neofs-readdir-root = ["neo-test", "neo-test-phase3-neofs-2e"]
+neo-test-phase3-neofs-readdir-stale-generation = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+]
+neo-test-neofs-large-file = ["neo-test", "neo-test-phase3-neofs-2e"]
+# NFS-W1: a kernel-written file past the direct blocks (double-indirect),
+# remounted and read back, and a write stopped before its commit.
+neo-test-neofs-large-write = ["neo-test", "neofs-large-write"]
+# The write-leak fix: 100 overwrites of a file in a subdirectory keep the
+# used-block count constant, and a second boot reads the last version back
+# with the count unchanged. With `neofs-leak-superseded` it must fail.
+neo-test-neofs-overwrite-frees = ["neo-test", "neofs-file-replace"]
+# #206 AAG, C1: mount rejects a candidate where one inode is named by two
+# entries (`shared-inode` image) or one block twice by an inode
+# (`doubled-block` image), and selects the older valid copy.
+neo-test-neofs-rejects-shared-inode = ["neo-test", "neo-test-phase3-neofs-2e"]
+neo-test-neofs-rejects-doubled-block = ["neo-test", "neo-test-phase3-neofs-2e"]
+# A NeoFS volume grown in place, written past its old end in the same mount
+# through an installer claim, and read back there and after a remount.
+neo-test-neofs-grow-write = ["neo-test", "installer"]
+# OT-67 W1: SYS_FILE_REPLACE, a file's whole content replaced in one commit
+# (docs/THINK-2026-10-29-ot67-editor.md §5.2). Off: no syscall number.
+neofs-file-replace = []
+# W1's scenario: the byte oracle, rights, the cap, a lost race, a stale
+# reader, free space, and a cut before the publish (two boots).
+neo-test-neofs-file-replace = [
+    "neo-test",
+    "neofs-file-replace",
+    "neo-test-phase3-neofs-2e",
+]
+# #206 AAG U2: a commit between a read and its re-check makes the read
+# return ESTALE. `vfs-read-no-recheck` (test only) drops the re-check.
+neo-test-neofs-read-recheck = ["neo-test", "neo-test-phase3-neofs-2e"]
+vfs-read-no-recheck = []
+# Test only: the re-check compares with the handle's own generation field, as
+# first written (#213 AAG); a commit through the same OpenFile then escapes it.
+vfs-read-recheck-against-handle = []
+# #206 AAG U3, test only: a refused commit keeps its reservations, as before
+# the fix. Used only to falsify `neofs_overwrite_frees`.
+neofs-keep-refused-reservations = []
+neo-test-neofs-truncate = [
+    "neo-test",
+    "neo-test-phase3-neofs-2e",
+    "neo-test-phase3-neofs-3c",
+]
+# BUILD-4B mount-table substrate. Umbrella feature flag enabled by all seven
+# BUILD-4B scenario features so the kernel-side debug helpers compile once.
+neo-test-phase3-mount-table = ["neo-test"]
+neo-test-phase3-mount-neofs-device0-readonly = ["neo-test-phase3-mount-table"]
+neo-test-phase3-mount-requires-mount-right = ["neo-test-phase3-mount-table"]
+neo-test-phase3-mount-regular-fd-is-enotdir = ["neo-test-phase3-mount-table"]
+neo-test-phase3-mount-target-exists-is-eexist = ["neo-test-phase3-mount-table"]
+neo-test-phase3-umount-busy-is-ebusy = ["neo-test-phase3-mount-table"]
+neo-test-phase3-umount-removes-namespace = ["neo-test-phase3-mount-table"]
+# CP-37 on MOUNTS: an unmounted NeoFS is dropped (writeback stop + join) only
+# after MOUNTS is released. Control: drop under the lock, as before (must hang).
+neo-test-phase3-umount-drop-outside-mounts = ["neo-test-phase3-mount-table"]
+neo-test-mounts-drop-under-lock-control = ["neo-test-phase3-umount-drop-outside-mounts"]
+neo-test-phase3-mount-request-validation = ["neo-test-phase3-mount-table"]
+# Phase 3 BUILD-4C: FAT32 read-only foreign filesystem scenarios.
+neo-test-phase3-fat32 = ["neo-test-phase3-mount-table"]
+neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32"]
+# Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
+neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
+neo-test-phase3-ext4-mount-readonly = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-readdir-root = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-open-read-regular-file = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-subdir-walk = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-extent-chain-read = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-write-is-rejected = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-exec-blocked-by-default = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-exec-with-opt-in = ["neo-test-phase3-ext4"]
+neo-test-phase3-ext4-type-import-is-regular = ["neo-test-phase3-ext4"]
+# Phase 3 BUILD-5a-AHCI: AHCI block backend scenarios.
+neo-test-phase3-ahci = ["neo-test-phase3-mount-table"]
+neo-test-phase3-ahci-controller-detected = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-port-identify = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-read-sector-pattern = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-write-sector-pattern = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-multi-sector-io = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-block-device-registered = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-fat32-mount-and-read = ["neo-test-phase3-ahci"]
+neo-test-phase3-ahci-neofs-mount-and-readwrite = ["neo-test-phase3-ahci"]
+# Phase 3 BUILD-5a-NVMe: NVMe block backend scenarios.
+neo-test-phase3-nvme = ["neo-test-phase3-mount-table"]
+neo-test-phase3-nvme-controller-detected = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-namespace-identify = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-read-sector-pattern = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-write-sector-pattern = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-multi-sector-io = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-block-device-registered = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-fat32-mount-and-read = ["neo-test-phase3-nvme"]
+neo-test-phase3-nvme-neofs-mount-and-readwrite = ["neo-test-phase3-nvme"]
+neo-test-phase4-virtio-net-smoltcp-wrap-smoke = ["neo-test"]
+neo-test-phase4-socket-udp-loopback = ["neo-test"]
+neo-test-phase4-slaac-udp-ipv6-loopback = ["neo-test"]
+neo-test-phase4-ndp-ipv6-neighbor = ["neo-test"]
+neo-test-phase4-dhcpv4-ipv4-udp = ["neo-test"]
+neo-test-phase4-tcp-connect-stream-close = ["neo-test"]
+# Phase 7.5 CB-3 (ISC-1/2/3): the interface-identity ON path on two virtio-net
+# devices — runtime eth0/eth1 names, registry link-state as the source of truth, and
+# multi-interface select_source picking the UP interface (eth0 forced down ⇒ eth1
+# wins) where the pre-identity path hardcoded interface 0. Pulls `interface-identity`.
+neo-test-interface-identity-select = ["neo-test", "interface-identity"]
+# Phase 7.5 CB-3 (ISC-4): the interface capability. neo-init opens /net/if/eth0
+# (a Handle::File under the synthetic /net mount), derives an attenuated read-only
+# cap, reads the interface status through it, then revokes the parent and asserts the
+# derived descendant dies — mirroring file_cap_derive_grant on the interface path.
+# Pulls `interface-identity` (the /net mount + registry) AND `file-caps` (so the
+# Handle::File cap carries DERIVE/GRANT and enters the I-15 graph). NEO_SMP=4 in CI.
+neo-test-interface-cap-derive-revoke = ["neo-test", "interface-identity", "file-caps"]
+# Phase 7.5 CB-1b (P0) ISC-3: the REAL cold lease — DORA completes over the wire
+# via the PRODUCTION demux (`dhcpv4::demux_eth_rx`) against slirp's DHCP server in
+# QEMU (real Offer/Ack off a virtio-net wire, NOT inject_*) -> a real lease. The
+# named "gets an IP" gate CB-1 lacked.
+neo-test-dhcp-rx-real-lease = ["neo-test"]
+neo-test-phase4-https-fetch = ["neo-test", "net-dial-cap"]
+# Equality gate: deliberately does NOT enable net-dial-cap and proves the
+# original ambient HTTPS path still succeeds.
+neo-test-net-dial-cap-kill-switch = ["neo-test"]
+neo-test-tensor-create-query-drop = ["neo-test"]
+neo-test-model-load-cascade = ["neo-test"]
+neo-test-infer-mlp-forward = ["neo-test"]
+neo-test-infer-transformer-forward = ["neo-test"]
+neo-test-inference-preemptible-liveness = [
+    "neo-test",
+    "inference-preemptible",
+    "neo-test-instrumentation",
+    "ai-generate",
+]
+neo-test-infer-embedding-forward = ["neo-test"]
+neo-test-infer-embedding-oob-rejected = ["neo-test"]
+neo-test-ai-generate-decode = ["neo-test", "ai-generate"]
+neo-test-forward-mixed-quant = ["neo-test", "phase9-real-quant"]
+# OT-16 B2b: kernel-only proof that the walker dispatches a synthetic
+# GatedDeltaNetLinear layer through the real GDN recurrent step and carries
+# state across two token decodes.
+neo-test-ot16-gdn-walker-execution = ["neo-test", "ot16-graph-walker"]
+neo-test-accel-cpu-forward-migrate = ["neo-test"]
+neo-test-accel-sim-forward-equiv = ["neo-test", "accel-sim"]
+neo-test-accel-placement-residency = ["neo-test", "accel-sim"]
+neo-test-accel-evict-pressure = ["neo-test", "accel-sim"]
+neo-test-accel-residency-retain = ["neo-test", "accel-sim"]
+neo-test-accel-residency-demote = ["neo-test", "accel-sim"]
+neo-test-accel-migration-reservation = ["neo-test", "accel-sim"]
+neo-test-accel-slot-arena = ["neo-test", "accel-sim"]
+neo-test-accel-model-residency = ["neo-test", "accel-sim"]
+neo-test-accel-dedup-movement = ["neo-test", "accel-sim"]
+neo-test-dma-arena-fence = ["neo-test"]
+# Phase 7.5 BUILD-V: the VT-d / IOMMU Stage-A gate. Pulls in `vtd` so the
+# ACPI/DMAR parse + iommu driver compile; xtask adds `-device intel-iommu` and
+# an NVMe disk for this scenario.
+neo-test-vtd-fence = ["neo-test", "vtd"]
+# OT-63 GPU P1 Slice 5 (ADR-077 §Slice-5 + amendment 5): the graphics VT-d
+# domain — I-14(c2) for the iGPU. Proves the named graphics arena + the
+# translated graphics domain + the out-of-domain fault + the kill-switch on an
+# NVMe proxy (the real Gen9 iGPU is bare-metal-only). Same infra as vtd-fence;
+# xtask adds `-device intel-iommu` and an NVMe disk.
+neo-test-graphics-vtd-domain = ["neo-test", "vtd"]
+usb-host = []
+# Zenbook USB input lane (Plans/NOTE-2026-10-22-zenbook-usb-input.md): xHCI
+# bring-up for real Intel client silicon. Census every xHCI and choose the one
+# a keyboard/mouse can appear on (the USB-C ports' USB 2 pins are on the south
+# xHCI, scanned after the Type-C subsystem's SuperSpeed-only one), D0, forced
+# BIOS handoff + firmware SMIs off, root-port power + settle, hubs marked by
+# Configure Endpoint and given their power-good wait, and the USB summary
+# held on screen when no input device binds. Feature off: the first xHCI is
+# brought up exactly as before (not compiled).
+xhci-silicon = ["usb-host"]
+# Zenbook USB input lane: the port service — a kernel thread that re-reads
+# root and hub ports every 250 ms and enumerates devices that connect after
+# the boot scan. Feature off: ports are scanned once at boot, as before.
+usb-hotplug = ["xhci-silicon"]
+# CP-81: a timed park for kernel threads without `wait-multiplex`
+# (`sched::tick_sleep`), so `usb::nap_ticks` (the port service, the boot
+# input check) and the touchpad's polled naps sleep instead of yield-spinning
+# until their deadline tick. Enabled in image A (xtask). Feature off: not
+# compiled, the naps are the yield loop, as before.
+tick-sleep = []
+# OT-96 R1+R2: a `net-rx` kernel thread receives from every NIC after
+# bring-up and routes ARP, IPv4 (UDP to sockets and the DHCP client, TCP, ICMP
+# echo) and IPv6 NDP/RA (`net::rx`, `net::rx_logic`). Off => not compiled:
+# frames are received only in bring-up loops. Requires `net-tick` (OT-95):
+# the state wire receive grows (ARP, NDP, the lease, TCP's timers) ages only
+# when the net clock runs.
+wire-rx = ["tick-sleep", "net-tick"]
+# OT-95: a kernel thread runs `net::tick` once a second after boot, so TCP
+# retransmits and TIME_WAIT, the ARP/NDP caches and the DHCP lease advance on
+# a product kernel (only driver bring-up loops called it before). NOT in image
+# A yet: with the clock running the DHCP lease expires and nothing renews it
+# (no wire RX after bring-up, OT-96), so it goes in with renewal. Built in
+# CI's product-real-lm arm. Off => not compiled, and the clocks stop after
+# bring-up.
+net-tick = ["tick-sleep"]
+# Zenbook freeze lane (Plans/NOTE-2026-10-22-zenbook-ask-freeze.md): a status
+# block in the screen's bottom-left corner, redrawn once a second by the last
+# AP from its idle loop, lock-free, so it survives the desktop and a stuck
+# CPU 0: CPU 0 ticks/s, AP heartbeats, each process's last syscall and its
+# age, model-load and generation phase, matmul jobs/barrier wait, USB input
+# counters. Feature off: not compiled. Enabled only in the product ISO
+# (xtask), never via `desktop`: the desktop scenarios read back every pixel.
+freeze-watchdog = []
+# Kill-switch for the i8042 boot-key cut: keys typed during the boot screens
+# are delivered to the first keyboard route again, as before the A5 fix.
+ps2-boot-keys-legacy = []
+# Scenario: two xHCIs (QEMU addr 0x0d and 0x14, as on Intel), the keyboard
+# and mouse on the second. Its control chooses by scan order (the pre-lane
+# rule) and must FAIL `hid_not_bound`.
+neo-test-usb-xhci-select = ["neo-test", "usb-hid-mouse", "xhci-silicon"]
+neo-test-usb-xhci-select-control = ["neo-test-usb-xhci-select"]
+# Scenario: no device at boot; xtask hot-adds a usb-kbd, types, removes it and
+# adds it again. Its control does not start the port service and must FAIL
+# `hotplug_not_bound`.
+neo-test-usb-hotplug = ["neo-test", "usb-hid", "usb-hotplug", "tick-sleep"]
+neo-test-usb-hotplug-control = ["neo-test-usb-hotplug"]
+# CP-81 control: `tick_sleep` never parks (every sleep is the old yield
+# loop). `usb_hotplug` must FAIL `tick_sleep_not_parked`.
+neo-test-tick-sleep-control = ["neo-test-usb-hotplug"]
+# Controls for the selftest itself (Chad, relay #56): the tick wakes every
+# sleeper one tick early (must FAIL `tick_sleep_not_parked` on
+# `woken_early=true`), and the tick never wakes a sleeper (must FAIL
+# `tick_sleep_not_parked` within the selftest's 200-tick wait, not time out).
+neo-test-tick-sleep-early-control = ["neo-test-usb-hotplug"]
+neo-test-tick-sleep-no-wake-control = ["neo-test-usb-hotplug"]
+neo-test-usb-enumerate = ["neo-test", "usb-host"]
+neo-test-usb-storm = ["neo-test", "usb-host", "accel-sim"]
+neo-test-usb-baremetal-probe = ["neo-test", "usb-host"]
+neo-test-usb-ethernet = ["neo-test", "usb-host"]
+neo-test-usb-ethernet-baremetal = ["neo-test", "usb-host"]
+# Phase 7.5 BUILD-W1: the MT7601U scan bring-up on bare metal (Stage B — the
+# conclusive gate). Enumerate 148f:7601 → firmware load → eFUSE → MAC/PHY →
+# scan real 2.4 GHz BSSIDs, each stage emitting its discriminator breadcrumb.
+neo-test-mt7601u-scan-baremetal = ["neo-test", "mt7601u"]
+# Phase 7.5 BUILD-W2: associate to a real AP (scan -> auth -> assoc -> [4-way] ->
+# DHCP-over-WiFi), each stage emitting its discriminator breadcrumb. Target AP is
+# the config-swap in mt7601u::configured_target (open SSID first, then WPA2).
+neo-test-mt7601u-assoc-baremetal = ["neo-test", "mt7601u"]
+# Phase 7.5 CB-1 (P0): HERMETIC wlan0 link logic — GTK-KDE parse (T-038) +
+# 802.3->802.11 encap (T-048) + the inject-driven DHCP DORA SM -> a lease, with
+# the group-rx kill-switch (ISC-6). Device-free (no dongle, no live network): the
+# real over-the-air DORA is the bare-metal run. Runs in the QEMU shard set @ SMP=4.
+neo-test-mt7601u-wlan0-dora = ["neo-test", "mt7601u"]
+# CB-5a ISC-5: the hermetic device-less WPA3-SAE gate. A MockAp `ConnectSeam`
+# pumps the full Commit→Confirm→assoc→SAE-PMK-4-way→GKH→BIP sequence through
+# `sae_connect` (no driver DMA, no dongle, no live AP) and asserts the connect
+# outcome + the off≡CB-2 kill-switch equality. Pulls `mt7601u` so the gated
+# associate() hook compiles under the scenario build. Runs in the QEMU shards.
+neo-test-wpa3-sae = ["neo-test", "mt7601u", "wpa3-sae"]
+neo-test-accel-residency-daemon = ["neo-test", "accel-sim"]
+neo-test-accel-sim-migrate-roundtrip = ["neo-test", "accel-sim"]
+neo-test-accel-sim-async-poll = ["neo-test", "accel-sim"]
+neo-test-accel-accounting = ["neo-test", "accel-sim"]
+neo-test-accel-admission = ["neo-test", "accel-sim"]
+neo-test-accel-admission-livepath = ["neo-test", "accel-sim"]
+neo-test-accel-tensor-sharing = ["neo-test", "accel-sim"]
+neo-test-virtio-accel-identity-roundtrip = ["neo-test", "virtio-accel"]
+neo-test-virtio-accel-forward-equiv = ["neo-test", "virtio-accel"]
+neo-test-virtio-accel-migrate-roundtrip = ["neo-test", "virtio-accel"]
+neo-test-accel-intel-add-bringup = ["neo-test", "accel-intel"]
+neo-test-accel-intel-ppgtt-bringup = ["neo-test", "accel-intel"]
+neo-test-accel-intel-execlist-bringup = ["neo-test", "accel-intel"]
+neo-test-accel-intel-execlist-data-bringup = ["neo-test", "accel-intel"]
+neo-test-accel-intel-execlist-negative-bringup = ["neo-test", "accel-intel"]
+# OT-63 GPU P1 Slice 4: real Gen9 EU blur gate. The narrowed variant is a
+# separate boot/ISO in the same joint hardware session and adds the Slice-5
+# graphics VT-d positive + out-of-domain negative controls.
+neo-test-accel-intel-blur-silicon = ["neo-test", "accel-intel", "atrium-compositor-g1", "vtd"]
+neo-test-accel-intel-blur-silicon-narrowed = ["neo-test", "accel-intel", "atrium-compositor-g1", "vtd"]
+# Phase 3 BUILD-5b: bare-metal evidence capture. xtask selects exactly one
+# log-sink target driver when `neo-test-bare-metal-mode` is enabled.
+neo-test-bare-metal-mode = ["neo-test"]
+neo-test-log-sink-target-ahci = []
+neo-test-log-sink-target-nvme = []
+# Phase 10.1 BUILD-10.1: kernel CSPRNG self-test QEMU scenario. Runs the KATs
+# (ChaCha20 RFC 8439 + SHA-256 NIST + golden composition) at boot and emits
+# NEO_TEST/1 event=PASS when all three pass. Requires RDRAND passthrough in QEMU.
+neo-test-kernel-rng-selftest = ["neo-test", "kernel-rng"]
+# OT-90 P2: power-off and restart scenarios. xtask judges them by QEMU's own
+# report of why it stopped (QMP SHUTDOWN/RESET reasons), not by debug-exit.
+neo-test-ot90-s5-exits-qemu = ["neo-test", "power-control"]
+neo-test-ot90-restart-second-boot = ["neo-test", "power-control"]
+neo-test-ot90-restart-fallback-i8042 = ["neo-test", "power-control"]
+# OT-90 P3a: a file written with no fsync survives a clean S5 (two QEMU runs on
+# one disk; K2's drain is the only writer), and a user process that never
+# exits is terminated within K1's bound.
+neo-test-ot90-s5-durability = ["neo-test", "power-clean"]
+neo-test-ot90-straggler-forced = ["neo-test", "power-clean"]
+# Chad #199 item 2: a dirty NeoFS block on a disk that stops completing
+# requests; the shutdown's deadline must still reach S5. The control removes
+# the deadline (the run must then hang).
+neo-test-ot90-stuck-disk = ["neo-test", "power-clean"]
+neo-test-ot90-stuck-disk-no-deadline = ["neo-test-ot90-stuck-disk"]
+# #267 (Chad 3b): an armed block log sink whose disk stops answering right
+# after K3; power-off and restart must still be reached (the sink is closed
+# before the power path). The control leaves the sink open (it must hang).
+neo-test-ot90-stuck-sink-off = ["neo-test", "power-clean"]
+neo-test-ot90-stuck-sink-restart = ["neo-test", "power-clean"]
+neo-test-ot90-stuck-sink-no-close = ["power-clean"]
+# The kill-switch scenario: built WITHOUT power-control; it proves the power
+# path is absent and the boot passes through debug-exit as today.
+neo-test-ot90-kill-switch-off = ["neo-test"]
+# Phase 10.3 BUILD-10.3: SYS_GETRANDOM syscall KAT. Tests the fill_random
+# helper via the global singleton (fixed-seed deterministic output), verifies
+# distinct successive calls, and exercises the buffer-validation truth table
+# (NULL ptr, kernel-half ptr, overflow, oversized len, zero len).
+neo-test-sys-getrandom = ["neo-test", "kernel-rng"]

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-shell-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[features]
+# OT-87 R4.4: test the parser with the shell's `install` command.
+default = ["installer"]
+installer = []

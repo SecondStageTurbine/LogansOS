@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+# Vendored copy of rafalh/rust-fatfs at master 38b3a7950bf0e765e34286d1dfe76c519ee347e2
+# (2026-10-16; 0.4.0, unreleased). Upstream licence kept: LICENSE.txt (MIT).
+# Upstream's manifest is `Cargo.toml.upstream`; this one differs only in
+# `publish = false`, dropping the dev-dependencies (upstream's tests are not
+# vendored) and dropping `chrono` from the default features. `src/` is
+# upstream's plus one SPDX line per file (see VENDORED.md).
+[package]
+name = "fatfs"
+version = "0.4.0"
+authors = ["Rafał Harabień <rafalh92@outlook.com>"]
+edition = "2021"
+rust-version = "1.71"
+repository = "https://github.com/rafalh/rust-fatfs"
+description = "FAT filesystem library (vendored for the LogansOS host ESP-template builder)"
+license = "MIT"
+publish = false
+
+[features]
+std = []
+lfn = []
+alloc = []
+unicode = []
+log_level_error = []
+log_level_warn = ["log_level_error"]
+log_level_info = ["log_level_warn"]
+log_level_debug = ["log_level_info"]
+log_level_trace = ["log_level_debug"]
+default = ["std", "alloc", "lfn", "unicode", "log_level_trace"]
+
+[dependencies]
+bitflags = { version = "2", default-features = false }
+log = { version = "0.4", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }

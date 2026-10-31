@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+"""Exact label oracle for the Desktop S3 chrome (Codex S3 MEDIUM finding).
+
+The scene oracle masks whole label boxes, so a deleted or corrupted label
+(the "· owned" trust subtitle, the chip's "Arthur") passed every exact check.
+This oracle instead derives, independently of neo-text and neo-atrium:
+
+* every label run's glyph coverage, by exact area (scripts/fonts/area_oracle:
+  fontTools outlines, f64 polygon clipping, neo-text's *specified* stem
+  darkening and 1/4-px origins), placed by the scene spec's label rules;
+* the background under it from scripts/desktop/scene_oracle (numpy; the real,
+  non-flat glass in Glass mode, the flat panels in Reduce Transparency);
+* per pixel [lo, hi] bounds over a tight window around each run's ink
+  (coverage +/- slack, linear-light blend over that background);
+* the FNV-1a scene digest with ONLY those glyph windows masked, so every
+  other pixel of the old label boxes is checked exactly against the base.
+
+Deleting a run, or drawing different text, leaves base-coloured pixels where
+the window requires ink and fails the bounds.
+
+usage: label_oracle.py fixture > fixtures/desktop-s3/labels.rs
+"""
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "..", "fonts"))
+sys.path.insert(0, HERE)
+
+import area_oracle as ao  # noqa: E402
+import scene_oracle as so  # noqa: E402
+
+FONT = os.path.join(HERE, "..", "..", "assets", "fonts", "Inter-Regular.ttf")
+PRIMARY = 0xFFFFFF
+SECONDARY = 0xC8CDD2
+SLACK = 2
+W, H = 1920, 1080
+
+
+def measure(face, px, text):
+    """The pen advance of a whole run (advances + kerning, unrounded)."""
+    s = px / face.upem
+    pen, prev = 0.0, None
+    for ch in text:
+        gid = face.gid(ch)
+        if prev is not None:
+            pen += face.kern(prev, gid) * s
+        pen += face.advance(gid) * s
+        prev = gid
+    return pen
+
+
+def runs(face, L):
+    """(name, text, px, x, baseline, colour, clip box) per label run, from the
+    scene spec's label rules for the unfocused window view."""
+    fx, fy = L["frame"][0], L["frame"][1]
+    bar_box, title_box, chip_box = L["labels"]
+    cx = L["chip"][0] + L["chip"][2] / 2.0
+    cy = L["chip"][1]
+    tx = float(fx + 18)
+    return [
+        ("BAR", "Atrium", 13.0, 32.0, 23, PRIMARY, bar_box),
+        ("TITLE", "Arthur", 14.0, tx, fy + 22, PRIMARY, title_box),
+        ("TITLE_TRUST", "· owned", 11.0, tx + measure(face, 14.0, "Arthur") + 8.0, fy + 22,
+         SECONDARY, title_box),
+        ("CHIP_MONO", "A", 20.0, cx - measure(face, 20.0, "A") / 2.0, cy + 30, PRIMARY, chip_box),
+        ("CHIP_NAME", "Arthur", 10.0, cx - measure(face, 10.0, "Arthur") / 2.0, cy + 47, SECONDARY,
+         chip_box),
+    ]
+
+
+def inside(box, x, y):
+    bx, by, bw, bh = box
+    return bx <= x < bx + bw and by <= y < by + bh
+
+
+def run_coverage(face, text, px, x0, baseline, clip):
+    """[{(x, y): coverage}] per glyph, clipped to the label box."""
+    out = []
+    for gid, ix, b in ao.line_glyphs(face, px, text, x0):
+        cov = ao.glyph_coverage(face, gid, px, ix + b / 4.0, baseline)
+        out.append({k: a for k, a in cov.items() if inside(clip, *k)})
+    return out
+
+
+def window_of(layers, clip):
+    keys = [k for cov in layers for k, a in cov.items() if a > 0]
+    x0 = max(min(k[0] for k in keys) - 1, clip[0])
+    y0 = max(min(k[1] for k in keys) - 1, clip[1])
+    x1 = min(max(k[0] for k in keys) + 2, clip[0] + clip[2])
+    y1 = min(max(k[1] for k in keys) + 2, clip[1] + clip[3])
+    return (x0, y0, x1 - x0, y1 - y0)
+
+
+def bounds(layers, px, fg, win, bg_at):
+    darken = px if px < 16.0 else None
+    lo, hi = {}, {}
+    for cov in layers:
+        for key, a in cov.items():
+            base_lo = lo.get(key, bg_at(*key))
+            base_hi = hi.get(key, bg_at(*key))
+            assert all(((fg >> s) & 0xFF) >= ((base_lo >> s) & 0xFF) for s in (16, 8, 0)), key
+            lo[key] = ao.blend(base_lo, fg, ao.darkened(max(0, a - SLACK), darken))
+            hi[key] = ao.blend(base_hi, fg, ao.darkened(min(255, a + SLACK), darken))
+    wx, wy, ww, wh = win
+    out_lo, out_hi = [], []
+    for y in range(wy, wy + wh):
+        for x in range(wx, wx + ww):
+            bg = bg_at(x, y)
+            out_lo.append(lo.get((x, y), bg))
+            # A rasterizer may emit coverage 1..slack where the exact area is 0.
+            out_hi.append(hi.get((x, y), ao.blend(bg, fg, ao.darkened(SLACK, darken))))
+    return out_lo, out_hi
+
+
+def fixture():
+    face = ao.Face(FONT)
+    L = so.layout(W, H)
+    spec = runs(face, L)
+    layers = {name: run_coverage(face, text, px, x0, base, clip)
+              for name, text, px, x0, base, _fg, clip in spec}
+    windows = {name: window_of(layers[name], clip) for name, *_r, clip in spec}
+    print("// SPDX-License-Identifier: MPL-2.0")
+    print("// GENERATED by scripts/desktop/label_oracle.py fixture — do not edit.")
+    print("// Desktop S3 labels, exact: per-run glyph windows with per-pixel [lo, hi]")
+    print("// bounds (exact-area coverage +/-%d/255 over the independent scene oracle's" % SLACK)
+    print("// background), and the unfocused 1920x1080 scene digest with ONLY those")
+    print("// windows masked. Independent of neo-text and neo-atrium.")
+    names = [s[0] for s in spec]
+    print("/// Label runs: %s." % ", ".join("%s = %r" % (s[0], s[1]) for s in spec))
+    print("pub const RUNS: [&str; %d] = [%s];" % (len(names), ", ".join('"%s"' % n for n in names)))
+    print("/// The glyph windows (x, y, w, h), in RUNS order; the digest masks only these.")
+    print("pub const WINDOWS: [(usize, usize, usize, usize); %d] = [" % len(names))
+    for n in names:
+        print("    (%d, %d, %d, %d), // %s" % (windows[n] + (n,)))
+    print("];")
+    for mode in ("glass", "rt"):
+        rgb, _ = so.render(W, H, mode, False)
+        digest = so.digest(rgb, dict(L, labels=[windows[n] for n in names]))
+        tag = mode.upper()
+        print("pub const %s_UNFOCUSED_DIGEST: u64 = 0x%016x;" % (tag, digest))
+
+        def bg_at(x, y, rgb=rgb):
+            p = rgb[y, x]
+            return (int(p[0]) << 16) | (int(p[1]) << 8) | int(p[2])
+
+        for name, _text, px, _x0, _base, fg, _clip in spec:
+            lo, hi = bounds(layers[name], px, fg, windows[name], bg_at)
+            for half, table in (("LO", lo), ("HI", hi)):
+                print("#[rustfmt::skip]")
+                print("pub const %s_%s_%s: [u32; %d] = [" % (tag, name, half, len(table)))
+                ww = windows[name][2]
+                for i in range(0, len(table), ww):
+                    print("    " + ", ".join("0x%06x" % v for v in table[i:i + ww]) + ",")
+                print("];")
+    print("/// (LO, HI) per run in RUNS order, for each material.")
+    for tag in ("GLASS", "RT"):
+        print("pub const %s_BOUNDS: [(&[u32], &[u32]); %d] = [" % (tag, len(names)))
+        for n in names:
+            print("    (&%s_%s_LO, &%s_%s_HI)," % (tag, n, tag, n))
+        print("];")
+
+
+def main():
+    if len(sys.argv) == 2 and sys.argv[1] == "fixture":
+        fixture()
+        return
+    print(__doc__)
+    sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,199 @@
+=~=~=~=~=~=~=~=~=~=~=~= PuTTY log 2026.05.26 22:59:52 =~=~=~=~=~=~=~=~=~=~=~=
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=0 loaded (tss_sel=0x30)
+[ kernel ] idt: loaded (18 exception handlers + timer at vector 32 + AHCI MSI at vector 240 + NVMe MSI/MSI-X at vector 241 + TLB shootdown IPI at vector 252 + resched IPI at vector 253)
+[ kernel ] per_cpu: PER_CPU[0] at 0xffffffffe50cd700 → IA32_GS_BASE (BSP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+
+================================================
+  NEOPLUTARCH  v0.0.1
+  Intelligence as a kernel primitive.
+================================================
+
+[ kernel ] entered _kernel_start, long mode, ring 0 (limine rev: supported=true, actual=Some(3))
+[ kernel ] limine: executable phys=0x0000000066b77000 virt=0xffffffffe4f60000
+[ kernel ] interrupts: enabled
+[ trap  ] BREAKPOINT (#BP) InterruptStackFrame { instruction_pointer: VirtAddr(0xffffffffe4fd7391), code_segment: SegmentSelector { index: 1, rpl: Ring0 }, cpu_flags: RFlags(INTERRUPT_FLAG | SIGN_FLAG | 0x2), stack_pointer: VirtAddr(0xffff80006a43ec58), stack_segment: SegmentSelector { index: 2, rpl: Ring0 } }
+[ kernel ] breakpoint smoke test: returned cleanly
+[ kernel ] mm: hhdm_offset=0xffff800000000000, memmap_entries=72
+[ kernel ] mm: usable physical memory = 16068 MiB
+[ kernel ] mm: hhdm_phys_end=0x000000047d7fff60
+[hhdm] required_end=0x47d7fff60 exec=[0x66b77000,0x670b2000) modules=[module0=[0x47d4ee000,0x47d7fff60),module1=[0x47d1dd000,0x47d4ed940)] repair_pages=0
+[ kernel ] paging: CR4.PGE was not set; enabled it.
+[ kernel ] paging: GLOBAL fixup complete - 4K leaves: 27970, 2M leaves: 1345, 1G leaves: 13
+[ kernel ] paging: sanity OK - kernel .text sample virt VirtAddr(0xffffffffe4fe02e0) -> phys PhysAddr(0x66bf72e0) (global=true)
+[ kernel ] heap: ready (4 MiB at VirtAddr(0xffffffffe5800000), 1024 pages mapped)
+[ kernel ] heap: smoke test passed (Box, Vec, String)
+[ kernel ] mm: kernel PML4 phys = 0x000000006a459000
+[ kernel ] slab: initialized per-CPU state cpu=0 at 0xffffffffe5800180
+[ kernel ] block: init (generic block-device substrate)
+[ kernel ] pci: AHCI controller 00:17.0 vendor=0x8086 device=0x06d2 class=0x010601
+[ kernel ] ahci: attached bdf=00:17.0 port=0 sectors=488397168 sector_size=512 msi_configured=true
+[ kernel ] block: registered device index=0 driver=ahci name=ahci0p0 pci_bdf=Some((0, 23, 0))
+[ kernel ] pci: NVMe controller 01:00.0 vendor=0x8086 device=0xf1a6 class=0x010802
+[ kernel ] block: registered device index=1 driver=nvme name=nvme0n1 pci_bdf=Some((1, 0, 0))
+[ kernel ] nvme: attached bdf=01:00.0 nsid=1 sectors=500118192 sector_size=512 doorbell_stride=4 msix=true msi=false
+[ kernel ] block: pci scan complete functions=18 virtio_blk=0 ahci=1 ahci_ok=1 nvme=1 nvme_ok=1 attached_devices=2
+[ kernel ] framebuffer: 1920x1080 @ 32 bpp, pitch 7680 addr 0xffff800080000000
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] apic: cpu=0 lapic_id=0 enabled xAPIC (BSP, base_phys=0x00000000fee00000)
+[ kernel ] smp: Limine reports 12 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=2
+[ kernel ] smp: starting cpu_id=2 lapic_id=4
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=3 lapic_id=6
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffe50cd780 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffe50cd800 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=4 lapic_id=8
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] smp: starting cpu_id=5 lapic_id=10
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffe50cd880 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffe50cd780 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[5] at 0xffffffffe50cd980 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[4] at 0xffffffffe50cd900 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=5 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=4 loaded (tss_sel=0x30)
+[ kernel ] smp: starting cpu_id=6 lapic_id=1
+[ kernel ] per_cpu: PER_CPU[5] at 0xffffffffe50cd980 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[4] at 0xffffffffe50cd900 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=5 lapic_id=10 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffe50cd800 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=4 lapic_id=8 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] apic: cpu=1 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=7 lapic_id=3
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[6] at 0xffffffffe50cda00 → IA32_GS_BASE (AP)
+[ kernel ] slab: initialized per-CPU state cpu=4 at 0xffffffffe5800cc0
+[ kernel ] slab: initialized per-CPU state cpu=5 at 0xffffffffe5800a80
+[ kernel ] apic: cpu=2 lapic_id=4 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: AP cpu_id=4 ready (lapic_id=8, processor_id=5)
+[ kernel ] smp: starting cpu_id=8 lapic_id=5
+[ kernel ] gdt: cpu=6 loaded (tss_sel=0x30)
+[ kernel ] smp: starting cpu_id=9 lapic_id=7
+[ kernel ] per_cpu: PER_CPU[6] at 0xffffffffe50cda00 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=10 lapic_id=9
+[ kernel ] apic: cpu=6 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: starting cpu_id=11 lapic_id=11
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: started 11 AP(s)
+[ kernel ] slab: initialized per-CPU state cpu=6 at 0xffffffffe58014a0
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[9] at 0xffffffffe50cdb80 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffe50cd880 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffffe5801c80
+[ kernel ] per_cpu: PER_CPU[8] at 0xffffffffe50cdb00 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=4, processor_id=3)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=4, bootstrap='ap-4-main', ready_queue empty)
+[ kernel ] smp: AP cpu_id=5 ready (lapic_id=10, processor_id=6)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=5, bootstrap='ap-5-main', ready_queue empty)
+[ kernel ] per_cpu: PER_CPU[11] at 0xffffffffe50cdc80 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffffe5802a00
+[ kernel ] per_cpu: PER_CPU[7] at 0xffffffffe50cda80 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=8 loaded (tss_sel=0x30)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] per_cpu: PER_CPU[8] at 0xffffffffe50cdb00 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=6 ready (lapic_id=1, processor_id=7)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=6, bootstrap='ap-6-main', ready_queue empty)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] apic: cpu=3 lapic_id=6 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] gdt: cpu=9 loaded (tss_sel=0x30)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[9] at 0xffffffffe50cdb80 → IA32_GS_BASE (AP)
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffffe5807230
+[ kernel ] apic: cpu=9 lapic_id=7 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] gdt: cpu=11 loaded (tss_sel=0x30)
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=6, processor_id=4)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=9 at 0xffffffffe5807a10
+[ kernel ] gdt: cpu=7 loaded (tss_sel=0x30)
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=2, processor_id=2)
+[ kernel ] per_cpu: PER_CPU[7] at 0xffffffffe50cda80 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[11] at 0xffffffffe50cdc80 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=7 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] apic: cpu=11 lapic_id=11 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: AP cpu_id=9 ready (lapic_id=7, processor_id=10)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=9, bootstrap='ap-main', ready_queue empty)
+[ kernel ] apic: cpu=8 lapic_id=5 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] slab: initialized per-CPU state cpu=7 at 0xffffffffe5808790
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: AP cpu_id=7 ready (lapic_id=3, processor_id=8)
+[ kernel ] slab: initialized per-CPU state cpu=8 at 0xffffffffe58089d0
+[ kernel ] sched: spawned 'ping' (id=5)
+[ kernel ] smp: AP cpu_id=8 ready (lapic_id=5, processor_id=9)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=7, bootstrap='ap-7-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=8, bootstrap='ap-main', ready_queue empty)
+[ kernel ] sched: spawned 'pong' (id=10)
+[ kernel ] per_cpu: PER_CPU[10] at 0xffffffffe50cdc00 → IA32_GS_BASE (AP)
+[ kernel ] sched: spawned 'hog' (id=12)
+[ kernel ] slab: initialized per-CPU state cpu=11 at 0xffffffffe5808c10
+[ ping ] 1
+[ kernel ] smp: AP cpu_id=11 ready (lapic_id=11, processor_id=12)
+[ pong ] 1
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=11, bootstrap='ap-main', ready_queue empty)
+[ ping ] 2
+[ kernel ] gdt: cpu=10 loaded (tss_sel=0x30)
+[ pong ] 2
+[ kernel ] per_cpu: PER_CPU[10] at 0xffffffffe50cdc00 → IA32_GS_BASE (AP)
+[ ping ] 3
+[ kernel ] apic: cpu=10 lapic_id=9 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ pong ] 3
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffe503ea20), SFMASK=IF|TF|AC|DF)
+[ hog  ] preempted at least 5 ticks (start=5, now=12)
+[ kernel ] slab: initialized per-CPU state cpu=10 at 0xffffffffe5811fd0
+[ ping ] 4
+[ kernel ] smp: AP cpu_id=10 ready (lapic_id=9, processor_id=11)
+[ pong ] 4
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=10, bootstrap='ap-main', ready_queue empty)
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=5)
+[ kernel ] sched: reaped 'pong' (id=10)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=12)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=24)
+NEO_TEST/1 event=BEGIN name=cap_revoke_spawn_inheritance_descendants phase=dispatch
+[ kernel ] elf: neo-init module at 0xffff80047d4ee000 size=3219296 bytes
+[ frame ] phase=baseline-pre-spawn used=1038 delta=+1038
+[ kernel ] elf: loaded entry=0x0000000000400210 segments=2
+[ kernel ] sched: enqueued user thread (id=15)
+[ kernel ] proc: spawned 'neo-init' (pid=1) entry=0x0000000000400210 user_rsp=0x00007fffffffeff8 handles_inherited=0
+[ frame ] phase=post-spawn used=1051 delta=+13
+[ kernel ] elf: loaded entry=0x0000000000400300 segments=2
+[ kernel ] sched: enqueued user thread (id=16)
+[ kernel ] proc: spawned 'worker' (pid=2) entry=0x0000000000400300 user_rsp=0x00007fffffffeff8 handles_inherited=2
+[ frame ] phase=post-spawn used=1064 delta=+13
+[ kernel ] proc: neo-init spawned with pid=1
+[ kernel ] proc: user thread exited with code 0
+[ kernel ] proc: user thread exited with code 0
+[ kernel ] sched: reaped 'neo-init' (id=15)
+[ kernel ] pmap: dropped — freed 12 frames + 1 PML4
+[ kernel ] proc: deregistered 'neo-init' (pid=1)
+[ frame ] phase=post-natural-exit used=1051 delta=-13
+[ kernel ] sched: reaped 'worker' (id=16)
+[ kernel ] pmap: dropped — freed 12 frames + 1 PML4
+[ kernel ] proc: deregistered 'worker' (pid=2)
+[ frame ] phase=post-natural-exit used=1038 delta=-13
+[ kernel ] proc: neo-init reaped — back in kernel-only mode
+[ kernel ] proc: neo-init exit code 0
+[ frame ] phase=final-post-reap used=1038 delta=+0
+[ kernel ] frame: leak audit clean (baseline=1038 final=1038)
+NEO_TEST/1 event=PASS name=cap_revoke_spawn_inheritance_descendants cap_scenario=ok exit_code=0

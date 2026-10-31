@@ -1,0 +1,9 @@
+Phase 7.5 BUILD-A Stage B close evidence — the OptiPlex blind-run loop (3 iterations, each conclusive per F1-F7)
+
+Iter 1 (ISO 88de2ec8): #PF cr2=HHDM+0x91228000 = BAR(0x91220000)+0x8000 — the first byte past the 32 KiB BAR window; Intel PCH parks the xECP chain at byte 0x8000. Localized from cr2 arithmetic alone, deterministic across 2 boots. Fix: 64 KiB window + bounded xECP walk + arena margin.
+
+Iter 2 (ISO c2d54ba6): the controller came fully alive on silicon — usblegsup 0x00002201 -> 0x01002201 verdict=os-owned (F1); scratchpads 34/34 (F2); REAL MSI delivery irqs=11 on vector 0xf3 (F6 counted side live on hardware, 0 on QEMU); commands 4/4 (F4); 26-port PLS timeline (F7); fence admits=47 refusals=0 (I-14(c1) held on real DMA); probe PASS. Census residue: port 9 = HS hub (class 09, descriptor read ON SILICON, skipped per scope); port 14 = FS device bMaxPacketSize0=64, 18-byte read failed mid-stage — the deferred FS-MPS class, one-look diagnosis from the quirk breadcrumb.
+
+Iter 3 (ISO 4981fa80): COMPLETE. Port 9 hub identified vid=05e3 pid=0610 (Genesys Logic). Port 14: "evaluate context" fired -> FULL ENUMERATION: usb: enumerated port=14 slot=2 speed=full vid=8087 pid=0026 class=e0/01/01 configs=1 (Intel AX201 Bluetooth, 8 interfaces parsed). Probe: devices=1 submitted=5 completed=5 irqs=15 drained=14 passes=363 max_burst=2 fence_admits=47 fence_refusals=0 -> PASS.
+
+THE STAGE-B GATE IS MET: enumeration of a physically present device on the OptiPlex root ports, VID/PID + descriptors, with the structural fence holding (0 refusals across all runs), real MSI delivery, the ISR cap held, and every blind failure self-localizing in one run.

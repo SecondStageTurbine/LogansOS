@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "block-guard-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+# The module under test seals its markers with BLAKE3, as the kernel does.
+blake3 = { version = "1.8.2", default-features = false }
+
+[dev-dependencies]
+# OT-87 R3: the independent GPT reader the oracle is checked against
+# (MIT; THINK §11.2). Host tests only, never in the kernel.
+gpt = "=4.1.0"
+uuid = { version = "1", features = ["macro-diagnostics"] }

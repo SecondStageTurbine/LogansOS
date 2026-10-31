@@ -1,0 +1,35 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# VISION: LogansOS → Arthur (the committed telos)
+
+**Status:** **Committed telos** — the *direction* is now constitutional (Bible Article 29 + Article 23.1 reversed, 2026-06-14): LogansOS ships an integral assistant, **Arthur**. This doc records the realization roadmap. What remains honestly *pending* is timing, not intent: the *substrate* claims below are proven on silicon (Phases 5–7.5); the *upper layers* are under construction (Phase 8 opened). No build deadline is committed here — Arthur is the committed direction, proven-vs-pending stated plainly (Article 1).
+**Date:** 2026-06-13 (reframed 2026-06-14 — north-star → committed telos; named **Arthur**)
+**Naming note:** "Arthur" (Assistant for Real-time Tasks, Home automation, & User Requests) is the assistant's name as of 2026-06-14; **"JARVIS" below is the historical working placeholder** for the same thing (kept in the filename as a lineage artifact). The OS is named for the PL's son Logan; Arthur is the assistant it serves.
+**Related:** Bible Article 29 (Arthur, the Integral Assistant — the definition), Article 28 (Product Accessibility — the promise Arthur realizes), Article 13 (phase ledger), ADR-049 (model hot-swap), `docs/complexity-governance.md` §4 (the latency oracle — load-bearing for an interactive assistant).
+
+## 1. The thesis: we built the moat first
+LogansOS is the **substrate** for an Arthur-class assistant; Arthur is the **telos** of the accessibility commitment (Article 28: usable by real people on hardware they own). The bet — made deliberately — was to build the **hardest, most novel layer first**: a kernel that *governs intelligence as a resource*. Everyone can run a model in userspace; **no other OS governs AI memory between untrusting agents, isolates them in hardware, content-addresses their weights, and hot-swaps models without downtime.** That governance is exactly what a real assistant most needs and most lacks. So the path to Arthur is **additive layers on top of a proven foundation — not a rework of it.** "How much do we change about what exists?" → almost nothing. "How much do we build on top?" → several layers, decomposed below.
+
+## 2. What's already built that Arthur needs (the foundation — proven)
+- **KV-cache management ≈ solved.** A conversational LLM's KV cache is its largest, most dynamic memory consumer — and KV cache *is tensors*. The policy layer (P1 placement, P2 eviction, P3 proactive retention, P4b background daemon) is precisely KV-cache governance. The hardest part of *serving* an LLM well is built.
+- **Multi-agent, isolated, deduped serving** (§9.5–9.8 + content-hash dedup) — multiple agents/models coexisting safely, one physical copy of shared weights, cross-tenant isolation enforced by the GPU's own page tables (silicon-proven, the 4X arc + I-14).
+- **Hot-swap (ADR-049)** — update the assistant's model without downtime; content-addressing makes versions coexist and migrate only the delta.
+- **Capability-bounded action — the safety keystone.** When an agent *acts* (controls the OS), the danger is unbounded authority. LogansOS's capability system means **the agent's reach is kernel-governed by construction** — a structurally *safer* Arthur than a userspace agent with ambient access. "Intelligence as a kernel primitive" extends to "the agent's authority is bounded by the kernel."
+- **Connectivity** (Phase 7.5: USB, USB-Ethernet, WiFi) — the assistant reaches the world.
+
+## 3. The additive layers (the gap — unbuilt, substrate-up)
+1. **Inference maturity → real LLM serving** *(extends Phase 5/6).* The autoregressive **generation loop** (sampling: temperature/top-k/top-p), the **KV cache wired to the residency governance** (mostly plumbing existing machinery), a **tokenizer** (BPE/SentencePiece), and **quantization (int8/int4)** so a real model fits. The op set + `.neom` format + governance exist; this adds the decode loop + quantization + a real model. Substantial, but "more of the same kind."
+2. **The agent layer — Arthur proper** *(new).* Dialogue/context management, **tool-use / function-calling** (the agent does things, capability-bounded), the perceive→reason→act loop. Genuinely new and genuinely hard (reliable agency is hard everywhere) — but it's software on the substrate, and the governance makes its *safety* tractable.
+3. **I/O modalities — something you talk to** *(driver + model work).* An **audio driver** (HDA or USB-audio — real driver work, like the WiFi lane), then **STT + TTS** (which are *just more models the inference substrate runs*). Optional vision (camera + a vision model). The drivers are new; the models ride what's built.
+4. **Userland / the human surface** *(Phase 8, already committed).* The way a non-developer interacts. A conversational assistant *is* the ultimate form of the Article 28 accessibility goal — Arthur is that goal made concrete.
+
+## 4. The two honest constraints
+- **Compute gates *scale*, not architecture.** A full 70B Arthur needs real accelerator hardware; the OptiPlex's UHD 630 is a proof-of-concept. But the architecture *scales* (the accel driver class + residency governance were built for it), and a **3–7B quantized model is a credible near-term Arthur** on modest hardware. Scale is a hardware/budget question, not a redesign.
+- **The agent layer is real research, and interactivity raises the bar on cost.** Reliable, safe agency is unsolved-in-general; we'd be doing it on the one substrate that makes safety structural. And an interactive assistant has hard *latency* requirements — which is exactly why the **§4 latency oracle** (currently a tracked, unbuilt obligation) becomes load-bearing here: "designed-for, not measured" is acceptable for a batch governor, not for a conversation.
+
+## 5. Why build Arthur on LogansOS at all (the differentiator)
+An Arthur-class assistant on Linux + a userspace runtime inherits userspace's weaknesses: no kernel-enforced isolation between agents, no governed multi-model residency, model updates that reload the world, and an agent with ambient authority. Arthur on LogansOS is, by construction: **multi-agent-isolated in hardware, residency-governed (so it runs more models in less memory), hot-swappable without downtime, and capability-bounded in what it can touch.** The unconventional base is precisely what makes this assistant *safer and denser* than anything on a conventional stack. That is the reason the moat was built first.
+
+## 6. Rough direction (not a commitment)
+Phase 7.5 (connectivity) → **Phase 8** (userland + the serving surface + inference maturity — the LLM-serving layer, the natural home for L1) → **Phase 9+** (the agent layer + audio I/O + STT/TTS — Arthur proper). Each is gated the way everything here is: falsifiable, kill-switchable, honest about proven-vs-pending. This doc is the aim; the phase plan turns it into builds when the PL calls each phase.
+
+*The foundation — the hard, unique, "why does this OS exist" layer — is proven on silicon. Arthur is the additive build-up on top, and the substrate is what makes it worth building here rather than anywhere else.*

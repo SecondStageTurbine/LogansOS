@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-edit-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "OT-67 E1: the text editor's core (gap buffer, line index, undo, cursor moves, find, wrap cache); no_std"
+
+[lib]
+name = "neo_edit_core"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# UAX #29 grapheme and word boundaries: cursor stops never fall inside a
+# grapheme. Apache-2.0 OR MIT; no_std + alloc (its `no_std` feature is a
+# no-op kept for compatibility). Userland only, never the kernel.
+unicode-segmentation = { version = "1.13", default-features = false }

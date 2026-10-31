@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neomc"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+name = "neomc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "neomc"
+path = "src/main.rs"

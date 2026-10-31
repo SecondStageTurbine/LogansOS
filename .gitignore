@@ -1,0 +1,55 @@
+/target
+/.ci-artifacts/
+/.cargo-home
+**/*.rs.bk
+*.iso
+*.img
+*.bin
+# OT-27a (2026-06-21): vendor device-firmware blobs are NO LONGER committed.
+# The MT7601U firmware (`kernel/assets/firmware/mediatek/mt7601u.bin`) is staged
+# onto the boot image as a Limine module by xtask and looked up at runtime — the
+# same out-of-band, not-in-git discipline as the AI model blob (binary +
+# licensing). It stays on disk locally; `*.bin` above keeps it untracked. See
+# ADR-054 (amended) + the firmware_blob() loader in the mt7601u driver.
+.DS_Store
+.idea/
+.vscode/
+
+# Scratch artifacts — boot logs, build outputs, ad-hoc text capture at repo root.
+# Kept on disk for local reference; not committed.
+boot-log-*.txt
+baseline-build.txt
+build-*.txt
+
+# BUILD-5b operator staging folder — local working copy of files for the
+# OptiPlex 7080 Micro hardware session. Reproducible from `target/` outputs +
+# the Plans/ execution guide; not a canonical source.
+/BUILD-5b-staging/
+
+# Tool config directories for AI coders / IDE assistants
+.qwen/
+.claude/
+
+# Accidental capture from agent processes that did not expand $HOME correctly.
+# Contains Claude Code PAI memory state belonging to the user account, not the repo.
+${HOME}/
+
+# Local operational tooling (Jira dispatch) and its bytecode cache.
+# Referenced by CLAUDE.md; kept on disk, not committed.
+jira-dispatcher.py
+__pycache__/
+*.pyc
+
+# Living website
+/website/
+
+# Per-seat coder worktrees (PL standing ops, 2026-07-20). Each CLI coder gets its
+# own persistent git worktree under Workers/<seat> so two seats never share one
+# physical tree (the recurring shared-tree collision / cross-push hazard). These
+# are separate worktrees of THIS repo, nested inside the main tree's working dir,
+# so they must be ignored here to keep `git status` clean. See
+# docs/runbook-per-seat-worktrees.md.
+/Workers/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

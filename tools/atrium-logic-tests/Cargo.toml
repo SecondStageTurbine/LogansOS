@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "atrium-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+# `key-autorepeat`: the mounted `input_queue_logic.rs` sees this crate's
+# feature of the same name (its repeat rule); on by default so the KATs run.
+[features]
+default = ["key-autorepeat", "atrium-pointer-wheel", "sak-lock", "sak-lock-route"]
+key-autorepeat = []
+# The kernel modules' wheel paths (A9-C2), as the kernel feature gates them.
+atrium-pointer-wheel = []
+# OT-66 L2: the SAK table with Super+L, as the kernel feature gates it.
+sak-lock = []
+# OT-66 L2b: the kernel lock route word's transitions (`sak_logic::lock_word`).
+sak-lock-route = ["sak-lock"]
+dw2-scene-policy = []
+atrium-yield = []
+atrium-launch = []
+atrium-damage = []
+atrium-busy = []
+# OT-88 S1: the mounted protocol's OP_SETTING (compiled in under test anyway).
+atrium-settings = []
+atrium-permission = []
+
+[dev-dependencies]
+# A9-D: the busy emblem's frames and placement, composed through atrium_wm.
+neo-atrium = { path = "../../userland/neo-atrium" }

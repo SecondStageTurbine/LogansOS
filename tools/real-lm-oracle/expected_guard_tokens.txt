@@ -1,0 +1,9 @@
+# A9-B guarded-decode oracle: tools/real-lm-oracle/inventory_ref.py over
+# kernel/src/ai/fixtures/kv_persist_kat.neom (float64, greedy, repetition guard).
+guard_prompt=1,5,9,2 max_new=48 window=64 ngram=16
+p1_3_tokens=11,0,3,4,10,3
+p1_3_loop_stop=yes generated=22
+p1_3_min_margin=0.010560
+p1_0_tokens=11,0,3
+p1_0_loop_stop=yes generated=19
+p1_0_min_margin=0.010560

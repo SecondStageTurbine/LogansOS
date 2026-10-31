@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "slab-magazine-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+spin = "0.9"

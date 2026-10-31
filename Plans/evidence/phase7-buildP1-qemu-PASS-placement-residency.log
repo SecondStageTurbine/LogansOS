@@ -1,0 +1,464 @@
+limine: Loading executable `boot():/boot/kernel`...
+limine: Loading module `boot():/modules/neo-init`...
+limine: Loading module `boot():/modules/neo-worker`...
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=0 loaded (tss_sel=0x30)
+[ kernel ] idt: loaded (18 exception handlers + timer at vector 32 + AHCI MSI at vector 240 + NVMe MSI/MSI-X at vector 241 + TLB shootdown IPI at vector 252 + resched IPI at vector 253)
+[ kernel ] per_cpu: PER_CPU[0] at 0xffffffffb9067780 → IA32_GS_BASE (BSP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffb8dff488), SFMASK=IF|TF|AC|DF)
+
+================================================
+  LOGANSOS  v0.0.1
+  Intelligence as a kernel primitive.
+================================================
+
+[ kernel ] entered _kernel_start, long mode, ring 0 (limine rev: supported=true, actual=Some(3))
+[ kernel ] limine: executable phys=0x000000001dec4000 virt=0xffffffffb8dbc000
+[ kernel ] interrupts: enabled
+[ trap  ] BREAKPOINT (#BP) InterruptStackFrame { instruction_pointer: VirtAddr(0xffffffffb8e83391), code_segment: SegmentSelector { index: 1, rpl: Ring0 }, cpu_flags: RFlags(INTERRUPT_FLAG | SIGN_FLAG | 0x2), stack_pointer: VirtAddr(0xffff80001fecbc58), stack_segment: SegmentSelector { index: 2, rpl: Ring0 } }
+[ kernel ] breakpoint smoke test: returned cleanly
+[ kernel ] mm: hhdm_offset=0xffff800000000000, memmap_entries=22
+[ kernel ] mm: usable physical memory = 438 MiB
+[ kernel ] mm: hhdm_phys_end=0x000000001fe97000
+[hhdm] required_end=0x1fe97000 exec=[0x1dec4000,0x1e592000) modules=[module0=[0x1cb01000,0x1deb2870),module1=[0x1b74c000,0x1cafc6e0)] repair_pages=0
+[ kernel ] paging: CR4.PGE was not set; enabled it.
+[ kernel ] paging: GLOBAL fixup complete - 4K leaves: 5169, 2M leaves: 251, 1G leaves: 0
+[ kernel ] paging: sanity OK - kernel .text sample virt VirtAddr(0xffffffffb8dfb310) -> phys PhysAddr(0x1df03310) (global=true)
+[ kernel ] heap: ready (4 MiB at VirtAddr(0xffffffffb9800000), 1024 pages mapped)
+[ kernel ] heap: smoke test passed (Box, Vec, String)
+[ kernel ] mm: kernel PML4 phys = 0x000000001febb000
+[ kernel ] slab: initialized per-CPU state cpu=0 at 0xffffffffb9800180
+[ kernel ] apic: cpu=0 lapic_id=0 enabled xAPIC (BSP, base_phys=0x00000000fee00000)
+[ kernel ] block: init (generic block-device substrate)
+[ kernel ] pci: virtio-blk modern 00:03.0 vendor=0x1af4 device=0x1042
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=5 bar=0 offset=0x0 length=0x0
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=2 bar=4 offset=0x3000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=4 bar=4 offset=0x2000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=3 bar=4 offset=0x1000 length=0x1000
+[ kernel ] virtio-blk: cap bdf=00:03.0 type=1 bar=4 offset=0x0 length=0x1000
+[ kernel ] block: registered device index=0 driver=virtio-blk name=virtio-blk0 pci_bdf=Some((0, 3, 0))
+[ kernel ] virtio-blk: feature-policy bdf=00:03.0 offered=0x0000010130006e54 driver=0x0000000100000200 F_FLUSH_offered=true F_FLUSH_negotiated=true F_CONFIG_WCE_negotiated=false queue_size=8 capacity_sectors=262144 attach=rw
+[ kernel ] pci: AHCI controller 00:1f.2 vendor=0x8086 device=0x2922 class=0x010601
+[ kernel ] block: pci scan complete functions=7 virtio_blk=1 ahci=1 ahci_ok=0 nvme=0 nvme_ok=0 attached_devices=1
+[ kernel ] net: init (generic link-device substrate)
+[ kernel ] net: pci scan complete functions=7 virtio_net=0 virtio_net_ok=0 attached_devices=0
+[ kernel ] framebuffer: 1280x800 @ 32 bpp, pitch 5120 addr 0xffff8000fd000000
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] accel: init complete attached_devices=2
+[ kernel ] smp: Limine reports 1 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: started 0 AP(s)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] sched: spawned 'ping' (id=1)
+[ kernel ] sched: spawned 'pong' (id=2)
+[ kernel ] sched: spawned 'hog' (id=3)
+[ ping ] 1
+[ pong ] 1
+[ ping ] 2
+[ pong ] 2
+[ ping ] 3
+[ pong ] 3
+[ ping ] 4
+[ pong ] 4
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=1)
+[ kernel ] sched: reaped 'pong' (id=2)
+[ hog  ] preempted at least 5 ticks (start=2, now=9)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=3)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=11)
+NEO_TEST/1 event=BEGIN name=accel_placement_residency phase=dispatch
+[ kernel ] sched: spawned 'virtio-blk-completion' (id=4)
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] fs: mounted NeoFS readonly at /neofs selected_superblock=0 generation=1
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+[ kernel ] virtio-blk: completion bdf=0x000300 status=0 completion_cpu=0 token_cpu=0 token_slot=0 wake=Woken
+placement: op=Gelu principal=PID0 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID0 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Gelu principal=PID0 → device=Accel(1) reason=operands-resident migrated=0
+placement: op=Relu principal=PID0 → device=Accel(1) reason=operands-resident migrated=0
+[ kernel ] accel-placement: gate policy_migrations=0 baseline_migrations=3 output_unchanged=true (policy keeps operands resident on Accel(1); baseline thrashes host↔device)
+NEO_TEST/1 event=PASS name=accel_placement_residency accel_placement=ok model=valid_unary_chain policy_migrations=0 baseline_thrash=yes output=byte_identical reason=operands-resident kernel_decides_placement opens=9.9

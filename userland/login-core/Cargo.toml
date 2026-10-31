@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "login-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+vault-core = { path = "../vault-core" }
+blake3 = { version = "1.8.2", default-features = false }
+zeroize = { version = "1.8", default-features = false }

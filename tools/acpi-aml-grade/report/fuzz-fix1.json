@@ -1,0 +1,100 @@
+{
+  "cases": 200000,
+  "crash_count": 0,
+  "crashes": [],
+  "crate": "fix1",
+  "hang_count": 17,
+  "hangs": [
+    {
+      "hash": "4b2c37f0b0633c77",
+      "index": 1699,
+      "source": "zenbook-s14-ux5406aa-303/ssdt16.dat@0x6201@0x58"
+    },
+    {
+      "hash": "1176ce14ec712d86",
+      "index": 9471,
+      "source": "zenbook-s14-ux5406aa-303/dsdt.dat@0x66ea6@0x0"
+    },
+    {
+      "hash": "54a9b9617f7a1ba1",
+      "index": 17695,
+      "source": "optiplex-7080-linux-1.37.0/DSDT@0x6b5e@0x588"
+    },
+    {
+      "hash": "d38fbe0e3cab8c9d",
+      "index": 26469,
+      "source": "hp-elitedesk-800-g6-mini-s21-02.27.00/dsdt.dat@0x4617@0x77d9@0x284@0x9ac@0x0"
+    },
+    {
+      "hash": "d99e4cf72c359ad9",
+      "index": 32642,
+      "source": "zenbook-s14-ux5406aa-303/dsdt.dat@0x66ff7@0x0"
+    },
+    {
+      "hash": "87249ae84a052ba4",
+      "index": 33425,
+      "source": "qemu-q35-ovmf-smp1/dsdt.dat"
+    },
+    {
+      "hash": "e9515dd6e768b847",
+      "index": 64918,
+      "source": "hp-elitedesk-800-g6-mini-s21-02.27.00/dsdt.dat@0x4617@0x1d0a@0x43@0x53e"
+    },
+    {
+      "hash": "331edd7c03d7f520",
+      "index": 71629,
+      "source": "msi-ms-7e57-1.a70/dsdt.dat@0x3e4c8@0x9@0xda77@0x17da@0x56"
+    },
+    {
+      "hash": "0cf931068a193156",
+      "index": 74664,
+      "source": "qemu-q35-ovmf-smp4-viommu/dsdt.dat"
+    },
+    {
+      "hash": "c95e9f3e07e92458",
+      "index": 86189,
+      "source": "lenovo-thinkcentre-m910q-m1akt5aa/dsdt.dat@0x28458"
+    },
+    {
+      "hash": "7ecacb71c86de8b2",
+      "index": 89118,
+      "source": "zenbook-s14-ux5406aa-303/dsdt.dat@0x66d56@0x0"
+    },
+    {
+      "hash": "39a23030bc590311",
+      "index": 94341,
+      "source": "msi-ms-7e57-1.a70/ssdt2.dat@0x2b2c@0x3c3"
+    },
+    {
+      "hash": "74fed310f8f4b215",
+      "index": 117771,
+      "source": "qemu-q35-ovmf-smp4-viommu/dsdt.dat@0x5@0x18"
+    },
+    {
+      "hash": "50fcc5f2d7451970",
+      "index": 129909,
+      "source": "optiplex-7080-1.37.0/dsdt.dat@0x14839@0x14f"
+    },
+    {
+      "hash": "bc1a21128baeb3b3",
+      "index": 141514,
+      "source": "zenbook-s14-ux5406aa-303/dsdt.dat@0x66ff7@0x0"
+    },
+    {
+      "hash": "0a0a181f1fff3a3f",
+      "index": 143561,
+      "source": "msi-ms-7e57-1.a70/dsdt.dat@0x3e4c8@0x9@0xda77@0x17da@0x56"
+    },
+    {
+      "hash": "33f48df57071b3b6",
+      "index": 188983,
+      "source": "zenbook-s14-ux5406aa-303/ssdt18.dat@0x7e9d@0x26@0xfff@0x73"
+    }
+  ],
+  "panic_count": 0,
+  "panic_sites": {},
+  "panics": [],
+  "pool_sources": 10193,
+  "seed": "0x786",
+  "timeout_s": 20
+}

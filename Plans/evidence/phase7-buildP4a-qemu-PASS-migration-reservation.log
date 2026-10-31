@@ -1,0 +1,398 @@
+limine: Loading executable `boot():/boot/kernel`...
+limine: Loading module `boot():/modules/neo-init`...
+limine: Loading module `boot():/modules/neo-worker`...
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=0 loaded (tss_sel=0x30)
+[ kernel ] idt: loaded (18 exception handlers + timer at vector 32 + AHCI MSI at vector 240 + NVMe MSI/MSI-X at vector 241 + TLB shootdown IPI at vector 252 + resched IPI at vector 253)
+[ kernel ] per_cpu: PER_CPU[0] at 0xffffffffac31c600 → IA32_GS_BASE (BSP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffac0973ec), SFMASK=IF|TF|AC|DF)
+
+================================================
+  LOGANSOS  v0.0.1
+  Intelligence as a kernel primitive.
+================================================
+
+[ kernel ] entered _kernel_start, long mode, ring 0 (limine rev: supported=true, actual=Some(3))
+[ kernel ] limine: executable phys=0x000000001db93000 virt=0xffffffffac015000
+[ kernel ] interrupts: enabled
+[ trap  ] BREAKPOINT (#BP) InterruptStackFrame { instruction_pointer: VirtAddr(0xffffffffac1f45e1), code_segment: SegmentSelector { index: 1, rpl: Ring0 }, cpu_flags: RFlags(INTERRUPT_FLAG | SIGN_FLAG | 0x2), stack_pointer: VirtAddr(0xffff80001fed8c58), stack_segment: SegmentSelector { index: 2, rpl: Ring0 } }
+[ kernel ] breakpoint smoke test: returned cleanly
+[ kernel ] mm: hhdm_offset=0xffff800000000000, memmap_entries=21
+[ kernel ] mm: usable physical memory = 435 MiB
+[ kernel ] mm: hhdm_phys_end=0x000000001e2be000
+[hhdm] required_end=0x1e2be000 exec=[0x1db93000,0x1e2be000) modules=[module0=[0x1c7d0000,0x1db81870),module1=[0x1b41b000,0x1c7cb6e0)] repair_pages=0
+[ kernel ] paging: CR4.PGE was not set; enabled it.
+[ kernel ] paging: GLOBAL fixup complete - 4K leaves: 5265, 2M leaves: 251, 1G leaves: 0
+[ kernel ] paging: sanity OK - kernel .text sample virt VirtAddr(0xffffffffac2472c0) -> phys PhysAddr(0x1ddc52c0) (global=true)
+[ kernel ] heap: ready (4 MiB at VirtAddr(0xffffffffaca00000), 1024 pages mapped)
+[ kernel ] heap: smoke test passed (Box, Vec, String)
+[ kernel ] mm: kernel PML4 phys = 0x000000001fec8000
+[ kernel ] slab: initialized per-CPU state cpu=0 at 0xffffffffaca00180
+[ kernel ] apic: cpu=0 lapic_id=0 enabled xAPIC (BSP, base_phys=0x00000000fee00000)
+[ kernel ] block: init (generic block-device substrate)
+[ kernel ] pci: AHCI controller 00:1f.2 vendor=0x8086 device=0x2922 class=0x010601
+[ kernel ] block: pci scan complete functions=6 virtio_blk=0 ahci=1 ahci_ok=0 nvme=0 nvme_ok=0 attached_devices=0
+[ kernel ] net: init (generic link-device substrate)
+[ kernel ] net: pci scan complete functions=6 virtio_net=0 virtio_net_ok=0 attached_devices=0
+[ kernel ] framebuffer: 1280x800 @ 32 bpp, pitch 5120 addr 0xffff8000fd000000
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] accel: init complete attached_devices=2
+[ kernel ] smp: Limine reports 4 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=1
+[ kernel ] smp: starting cpu_id=2 lapic_id=2
+[ kernel ] smp: starting cpu_id=3 lapic_id=3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffac31c700 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffac31c780 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffac31c680 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffac31c780 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffac31c700 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=3 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: started 3 AP(s)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffac0973ec), SFMASK=IF|TF|AC|DF)
+[ kernel ] apic: cpu=2 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffffaca007c8
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffac31c680 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=3, processor_id=3)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffac0973ec), SFMASK=IF|TF|AC|DF)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] apic: cpu=1 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffac0973ec), SFMASK=IF|TF|AC|DF)
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffffaca01000
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=2, processor_id=2)
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffffaca01240
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=1, processor_id=1)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] sched: spawned 'ping' (id=4)
+[ kernel ] sched: spawned 'pong' (id=5)
+[ kernel ] sched: spawned 'hog' (id=6)
+[ ping ] 1
+[ pong ] 1
+[ ping ] 2
+[ pong ] 2
+[ ping ] 3
+[ pong ] 3
+[ ping ] 4
+[ pong ] 4
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=4)
+[ hog  ] preempted at least 5 ticks (start=4, now=11)
+[ kernel ] sched: reaped 'pong' (id=5)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=6)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=15)
+NEO_TEST/1 event=BEGIN name=accel_migration_reservation phase=dispatch
+[ kernel ] sched: spawned 'res-accessor' (id=7)
+[ kernel ] accel-reservation: iter=0 phase=start
+[ kernel ] accel-reservation: iter=0 phase=migrations-done
+[ kernel ] accel-reservation: iter=0 phase=probe-claimed
+[ kernel ] accel-reservation: iter=0 phase=park-observed
+[ kernel ] accel-reservation: iter=0 phase=drained
+[ kernel ] accel-reservation: iter=1 phase=start
+[ kernel ] accel-reservation: iter=1 phase=migrations-done
+[ kernel ] accel-reservation: iter=1 phase=probe-claimed
+[ kernel ] accel-reservation: iter=1 phase=park-observed
+[ kernel ] accel-reservation: iter=1 phase=drained
+[ kernel ] accel-reservation: iter=2 phase=start
+[ kernel ] accel-reservation: iter=2 phase=migrations-done
+[ kernel ] accel-reservation: iter=2 phase=probe-claimed
+[ kernel ] accel-reservation: iter=2 phase=park-observed
+[ kernel ] accel-reservation: iter=2 phase=drained
+[ kernel ] accel-reservation: iter=3 phase=start
+[ kernel ] accel-reservation: iter=3 phase=migrations-done
+[ kernel ] accel-reservation: iter=3 phase=probe-claimed
+[ kernel ] accel-reservation: iter=3 phase=park-observed
+[ kernel ] accel-reservation: iter=3 phase=drained
+[ kernel ] accel-reservation: iter=4 phase=start
+[ kernel ] accel-reservation: iter=4 phase=migrations-done
+[ kernel ] accel-reservation: iter=4 phase=probe-claimed
+[ kernel ] accel-reservation: iter=4 phase=park-observed
+[ kernel ] accel-reservation: iter=4 phase=drained
+[ kernel ] accel-reservation: iter=5 phase=start
+[ kernel ] accel-reservation: iter=5 phase=migrations-done
+[ kernel ] accel-reservation: iter=5 phase=probe-claimed
+[ kernel ] accel-reservation: iter=5 phase=park-observed
+[ kernel ] accel-reservation: iter=5 phase=drained
+[ kernel ] accel-reservation: iter=6 phase=start
+[ kernel ] accel-reservation: iter=6 phase=migrations-done
+[ kernel ] accel-reservation: iter=6 phase=probe-claimed
+[ kernel ] accel-reservation: iter=6 phase=park-observed
+[ kernel ] accel-reservation: iter=6 phase=drained
+[ kernel ] accel-reservation: iter=7 phase=start
+[ kernel ] accel-reservation: iter=7 phase=migrations-done
+[ kernel ] accel-reservation: iter=7 phase=probe-claimed
+[ kernel ] accel-reservation: iter=7 phase=park-observed
+[ kernel ] accel-reservation: iter=7 phase=drained
+[ kernel ] accel-reservation: iter=8 phase=start
+[ kernel ] accel-reservation: iter=8 phase=migrations-done
+[ kernel ] accel-reservation: iter=8 phase=probe-claimed
+[ kernel ] accel-reservation: iter=8 phase=park-observed
+[ kernel ] accel-reservation: iter=8 phase=drained
+[ kernel ] accel-reservation: iter=9 phase=start
+[ kernel ] accel-reservation: iter=9 phase=migrations-done
+[ kernel ] accel-reservation: iter=9 phase=probe-claimed
+[ kernel ] accel-reservation: iter=9 phase=park-observed
+[ kernel ] accel-reservation: iter=9 phase=drained
+[ kernel ] accel-reservation: iter=10 phase=start
+[ kernel ] accel-reservation: iter=10 phase=migrations-done
+[ kernel ] accel-reservation: iter=10 phase=probe-claimed
+[ kernel ] accel-reservation: iter=10 phase=park-observed
+[ kernel ] accel-reservation: iter=10 phase=drained
+[ kernel ] accel-reservation: iter=11 phase=start
+[ kernel ] accel-reservation: iter=11 phase=migrations-done
+[ kernel ] accel-reservation: iter=11 phase=probe-claimed
+[ kernel ] accel-reservation: iter=11 phase=park-observed
+[ kernel ] accel-reservation: iter=11 phase=drained
+[ kernel ] accel-reservation: iter=12 phase=start
+[ kernel ] accel-reservation: iter=12 phase=migrations-done
+[ kernel ] accel-reservation: iter=12 phase=probe-claimed
+[ kernel ] accel-reservation: iter=12 phase=park-observed
+[ kernel ] accel-reservation: iter=12 phase=drained
+[ kernel ] accel-reservation: iter=13 phase=start
+[ kernel ] accel-reservation: iter=13 phase=migrations-done
+[ kernel ] accel-reservation: iter=13 phase=probe-claimed
+[ kernel ] accel-reservation: iter=13 phase=park-observed
+[ kernel ] accel-reservation: iter=13 phase=drained
+[ kernel ] accel-reservation: iter=14 phase=start
+[ kernel ] accel-reservation: iter=14 phase=migrations-done
+[ kernel ] accel-reservation: iter=14 phase=probe-claimed
+[ kernel ] accel-reservation: iter=14 phase=park-observed
+[ kernel ] accel-reservation: iter=14 phase=drained
+[ kernel ] accel-reservation: iter=15 phase=start
+[ kernel ] accel-reservation: iter=15 phase=migrations-done
+[ kernel ] accel-reservation: iter=15 phase=probe-claimed
+[ kernel ] accel-reservation: iter=15 phase=park-observed
+[ kernel ] accel-reservation: iter=15 phase=drained
+[ kernel ] accel-reservation: iter=16 phase=start
+[ kernel ] accel-reservation: iter=16 phase=migrations-done
+[ kernel ] accel-reservation: iter=16 phase=probe-claimed
+[ kernel ] accel-reservation: iter=16 phase=park-observed
+[ kernel ] accel-reservation: iter=16 phase=drained
+[ kernel ] accel-reservation: iter=17 phase=start
+[ kernel ] accel-reservation: iter=17 phase=migrations-done
+[ kernel ] accel-reservation: iter=17 phase=probe-claimed
+[ kernel ] accel-reservation: iter=17 phase=park-observed
+[ kernel ] accel-reservation: iter=17 phase=drained
+[ kernel ] accel-reservation: iter=18 phase=start
+[ kernel ] accel-reservation: iter=18 phase=migrations-done
+[ kernel ] accel-reservation: iter=18 phase=probe-claimed
+[ kernel ] accel-reservation: iter=18 phase=park-observed
+[ kernel ] accel-reservation: iter=18 phase=drained
+[ kernel ] accel-reservation: iter=19 phase=start
+[ kernel ] accel-reservation: iter=19 phase=migrations-done
+[ kernel ] accel-reservation: iter=19 phase=probe-claimed
+[ kernel ] accel-reservation: iter=19 phase=park-observed
+[ kernel ] accel-reservation: iter=19 phase=drained
+[ kernel ] accel-reservation: iter=20 phase=start
+[ kernel ] accel-reservation: iter=20 phase=migrations-done
+[ kernel ] accel-reservation: iter=20 phase=probe-claimed
+[ kernel ] accel-reservation: iter=20 phase=park-observed
+[ kernel ] accel-reservation: iter=20 phase=drained
+[ kernel ] accel-reservation: iter=21 phase=start
+[ kernel ] accel-reservation: iter=21 phase=migrations-done
+[ kernel ] accel-reservation: iter=21 phase=probe-claimed
+[ kernel ] accel-reservation: iter=21 phase=park-observed
+[ kernel ] accel-reservation: iter=21 phase=drained
+[ kernel ] accel-reservation: iter=22 phase=start
+[ kernel ] accel-reservation: iter=22 phase=migrations-done
+[ kernel ] accel-reservation: iter=22 phase=probe-claimed
+[ kernel ] accel-reservation: iter=22 phase=park-observed
+[ kernel ] accel-reservation: iter=22 phase=drained
+[ kernel ] accel-reservation: iter=23 phase=start
+[ kernel ] accel-reservation: iter=23 phase=migrations-done
+[ kernel ] accel-reservation: iter=23 phase=probe-claimed
+[ kernel ] accel-reservation: iter=23 phase=park-observed
+[ kernel ] accel-reservation: iter=23 phase=drained
+[ kernel ] accel-reservation: iter=24 phase=start
+[ kernel ] accel-reservation: iter=24 phase=migrations-done
+[ kernel ] accel-reservation: iter=24 phase=probe-claimed
+[ kernel ] accel-reservation: iter=24 phase=park-observed
+[ kernel ] accel-reservation: iter=24 phase=drained
+[ kernel ] accel-reservation: iter=25 phase=start
+[ kernel ] accel-reservation: iter=25 phase=migrations-done
+[ kernel ] accel-reservation: iter=25 phase=probe-claimed
+[ kernel ] accel-reservation: iter=25 phase=park-observed
+[ kernel ] accel-reservation: iter=25 phase=drained
+[ kernel ] accel-reservation: iter=26 phase=start
+[ kernel ] accel-reservation: iter=26 phase=migrations-done
+[ kernel ] accel-reservation: iter=26 phase=probe-claimed
+[ kernel ] accel-reservation: iter=26 phase=park-observed
+[ kernel ] accel-reservation: iter=26 phase=drained
+[ kernel ] accel-reservation: iter=27 phase=start
+[ kernel ] accel-reservation: iter=27 phase=migrations-done
+[ kernel ] accel-reservation: iter=27 phase=probe-claimed
+[ kernel ] accel-reservation: iter=27 phase=park-observed
+[ kernel ] accel-reservation: iter=27 phase=drained
+[ kernel ] accel-reservation: iter=28 phase=start
+[ kernel ] accel-reservation: iter=28 phase=migrations-done
+[ kernel ] accel-reservation: iter=28 phase=probe-claimed
+[ kernel ] accel-reservation: iter=28 phase=park-observed
+[ kernel ] accel-reservation: iter=28 phase=drained
+[ kernel ] accel-reservation: iter=29 phase=start
+[ kernel ] accel-reservation: iter=29 phase=migrations-done
+[ kernel ] accel-reservation: iter=29 phase=probe-claimed
+[ kernel ] accel-reservation: iter=29 phase=park-observed
+[ kernel ] accel-reservation: iter=29 phase=drained
+[ kernel ] accel-reservation: iter=30 phase=start
+[ kernel ] accel-reservation: iter=30 phase=migrations-done
+[ kernel ] accel-reservation: iter=30 phase=probe-claimed
+[ kernel ] accel-reservation: iter=30 phase=park-observed
+[ kernel ] accel-reservation: iter=30 phase=drained
+[ kernel ] accel-reservation: iter=31 phase=start
+[ kernel ] accel-reservation: iter=31 phase=migrations-done
+[ kernel ] accel-reservation: iter=31 phase=probe-claimed
+[ kernel ] accel-reservation: iter=31 phase=park-observed
+[ kernel ] accel-reservation: iter=31 phase=drained
+[ kernel ] accel-reservation: iter=32 phase=start
+[ kernel ] accel-reservation: iter=32 phase=migrations-done
+[ kernel ] accel-reservation: iter=32 phase=probe-claimed
+[ kernel ] accel-reservation: iter=32 phase=park-observed
+[ kernel ] accel-reservation: iter=32 phase=drained
+[ kernel ] accel-reservation: iter=33 phase=start
+[ kernel ] accel-reservation: iter=33 phase=migrations-done
+[ kernel ] accel-reservation: iter=33 phase=probe-claimed
+[ kernel ] accel-reservation: iter=33 phase=park-observed
+[ kernel ] accel-reservation: iter=33 phase=drained
+[ kernel ] accel-reservation: iter=34 phase=start
+[ kernel ] accel-reservation: iter=34 phase=migrations-done
+[ kernel ] accel-reservation: iter=34 phase=probe-claimed
+[ kernel ] accel-reservation: iter=34 phase=park-observed
+[ kernel ] accel-reservation: iter=34 phase=drained
+[ kernel ] accel-reservation: iter=35 phase=start
+[ kernel ] accel-reservation: iter=35 phase=migrations-done
+[ kernel ] accel-reservation: iter=35 phase=probe-claimed
+[ kernel ] accel-reservation: iter=35 phase=park-observed
+[ kernel ] accel-reservation: iter=35 phase=drained
+[ kernel ] accel-reservation: iter=36 phase=start
+[ kernel ] accel-reservation: iter=36 phase=migrations-done
+[ kernel ] accel-reservation: iter=36 phase=probe-claimed
+[ kernel ] accel-reservation: iter=36 phase=park-observed
+[ kernel ] accel-reservation: iter=36 phase=drained
+[ kernel ] accel-reservation: iter=37 phase=start
+[ kernel ] accel-reservation: iter=37 phase=migrations-done
+[ kernel ] accel-reservation: iter=37 phase=probe-claimed
+[ kernel ] accel-reservation: iter=37 phase=park-observed
+[ kernel ] accel-reservation: iter=37 phase=drained
+[ kernel ] accel-reservation: iter=38 phase=start
+[ kernel ] accel-reservation: iter=38 phase=migrations-done
+[ kernel ] accel-reservation: iter=38 phase=probe-claimed
+[ kernel ] accel-reservation: iter=38 phase=park-observed
+[ kernel ] accel-reservation: iter=38 phase=drained
+[ kernel ] accel-reservation: iter=39 phase=start
+[ kernel ] accel-reservation: iter=39 phase=migrations-done
+[ kernel ] accel-reservation: iter=39 phase=probe-claimed
+[ kernel ] accel-reservation: iter=39 phase=park-observed
+[ kernel ] accel-reservation: iter=39 phase=drained
+[ kernel ] accel-reservation: iter=40 phase=start
+[ kernel ] accel-reservation: iter=40 phase=migrations-done
+[ kernel ] accel-reservation: iter=40 phase=probe-claimed
+[ kernel ] accel-reservation: iter=40 phase=park-observed
+[ kernel ] accel-reservation: iter=40 phase=drained
+[ kernel ] accel-reservation: iter=41 phase=start
+[ kernel ] accel-reservation: iter=41 phase=migrations-done
+[ kernel ] accel-reservation: iter=41 phase=probe-claimed
+[ kernel ] accel-reservation: iter=41 phase=park-observed
+[ kernel ] accel-reservation: iter=41 phase=drained
+[ kernel ] accel-reservation: iter=42 phase=start
+[ kernel ] accel-reservation: iter=42 phase=migrations-done
+[ kernel ] accel-reservation: iter=42 phase=probe-claimed
+[ kernel ] accel-reservation: iter=42 phase=park-observed
+[ kernel ] accel-reservation: iter=42 phase=drained
+[ kernel ] accel-reservation: iter=43 phase=start
+[ kernel ] accel-reservation: iter=43 phase=migrations-done
+[ kernel ] accel-reservation: iter=43 phase=probe-claimed
+[ kernel ] accel-reservation: iter=43 phase=park-observed
+[ kernel ] accel-reservation: iter=43 phase=drained
+[ kernel ] accel-reservation: iter=44 phase=start
+[ kernel ] accel-reservation: iter=44 phase=migrations-done
+[ kernel ] accel-reservation: iter=44 phase=probe-claimed
+[ kernel ] accel-reservation: iter=44 phase=park-observed
+[ kernel ] accel-reservation: iter=44 phase=drained
+[ kernel ] accel-reservation: iter=45 phase=start
+[ kernel ] accel-reservation: iter=45 phase=migrations-done
+[ kernel ] accel-reservation: iter=45 phase=probe-claimed
+[ kernel ] accel-reservation: iter=45 phase=park-observed
+[ kernel ] accel-reservation: iter=45 phase=drained
+[ kernel ] accel-reservation: iter=46 phase=start
+[ kernel ] accel-reservation: iter=46 phase=migrations-done
+[ kernel ] accel-reservation: iter=46 phase=probe-claimed
+[ kernel ] accel-reservation: iter=46 phase=park-observed
+[ kernel ] accel-reservation: iter=46 phase=drained
+[ kernel ] accel-reservation: iter=47 phase=start
+[ kernel ] accel-reservation: iter=47 phase=migrations-done
+[ kernel ] accel-reservation: iter=47 phase=probe-claimed
+[ kernel ] accel-reservation: iter=47 phase=park-observed
+[ kernel ] accel-reservation: iter=47 phase=drained
+[ kernel ] accel-reservation: iter=48 phase=start
+[ kernel ] accel-reservation: iter=48 phase=migrations-done
+[ kernel ] accel-reservation: iter=48 phase=probe-claimed
+[ kernel ] accel-reservation: iter=48 phase=park-observed
+[ kernel ] accel-reservation: iter=48 phase=drained
+[ kernel ] accel-reservation: iter=49 phase=start
+[ kernel ] accel-reservation: iter=49 phase=migrations-done
+[ kernel ] accel-reservation: iter=49 phase=probe-claimed
+[ kernel ] accel-reservation: iter=49 phase=park-observed
+[ kernel ] accel-reservation: iter=49 phase=drained
+[ kernel ] accel-reservation: iter=50 phase=start
+[ kernel ] accel-reservation: iter=50 phase=migrations-done
+[ kernel ] accel-reservation: iter=50 phase=probe-claimed
+[ kernel ] accel-reservation: iter=50 phase=park-observed
+[ kernel ] accel-reservation: iter=50 phase=drained
+[ kernel ] accel-reservation: iter=51 phase=start
+[ kernel ] accel-reservation: iter=51 phase=migrations-done
+[ kernel ] accel-reservation: iter=51 phase=probe-claimed
+[ kernel ] accel-reservation: iter=51 phase=park-observed
+[ kernel ] accel-reservation: iter=51 phase=drained
+[ kernel ] accel-reservation: iter=52 phase=start
+[ kernel ] accel-reservation: iter=52 phase=migrations-done
+[ kernel ] accel-reservation: iter=52 phase=probe-claimed
+[ kernel ] accel-reservation: iter=52 phase=park-observed
+[ kernel ] accel-reservation: iter=52 phase=drained
+[ kernel ] accel-reservation: iter=53 phase=start
+[ kernel ] accel-reservation: iter=53 phase=migrations-done
+[ kernel ] accel-reservation: iter=53 phase=probe-claimed
+[ kernel ] accel-reservation: iter=53 phase=park-observed
+[ kernel ] accel-reservation: iter=53 phase=drained
+[ kernel ] accel-reservation: iter=54 phase=start
+[ kernel ] accel-reservation: iter=54 phase=migrations-done
+[ kernel ] accel-reservation: iter=54 phase=probe-claimed
+[ kernel ] accel-reservation: iter=54 phase=park-observed
+[ kernel ] accel-reservation: iter=54 phase=drained
+[ kernel ] accel-reservation: iter=55 phase=start
+[ kernel ] accel-reservation: iter=55 phase=migrations-done
+[ kernel ] accel-reservation: iter=55 phase=probe-claimed
+[ kernel ] accel-reservation: iter=55 phase=park-observed
+[ kernel ] accel-reservation: iter=55 phase=drained
+[ kernel ] accel-reservation: iter=56 phase=start
+[ kernel ] accel-reservation: iter=56 phase=migrations-done
+[ kernel ] accel-reservation: iter=56 phase=probe-claimed
+[ kernel ] accel-reservation: iter=56 phase=park-observed
+[ kernel ] accel-reservation: iter=56 phase=drained
+[ kernel ] accel-reservation: iter=57 phase=start
+[ kernel ] accel-reservation: iter=57 phase=migrations-done
+[ kernel ] accel-reservation: iter=57 phase=probe-claimed
+[ kernel ] accel-reservation: iter=57 phase=park-observed
+[ kernel ] accel-reservation: iter=57 phase=drained
+[ kernel ] accel-reservation: iter=58 phase=start
+[ kernel ] accel-reservation: iter=58 phase=migrations-done
+[ kernel ] accel-reservation: iter=58 phase=probe-claimed
+[ kernel ] accel-reservation: iter=58 phase=park-observed
+[ kernel ] accel-reservation: iter=58 phase=drained
+[ kernel ] accel-reservation: iter=59 phase=start
+[ kernel ] accel-reservation: iter=59 phase=migrations-done
+[ kernel ] accel-reservation: iter=59 phase=probe-claimed
+[ kernel ] accel-reservation: iter=59 phase=park-observed
+[ kernel ] accel-reservation: iter=59 phase=drained
+[ kernel ] accel-reservation: gate iterations=60 migrations=240 reads=33 parks=78 retries=78 contended=60 referenced_skips=21 gen_fails=0 byte_fails=0 deltas_exact=true (move-while-referenced is safe: the race is provably benign)
+NEO_TEST/1 event=PASS name=accel_migration_reservation accel_migration_reservation=ok iterations=60 migrations=240 retries_gt_0=yes double_claims_refused=all quiesce=0 deltas=exact gen_consistent=all reads=byte_identical opens=9.12

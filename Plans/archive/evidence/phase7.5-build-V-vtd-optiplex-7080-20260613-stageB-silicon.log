@@ -1,0 +1,146 @@
+NEO_TEST/1 event=INFO name=vtd_fence bare_metal_log_sink=installed target_driver=ahci offset=0x10000000 size=16777216
+NEO_TEST/1 event=INFO name=vtd_fence bare_metal_log_sink_selftest=begin
+NEO_TEST/1 event=INFO name=vtd_fence bare_metal_log_sink_selftest=ok cursor=190
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] accel: init complete attached_devices=2
+[ kernel ] smp: Limine reports 12 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=2
+[ kernel ] smp: starting cpu_id=2 lapic_id=4
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffba50aec0 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=3 lapic_id=6
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffba50af40 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffba50aec0 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] apic: cpu=1 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffba50afc0 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=4 lapic_id=8
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: starting cpu_id=5 lapic_id=10
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffffbac00c58
+[ kernel ] smp: starting cpu_id=6 lapic_id=1
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffba50af40 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=2, processor_id=2)
+[ kernel ] apic: cpu=2 lapic_id=4 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=7 lapic_id=3
+[ kernel ] per_cpu: PER_CPU[6] at 0xffffffffba50b140 → IA32_GS_BASE (AP)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[4] at 0xffffffffba50b040 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffba50afc0 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=4 loaded (tss_sel=0x30)
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffffbac01440
+[ kernel ] per_cpu: PER_CPU[7] at 0xffffffffba50b1c0 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=4, processor_id=3)
+[ kernel ] per_cpu: PER_CPU[4] at 0xffffffffba50b040 → IA32_GS_BASE (AP)
+[ kernel ] smp: starting cpu_id=8 lapic_id=5
+[ kernel ] gdt: cpu=6 loaded (tss_sel=0x30)
+[ kernel ] smp: starting cpu_id=9 lapic_id=7
+[ kernel ] per_cpu: PER_CPU[6] at 0xffffffffba50b140 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=3 lapic_id=6 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] per_cpu: PER_CPU[9] at 0xffffffffba50b2c0 → IA32_GS_BASE (AP)
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffffbac01c28
+[ kernel ] gdt: cpu=9 loaded (tss_sel=0x30)
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=6, processor_id=4)
+[ kernel ] per_cpu: PER_CPU[9] at 0xffffffffba50b2c0 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=6 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: starting cpu_id=10 lapic_id=9
+[ kernel ] gdt: cpu=7 loaded (tss_sel=0x30)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] smp: starting cpu_id=11 lapic_id=11
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: started 11 AP(s)
+[ kernel ] slab: initialized per-CPU state cpu=6 at 0xffffffffbac02410
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] apic: cpu=4 lapic_id=8 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] per_cpu: PER_CPU[10] at 0xffffffffba50b340 → IA32_GS_BASE (AP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] gdt: cpu=10 loaded (tss_sel=0x30)
+[ kernel ] slab: initialized per-CPU state cpu=4 at 0xffffffffbac02bf8
+[ kernel ] per_cpu: PER_CPU[10] at 0xffffffffba50b340 → IA32_GS_BASE (AP)
+[ kernel ] smp: AP cpu_id=4 ready (lapic_id=8, processor_id=5)
+[ kernel ] apic: cpu=10 lapic_id=9 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[5] at 0xffffffffba50b0c0 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[11] at 0xffffffffba50b3c0 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=5 loaded (tss_sel=0x30)
+[ kernel ] gdt: cpu=11 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[5] at 0xffffffffba50b0c0 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[11] at 0xffffffffba50b3c0 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=5 lapic_id=10 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] apic: cpu=11 lapic_id=11 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] slab: initialized per-CPU state cpu=5 at 0xffffffffbac033e0
+[ kernel ] slab: initialized per-CPU state cpu=11 at 0xffffffffbac03620
+[ kernel ] smp: AP cpu_id=5 ready (lapic_id=10, processor_id=6)
+[ kernel ] smp: AP cpu_id=11 ready (lapic_id=11, processor_id=12)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=5, bootstrap='ap-5-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=11, bootstrap='ap-main', ready_queue empty)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=4, bootstrap='ap-4-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=10 at 0xffffffffbac043b0
+[ kernel ] per_cpu: PER_CPU[8] at 0xffffffffba50b240 → IA32_GS_BASE (AP)
+[ kernel ] per_cpu: PER_CPU[7] at 0xffffffffba50b1c0 → IA32_GS_BASE (AP)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] apic: cpu=9 lapic_id=7 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] smp: AP cpu_id=10 ready (lapic_id=9, processor_id=11)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] apic: cpu=7 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=10, bootstrap='ap-main', ready_queue empty)
+[ kernel ] slab: initialized per-CPU state cpu=9 at 0xffffffffbac04b98
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] smp: AP cpu_id=6 ready (lapic_id=1, processor_id=7)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=6, bootstrap='ap-6-main', ready_queue empty)
+[ kernel ] sched: spawned 'ping' (id=9)
+[ kernel ] slab: initialized per-CPU state cpu=7 at 0xffffffffbac04dd8
+[ kernel ] sched: spawned 'pong' (id=10)
+[ kernel ] smp: AP cpu_id=9 ready (lapic_id=7, processor_id=10)
+[ kernel ] gdt: cpu=8 loaded (tss_sel=0x30)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=9, bootstrap='ap-main', ready_queue empty)
+[ kernel ] smp: AP cpu_id=7 ready (lapic_id=3, processor_id=8)
+[ kernel ] sched: spawned 'hog' (id=11)
+[ kernel ] per_cpu: PER_CPU[8] at 0xffffffffba50b240 → IA32_GS_BASE (AP)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=7, bootstrap='ap-7-main', ready_queue empty)
+[ ping ] 1
+[ pong ] 1
+[ kernel ] apic: cpu=8 lapic_id=5 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ ping ] 2
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffba437c78), SFMASK=IF|TF|AC|DF)
+[ kernel ] slab: initialized per-CPU state cpu=8 at 0xffffffffbac12200
+[ pong ] 2
+[ ping ] 3
+[ kernel ] smp: AP cpu_id=8 ready (lapic_id=5, processor_id=9)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=8, bootstrap='ap-main', ready_queue empty)
+[ ping ] 4
+[ pong ] 3
+[ hog  ] preempted at least 5 ticks (start=5, now=12)
+[ ping ] 5
+[ pong ] 4
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=9)
+[ kernel ] sched: reaped 'pong' (id=10)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=11)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=20)
+NEO_TEST/1 event=BEGIN name=vtd_fence phase=dispatch
+[ kernel ] vtd: fence domain built over arena [0x47a380000,0x47a3c0000)
+[ kernel ] sched: spawned 'vtd-c2-poke' (id=15)
+[ kernel ] vtd: translation DISABLED (kill-switch)
+[ kernel ] vtd-fence: done sid=0x0100 fault_addr=0x47a372000 arena=[0x47a380000,0x47a3c0000) faults=1
+NEO_TEST/1 event=PASS name=vtd_fence vtd_fence=ok dmar=present tes=set no_regression=read_ok fenced=out_of_arena_faulted sid_matched=true addr_out_of_arena=true governance=intact kill_switch=tes_cleared i14c2=proven opens=adr-050

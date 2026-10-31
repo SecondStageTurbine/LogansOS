@@ -1,0 +1,39 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Showcase Slice B — dress-rehearsal ISO + JOINT-run prep → Jarvis
+
+**Date:** 2026-07-21
+**From:** PM (Claude)
+**To:** Jarvis (main-tier; showcase owner)
+**Status:** DISPATCHED — **prep + de-risk, largely NO-GATE** (an ISO-assembly + QEMU boot-smoke + a run-prep doc; a code fix only if the dress rehearsal surfaces one). Slice A (Arthur as a confined G1 client) is merged (`7314818`); Slice B (the full keyboard→Arthur→inference→composited-answer loop) is coded + merged but **has never executed** — QEMU can't exercise it. This dispatch **de-risks the JOINT OptiPlex run BEFORE the PL's ~1-hour window** so that run is turnkey, not a first-time debug session.
+
+## The goal
+When the PL signals ~1 hr out, the *only* remaining step should be: **re-assemble the ISO from latest `main` + boot the OptiPlex.** Everything that can fail at assembly/staging/boot-config time must be found + fixed NOW, not in the PL's window. "Capture-before-you-need-it," applied to the demo.
+
+## Part A — the dress-rehearsal ISO build + boot-smoke (do this for real, today)
+1. **Assemble the Slice-B ISO** from current `main`: `xtask iso` with the `arthur-compositor-baremetal` + `arthur-real-infer` feature set (the full boot → G1 compositor → Arthur greeting → keyboard → inference → composited-answer path). **This is the never-before-combined feature set** (framebuffer + `atrium-compositor-g1` + `usb-hid` + the real-model path all in one build) — confirm it **actually compiles + links** as one image. A feature-combo build error is the first thing to catch.
+2. **Stage the real model artifact** exactly as the OT-28 bare-metal run did: the 485 MB `.neom` + vocab sidecar as the out-of-band Limine module / NeoFS volume (ISC-2 — **not in git**; a blob-less build must fail closed, which is correct). Confirm the `limine.conf` module wiring resolves the model + `neo-arthur`/`neo-init`/`neo-shell` modules by path suffix, and the ISO stages without a missing-file/oversize error.
+3. **Boot-smoke in QEMU as far as it goes.** QEMU won't run the real keyboard→inference loop (no real USB keyboard, and the silicon path fails closed) — that's expected. But QEMU **can** prove the non-silicon prefix: boot → limine → GOP framebuffer → heap → G1 compositor up → Arthur's surface created → **greeting composited** (the Slice-A path, now inside the Slice-B build). Confirm the build boots that far and the fail-closed on the missing hardware/loop is graceful (a clear serial line, not a hang/panic).
+4. **If Part A surfaces a bug** (feature-combo won't compile, module staging broken, boots-then-panics before the fail-closed point): fix it. If the fix is kernel-touching, run the close-gate + a green 4-shard QEMU URL (it's a real code change); if it's ISO-recipe/staging only, no gate. Either way the demo ISO must be **provably assemblable + boot-smoke-clean** at the end of this dispatch.
+
+## Part B — the JOINT Slice-B run runbook (the turnkey checklist)
+Write/finalize the run procedure so the PL + you can execute it cold, in `docs/runbook-sliceB-arthur-showcase-optiplex.md` (CC-BY-4.0) — a Slice-B-specific companion to `docs/runbook-baremetal-arthur-optiplex.md` (reference it for the generic SSH/boot-select/serial-capture mechanics; do NOT re-derive them):
+1. **The exact final-build command** (the one command to re-assemble from latest `main` when the PL signals) + the model-staging steps + the boot-select (`efibootmgr -n 0001 && reboot`, per the runbook).
+2. **The serial-breadcrumb map** — the ordered breadcrumbs the run emits and what each proves: boot → GOP → heap → NeoFS → **G1 up** → model-load → **Arthur surface** → **greeting composited** → keystroke-received → **input-focus-routed** → **inference start** (`SHOWCASE inference start source=input_focus`) → **inference complete** (`forward=real`) → **answer composited** (`commit_answer`). The PL reads the framebuffer live; the serial log (+ NVMe sink) is the durable proof.
+3. **The blind-hardware failure-mode + discriminator bank** (MANDATORY — this is a blind first run). Pre-seed the known risks, each with the breadcrumb that localizes it:
+   - **#1 memory-footprint OOM** — 485 MB model + compositor + USB + inference/KV all resident on the OptiPlex; discriminator: the breadcrumb it dies *after* (model-load vs surface vs inference) + a heap/used-bytes line. (This is the top risk the dispatch flagged.)
+   - **Arthur surface fails to composite under real inference** — greeting shows but the answer never composites; discriminator: `inference complete` present but no `answer composited`.
+   - **Keystroke never reaches Arthur** — greeting shows, typing does nothing; discriminator: keystroke-received present but no input-focus-routed / no `inference start`.
+   - **Inference hangs with the compositor resident** — `inference start` then silence; discriminator: no `inference complete` within the watchdog.
+   - **Model-load fails with the compositor already up** — discriminator: `G1 up` present, model-load line errors.
+   Each: what serial evidence maps to which cause, so a first-run hiccup is diagnosable in the PL's window, not a mystery.
+
+## Discipline
+- Reference `docs/runbook-baremetal-arthur-optiplex.md` (`git show origin/main:...`) for the generic mechanics; the serial log on a proven-non-blank framebuffer is the legibility proof (**no photo**).
+- Kill-switch stays intact (showcase-off ≡ standalone scenarios); the security scanout gate (just merged) stays armed.
+- Deliverable = a **run-ready state**: (a) the demo ISO provably assembles + boot-smokes; (b) the model staging is proven; (c) the Slice-B run runbook + failure/discriminator bank is written. RETURN: "run-ready" + the dress-rehearsal evidence (ISO built, QEMU boot-smoke serial to the greeting, any bug found+fixed). Push docs/any fix to `codex/showcase-sliceB-prep-jarvis`; PM cherry-picks. **Do NOT do the actual bare-metal run — that's the JOINT session on the PL's signal.**
+- Disk reclaim: `Workers/jarvis` persistent — reused.
+
+## Relay — what to tell Jarvis
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-21-showcase-sliceB-dress-rehearsal-jarvis.md`. The design: `git show origin/main:docs/THINK-2026-07-21-integrated-showcase-arthur-compositor.md`. Bare-metal mechanics: `…:docs/runbook-baremetal-arthur-optiplex.md`. Work in `Workers\jarvis`; branch `codex/showcase-sliceB-prep-jarvis`.
+- **One-line:** **De-risk the Slice-B OptiPlex run before the PL's ~1-hour window.** (1) **Dress-rehearsal ISO:** actually assemble the Slice-B ISO (`xtask iso`, the `arthur-compositor-baremetal`+`arthur-real-infer` never-before-combined feature set) from current `main`, confirm it **compiles/links**, the **485 MB model stages** (out-of-band Limine module, ISC-2), and it **boot-smokes in QEMU to the composited greeting** (the keyboard→inference loop is silicon-only, fails closed — expected). Fix anything that breaks (gate it if kernel-touching). (2) **Run runbook** `docs/runbook-sliceB-arthur-showcase-optiplex.md`: the one-command final re-assemble + model staging + boot-select, the **serial-breadcrumb map** (…→G1 up→Arthur surface→greeting composited→keystroke→focus→inference start→forward=real→answer composited), and the **blind-hardware failure/discriminator bank** (top risk = memory-footprint OOM of model+compositor+USB+inference resident; + surface-no-composite / keystroke-not-routed / inference-hang / model-load-fail). Do NOT run bare-metal — that's the JOINT session. RETURN: "run-ready" + the dress-rehearsal evidence.
+- **RAG:** `xtask iso limine module neom model stage`, `arthur compositor baremetal scenario`, `neo-arthur poll_ascii inference commit_answer`, `atrium compositor surface greeting`. Health-check `Invoke-RestMethod http://127.0.0.1:8404/health` first; if down, note it + grep/Read (PL owns RAG startup; never a blocker).

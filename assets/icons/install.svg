@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <title>Install</title>
+  <!-- Shape: Jarvis (Codex), docs/design/icons-2026-10-29/jarvis/. Redrawn by S1 at the set's
+       weights and colour rule: Silver or White carries the shape, Electric Blue is the accent. -->
+  <!-- the base: a line of light, wider than the tray; the tray is drawn over it -->
+  <path d="M5 33 H35" stroke="#3c8ef4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M8 27 V33 H32 V27" fill="none" stroke="#a8adb2" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- the arrow: White, the action -->
+  <path d="M20 5 V24 M13 17 L20 24 L27 17" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

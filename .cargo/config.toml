@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MPL-2.0
+[alias]
+xtask = "run --package xtask --"
+
+# Quality-of-life aliases. All kernel-touching aliases delegate to xtask
+# because xtask CDs into kernel/ where kernel/.cargo/config.toml lives
+# (target = x86_64-neoplutarch, build-std, linker.ld rustflags). Invoking
+# `cargo build --package neoplutarch-kernel` from workspace root would
+# miss that per-package config and try to build the kernel for the host.
+k        = "xtask build"                            # build the kernel only
+iso      = "xtask iso"                              # build the bootable Limine ISO
+neo      = "xtask run"                              # local GTK window (host)
+neo-tty  = "xtask run-headless"                     # serial only (CI / Docker shell)
+neo-vnc  = "xtask run-vnc"                          # VNC :5901 (Docker recommended)
+neo-desktop = "xtask run-desktop"                   # live desktop session (window; --vnc in Docker)
+neo-test = "xtask neo-test"                         # QEMU integration tests (serial frames + debug-exit)

@@ -1,0 +1,9 @@
+# B1c real-LM oracle: tools/real-lm-oracle/inventory_ref.py over
+# kernel/src/ai/fixtures/kv_persist_kat.neom (float64, greedy).
+prompt=1,5,9,2 max_new=8
+tokens=11,0,3,3,3,3,3,3
+control_prompt=1,5,9,3
+control_tokens=4,11,3,3,3,3,3,3
+# top1 - top2 logit per step (a small margin could flip under f32 reordering):
+margins=0.010560,0.182309,0.147299,0.037018,0.025322,0.042315,0.055358,0.057502
+min_margin=0.010560

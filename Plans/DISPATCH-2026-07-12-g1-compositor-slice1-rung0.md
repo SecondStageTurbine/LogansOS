@@ -1,0 +1,34 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Rung 0 — the G1 compositor slice-1 (the desktop's first composited pixels) → (seat TBD by PL)
+
+**Date:** 2026-07-12
+**From:** PM (Claude)
+**To:** **Oracle** (assigned by PL 2026-07-12 — carries fresh G1/compositor context from the GPU synthesis). **Branch:** `codex/g1-compositor-slice1-oracle`.
+**Status:** DISPATCHED — **kernel-touching build.** The first build of the ratified OT-63 accel ladder: **Rung 0, the software-render floor.** Design is already ratified (the G1 compositor synthesis + the OT-63 SYNTHESIS §3). **Develops NOW in parallel with OT-59; its kernel pieces MERGE after OT-59 closes** (green gate) — build on a branch now, no calendar lost.
+
+## What this is (and is NOT)
+- **IS:** the G1 compositor slice-1 — the **two ratified kernel object kinds** (a **shared pixel-buffer object**: immutable descriptor [dimensions/stride/format], `BorrowedBuffer` Pmap ownership, Arc-pinned, **compositor mappings hardware RO/NX**; and an **`InputFocus` object**: kernel-routed atomic focus transfer) + **composition via the existing `fb::blit_rgba`** + **software-measured present fences**. Delivers the desktop's first composited Workfield pixels.
+- **IS NOT:** any GPU code, any GPU interrupt, any display-engine/modeset/vblank work (that's Rung 1, gated on OT-59), any hardware raster (Rung 2). No `swgl` yet — that's the sibling Rung-0 userland build (fast-follow, wires into this compositor's present surface). This is pure CPU composition into the Limine framebuffer.
+
+## Standing-rule sections (all mandatory — this is the template)
+- **Kill-switch (required):** compositor-off ≡ the v1 framebuffer console, **bit-for-bit** — ship the disabled-mode + the equality regression proving it. (This is the ratified G1 kill-switch.)
+- **Invariant budget:** the two kernel objects are the G1-ratified additions; the compositor's mappings are **hardware RO/NX** (the existing I-15-class mapping discipline — name it, don't invent a new invariant unless the build genuinely needs one; if it does, justify + guard in the same build).
+- **Concurrency pitfall-bank consultation (NEW mandatory rule, OT-62 — this is its first real application):** the present-fence + atomic InputFocus transfer are cross-CPU/wake/atomic code. Consult `docs/concurrency-pitfalls.md` and state, for each touched class: **introduce / guard / N-A + the discriminator.** Load-bearing ones here: **CP-8/CP-17** (present must gate on an explicit fence, never a visibility proxy — I-16), **CP-14/15/16** (the present-fence/focus wake path — the OT-59 wake-race family; the **software** present-fence must be bounded-wait, never an unyielding spin — CP-2/CP-3), **CP-11/13** (the InputFocus atomic — correct `Ordering`, no torn read).
+- **I-14 (governance fault-containment):** the compositor is a **userland tenant** — its total death degrades to "no composition," never a governance stall; the software present-fence is bounded-wait so a stuck client can't hang it into that death. Confirm: no AI-governance lock on the present/focus path; no DMA (pure CPU `blit_rgba`).
+- **Byte-oracle (if applicable):** the shared-pixel-buffer **descriptor** is an ABI struct (dimensions/stride/format) — if it crosses the syscall boundary as bytes, ship a hand-laid-out byte fixture asserted independently of writer/reader (the ADR-028 lesson).
+- **Falsifiable scenario:** an in-kernel/host scenario proving composition (N surfaces → correct pixels in the framebuffer, damage honored, present-fence fires only after the blit completes) + the kill-switch equality.
+
+## Scope guard
+Rung 0 software compositor only. No GPU, no display engine, no `swgl` (sibling build). Don't re-open the ratified G1 design or the OT-63 architecture. Preserve the v1 console as the kill-switch floor + the recovery contract.
+
+## Gate + close
+- **Kernel-touching ⇒ the mandatory `workflow_dispatch` 4-shard QEMU gate is REQUIRED to merge** — and its merge **gates on OT-59 closing** (a red gate blocks it regardless). Develop + local-verify now; fire the gate + merge once `main` is green. **Stagger the gate-fire behind OT-59/B3** (runner capacity).
+- `scripts/worker-close-gate.sh` (rebase onto current `main` first); the two hard rules (green CI URL; PM inspects own `git show --stat`). PM AAG at merge (concurrency [the wake/fence path] + memory-safety [the RO/NX mappings] + I-14 + completeness [the kill-switch equality + the composition scenario]).
+- **RETURN:** the branch + the two kernel objects + the composition scenario + the kill-switch equality + the pitfall-bank consultation table + the I-14 analysis + (once green) the CI URLs.
+- **Disk reclaim** after PM confirms merge.
+
+---
+## Relay — what to tell the seat
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-12-g1-compositor-slice1-rung0.md` (+ `git show origin/main:docs/THINK-2026-07-10-g1-compositor-SYNTHESIS.md` [the ratified compositor design — the two kernel objects, `fb::blit_rgba` composition, software present-fence, the compositor-off≡v1-console kill-switch]; `git show origin/main:docs/THINK-2026-07-12-gpu-accel-path-SYNTHESIS.md` [Rung 0 in the ladder]; `git show origin/main:docs/concurrency-pitfalls.md` [**consult — the new mandatory rule**]; grep/RAG `kernel/src/drivers/fb/mod.rs` [`blit_rgba`, the surface both consumers composite into]). **Branch:** `<seat>/g1-compositor-slice1`.
+- **One-line:** **Build Rung 0 — the G1 compositor slice-1 (the desktop's first composited pixels): the two ratified kernel objects (shared-pixel-buffer [RO/NX compositor mappings] + atomic InputFocus) + composition via `fb::blit_rgba` + a bounded-wait software present-fence. No GPU, no display engine, no swgl (sibling build). Kill-switch: compositor-off ≡ v1 console bit-for-bit + the equality regression.** CONSULT `docs/concurrency-pitfalls.md` (mandatory now): map CP-8/17 (present-gates-on-explicit-fence = I-16), CP-14/15/16 + CP-2/3 (the present-fence/focus wake path — bounded-wait, never unyielding spin), CP-11/13 (the InputFocus atomic) to introduce/guard/N-A + discriminator. I-14: compositor is a userland tenant (death ⇒ no-composition, never governance stall); no governance lock, no DMA. Ship a falsifiable composition scenario + the kill-switch equality. **Develops NOW in parallel with OT-59; kernel-touching ⇒ the mandatory QEMU gate + merge come AFTER OT-59 closes (stagger the gate-fire behind OT-59/B3).** Close-gate ritual + green CI URLs at merge; PM AAG (concurrency/memory-safety/I-14/completeness). Disk reclaim after.
+- **RAG:** use it for our surfaces (`fb blit_rgba framebuffer compositor`, `shared pixel buffer BorrowedBuffer Pmap`, `InputFocus atomic focus`, `present fence bounded wait`, `capability object kernel`). Health-check `Invoke-RestMethod http://127.0.0.1:8404/health`; if down, note it + fall back to grep/Read (never a blocker).

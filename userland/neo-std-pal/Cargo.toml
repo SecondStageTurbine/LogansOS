@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-std-pal"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+# OT-61 browser C0: the LogansOS platform layer (PAL) for a hosted Rust `std`
+# target — the real `sys`-tier primitives (NOT a std-lite name shim; ADR the
+# REFUTE). Authored to the shape the rust-src `library/std/src/sys/*` overlay
+# needs: print/heap/exit wired to raw libneo syscalls; every C1+ surface a
+# DETERMINISTIC loud-abort stub carrying its symbol name. Compile-validated
+# standalone in C0; the toolchain-std overlay (§C0-completion sub-rung) links it
+# into real `std`. A3: the thread/TLS/wait/VM/clock stubs are shaped to serve
+# BOTH `std`'s platform layer AND SpiderMonkey's native pthread/TLS port.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+linked_list_allocator = { version = "0.10", default-features = false }

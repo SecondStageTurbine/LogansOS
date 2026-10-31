@@ -1,0 +1,11 @@
+# ACPI tables are exact bytes: never let text=auto/eol=lf touch them (a short
+# table with no NUL byte would otherwise be "detected" as text). Only the
+# metadata files are text.
+*                     binary
+.gitattributes        text diff eol=lf
+*.json                text diff eol=lf
+*.md                  text diff eol=lf
+SHA256SUMS            text diff eol=lf
+machine.txt           text diff eol=lf
+bios.txt              text diff eol=lf
+acpidump-version.txt  text diff eol=lf

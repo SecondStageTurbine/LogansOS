@@ -1,0 +1,24 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# DISPATCH: Gaming design — facet 2, the graphics mountain (M1) → Cerebro
+
+**Date:** 2026-07-21
+**From:** PM (Claude)
+**To:** Cerebro (main-tier; Claude family; OT-63 GPU owner — cross-model family 2 of 3 on the gaming panel)
+**Status:** DISPATCHED — **deep design research, NO-GATE** (a FINDINGS feeding the PM gaming synthesis). You own OT-63 + the GPU program, so you own the tallest pole: **M1, the GPU/Vulkan driver.** **Read the framing first:** `git show origin/main:docs/THINK-2026-07-21-gaming-on-logansos-framing.md`. *(This runs in parallel with your P1 Slice-3 build — treat this as the design-lane facet; Slice 3 keeps its own branch.)*
+
+## Your facet — how LogansOS gets a *gaming-class GPU*
+Games funnel everything to **Vulkan** (via DXVK/VKD3D for D3D). So M1 = a real, performant Vulkan driver on a real GPU. Answer, from the GPU seat:
+1. **The pivot decision (highest leverage):** **adopt Mesa** (RADV/ANV — MIT-ish, permissive) under our substrate vs. **from-scratch Vulkan** vs. a **bounded Linux-DRM/KMS personality** that lets Mesa run essentially as-is. What each costs (in cycles/gates/uncertainty), what each demands of the kernel (DRM/KMS ABI? GBM? the display path?), and which is charter-consistent. This is the decision glass + browser + games all share.
+2. **Which GPU to target.** The PL's real hardware: the M75q's **AMD Vega 11** (GCN5) is a *far* better gaming-driver target than the Intel Gen9 the compute work is on — but it's a different arch (amdgpu-class, RADV). A discrete AMD/NVIDIA card? State the honest target recommendation + why (driver maturity, RADV support, our starting point). Note: **the OT-63/glass work is Intel Gen9 compute — gaming likely needs a *different GPU + a different (Vulkan) driver*, not an extension of the Gen9 compute device.** Be honest about how much OT-63 actually transfers.
+3. **What DXVK/VKD3D require of the Vulkan driver** — the feature level, extensions, and performance floor D3D9-12 translation needs; what "good enough for games" means vs the minimal compute device.
+4. **The presentation/frame path** — Vulkan swapchain, vsync/tearing/VRR, frame pacing, the compositor seam (Gamescope-style) — how it maps onto (or replaces) G1 for the game-mode path; the I-14 DMA-containment story for a full GPU driver (VT-d/PPGTT at gaming DMA volume).
+5. **The de-risking spike** — the smallest experiment that proves the pivot (e.g., RADV-on-a-Linux-personality rendering one Vulkan triangle on the Vega, or a from-scratch Vulkan clear) — the go/no-go before any commitment.
+
+## Deliverable + close
+- `docs/RESEARCH-2026-07-21-gaming-facet-graphics-FINDINGS.md` (CC-BY-4.0): the **adopt-Mesa-vs-from-scratch-vs-Linux-DRM-personality** recommendation with honest cost/charter-fit; the target-GPU recommendation; the honest OT-63-transfer assessment; the Vulkan/DXVK requirements; the present/frame-pacing path; and the de-risking spike. Confidence-tagged; flag divergences from the framing. **No-GPL-lift discipline** (Mesa is MIT — adoptable; but *reason for principle*, license-check any adoption from raw LICENSE).
+- No-gate; push to `Workers\cerebro` on `codex/gaming-facet-graphics-cerebro`; PM cherry-picks + synthesizes.
+
+## Relay — what to tell Cerebro
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-07-21-gaming-facet-graphics-cerebro.md` + the framing `…:docs/THINK-2026-07-21-gaming-on-logansos-framing.md`. Context: `…:docs/ADR-077-gpu-p1-compute-service.md` (your compute work), `…:docs/RESEARCH-2026-07-20-gpu-graphics-compute-api-design-FINDINGS.md`. Work in `Workers\cerebro`; branch `codex/gaming-facet-graphics-cerebro` (design lane, parallel to your P1 Slice-3 build).
+- **One-line:** **Gaming panel, facet 2 (the GPU/Vulkan mountain — M1).** From the GPU seat: make the load-bearing pivot call — **adopt Mesa (RADV, MIT) under our substrate vs from-scratch Vulkan vs a bounded Linux-DRM/KMS personality that runs Mesa as-is** — with honest cost/charter-fit, and what each demands of the kernel. Recommend the **target GPU** (the PL's M75q **AMD Vega 11** is a better gaming target than the Intel Gen9 our compute work is on — and be honest that gaming likely needs a *different GPU + Vulkan driver*, NOT an OT-63 extension). Cover what DXVK/VKD3D need of the driver, the Vulkan swapchain/VRR/frame-pacing + I-14 DMA story at gaming volume, and the smallest **de-risking spike** (e.g. one Vulkan triangle on the Vega via the chosen path). Deliverable `docs/RESEARCH-2026-07-21-gaming-facet-graphics-FINDINGS.md`; feeds the PM synthesis with Prometheus (landscape) + Jarvis (substrate).
+- **RAG:** `accel intel_gen9 ppgtt execlist vulkan`, `dma_arena fence vt-d iommu`, `atrium present_backend scanout GpuSubmit`, `GPU graphics compute api design`. Health-check first; note-and-fall-back if down.

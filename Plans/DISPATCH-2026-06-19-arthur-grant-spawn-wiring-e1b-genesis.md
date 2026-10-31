@@ -1,0 +1,54 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+> **SUPERSEDED 2026-06-22 — Genesis off-boarded. This dispatch is reassigned to Janus; see `DISPATCH-2026-06-22-arthur-grant-spawn-wiring-e1b-janus.md`. Do NOT action this file.**
+
+# DISPATCH: Arthur grant ergonomics — Slice E1b (spawn-time cap re-derivation, the live boundary) → Genesis (GLM-5.2)
+
+**Date:** 2026-06-19
+**From:** PM (Claude)
+**To:** Genesis (GLM-5.2, OpenCode CLI coder). New branch off `origin/main` HEAD: `codex/arthur-grant-spawn-wiring-e1b-genesis`.
+**Status:** DISPATCHED — **UNBLOCKED 2026-06-21 (resume).** **The kernel-touching follow-on that makes E1a *live*.** E1a (landed `3dea847`… actually grant store landed `49563a2`) shipped the grant-store substrate (format, loader, D7 default, the boundary *proven against a host mock*). E1b wires it into the real spawn path so **Arthur actually reloads its durable grants across sessions**, and proves the authority boundary **against the real kernel** (not a mock). This is a **trust-ramp stretch** for a newer seat — the dispatch is deliberately explicit; follow it exactly and do not widen scope.
+
+> **UNBLOCK UPDATE (2026-06-21 — Genesis back online, resume):** E1b had STOPPED here because file handles weren't in the capability graph (the original blocker). **OT-25 is now CLOSED — I-15 landed (`2eb28b9`): `Handle::File` is a first-class capability**, so the keystone this build needs is real: derive a narrow *file* cap with **`process::derive_handle(pid, h, child_rights)`** (`kernel/src/sched/process.rs:937`) where attenuation is `attenuate_file_rights` (`kernel/src/sched/file_cap_logic.rs:202`, `original & requested` — over-grant impossible by construction), then `ipc::grant`/`sys_spawn`-inherit it to Arthur. **Start a FRESH branch off current `origin/main` (`d8982e7` or later)** — there is no prior E1b branch to rebase (it stopped before committing). Everything else in this dispatch stands as written.
+
+## 0. The decision this build makes
+Turn E1a's dormant substrate into the live behavior: at Arthur spawn, **neo-shell re-derives a narrow kernel capability per durable grant** (`derive_handle`, attenuated) and delegates it to Arthur (`ipc::grant` / `sys_spawn` inheritance); **neo-arthur** builds its `execute_action` `Grant` set from the inherited caps + the store. The **kernel cap is the enforcement boundary by construction (Article 29.3)** — and E1b's QEMU scenario is the first time that boundary is exercised against the *real* kernel.
+
+## 1. References (read ALL before writing code)
+```
+git fetch origin
+git show origin/main:Plans/THINK-2026-06-18-arthur-grant-ergonomics-design.md   # ratified design — esp. D4 (authority boundary), D7 (default), §11.1 (E1b is the kernel-touching follow-on)
+git show origin/main:userland/libneo/src/grant_store.rs                          # E1a (landed): GrantConfig, build_grant_entries(), default_grant_entries(), entry_to_grant() (FileRead/FileWrite→Grant::File; others→None), entries_to_grants(), ARTHUR_HOME, MAX_GRANTS, GrantEntry, ScopeKind
+git show origin/main:userland/libneo/src/action.rs                               # execute_action_with(), Grant::File{path,rights}, ActionSyscalls, ActionError, RequiredCapability
+git show origin/main:userland/neo-shell/src/main.rs                              # Arthur spawn site (~73-126): sys_spawn("arthur", &inherited) + handle inheritance (the placeholder fs-read slot)
+git show origin/main:userland/neo-arthur/src/main.rs                             # neo-arthur startup — where the Grant set is built + execute_action runs
+# capability primitives (Phase 2, silicon-proven) — DO NOT modify these:
+git show origin/main:kernel/src/sched/process.rs                                 # process::derive_handle(pid,h,child_rights) [child ⊆ parent, DERIVE], ipc::grant, revoke_handle
+```
+Reuse E1a's `grant_store` loader verbatim (it's the parser + D7 default). Reuse the existing capability primitives. You are WIRING, not inventing.
+
+## 2. ISCs
+- **ISC-1 — neo-shell: re-derive a narrow cap per durable grant at Arthur spawn.** At the Arthur spawn site, read `.arthur/grants.json` (neo-shell holds the user's fs caps), parse via `grant_store` (E1a), and for each **FileRead** durable grant (and **FileWrite** if it falls out cleanly — else defer FileWrite, note it): `derive_handle` a kernel cap **attenuated to that resource + rights** (READ for FileRead; never more than neo-shell holds — child ⊆ parent), and pass it to Arthur through `sys_spawn` inheritance / `ipc::grant`. **Always** derive the D7 default (FileRead on `ARTHUR_HOME = .arthur/`) so Arthur can read its own store/memories.
+- **ISC-2 — neo-arthur: build the `Grant` set from inherited caps + store.** On startup, neo-arthur constructs its `execute_action` `Grant` set from the handles it inherited (mapped to `grant_store::entries_to_grants` / `entry_to_grant`). Scope stays **FileRead/FileWrite only** — `entry_to_grant` already returns `None` for Process/Network/Model/Memory; **keep those deferred** (E2/E4). The `Grant` set is the policy mirror; the inherited kernel caps are the boundary.
+- **ISC-3 — The attenuation invariant (security-critical — the discriminator).** The re-derived cap MUST be **no broader than the grant**: a `FileRead` grant yields a **read-only** cap. Prove it: in the scenario, a `FileRead`-granted path → read **succeeds**, **write to the same path → EPERM** (read-only cap, not read-write). And a path Arthur was **never granted** → **EPERM at the real kernel** (the live boundary E1a could only mock). If neo-shell ever derives a cap with rights exceeding the stored grant, that is a privilege-escalation bug — fail the build.
+- **ISC-4 — Fail-safe (D6/D7 degradation).** Missing/corrupt store, or a `derive_handle` failure (neo-shell lacks the parent cap) ⇒ Arthur degrades to the **D7 default only** (FileRead on `.arthur/`) — never crash, never spawn Arthur with *more* than intended, never leak. Host-test the degradation logic where expressible; the scenario covers the live path.
+- **ISC-5 — Standards + kill-switch.** **Kill-switch `arthur-grants` default-OFF ⇒ Arthur spawns with only the prior spawn-inherited caps (IPC + model handle), no store read, no derived fs caps ≡ pre-E1 bit-for-bit.** New `unsafe`: none expected (composes existing primitives) — if you reach for `unsafe`, STOP and flag it. **No new invariant** (re-derivation composes `derive_handle`'s existing child⊆parent guarantee — state this explicitly; if you think you need a new invariant, STOP and flag). SPDX on any new file. `fmt`/`clippy --workspace --all-targets -D warnings` via Docker (kernel clippy blocking). ADR-060 amendment (E1b: the live spawn-wiring + the attenuation invariant).
+
+## 3. Failure-mode + discriminator (QEMU scenario `arthur_grants_persist`)
+This is an integration with a real-kernel boundary, so the scenario must be **conclusive on pass AND fail**:
+1. **Persist + reload (the headline):** grant a FileRead scope (e.g. a test dir) → write `.arthur/grants.json` → spawn Arthur fresh → Arthur re-derives the cap → **reads an in-scope file successfully**. (Proves reload-across-sessions.)
+2. **Live boundary (ISC-3):** Arthur attempts a path it was **not** granted → **EPERM**; Arthur attempts a **write** to a FileRead-granted path → **EPERM**. (Proves attenuation against the real kernel.)
+3. **Kill-switch:** `arthur-grants` off ⇒ no persistence (D7-default behavior only); **corrupt store ⇒ D7 default, no crash.**
+- At **NEO_SMP=4**. **Capture-before-you-need-it:** log, on the serial console, each re-derived cap's (resource, rights) at spawn so a boundary failure is self-diagnosing (you can see whether the wrong rights were derived vs the kernel check fired wrong).
+
+## 4. Scope guard
+Spawn-time re-derivation + neo-arthur Grant-set build + the `arthur_grants_persist` scenario **only**. **Do NOT**: build E2 (on-miss re-request), E3 (audit/revoke), E4 (memory-scope); map Process/Network/Model/Memory scopes (keep `entry_to_grant`'s `None`); modify `derive_handle`/`ipc::grant`/`revoke_handle` (Phase-2, frozen — compose them); change E1a's `grant_store` format/loader; widen the D7 default past `.arthur/`. No new invariant/`unsafe`.
+
+## 5. Merge (PM)
+**Close-gate: run `scripts/worker-close-gate.sh`** (rebase-freshness vs current `main` — the base moves fast right now, so rebase last; the exact CI host-checks; SPDX; self-stat). Two hard rules: **"green" without a CI URL is not done** (paste the green push-CI URL + the `workflow_dispatch` QEMU URL — **kernel-touching ⇒ the 4-shard QEMU gate is mandatory**), and the PM re-inspects your commit's own `git show --stat`. PM `pm-merge-check` → `--ff-only`/cherry-pick → ledger (**OT-18 E1 complete — grants reload across sessions, boundary live**; E2 next). **Expect the PM to scrutinize the attenuation (ISC-3) hardest** — it's the security crux.
+
+**Disk reclaim (after PM confirms merge):** delete the build tree once on `origin/main` and confirmed. See CLAUDE.md "Disk hygiene."
+
+---
+## Relay — what to tell Genesis (GLM-5.2)
+- **Read:** `git fetch origin && git show origin/main:Plans/DISPATCH-2026-06-19-arthur-grant-spawn-wiring-e1b-genesis.md` (and the ratified `…THINK-2026-06-18-arthur-grant-ergonomics-design.md` + E1a's `userland/libneo/src/grant_store.rs`). **Branch:** `codex/arthur-grant-spawn-wiring-e1b-genesis` off `origin/main`.
+- **One-line:** Build **OT-18 Slice E1b — make E1a live**: at Arthur spawn, **neo-shell re-derives a narrow kernel cap per durable grant** from `.arthur/grants.json` (`derive_handle`, **attenuated — child ⊆ parent, FileRead ⇒ read-only**) and delegates it via `sys_spawn` inheritance/`ipc::grant`; **neo-arthur** builds its `execute_action` `Grant` set from the inherited caps + E1a's loader (FileRead/FileWrite only — keep Process/Network/Model/Memory deferred). **Always derive the D7 default (FileRead on `.arthur/`).** **The kernel cap is the boundary (29.3); `grants.json` is never authority.** **Security crux (ISC-3): the re-derived cap must not exceed the grant** — prove it in the QEMU scenario: in-scope read ✓, write-to-read-grant → EPERM, never-granted path → EPERM **at the real kernel**. Fail-safe: missing/corrupt store or derive failure ⇒ D7 default only, no crash, never more than intended. **Kill-switch `arthur-grants` default-off ⇒ only spawn-inherited caps ≡ today.** No new `unsafe`/invariant (compose `derive_handle`/`ipc::grant` — do NOT modify them). QEMU scenario `arthur_grants_persist` @ NEO_SMP=4 (persist+reload, live boundary, kill-switch, corrupt→D7); log each re-derived (resource,rights) at spawn so a boundary failure is self-diagnosing. **Scope: spawn-wiring + neo-arthur Grant-set + the scenario ONLY — NOT E2/E3/E4.** **Close-gate: run `scripts/worker-close-gate.sh` (rebase LAST — main moves fast); RETURN pastes the green push-CI + 4-shard QEMU URLs.**

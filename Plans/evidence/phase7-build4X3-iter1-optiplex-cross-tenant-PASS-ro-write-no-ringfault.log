@@ -1,0 +1,10 @@
+[ kernel ] accel-intel: negative-gate positive-control OK (B's own Add = [4,6])
+[ kernel ] accel-intel: execlist-pml4 built kind=add-cross-tenant root(pml4)=0x000000047a3a2000 pt=0x000000047a3a5000 leaf_pages=7 lhs=omitted output=rw lhs_va=0x130000 output_va=0x132000 pt_idx_state=0x110
+[ kernel ] accel-intel: ring-fault-decode execlist-mid-status token=2 RING_FAULT=0x000001e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=PPGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000000 in_build4a_window=true
+[ kernel ] accel-intel: ring-fault-decode execlist-timeout-status token=2 RING_FAULT=0x000001e1 valid=true fault_type=0 (invalid-PTE/not-present) srcid=0x3c addr_space=PPGTT fault_gpu_va=0x000000130000 data0=0x00000130 data1=0x00000000 in_build4a_window=true
+[ kernel ] accel-intel: execlist-bringup timeout token=2 execlist-seqno=0x00000000 csb_switch_events=3 execlist_enabled=true ring_head=0x00000110 ring_mode=0x00008000 fault_valid=true fault_space=PPGTT branch=treeC_csb+fault_PPGTT=>bad_LRC_image_or_PML4_root
+[ kernel ] accel-intel: negative-gate cross-tenant ran_ok=false fault_valid=true select_ppgtt=true fault_va=0x000000130000 expected_va=0x130000 pml4_root=0x000000047a3a2000
+[ kernel ] accel-intel: execlist-pml4 built kind=add-read-only root(pml4)=0x000000047a3a2000 pt=0x000000047a3a5000 leaf_pages=8 lhs=ro output=ro lhs_va=0x130000 output_va=0x132000 pt_idx_state=0x110
+[ kernel ] accel-intel: execlist-bringup timeout token=3 execlist-seqno=0x00000000 csb_switch_events=4 execlist_enabled=true ring_head=0x00000110 ring_mode=0x00008000 fault_valid=false fault_space=PPGTT branch=treeE_csb+head_moved_no_seqno=>ring_ran_but_batch_wrong
+[ kernel ] accel-intel: negative-gate rw-on-ro ran_ok=false fault_valid=false select_ppgtt=true fault_va=0x000000130000 expected_va=0x132000 fault_type=0 (1=write-violation)
+NEO_TEST/1 event=FAIL name=accel_intel_execlist_negative_bringup reason=accel_intel_negative_ro_no_fault

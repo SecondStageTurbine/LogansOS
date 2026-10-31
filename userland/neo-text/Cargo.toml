@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-text"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Desktop S2 text engine: TrueType parsing, AA rasterization, layout, gamma-correct blending (no_std)"
+
+[lib]
+name = "neo_text"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# TrueType/OpenType parsing only (no rasterization). MIT OR Apache-2.0, zero
+# dependencies, no_std without the `std` feature. `opentype-layout` exposes the
+# GPOS pair-adjustment lookups used for kerning (IBM Plex has no legacy `kern`).
+# `no-std-float` pulls core_maths (MIT) -> libm (MIT) for the sin/cos/tan
+# used by ttf-parser's variable-font/transform paths.
+ttf-parser = { version = "0.25", default-features = false, features = ["opentype-layout", "no-std-float"] }
+# powf for the small-size stem-darkening curve (already in the tree via
+# ttf-parser -> core_maths). MIT.
+libm = "0.2"
+
+[features]
+default = []
+# Bundled faces (assets/fonts, SIL OFL-1.1). Opt-in per binary so a process
+# only links the faces it actually renders.
+inter = []
+plex-mono = []
+
+[dev-dependencies]
+neo-text = { path = ".", features = ["inter", "plex-mono"] }

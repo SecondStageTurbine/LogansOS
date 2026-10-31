@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-worker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "NeoPlutarch test worker process — Phase 1.5 multiprocess + IPC bring-up"
+
+[[bin]]
+name = "neo-worker"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+libneo = { path = "../libneo" }
+# Enabled only by the `vault-phase-b` feature (optional deps): the crypto/record
+# core and zeroize for wiping the scratch request buffer.
+vault-core = { path = "../vault-core", optional = true }
+zeroize = { version = "1.8", default-features = false, features = ["alloc"], optional = true }
+# DS-1c: the Lens draws its listing with the desktop text engine.
+neo-text = { path = "../neo-text", features = ["inter"], optional = true }
+
+[features]
+default = []
+# OT-87 R4.4: `install_console`'s negative leg: call both installer
+# syscalls without the Installer cap; each must be EPERM.
+installer-probe = []
+# OT-66 L1 (`login_record_guard`): try the sign-in record as a non-WM process.
+record-guard-probe = []
+# Phase-B cap-bounded vault process role (ADR-075). The vault holds the master
+# key + encrypted store and answers unlock/store/retrieve/lock over its
+# operation channel; the retrieved secret is written into a caller-offered
+# send-only least-rights grant. Spawned by neo-init as the child.
+vault-phase-b = ["dep:vault-core", "dep:zeroize"]
+atrium-surface-protocol = []
+# DS-1c: the Lens role (a read-only directory instrument; still DS-1b's probe
+# when spawned with no handles).
+desktop-lens = ["dep:neo-text", "libneo/atrium-launch"]
+atrium-input-routing = []
+dw1-desktop-wm = []
+dw2-scene-policy = ["libneo/dw2-scene-policy"]
+atrium-slice3 = []
+atrium-interactive = []
+atrium-interactive-baremetal = []
+gpu-glass-slice6 = []
+# OT-61 C1.1: the guard-fault/refcount/cap-probe child (threads_guard_fault).
+threads-guard-fault = []
+# OT-61 C1.2: the no-capability SYS_THREAD_SET_TLS probe child (threads_tls).
+threads-tls = []
+# OT-61 C1.3b (CP-86): the cross-CPU process-retire battery (threads_exit_group).
+threads-exit-group = ["libneo/neo-test"]
+# CP-46: the futex-parked sibling waits with a (far) deadline, so the fault-kill
+# purges a TIMED waiter and recomputes the earliest futex deadline. libneo's
+# neo-test gives it the futex queue-length probe for its park barrier.
+threads-guard-fault-timed = ["threads-guard-fault", "libneo/neo-test"]
+cap-mint-and-use = []
+cap-derive-subset = []
+cap-derive-rights-violation = []
+cap-derive-missing-meta = []
+cap-grant-basic = []
+cap-grant-missing-meta = []
+cap-revoke-local = []
+cap-graph-revoke = []
+cap-revoke-cross-process = []
+cap-revoke-descendants-walk = []
+cap-revoke-spawn-inheritance-descendants = []
+cap-survive-exit = []
+file-cap-derive-grant = []
+cap-rooted-open-test = []
+# OT-61 C2.2: the mem_quota probe roles (a `mem-quota` kernel).
+mem-quota-test = []
+# OT-93: kill_ready_in_kernel, the worker that is killed inside its send.
+kill-ready-in-kernel-test = []
+# OT-61 C2.2b: the obj_quota probe roles (an obj-quota kernel).
+obj-quota-test = []
+# user_copy_bounds: neo-init drives it alone; the worker needs no code.
+user-copy-bounds-test = []
+# socket_teardown: the roles that bind and then exit or are killed.
+socket-teardown-test = []
+# OT-91: the exit_codes_bounded scenario.
+exit-codes-test = []
+# Dexter #187 item 3a: the mount_authority scenario.
+mount-authority-test = []
+sys-wait-blocking = []
+sys-wait-wnohang = []
+sys-wait-already-exited = []
+sys-wait-multiple-waiters = []
+sys-inspect-running = []
+sys-inspect-exited = []
+sys-inspect-rights-gate = []
+kernel-observability = []
+kernel-observability-disabled = []
+sched-ready-queue-capacity-pressure = []
+neo-shell-repl = []
+arthur-action-surface = []
+phase4-socket-udp-loopback = []
+phase4-slaac-udp-ipv6-loopback = []
+phase4-https-fetch = []
+ipc-rendezvous-translate-fault = []
+vfs-testfs-open-read-close = []
+vfs-testfs-write-readback = []
+vfs-type-vs-rights-errors = []
+vfs-stdout-compat = []
+vfs-block-smoke = []
+vfs-readdir-testfs-root = []
+vfs-readdir-requires-right = []
+vfs-readdir-regular-is-enotdir = []
+vfs-directory-read-is-eisdir = []
+readdir-cursor-eof-stable = []
+readdir-buffer-too-small = []
+tensor-create-query-drop = []
+model-load-cascade = []
+infer-mlp-forward = []
+infer-transformer-forward = []
+infer-embedding-forward = []
+infer-embedding-oob-rejected = []
+swapgs-irq-ring3 = []
