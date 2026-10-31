@@ -77,6 +77,8 @@ pub fn init(rsdp_phys: u64) {
     if CACHE.lock().is_some() {
         return;
     }
+    #[cfg(feature = "power-stop-cpus")]
+    RSDP.store(rsdp_phys, core::sync::atomic::Ordering::Release);
     let Some(fadt) = super::fadt(rsdp_phys).and_then(power_logic::parse_fadt) else {
         crate::serial_println!("[ kernel ] power: no FADT; power-off and restart unavailable");
         return;
@@ -123,6 +125,41 @@ pub fn init(rsdp_phys: u64) {
         }
     }
     *CACHE.lock() = Some(Cached { fadt, plan, chain });
+}
+
+/// OT-90 P3b: the RSDP, for K5's MADT read.
+#[cfg(feature = "power-stop-cpus")]
+static RSDP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// OT-90 P3b: the RSDP `init` was given (0 if none).
+#[cfg(feature = "power-stop-cpus")]
+pub fn rsdp() -> u64 {
+    RSDP.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// OT-90 P3b: K4's wait, with interrupts off and no lock taken: poll `done`
+/// for up to `us` microseconds on the ACPI PM timer (port 0x80 writes
+/// without one). `fadt` is read before K4 ([`stop_timer`]).
+#[cfg(feature = "power-stop-cpus")]
+pub fn spin_us(fadt: Option<&FadtPower>, us: u64, done: &mut dyn FnMut() -> bool) -> bool {
+    match fadt {
+        Some(fadt) => poll_us(fadt, us, done),
+        None => {
+            for _ in 0..us {
+                if done() {
+                    return true;
+                }
+                outb(0x80, 0);
+            }
+            done()
+        }
+    }
+}
+
+/// OT-90 P3b: the FADT timer fields [`spin_us`] uses, read before K4.
+#[cfg(feature = "power-stop-cpus")]
+pub fn stop_timer() -> Option<FadtPower> {
+    cached().map(|c| c.fadt)
 }
 
 fn cached() -> Option<Cached> {

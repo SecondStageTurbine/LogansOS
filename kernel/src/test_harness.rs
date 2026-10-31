@@ -1025,6 +1025,10 @@ const SCENARIO: &str = "ot90_stuck_disk";
 const SCENARIO: &str = "ot90_stuck_sink_off";
 #[cfg(feature = "neo-test-ot90-stuck-sink-restart")]
 const SCENARIO: &str = "ot90_stuck_sink_restart";
+#[cfg(feature = "neo-test-ot90-stop-cpus")]
+const SCENARIO: &str = "ot90_stop_cpus";
+#[cfg(feature = "neo-test-ot90-stop-holdout")]
+const SCENARIO: &str = "ot90_stop_holdout";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1578,6 +1582,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
     feature = "neo-test-ot90-straggler-forced",
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -4811,6 +4817,11 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ot90-stuck-disk")]
     run_ot90_stuck_disk();
+    #[cfg(any(
+        feature = "neo-test-ot90-stop-cpus",
+        feature = "neo-test-ot90-stop-holdout"
+    ))]
+    run_ot90_stop_cpus();
 
     #[cfg(any(
         feature = "neo-test-ot90-stuck-sink-off",
@@ -39589,6 +39600,24 @@ fn run_ot90_straggler_forced() -> ! {
         crate::sched::yield_now();
         crate::sched::reap();
         core::hint::black_box(&channel);
+    }
+}
+
+/// OT-90 P3b `ot90_stop_cpus` / `ot90_stop_holdout`: power-off with K4 and
+/// K5. The APs are idle (or running the harness's own threads) when the
+/// shutdown starts; K4 must park every one of them before S5, by the STOP
+/// IPI, or (`-holdout`, where the highest AP ignores it once) the NMI. xtask
+/// judges it by QMP and the K4/K5 lines.
+#[cfg(any(
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout"
+))]
+fn run_ot90_stop_cpus() -> ! {
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
     }
 }
 

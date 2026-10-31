@@ -5825,6 +5825,22 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P3b: K4 parks every AP (STOP IPI; `-holdout`: one by NMI) and
+    // K5 masks the interrupt sources, before S5. Needs NEO_SMP >= 2.
+    TestScenario {
+        name: "ot90_stop_cpus",
+        feature: "neo-test-ot90-stop-cpus",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_holdout",
+        feature: "neo-test-ot90-stop-holdout",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -9687,7 +9703,9 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_s5_durability"
         | "ot90_straggler_forced"
         | "ot90_stuck_disk"
-        | "ot90_stuck_sink_off" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stuck_sink_off"
+        | "ot90_stop_cpus"
+        | "ot90_stop_holdout" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -9789,10 +9807,76 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             ));
         }
     }
+    // OT-90 P3b: K4 parked every AP before K5 and S5.
+    if scenario.name == "ot90_stop_cpus" || scenario.name == "ot90_stop_holdout" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K3 log flushed",
+                "[ power ] K4 start",
+                "[ power ] K4 targets=",
+                "[ power ] K5 lapic_timer=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(scenario.name == "ot90_stop_holdout", k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
     eprintln!(
         "[xtask] neo-test: `{}` PASS on QMP {:?}",
         scenario.name, events
     );
+    Ok(())
+}
+
+/// OT-90 P3b: K4's line, `targets parked_by_ipi parked_by_nmi holdouts`.
+fn ot90_k4_report(serial: &str) -> Option<[u64; 4]> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K4 targets="))?;
+    let mut out = [0u64; 4];
+    for (slot, key) in
+        out.iter_mut()
+            .zip(["targets=", "parked_by_ipi=", "parked_by_nmi=", "holdouts="])
+    {
+        let at = line.find(key)? + key.len();
+        let hex = line[at..]
+            .split_whitespace()
+            .next()?
+            .trim_start_matches("0x");
+        *slot = u64::from_str_radix(hex, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// OT-90 P3b: every AP parked, none held out. `holdout`: the highest AP by
+/// NMI, the rest by the STOP IPI; else all by the STOP IPI.
+fn ot90_check_k4(holdout: bool, [targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets == 0 {
+        return Err("K4 had no AP to stop (run with NEO_SMP >= 2)".into());
+    }
+    if holdouts != 0 {
+        return Err(format!("K4 left CPUs {holdouts:#x} running"));
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    let (want_ipi, want_nmi) = if holdout {
+        (targets & !highest, highest)
+    } else {
+        (targets, 0)
+    };
+    if ipi != want_ipi || nmi != want_nmi {
+        return Err(format!(
+            "K4 parked by IPI {ipi:#x} and by NMI {nmi:#x}; expected {want_ipi:#x} and {want_nmi:#x} of {targets:#x}"
+        ));
+    }
     Ok(())
 }
 

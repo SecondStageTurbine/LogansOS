@@ -15,6 +15,8 @@
 //! Phase 1.1+ will add hardware IRQ vectors (timer, keyboard, etc.); Phase 1.3
 //! adds the syscall vector (or moves to SYSCALL/SYSRET).
 
+#[cfg(feature = "power-stop-cpus")]
+use crate::arch::x86_64::cpu_stop::stop_ipi;
 use core::arch::global_asm;
 #[cfg(feature = "neo-test")]
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -221,6 +223,10 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     unsafe { double_fault_options.set_stack_index(DOUBLE_FAULT_IST_INDEX) };
     let nmi_options = set_exception_entry!(idt.non_maskable_interrupt, nmi);
     unsafe { nmi_options.set_stack_index(NMI_IST_INDEX) };
+    // OT-90 P3b: the shutdown's STOP IPI (an interrupt gate: IF clears on
+    // entry, and the handler never returns).
+    #[cfg(feature = "power-stop-cpus")]
+    set_exception_entry!(idt[apic::STOP_IPI_VECTOR], stop_ipi);
     // SAFETY: as above for the timer's IST slot; every address below is a
     // hand-written entry stub that preserves the interrupted context.
     unsafe {
@@ -1175,6 +1181,10 @@ extern "C" fn spurious_interrupt_body(from_ring3: u64) {
 /// NMI runs on IST 1 so a corrupted thread stack can't wedge it. Phase 1.3
 /// has no real NMI source we expect — this handler exists as defense-in-depth.
 extern "x86-interrupt" fn nmi(sf: InterruptStackFrame) {
+    // OT-90 P3b: during a shutdown, a CPU that never took the STOP IPI is
+    // parked here, quietly (no dump: it would take the serial lock).
+    #[cfg(feature = "power-stop-cpus")]
+    crate::arch::x86_64::cpu_stop::park_from_nmi();
     dump("NMI", &sf);
     // NMI is non-fatal in principle; for Phase 1.3 we have no recovery story
     // so we halt to avoid silently masking a hardware fault.
