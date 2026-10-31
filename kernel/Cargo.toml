@@ -197,6 +197,12 @@ i2c-hid-bar-assign = ["i2c-hid-touchpad"]
 # log on a target with no serial port). Enabled by `xtask iso --with-model`
 # and bare-metal bundles; feature-off ⇒ not compiled (byte-identical).
 fb-progress-console = []
+# L7.1: the boot-time numbers. The kernel stamps the TSC at entry and at
+# desktop start, reads the firmware's boot timestamps (FPDT/FBPT), prints
+# one `[ boot ] time:` line as the boot console's last, and serves them
+# through `SYS_BOOT_TIMES` (0x55). The rate comes from the LAPIC timer's
+# calibration. Off: none of it is compiled, `SYS_BOOT_TIMES` is ENOSYS.
+boot-time = ["lapic-timer"]
 # Zenbook bring-up evidence holds (kill-switch): before the desktop takes the
 # framebuffer, wait 5 s for a USB keyboard or mouse to bind and hold the USB
 # summary up to 30 s (or run a 6 s input check), and run the touchpad's 6 s
@@ -1552,6 +1558,8 @@ neo-test-phase3-neofs-create-small-file = ["neo-test"]
 neo-test-phase3-neofs-write-readback-same-boot = ["neo-test"]
 neo-test-phase3-neofs-cache-evict = ["neo-test", "neofs-cache-evict", "neofs-large-write"]
 neo-test-phase3-neofs-cache-evict-off = ["neo-test", "neofs-large-write"]
+# L7.1: the kernel half of the boot-time numbers (`boot_time`).
+neo-test-boot-time = ["neo-test", "boot-time"]
 neo-test-phase3-neofs-allocator-reuse-guard = ["neo-test"]
 neo-test-phase3-neofs-reboot-persistence-small-file = ["neo-test"]
 # Phase 3 BUILD-2 sub-commit 2D: NeoFS CoW/recovery/fsync scenarios.

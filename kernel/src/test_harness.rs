@@ -1083,6 +1083,8 @@ const SCENARIO: &str = "phase3_neofs_write_readback_same_boot";
 const SCENARIO: &str = "phase3_neofs_cache_evict";
 #[cfg(feature = "neo-test-phase3-neofs-cache-evict-off")]
 const SCENARIO: &str = "phase3_neofs_cache_evict_off";
+#[cfg(feature = "neo-test-boot-time")]
+const SCENARIO: &str = "boot_time";
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
 const SCENARIO: &str = "phase3_neofs_allocator_reuse_guard";
 #[cfg(feature = "neo-test-phase3-neofs-reboot-persistence-small-file")]
@@ -1406,6 +1408,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
+    feature = "neo-test-boot-time",
     feature = "neo-test-phase3-neofs-allocator-reuse-guard",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -4899,6 +4902,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-phase3-neofs-cache-evict-off"
     ))]
     run_neofs_cache_evict();
+    #[cfg(feature = "neo-test-boot-time")]
+    run_boot_time();
 
     #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
     run_phase3_neofs_allocator_reuse_guard();
@@ -33206,6 +33211,70 @@ fn run_neofs_cache_evict() -> ! {
         end.evictions,
         report.selected_superblock_slot,
         report.generation
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// L7.1: the kernel half of the boot-time numbers. The entry stamp was taken
+/// before anything else ran; QEMU's firmware has no FPDT, so the firmware
+/// part reports `no-fpdt` (the parse itself is host-tested on a hand-laid
+/// table); the desktop stamp follows the entry stamp; the record the
+/// syscall writes decodes to the snapshot; and `SYS_BOOT_TIMES` refuses a
+/// wrong length or a kernel address.
+#[cfg(feature = "neo-test-boot-time")]
+fn run_boot_time() -> ! {
+    use crate::boot_time_logic::{BOOT_TIMES_V1_LEN, FpdtError, decode, encode};
+    let rsdp = crate::rsdp_phys();
+    let firmware = crate::boot_time::read_firmware(rsdp);
+    if firmware != Err(FpdtError::NoFpdt) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_firmware_not_no_fpdt got={:?}",
+            SCENARIO,
+            firmware
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    crate::boot_time::stamp_desktop(rsdp);
+    let times = crate::boot_time::snapshot();
+    if times.tsc_kernel_entry == 0 {
+        fail("reason=boot_time_no_entry_stamp");
+    }
+    if times.tsc_desktop_start <= times.tsc_kernel_entry {
+        fail("reason=boot_time_desktop_not_after_entry");
+    }
+    if times.tsc_hz == 0 {
+        fail("reason=boot_time_no_tsc_rate");
+    }
+    if decode(&encode(&times)) != Some(times) {
+        fail("reason=boot_time_record_roundtrip");
+    }
+    let mut kernel_buf = [0u8; BOOT_TIMES_V1_LEN];
+    let wrong_len = crate::arch::x86_64::syscall::debug_sys_boot_times_for_test(
+        kernel_buf.as_mut_ptr() as u64,
+        BOOT_TIMES_V1_LEN - 1,
+    );
+    let kernel_addr = crate::arch::x86_64::syscall::debug_sys_boot_times_for_test(
+        kernel_buf.as_mut_ptr() as u64,
+        BOOT_TIMES_V1_LEN,
+    );
+    if wrong_len != crate::errno::EINVAL || kernel_addr >= 0 || kernel_buf != [0; BOOT_TIMES_V1_LEN]
+    {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_syscall_checks wrong_len={} kernel_addr={}",
+            SCENARIO,
+            wrong_len,
+            kernel_addr
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={}",
+        SCENARIO,
+        times.tsc_hz,
+        times.tsc_kernel_entry,
+        times.tsc_desktop_start,
+        wrong_len,
+        kernel_addr
     );
     debug_exit(EXIT_SUCCESS);
 }

@@ -44,16 +44,26 @@ extern crate alloc;
     feature = "rtc-epoch",
     feature = "ps2-keyboard",
     feature = "i2c-hid-touchpad",
-    feature = "power-control"
+    feature = "power-control",
+    feature = "boot-time"
 ))]
 #[allow(dead_code)]
 mod acpi;
 mod ai;
 mod arch;
+// L7.1: the boot-time numbers (`SYS_BOOT_TIMES`).
+// Its desktop-start stamp is the desktop session's (and the scenario's).
+#[cfg(feature = "boot-time")]
+#[allow(dead_code)]
+mod boot_time;
+// Its decoder and milestone line are libneo's.
 #[cfg(feature = "atrium-compositor-g1")]
 mod atrium;
 #[cfg(feature = "model-boot-module")]
 mod boot_modules;
+#[cfg(feature = "boot-time")]
+#[allow(dead_code)]
+mod boot_time_logic;
 // One of its two pin tables is live per build (test or product).
 #[cfg(feature = "model-boot-module")]
 #[allow(dead_code)]
@@ -179,6 +189,15 @@ static EXECUTABLE_FILE_REQUEST: limine::request::ExecutableFileRequest =
 #[used]
 #[unsafe(link_section = ".requests")]
 static RSDP_REQUEST: limine::request::RsdpRequest = limine::request::RsdpRequest::new();
+
+/// The RSDP's physical address, or 0 (L7.1's harness scenario).
+#[cfg(all(feature = "boot-time", feature = "neo-test"))]
+pub(crate) fn rsdp_phys() -> u64 {
+    RSDP_REQUEST
+        .response()
+        .map(|r| r.address as u64)
+        .unwrap_or(0)
+}
 
 // Markers tell Limine where our requests block begins and ends. Without
 // these, request scanning is undefined.
@@ -638,6 +657,9 @@ extern "C" fn _kernel_start() -> ! {
     // below has a place to land. If we asserted before init, a protocol
     // mismatch would panic into a black hole.
     drivers::console::serial::init();
+    // L7.1: the kernel-entry stamp (a TSC read; nothing else is up yet).
+    #[cfg(feature = "boot-time")]
+    boot_time::stamp_entry();
 
     // Enable early CR0/CR4 CPU features before ANY further code runs. rustc
     // compiles for x86_64-unknown-none with SSE2 on by default; LLVM
@@ -994,7 +1016,15 @@ extern "C" fn _kernel_start() -> ! {
         feature = "boot-model-preload",
         not(feature = "neo-test-boot-model-ticks")
     ))]
-    boot_modules::preload();
+    {
+        boot_modules::preload();
+        // L7.1: the model Arthur answers with is built (an image without
+        // one, or whose build failed, has no model-ready time).
+        #[cfg(feature = "boot-time")]
+        if boot_modules::any_model_built() {
+            boot_time::stamp_model_ready();
+        }
+    }
 
     #[cfg(feature = "neo-test")]
     test_harness::run_selected_scenario(spawn_neo_init);
@@ -1045,6 +1075,14 @@ extern "C" fn _kernel_start() -> ! {
             feature = "fb-progress-console"
         ))]
         drivers::i2c_hid::touchpad::evidence_lines();
+        // L7.1: the desktop-start stamp and the boot console's last line.
+        #[cfg(feature = "boot-time")]
+        boot_time::stamp_desktop(
+            RSDP_REQUEST
+                .response()
+                .map(|r| r.address as u64)
+                .unwrap_or(0),
+        );
         // The compositor owns the screen from here: stop the boot mirror.
         #[cfg(feature = "fb-progress-console")]
         drivers::fb::progress::stop();

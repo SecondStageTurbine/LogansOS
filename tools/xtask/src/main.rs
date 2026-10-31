@@ -5400,6 +5400,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L7.1: the boot-time stamps, QEMU's no-FPDT path, the record, and
+    // SYS_BOOT_TIMES's checks.
+    TestScenario {
+        name: "boot_time",
+        feature: "neo-test-boot-time",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     TestScenario {
         name: "phase3_neofs_allocator_reuse_guard",
         feature: "neo-test-phase3-neofs-allocator-reuse-guard",
@@ -6271,10 +6280,13 @@ fn product_image_ub_checks_on() -> bool {
 }
 
 fn build_product_image_kernel() -> Result<(), String> {
-    let kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
+    let mut kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
         .iter()
         .map(|f| f.to_string())
         .collect();
+    if boot_time_image() {
+        kernel_features.push("boot-time".to_string());
+    }
     let ub_checks_on = product_image_ub_checks_on();
     eprintln!(
         "[xtask] product image kernel: opt-level={} ub-checks={} ({}=on keeps them)",
@@ -6298,11 +6310,27 @@ fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     build_product_image_kernel()
 }
 
-/// The product-image flags: the old `--hwp-performance` and `--perf-probes`,
-/// both no-ops now (each feature is in image A).
+/// L7.1: `--boot-time` builds image A with the boot-time numbers: the
+/// kernel's `boot-time`, the sign-in card's row (neo-init `boot-time`) and
+/// Arthur's summary line (`arthur-boot-time`), for a Zenbook run's evidence
+/// (`docs/runbook-baremetal-zenbook-s14.md`). Image A without it is unchanged.
+const BOOT_TIME_FLAG: &str = "--boot-time";
+static BOOT_TIME_IMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn boot_time_image() -> bool {
+    BOOT_TIME_IMAGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The product-image flags: `--boot-time` (L7.1), and the old
+/// `--hwp-performance` and `--perf-probes`, both no-ops now (each feature is
+/// in image A).
 fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
+    BOOT_TIME_IMAGE.store(false, std::sync::atomic::Ordering::Relaxed);
     for arg in args {
-        if arg == HWP_PERFORMANCE_FLAG {
+        if arg == BOOT_TIME_FLAG {
+            BOOT_TIME_IMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[xtask] {command}: {BOOT_TIME_FLAG}: image A with the boot-time numbers");
+        } else if arg == HWP_PERFORMANCE_FLAG {
             eprintln!(
                 "[xtask] {command}: {HWP_PERFORMANCE_FLAG} is the default now (hwp-performance is in image A)"
             );
@@ -6312,7 +6340,7 @@ fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
             );
         } else {
             return Err(format!(
-                "{command} takes no options (got {args:?}); it builds the product image"
+                "{command} takes only {BOOT_TIME_FLAG} (got {args:?}); it builds the product image"
             ));
         }
     }
@@ -7239,6 +7267,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
     if extra_features_include("cap-rooted-open") {
         init_features.push("cap-rooted-open");
         shell_features.push("cap-rooted-open");
+    }
+    // L7.1: `iso --with-model --boot-time`.
+    let mut arthur_features = arthur_features;
+    if boot_time_image() && feature == Some("desktop-with-model") {
+        init_features.push("boot-time");
+        arthur_features.push("arthur-boot-time");
     }
     build_user_members(
         init_features.as_slice(),
