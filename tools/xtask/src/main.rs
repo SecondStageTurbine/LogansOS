@@ -1950,6 +1950,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 4 (SWGL S3a): the S1 pattern rendered into a kernel
+        // Atrium buffer, byte-compared through the compositor's RO view.
+        name: "swgl_atrium_smoke",
+        feature: "neo-test-swgl-atrium-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 rung 4 (SWGL S2): upstream WebRender renders a display list
         // through SWGL; pixels compared with a hand-derived scene.
         name: "webrender_smoke",
@@ -6490,6 +6499,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "swgl_smoke" => &[SWGL_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
+        "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
         _ => &[],
     }
 }
@@ -7420,6 +7430,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&WEBRENDER_BIN) {
             build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
         }
+        if std_real_staged_bins().contains(&SWGL_ATRIUM_BIN) {
+            build_standalone_std_smoke(SWGL_BIN, &[SWGL_ATRIUM_BIN], SWGL_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7457,6 +7470,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
+/// the same crate (`src/atrium.rs`).
+const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
 /// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
 const WEBRENDER_BIN: &str = "webrender-smoke";
 const WEBRENDER_DIR: &str = "userland/webrender-smoke";
@@ -7467,7 +7483,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
     match bin {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
-        SWGL_BIN => Some(SWGL_DIR),
+        SWGL_BIN | SWGL_ATRIUM_BIN => Some(SWGL_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         _ => None,
     }
@@ -7541,15 +7557,24 @@ fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(bin, &[bin], dir)?;
-    let elf = std_real_bin_path(bin);
-    let len = fs::metadata(&elf)
-        .map_err(|e| format!("stat {}: {e}", elf.display()))?
-        .len();
-    println!(
-        "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
-        elf.display()
-    );
+    // S1's crate also holds the S3a Atrium smoke, whose std surface is the
+    // A4 change, so both are built and checked.
+    let bins: &[&str] = if bin == SWGL_BIN {
+        &[SWGL_BIN, SWGL_ATRIUM_BIN]
+    } else {
+        &[bin]
+    };
+    build_standalone_std_smoke(bin, bins, dir)?;
+    for bin in bins {
+        let elf = std_real_bin_path(bin);
+        let len = fs::metadata(&elf)
+            .map_err(|e| format!("stat {}: {e}", elf.display()))?
+            .len();
+        println!(
+            "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
+            elf.display()
+        );
+    }
     Ok(())
 }
 
@@ -16353,6 +16378,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "WebRender on SWGL must render the hand-derived scene",
+            )?;
+        }
+    }
+    if scenario.name == "swgl_atrium_smoke" {
+        for needle in [
+            "[ swgl-atrium-smoke ] ok(7) the compositor handle cannot map the client view (EPERM)",
+            "[ swgl-atrium-smoke ] ok(8) the compositor handle cannot commit (EPERM)",
+            "[ swgl-atrium-smoke ] ok(10) get_color_buffer is the Atrium client view, 7x5, stride 36",
+            "[ swgl-atrium-smoke ] ok(13) the compositor view == the hand-laid pattern (BGRA, no flip, padding and the rest of the page untouched)",
+            "[ swgl-atrium-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SWGL must raster into the Atrium buffer the compositor reads",
             )?;
         }
     }

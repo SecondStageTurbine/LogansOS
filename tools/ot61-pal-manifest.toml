@@ -46,8 +46,14 @@ std_sys_modules = [
 # writes reuse SYS_WRITE on the handle index), SYS_PROCESS_SELF for
 # process::id and SYS_HANDLE_INFO for std::os::neoplutarch. Same rules: a
 # provenance line each, and the G1 sweep plus a G2 test.
+#
+# OT-61 rung 4 S3 adds the Atrium shared-pixel-buffer calls for
+# std::os::neoplutarch::atrium (a content process renders into its own
+# buffer; the compositor gets a derived read-only handle) and SYS_DERIVE to
+# attenuate that handle. Same rules. SYS_FB_PRESENT is deliberately absent:
+# the client never presents.
 [gate]
-allowed_syscalls = ["SYS_WRITE", "SYS_MAP_REGION", "SYS_EXIT", "SYS_CLOCK_GETTIME", "SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_THREAD_CREATE", "SYS_THREAD_EXIT", "SYS_THREAD_JOIN", "SYS_THREAD_DETACH", "SYS_THREAD_GET_INFO", "SYS_THREAD_SET_TLS", "SYS_SCHED_YIELD", "SYS_GETRANDOM", "SYS_OPEN", "SYS_READ", "SYS_CLOSE", "SYS_FSYNC", "SYS_PROCESS_SELF", "SYS_HANDLE_INFO"]
+allowed_syscalls = ["SYS_WRITE", "SYS_MAP_REGION", "SYS_EXIT", "SYS_CLOCK_GETTIME", "SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_THREAD_CREATE", "SYS_THREAD_EXIT", "SYS_THREAD_JOIN", "SYS_THREAD_DETACH", "SYS_THREAD_GET_INFO", "SYS_THREAD_SET_TLS", "SYS_SCHED_YIELD", "SYS_GETRANDOM", "SYS_OPEN", "SYS_READ", "SYS_CLOSE", "SYS_FSYNC", "SYS_PROCESS_SELF", "SYS_HANDLE_INFO", "SYS_DERIVE", "SYS_BUFFER_CREATE", "SYS_BUFFER_MAP", "SYS_BUFFER_QUERY", "SYS_BUFFER_COMMIT_DAMAGE", "SYS_BUFFER_UNMAP"]
 pal_crate = "userland/neo-std-pal"
 
 [gate.provenance]
@@ -70,6 +76,12 @@ SYS_CLOSE = "C2.1b: File drop; closes only the caller's own handle (its derivati
 SYS_FSYNC = "C2.1b: File::sync_all/sync_data on a handle the process holds."
 SYS_PROCESS_SELF = "C2.1b: std::process::id. Reads the caller's own pid; a pid is not a capability."
 SYS_HANDLE_INFO = "C2.1b: std::os::neoplutarch::handles and std::fs's RootDirCap check. Reads kind and rights of the caller's own handles; grants nothing."
+SYS_DERIVE = "S3: std::os::neoplutarch::atrium::derive. Attenuation only: a new handle to the same object with at most the caller's handle's rights (the kernel refuses anything wider); used to give the compositor MAP_READ|QUERY|PRESENT and no MAP_WRITE."
+SYS_BUFFER_CREATE = "S3: atrium::create. A shared pixel buffer of the caller's own memory (charged to its account, frames owned by the buffer object); no capability needed, and nothing outside the process sees it until it hands a handle out. ENOSYS without the Atrium runtime."
+SYS_BUFFER_MAP = "S3: atrium::map. Maps a buffer the caller holds a handle to: role 0 RW+NX needs MAP_WRITE, role 1 RO+NX needs MAP_READ. Never executable (W^X)."
+SYS_BUFFER_QUERY = "S3: atrium::query. Reads a held buffer's geometry; needs QUERY; grants nothing."
+SYS_BUFFER_COMMIT_DAMAGE = "S3: atrium::commit_damage. Publishes a damage rectangle on a held buffer for its compositor; needs COMMIT. Does not present."
+SYS_BUFFER_UNMAP = "S3: atrium::unmap. Removes the caller's own buffer mapping."
 SYS_GETRANDOM = "C2.0: std fill_bytes (HashMap RandomState, std randomness). The kernel CSPRNG (ChaCha20 DRBG seeded from RDRAND), whole fills only, 64 KiB per call; ENOSYS without kernel-rng, which std turns into a loud abort (no weaker fallback). No capability yet: the sealed-entropy-handle option is a later rung."
 
 # ── The surface inventory, grouped by gap-table surface ───────────────────────
