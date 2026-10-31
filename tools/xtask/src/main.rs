@@ -5839,7 +5839,6 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
-    // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
     // OT-90 P5: `shut down` typed at Home, confirmed: SYS_POWER from neo-init
     // (the cap's holder), the clean shutdown, S5.
     TestScenario {
@@ -5849,6 +5848,7 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
     TestScenario {
         name: "ot90_cap",
         feature: "neo-test-ot90-cap",
@@ -6270,19 +6270,16 @@ const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
     // kernel's MountAuthority) mounts and unmounts, so no other process can
     // unmount NeoFS or mount a foreign volume under the lock's `.system/`.
     "mount-authority",
-<<<<<<< ours
     // OT-66 K1b (L1.1): a root-form open needs a directory cap whose scope
     // contains the path. neo-init holds `/`; Arthur only `/neofs/.arthur`
     // and `/boot`; with the WM's `cap-rooted-open`.
     "cap-rooted-open",
-=======
     // OT-90 (L1.4): Shut down and Restart from Home, behind a confirm, with
     // the WM's `power-menu`. The clean shutdown (K1-K7) stops the apps, NeoFS,
     // the other CPUs and device DMA first; SYS_POWER is the session root's
     // PowerControl cap's alone. K6 stops only disks the write guard armed, so
     // the Zenbook's Windows NVMe is never touched.
     "power-cap",
->>>>>>> theirs
 ];
 
 /// The product image's kernel opt-level (Arthur latency NOTE, fix 1). The
@@ -6820,15 +6817,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             // OT-66 L1 (J.c.): the first-boot account screen, then sign-in,
             // on a volume with `.system/`; with the kernel's `kernel-rng`.
             "login",
-<<<<<<< ours
             // OT-66 K1b (L1.1): the WM spawns Arthur with his scopes only;
             // with the kernel's `cap-rooted-open`.
             "cap-rooted-open",
-=======
             // OT-90 (L1.4): Shut down / Restart from Home, with the kernel's
             // `power-cap`.
             "power-menu",
->>>>>>> theirs
         ],
         Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
         // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
