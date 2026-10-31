@@ -5939,6 +5939,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
+    // then S5.
+    TestScenario {
+        name: "ot90_quiesce",
+        feature: "neo-test-ot90-quiesce",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -10119,7 +10128,8 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_cpus"
         | "ot90_stop_holdout"
         | "ot90_stop_shootdown"
-        | "ot90_stop_wedged" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stop_wedged"
+        | "ot90_quiesce" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -10165,7 +10175,10 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         )
     })?;
     // Chad #199 item 2: K2 never came back from the stuck disk; the deadline
-    // abandoned it (so K3 never ran) and S5 still came.
+    // abandoned it (so K3 never ran) and K4 stopped the CPUs. The drain's
+    // write was the disk's first, so its write-guard judgement is the stuck
+    // read: K6's plan reads the disk as not armed instead of waiting on it,
+    // leaves it alone, and S5 still came.
     if scenario.name == "ot90_stuck_disk" {
         ot90_require_in_order(
             scenario.name,
@@ -10175,6 +10188,8 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 "stage=power_off_requested",
                 "[ power ] shutdown: started kind=PowerOff",
                 "[ power ] shutdown: deadline passed in K2 after ",
+                "[ power ] K4 targets=",
+                "[ power ] K6 disks_stopped=0 disks_left_alone=1 ",
                 "power: S5 PM1a=",
             ],
         )?;
@@ -10216,6 +10231,33 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         if !serial.contains("survivors=0 ticks=") || serial.contains("K1 terminated=0 ") {
             return Err(format!(
                 "`{}`: K1 did not terminate the straggler within its bound; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    // OT-90 P3b-2: K6 stopped disk 0 (armed by this boot's write), cleared
+    // the bus masters, then S5.
+    if scenario.name == "ot90_quiesce" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K5 lapic_timer=",
+                "[ power ] K6 disk=0 virtio-reset ok",
+                "[ power ] K6 disks_stopped=1 ",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let cleared = serial
+            .lines()
+            .find_map(|l| l.split("bus_masters_cleared=").nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0);
+        if cleared == 0 {
+            return Err(format!(
+                "`{}`: K6 cleared no bus master; serial={}",
                 scenario.name,
                 observed.serial_log.display()
             ));
@@ -14128,6 +14170,7 @@ fn scenario_uses_storage_disk(scenario: TestScenario) -> bool {
         || scenario.name == "install_claim_identity"
         || scenario.name == "virtio_blk_io_gate_contention"
         || scenario.name == "vtd_fence"
+        || scenario.name == "ot90_quiesce"
         || scenario.name == "graphics_vtd_domain"
         || scenario.name == "model_load_cascade"
         || scenario.name == "mount_authority"
@@ -14894,8 +14937,7 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         "phase3_neofs_cache_evict" | "phase3_neofs_cache_evict_off" => Some("normal"),
         "phase3_neofs_allocator_reuse_guard" => Some("normal"),
         "phase3_neofs_reboot_persistence_small_file" => Some("normal"),
-        "ot90_s5_durability" => Some("normal"),
-        "ot90_stuck_disk" => Some("normal"),
+        "ot90_s5_durability" | "ot90_quiesce" | "ot90_stuck_disk" => Some("normal"),
         "phase3_neofs_fsync_noop_write_through" => Some("normal"),
         "phase3_neofs_cow_write_after_write" => Some("normal"),
         "phase3_neofs_crash_mid_overwrite_recovery" => Some("normal"),
