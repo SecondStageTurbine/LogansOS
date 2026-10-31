@@ -55,6 +55,7 @@
         feature = "phase4-https-fetch",
         feature = "vault-phase-b",
         feature = "desktop-lens",
+        feature = "probe-app",
         feature = "installer-probe",
         feature = "record-guard-probe",
     ),
@@ -115,6 +116,8 @@ const MAIN: Handle = Handle(0);
 mod installer_probe;
 #[cfg(feature = "desktop-lens")]
 mod lens;
+#[cfg(feature = "probe-app")]
+mod probe_app;
 #[cfg(feature = "record-guard-probe")]
 mod record_guard;
 const BLOCK: Handle = Handle(1);
@@ -437,6 +440,11 @@ pub extern "C" fn _start() -> ! {
         sys_exit(lens::run());
     }
 
+    #[cfg(feature = "probe-app")]
+    {
+        sys_exit(probe_app::run());
+    }
+
     #[cfg(feature = "atrium-surface-protocol")]
     {
         sys_exit(atrium_surface_protocol_worker());
@@ -640,7 +648,8 @@ pub extern "C" fn _start() -> ! {
         feature = "threads-exit-group",
         feature = "desktop-lens",
         feature = "installer-probe",
-        feature = "record-guard-probe"
+        feature = "record-guard-probe",
+        feature = "probe-app"
     )))]
     {
         default_worker_main();

@@ -357,6 +357,19 @@ pub const SYS_WAIT_ANY: u64 = 0x1B5;
 /// buffer mapping starts at `va`.
 #[cfg(feature = "atrium-compositor-g1")]
 pub const SYS_BUFFER_UNMAP: u64 = 0x1B6;
+/// OT-88 A0k: `SYS_SEND` that completes only with a receiver already parked
+/// on the peer side, else EAGAIN; it never parks. `(h, buf, len)`.
+#[cfg(feature = "ipc-try-send")]
+pub const SYS_TRY_SEND: u64 = 0x1B7;
+/// OT-88 A0k: `SYS_GRANT` that completes only with a `SYS_RECV_GRANT`
+/// already parked on the peer side, else EAGAIN; it never parks.
+/// `(channel, src, rights_subset)`.
+#[cfg(feature = "ipc-try-send")]
+pub const SYS_TRY_GRANT: u64 = 0x1B8;
+/// OT-88 A0k: `SYS_RECV_GRANT` that completes only with a grantor already
+/// parked on the peer side, else EAGAIN; it never parks. `(channel, max)`.
+#[cfg(feature = "ipc-try-send")]
+pub const SYS_TRY_RECV_GRANT: u64 = 0x1B9;
 /// OT-87 R4.4: the installer's disk list (`install_ui_logic`). Gated by the
 /// `Installer` cap; ENOSYS without `installer`.
 #[cfg(feature = "installer")]
@@ -1309,6 +1322,12 @@ extern "C" fn syscall_dispatch(
         SYS_INPUT_SAK_TAKE => sys_input_sak_take_impl(a0, a1 as u32),
         #[cfg(feature = "atrium-pointer-forward")]
         SYS_TRY_RECV => sys_try_recv_impl(a0 as u32, a1, a2 as usize),
+        #[cfg(feature = "ipc-try-send")]
+        SYS_TRY_SEND => sys_try_send_impl(a0 as u32, a1, a2 as usize),
+        #[cfg(feature = "ipc-try-send")]
+        SYS_TRY_GRANT => sys_try_grant_impl(a0 as u32, a1 as u32, a2 as u16),
+        #[cfg(feature = "ipc-try-send")]
+        SYS_TRY_RECV_GRANT => sys_try_recv_grant_impl(a0 as u32, a1 as u16),
         #[cfg(feature = "wait-multiplex")]
         SYS_WAIT_ANY => sys_wait_any_impl(a0, a1 as usize, a2),
         #[cfg(feature = "installer")]
@@ -6175,6 +6194,84 @@ fn sys_try_recv_impl(h: u32, buf: u64, max_len: usize) -> i64 {
         Err(e) => return e,
     };
     crate::arch::x86_64::without_interrupts(|| channel.try_recv(side, buf, max_len, pmap))
+}
+
+/// OT-88 A0k `SYS_TRY_SEND`: `sys_send_impl`, completing only with a parked
+/// receiver (EAGAIN otherwise). It never parks, but a completed handoff
+/// yields to the receiver with this frame live, so the channel is anchored
+/// on the thread as `sys_send`'s is (CP-67).
+#[cfg(feature = "ipc-try-send")]
+fn sys_try_send_impl(h: u32, buf: u64, len: usize) -> i64 {
+    if len == 0 {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(buf, len) {
+        return e;
+    }
+    let (channel, side, pmap) = match ipc_lookup(h, channel_rights::SEND) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    crate::sched::with_channel_anchor(channel, |channel| {
+        crate::arch::x86_64::without_interrupts(|| channel.try_send(side, buf, len, pmap))
+    })
+}
+
+/// OT-88 A0k `SYS_TRY_GRANT`: `sys_grant_impl`'s checks, then a grant that
+/// completes only with a parked `SYS_RECV_GRANT` (EAGAIN otherwise).
+#[cfg(feature = "ipc-try-send")]
+fn sys_try_grant_impl(channel_h: u32, src_h: u32, rights_subset: u16) -> i64 {
+    let (channel, side) = match channel_lookup(channel_h, channel_rights::SEND) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let donor_pid = crate::sched::current_pid();
+    let source = match crate::arch::x86_64::without_interrupts(|| {
+        let donor = process::get(donor_pid).ok_or(EINVAL)?;
+        donor.handles.lock().get(src_h).ok_or(EBADF)
+    }) {
+        Ok(h) => h,
+        Err(EBADF) => {
+            channel.fail_recv_grant(side);
+            return EBADF;
+        }
+        Err(e) => return e,
+    };
+    if !source.rights().has_meta(meta_rights::GRANT) {
+        channel.fail_recv_grant(side);
+        return EPERM;
+    }
+    #[cfg(feature = "installer")]
+    if matches!(source, Handle::Installer { .. }) {
+        channel.fail_recv_grant(side);
+        return EPERM;
+    }
+    let payload = crate::ipc::GrantPayload {
+        grantor_pid: donor_pid,
+        source_cap_id: source.cap_id(),
+        offered: unpack_rights(rights_subset),
+    };
+    drop(source);
+    crate::sched::with_channel_anchor(channel, |channel| {
+        crate::arch::x86_64::without_interrupts(|| channel.try_grant(side, payload))
+    })
+}
+
+/// OT-88 A0k `SYS_TRY_RECV_GRANT`: `sys_recv_grant_impl`, completing only
+/// with a parked grantor (EAGAIN otherwise). It neither parks nor yields
+/// (the grantor is woken to run later), but it is anchored as `recv_grant` is.
+#[cfg(feature = "ipc-try-send")]
+fn sys_try_recv_grant_impl(channel_h: u32, max_rights: u16) -> i64 {
+    let (channel, side) = match channel_lookup(channel_h, channel_rights::RECV) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let recipient_pid = crate::sched::current_pid();
+    crate::sched::with_channel_anchor(channel, |channel| {
+        crate::arch::x86_64::without_interrupts(|| {
+            channel.try_recv_grant(side, recipient_pid, unpack_rights(max_rights))
+        })
+    })
 }
 
 /// One `SYS_WAIT_ANY` item.

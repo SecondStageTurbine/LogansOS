@@ -85,6 +85,9 @@ desktop-actions = ["desktop-home", "libneo/atrium-permission"]
 # Boot test only: after each action, read through the lent cap again and log
 # the result (the WM's revoke must have taken it).
 desktop-actions-probe = ["desktop-actions"]
+# OT-88 A1a boot test: the line `open probe app` launches the probe app (a
+# second WM client) through Arthur's LaunchCap.
+atrium-apps-probe = ["desktop-home"]
 # Chad DS-1c F1 boot test: ask for the Lens again after a refused bloom (the
 # WM's `desktop-lens-fault-test` fails the first two).
 desktop-lens-fault-test = ["desktop-lens"]
