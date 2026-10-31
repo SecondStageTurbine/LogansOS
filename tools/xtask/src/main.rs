@@ -1950,8 +1950,6 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
-<<<<<<< ours
-=======
         // OT-61 rung 4 (SWGL S1): upstream SWGL clears an asymmetric pattern
         // into a caller-owned padded-stride buffer, byte-compared on-target.
         name: "swgl_smoke",
@@ -1961,7 +1959,6 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
->>>>>>> theirs
         // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
         // musl's portable C over a std bottom half) in a real-std process.
         name: "cxx_runtime_smoke",
@@ -5877,10 +5874,7 @@ fn main() -> ExitCode {
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
-<<<<<<< ours
-=======
         "ot61-swgl-build" => cmd_ot61_swgl_build(&args[1..]),
->>>>>>> theirs
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
         "vocab-bin" => cmd_vocab_bin(&args[1..]),
@@ -6070,12 +6064,9 @@ fn print_help() {
     println!(
         "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
     );
-<<<<<<< ours
-=======
     println!(
         "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
     );
->>>>>>> theirs
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
         "    log-sink-header <out> [--force] write the sealed bare-metal log-sink header to a regular file"
@@ -6488,10 +6479,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
-<<<<<<< ours
-=======
         "swgl_smoke" => &[SWGL_BIN],
->>>>>>> theirs
         _ => &[],
     }
 }
@@ -7416,12 +7404,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
             build_cxx_runtime_smoke()?;
         }
-<<<<<<< ours
-=======
         if std_real_staged_bins().contains(&SWGL_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
         }
->>>>>>> theirs
     }
     Ok(())
 }
@@ -7456,31 +7441,22 @@ const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
 /// Its hardening twin, in the same crate (`src/trap.rs`).
 const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 
-<<<<<<< ours
-=======
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
 
->>>>>>> theirs
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`).
 fn standalone_std_dir(bin: &str) -> Option<&'static str> {
     match bin {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
-<<<<<<< ours
-=======
         SWGL_BIN => Some(SWGL_DIR),
->>>>>>> theirs
         _ => None,
     }
 }
 
 fn is_standalone_std_dir(subdir: &str) -> bool {
-<<<<<<< ours
-    subdir == SERVO_CLOSURE_DIR || subdir == CXX_RUNTIME_DIR
-=======
     subdir == SERVO_CLOSURE_DIR || subdir == CXX_RUNTIME_DIR || subdir == SWGL_DIR
 }
 
@@ -7552,7 +7528,6 @@ fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
         elf.display()
     );
     Ok(())
->>>>>>> theirs
 }
 
 /// Build one standalone std smoke (the overlay must already be applied) and
@@ -8122,12 +8097,9 @@ fn build_member_at_opt_level(
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-<<<<<<< ours
-=======
     if subdir == SWGL_DIR {
         swgl_cc_env(&mut cmd)?;
     }
->>>>>>> theirs
     if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
         // list (JSON targets included), and then every crate that uses std
@@ -16343,8 +16315,6 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
-<<<<<<< ours
-=======
     if scenario.name == "swgl_smoke" {
         for needle in [
             "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
@@ -16359,7 +16329,6 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
->>>>>>> theirs
     if scenario.name == "cxx_runtime_smoke" {
         // The smoke's own lines: the musl printf path reached the console, and
         // every check passed (the kernel's PASS line covers the exit code).
@@ -16367,11 +16336,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] stdout via musl printf: ok 7",
             "[ crt-smoke ] ok(9) malloc/free from 6 threads at once, contents intact",
             "[ crt-smoke ] ok(15) C++: one function-local static, 6 threads, built once",
-<<<<<<< ours
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
-=======
->>>>>>> theirs
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {

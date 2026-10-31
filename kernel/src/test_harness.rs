@@ -167,11 +167,8 @@ const SCENARIO: &str = "servo_closure_smoke";
 const SCENARIO: &str = "servo_closure_smoke_avx";
 #[cfg(feature = "neo-test-cxx-runtime-smoke")]
 const SCENARIO: &str = "cxx_runtime_smoke";
-<<<<<<< ours
-=======
 #[cfg(feature = "neo-test-swgl-smoke")]
 const SCENARIO: &str = "swgl_smoke";
->>>>>>> theirs
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -1217,10 +1214,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-servo-host-smoke",
     feature = "neo-test-servo-closure-smoke",
     feature = "neo-test-cxx-runtime-smoke",
-<<<<<<< ours
-=======
     feature = "neo-test-swgl-smoke",
->>>>>>> theirs
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -2815,8 +2809,6 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         );
     }
 
-<<<<<<< ours
-=======
     // OT-61 rung 4 (SWGL S1): swgl-smoke rasters a hand-laid pattern through
     // upstream SWGL into its own padded-stride buffer and byte-compares it;
     // it exits 0 only on an exact match, and every frame must come back.
@@ -2866,7 +2858,6 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         );
     }
 
->>>>>>> theirs
     // OT-83: a ring-3 exception kills only its process. Spawn the probe for
     // this scenario's vector (it raises exactly one exception in ring 3), require
     // the 128+signal exit code, then spawn a SECOND process that must run and

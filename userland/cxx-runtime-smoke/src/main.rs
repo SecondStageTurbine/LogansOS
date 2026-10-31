@@ -15,15 +15,11 @@
 
 #![no_main]
 
-<<<<<<< ours
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
-=======
-use std::thread;
->>>>>>> theirs
 
 use neo_std_pal::SyscallHeap;
 
@@ -50,7 +46,6 @@ unsafe extern "C" {
     fn cxx_check_clock() -> i32;
     fn cxx_static_guard_probe(id: i32) -> i32;
     fn cxx_static_guard_builds() -> i32;
-<<<<<<< ours
     fn crt_stdout_marker() -> i32;
     fn crt_stdio_hammer(id: i32) -> i32;
     fn crt_stdio_end_runs();
@@ -58,8 +53,6 @@ unsafe extern "C" {
     static stdout: *mut c_void;
     fn __lockfile(f: *mut c_void) -> i32;
     fn __unlockfile(f: *mut c_void);
-=======
->>>>>>> theirs
 }
 
 fn check(n: i32, what: &str, ok: bool) {
@@ -87,7 +80,6 @@ fn on_threads(probe: unsafe extern "C" fn(i32) -> i32) -> bool {
     handles.into_iter().all(|h| h.join().unwrap_or(false))
 }
 
-<<<<<<< ours
 /// CP-100: while this thread holds stdout's lock, a second thread's `fputs`
 /// to stdout must wait, and must finish once the lock is let go; and the
 /// holder taking it again is the nested case (0, nothing to release).
@@ -112,8 +104,6 @@ fn stdout_lock_excludes() -> bool {
     nested && waited && wrote && done.load(Ordering::Acquire)
 }
 
-=======
->>>>>>> theirs
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // The C and C++ static constructors, before any C or C++ runs.
@@ -178,7 +168,6 @@ pub extern "C" fn _start() -> ! {
         "C++: one function-local static, 6 threads, built once",
         on_threads(cxx_static_guard_probe) && unsafe { cxx_static_guard_builds() } == 1,
     );
-<<<<<<< ours
     check(
         16,
         "stdout's lock holds a second thread's fputs until it's let go",
@@ -187,8 +176,6 @@ pub extern "C" fn _start() -> ! {
     let ran = on_threads(crt_stdio_hammer);
     unsafe { crt_stdio_end_runs() };
     check(17, "6 threads print 600-byte runs to stdout at once", ran);
-=======
->>>>>>> theirs
     println!("{TAG} PASS");
     std::process::exit(0)
 }

@@ -65,7 +65,6 @@ moves with the toolchain's clang (§7, decision 1).
   - `locale_impl.h` is copied verbatim beside the override, because a quoted include finds its sibling first. That
     was a real escape, caught while building: files reaching it through `locale_impl.h` got the real header.
   - An override `pthread_arch.h` is a hard `#error`, so any future route to the real header fails the build.
-<<<<<<< ours
 - **stdout and stderr are always locked (CP-100).** neo-crt's `c/stdout.c`/`c/stderr.c` are musl's with
   `lock = 0`, and `__lockfile`/`__unlockfile` are Rust, so two threads in `printf` can't share `__fwritex`'s buffer
   unlocked. The on-stack FILEs of `vsnprintf`/`vsscanf` keep `lock = -1` (one thread each). There is no `fopen`.
@@ -75,11 +74,6 @@ moves with the toolchain's clang (§7, decision 1).
   `EINVAL` (C17/C23: an unsupported alignment fails). A size that isn't a multiple of the alignment is accepted:
   C17 (DR 460) dropped C11's requirement, glibc and musl accept it, and ported C++ relies on it. `memalign` keeps
   the legacy behaviour (an alignment below the minimum is raised to it). Smoke items 58-60.
-=======
-- **No locked FILEs.** Every FILE neo-crt can make has `lock = -1`: stdout, stderr, and the on-stack FILEs of
-  `vsnprintf`/`vsscanf`. There is no `fopen`. musl's lock paths (`__lockfile`, `__wake`) therefore abort with a
-  message instead of pretending to lock.
->>>>>>> theirs
 - **libc++ configuration** (`userland/neo-crt/cxx/__config_site`, hand-written from libc++'s template):
   - musl as the C library;
   - no exceptions, no RTTI;
@@ -121,17 +115,13 @@ cross-cutting: no syscall, no kernel invariant.
 | Spin vs park | `__lock`/`__unlock` (musl internals: `random()` state, not on any hot path) **spin with `yield_now`** | Short sections, rare contention. Recorded here; replace with a futex word if a profile ever shows it |
 | Per-thread state | `errno` is a std `thread_local!` (C1.2 keys), pointer stable for the thread's life | 6 threads interleave `errno` writes (`ok(8)`) |
 | Allocator under SMP | malloc family on std's global allocator (the PAL heap) | 6 threads, 4000 alloc/free steps each, contents checked (`ok(9)`) |
-<<<<<<< ours
 | Stdio streams under SMP (CP-100) | **guards**: stdout/stderr locked always (`c/stdout.c`, `c/stderr.c`, `.lock = 0`), `__lockfile` on a std `Mutex`/`Condvar` | A second thread's `fputs` waits while the first holds the lock (`ok(16)`); 6 threads print 600-byte runs at once (`ok(17)`); control: musl's `lock = -1` stream, `FAIL(16)` |
-=======
->>>>>>> theirs
 | Recursive static init | **left open**: a constructor that needs its own static waits forever (libc++abi aborts instead) | Not reachable in SWGL; noted for the SpiderMonkey rung |
 
 No kernel concurrency code changes.
 
 ## 6. Known gaps (each with the rung that closes it)
 
-<<<<<<< ours
 1. **No C++ threads, no pthreads. Hard rule: no multi-threaded C++ on this build until C3b's pthread rebuild.**
    libc++ here is `_LIBCPP_HAS_NO_THREADS`: `shared_ptr`'s reference counts aren't atomic, `call_once` isn't
    synchronised, and `std::thread`/`mutex`/`condition_variable` are absent. So C++ code may run on one thread
@@ -141,12 +131,6 @@ No kernel concurrency code changes.
    (`js/src/threading/posix`). C3b adds a pthread subset on the C1 primitives std already uses (one
    implementation for std and C++, per ADR-078 A3), then rebuilds libc++ with `_LIBCPP_HAS_THREAD_API_PTHREAD`.
    That rebuild is an ABI change inside the bundle only, and it lifts this rule.
-=======
-1. **No C++ threads, no pthreads.** `std::thread`/`mutex`/`condition_variable` are absent from this libc++ build.
-   SpiderMonkey threads through its own POSIX port (`js/src/threading/posix`). C3 adds a pthread subset on the C1
-   primitives std already uses (one implementation for std and C++, per ADR-078 A3), then rebuilds libc++ with
-   `_LIBCPP_HAS_THREAD_API_PTHREAD`. That rebuild is an ABI change inside the bundle only.
->>>>>>> theirs
 2. **`atexit`/`__cxa_atexit` handlers never run.** Bundle processes end by `exit` or by being killed; SWGL and
    SpiderMonkey shut down explicitly.
 3. **No wall clock.** `clock_gettime(CLOCK_REALTIME)` is `EINVAL`, so `std::chrono::system_clock::now()` aborts (a
@@ -155,7 +139,6 @@ No kernel concurrency code changes.
    and musl's `__errno_location` is `const`. So a plain read of `errno` right after a failed allocation can fold to
    its old value (this bit the smoke's own check, now a volatile read). The runtime does set it. This is a compiler
    modelling fact for consumers to know about, not a runtime bug.
-<<<<<<< ours
 5. **The toolchain.** The gate's compiler is pinned in the dev image (`Dockerfile`): Debian trixie's `clang-19`, held
    to major 19 (the image build fails on another), exported as `NEO_CRT_CLANG`. The QEMU gate builds in that image.
    The `crt-build` job runs on the hosted runner and installs `clang-19` itself (Ubuntu noble's package); it checks
@@ -170,18 +153,6 @@ No kernel concurrency code changes.
    supports the previous libc++ release, and moving libc++ to 19 is its own change if ever needed.
 2. **Runners need no clang.** `crt-build` installs the pinned major in the job (the public repo has no self-hosted
    QEMU-shard runners, so the job no longer runs in the dev image there).
-=======
-5. **The toolchain.** The C/C++ compiler is the runner's `clang` (`NEO_CRT_CLANG` overrides it). This container has
-   clang 18.1.3, which matches libc++ 18. CI runners need clang ≥ 18 (§7).
-
-## 7. Decisions (none blocks this rung)
-
-1. **Compiler pin.** Use the system clang 18 (as now) and pin libc++ to the matching release, or fetch a pinned LLVM
-   release toolchain in CI and move libc++ with it. I recommend the pinned release toolchain before SWGL, so the
-   C++ that reaches the browser doesn't depend on whatever clang a runner has.
-2. **Runners need `clang`.** The closure-build workflow now also runs `cargo xtask ot61-crt-build`. If a runner lacks
-   clang it fails with a clear message. Provisioning is the PL's.
->>>>>>> theirs
 
 ## 8. Evidence
 

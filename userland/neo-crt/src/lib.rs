@@ -11,12 +11,8 @@
 //!   `aligned_alloc`, `posix_memalign`, `memalign`) on std's global allocator;
 //! - `errno`, one per thread;
 //! - `clock_gettime` (`CLOCK_MONOTONIC` only; there is no wall clock);
-<<<<<<< ours
 //! - writes to fds 1 and 2, the stdout/stderr stream locks (`__lockfile`),
 //!   `abort`, process exit;
-=======
-//! - writes to fds 1 and 2, `abort`, process exit;
->>>>>>> theirs
 //! - `getenv` (the bundle has no environment), `__lock`/`__unlock` for the few
 //!   musl internals that take a lock, and the `atexit` family;
 //! - the Itanium C++ ABI pieces libc++ expects from a C++ ABI library:
@@ -184,7 +180,6 @@ pub unsafe extern "C" fn realloc(p: *mut c_void, size: usize) -> *mut c_void {
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aligned_alloc(align: usize, size: usize) -> *mut c_void {
-<<<<<<< ours
     // C17 (DR 460) and C23: an alignment the implementation doesn't support
     // fails with NULL. Ours are the powers of two; 0 is not one, so it fails
     // here instead of being raised to MIN_ALIGN as malloc's is. A size that
@@ -195,8 +190,6 @@ pub unsafe extern "C" fn aligned_alloc(align: usize, size: usize) -> *mut c_void
         set_errno(EINVAL);
         return core::ptr::null_mut();
     }
-=======
->>>>>>> theirs
     unsafe { raw_alloc(size, align, false) }
 }
 
@@ -249,7 +242,6 @@ pub unsafe extern "C" fn clock_gettime(clock: c_int, ts: *mut Timespec) -> c_int
     0
 }
 
-<<<<<<< ours
 // ── stdio stream locks ───────────────────────────────────────────────────
 
 /// Which thread holds each locked `FILE`, by the stream's address.
@@ -297,8 +289,6 @@ pub extern "C" fn __unlockfile(f: *mut c_void) {
     STREAM_FREED.notify_all();
 }
 
-=======
->>>>>>> theirs
 // ── output, exit, abort ──────────────────────────────────────────────────
 
 /// Called by `neo_bottom.c`'s `__stdio_write`. Only fds 1 and 2 exist.

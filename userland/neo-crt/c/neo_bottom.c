@@ -97,7 +97,6 @@ off_t __stdio_seek(FILE *f, off_t off, int whence)
 	return -1;
 }
 
-<<<<<<< ours
 /* stdout and stderr are locked always (c/stdout.c, c/stderr.c: lock = 0),
  * and their __lockfile/__unlockfile are Rust (src/lib.rs, CP-100). The
  * on-stack FILEs of vsnprintf and vsscanf keep lock = -1; there is no
@@ -107,41 +106,10 @@ void __wake(volatile void *addr, int cnt, int priv)
 {
 	(void)addr; (void)cnt; (void)priv;
 	static const char msg[] = "neo-crt: musl's futex wake was reached (nothing should use it)\n";
-=======
-/* Every FILE neo-crt can make has lock = -1: stdout and stderr (musl
- * stdout.c/stderr.c) and the on-stack FILEs of vsnprintf and vsscanf. There
- * is no fopen/fdopen. So musl's locking paths are unreachable; reaching one
- * means a locked FILE appeared, and that is a bug to stop on, not to paper
- * over with a no-op lock. */
-static _Noreturn void no_locked_files(void)
-{
-	static const char msg[] = "neo-crt: a FILE with a lock was used (none should exist)\n";
->>>>>>> theirs
 	__neo_crt_write(2, (const unsigned char *)msg, sizeof msg - 1);
 	abort();
 }
 
-<<<<<<< ours
-=======
-int __lockfile(FILE *f)
-{
-	(void)f;
-	no_locked_files();
-}
-
-void __unlockfile(FILE *f)
-{
-	(void)f;
-	no_locked_files();
-}
-
-void __wake(volatile void *addr, int cnt, int priv)
-{
-	(void)addr; (void)cnt; (void)priv;
-	no_locked_files();
-}
-
->>>>>>> theirs
 _Noreturn void exit(int code)
 {
 	fflush(stdout);
