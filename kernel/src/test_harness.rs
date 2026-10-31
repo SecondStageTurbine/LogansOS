@@ -1029,6 +1029,8 @@ const SCENARIO: &str = "ot90_stuck_sink_restart";
 const SCENARIO: &str = "ot90_stop_cpus";
 #[cfg(feature = "neo-test-ot90-stop-holdout")]
 const SCENARIO: &str = "ot90_stop_holdout";
+#[cfg(feature = "neo-test-ot90-quiesce")]
+const SCENARIO: &str = "ot90_quiesce";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1581,6 +1583,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-ot90-straggler-forced",
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
@@ -4828,6 +4831,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-ot90-stuck-sink-restart"
     ))]
     run_ot90_stuck_sink();
+
+    #[cfg(feature = "neo-test-ot90-quiesce")]
+    run_ot90_quiesce();
 
     #[cfg(feature = "neo-test-sys-getrandom")]
     {
@@ -30420,6 +30426,7 @@ fn run_phase3_pci_virtio_blk_probe_smoke() -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
     feature = "neo-test-phase3-virtio-blk-abandoned-io-no-leak",
     feature = "neo-test-phase3-virtio-blk-flush-negotiated-gate",
@@ -32660,6 +32667,7 @@ const NEOFS_2C_DIRECT_BLOCK_BYTES: usize = 4096;
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32693,6 +32701,7 @@ fn mount_neofs_rw_or_fail() -> crate::fs::neofs::MountReport {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32717,6 +32726,7 @@ fn neofs_2c_rw_rights() -> crate::fs::FileRights {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32746,6 +32756,7 @@ fn neofs_2c_fail_vfs(reason: &str, err: crate::fs::VfsError) -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32775,6 +32786,7 @@ fn neofs_2c_fail_count(reason: &str, got: usize, expected: usize) -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32800,6 +32812,7 @@ fn neofs_2c_create_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFile> 
 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32851,6 +32864,7 @@ fn neofs_2c_open_read_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFil
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32876,6 +32890,7 @@ fn neofs_2c_write_all_or_fail(file: &crate::fs::OpenFile, input: &[u8]) {
 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
+    feature = "neo-test-ot90-quiesce",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -38235,6 +38250,32 @@ fn run_phase3_nvme_neofs_mount_and_readwrite() -> ! {
     drop(file);
     nvme_expect_file_bytes(PATH, CONTENT);
     crate::scenario::phase(crate::scenario::ScenarioPhase::Cleanup);
+    // OT-90 P3b-2, with `power-quiesce` (NEO_TEST_EXTRA_FEATURES): K6's NVMe
+    // step on the controller this scenario just wrote through: CC.SHN,
+    // CSTS.SHST complete, CC.EN cleared.
+    #[cfg(feature = "power-quiesce")]
+    {
+        let step = crate::drivers::block::get_device(source_index).and_then(|d| d.shutdown_step());
+        let Some(crate::drivers::block::ShutdownStep::Nvme { mmio }) = step else {
+            fail("reason=nvme_shutdown_step_missing");
+        };
+        let timer = crate::acpi::power::stop_timer();
+        match crate::drivers::block::nvme::shutdown_notify(mmio, &|us, done| {
+            crate::acpi::power::spin_us(timer.as_ref(), us, done)
+        }) {
+            Ok(()) => {
+                serial_println!("NEO_TEST/1 event=INFO name={} nvme_shutdown=ok", SCENARIO);
+            }
+            Err(why) => {
+                serial_println!(
+                    "NEO_TEST/1 event=FAIL name={} reason=nvme_shutdown_{}",
+                    SCENARIO,
+                    why
+                );
+                debug_exit(EXIT_FAILURE);
+            }
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fs=neofs source=device{} mount=rw initial_read=ok create_write_fsync_readback=ok bytes={}",
         SCENARIO,
@@ -39613,6 +39654,24 @@ fn run_ot90_straggler_forced() -> ! {
     feature = "neo-test-ot90-stop-holdout"
 ))]
 fn run_ot90_stop_cpus() -> ! {
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// OT-90 P3b-2 `ot90_quiesce`: power-off with K6. NeoFS is mounted
+/// writable on disk 0 and a file is written, so the write guard has armed
+/// that disk; K6 must stop its controller, clear every bus master and then
+/// S5. xtask judges it by QMP and the K6 lines.
+#[cfg(feature = "neo-test-ot90-quiesce")]
+fn run_ot90_quiesce() -> ! {
+    let _ = mount_neofs_rw_or_fail();
+    let file = neofs_2c_create_or_fail("/neofs/ot90-quiesce.txt");
+    neofs_2c_write_all_or_fail(&file, b"K6 stops this disk after K2 drained it.\n");
+    drop(file);
     frame("INFO", "stage=power_off_requested");
     crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
     loop {

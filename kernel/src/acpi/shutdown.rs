@@ -23,9 +23,12 @@
 //! - **K5** (`power-stop-cpus`): stop this CPU's LAPIC tick and mask every
 //!   I/O APIC entry (prepared before K4: no mapping after it).
 //!
-//! K6 (quiesce DMA, then the IOMMU) is P3b's second part. Without
-//! `power-stop-cpus`, P2's paths run with the other CPUs live, as they
-//! already do.
+//! - **K6** (`power-quiesce`): stop each guard-armed disk's controller,
+//!   clear every function's Bus Master Enable, then turn the IOMMU off
+//!   (`drivers::quiesce`; planned before K4).
+//!
+//! Without `power-stop-cpus`, P2's paths run with the other CPUs live, as
+//! they already do.
 //!
 //! **The whole of K1-K3 is bounded too** (Chad #199 item 2). K2's bound is
 //! checked between drain passes, so a block request whose completion never
@@ -232,6 +235,10 @@ fn clean(kind: Kind, keep: Option<ProcessId>) {
 fn stop_world() {
     use crate::arch::x86_64::cpu_stop;
     let timer = super::power::stop_timer();
+    // K6's plan is read now, while every CPU runs (it takes driver locks
+    // and scans PCI). It is never dropped: K7 doesn't return.
+    #[cfg(feature = "power-quiesce")]
+    let quiesce = crate::drivers::quiesce::Plan::prepare();
     let ioapics =
         super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
     crate::serial_println!("[ power ] K4 start");
@@ -257,6 +264,8 @@ fn stop_world() {
         },
         masked.map_or(-1, |n| n as i64)
     );
+    #[cfg(feature = "power-quiesce")]
+    quiesce.run(&|us, done| super::power::spin_us(timer.as_ref(), us, done));
 }
 
 /// K1: terminate every user process but `keep`, reaping as they go, for at

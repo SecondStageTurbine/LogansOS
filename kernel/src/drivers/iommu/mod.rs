@@ -37,6 +37,9 @@ use crate::sync::SwitchMutex;
 
 pub mod vtd_logic;
 mod vtd_regs;
+/// OT-90 P3b-2: K6's plan holds a unit's register handle.
+#[cfg(feature = "power-quiesce")]
+pub use vtd_regs::RemapRegs;
 
 use vtd_logic as logic;
 use vtd_regs as regs;
@@ -697,6 +700,36 @@ pub fn poll_faults() -> u32 {
         total += process_faults(unit);
     }
     total
+}
+
+/// OT-90 P3b-2 (K6): each unit's registers and command word, copied before
+/// K4 (`STATE` is a lock a parked CPU could hold).
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_plan() -> alloc::vec::Vec<(regs::RemapRegs, u32)> {
+    STATE
+        .lock()
+        .as_ref()
+        .map(|state| state.units.iter().map(|u| (u.regs, u.gcmd)).collect())
+        .unwrap_or_default()
+}
+
+/// OT-90 P3b-2 (K6), last: clear Translation Enable on each unit of the
+/// plan, registers only, after every bus master has stopped. Returns how
+/// many units confirmed it (GSTS.TES clear).
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_disable(plan: &[(regs::RemapRegs, u32)]) -> usize {
+    let mut off = 0;
+    for &(unit_regs, gcmd) in plan {
+        unit_regs.write32(regs::REG_GCMD, gcmd & !regs::GCMD_TE);
+        for _ in 0..SPIN_MAX {
+            if unit_regs.read32(regs::REG_GSTS) & regs::GSTS_TES == 0 {
+                off += 1;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+    }
+    off
 }
 
 /// Runtime kill-switch: clear Translation-Enable on every unit, returning to

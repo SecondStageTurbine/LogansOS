@@ -329,6 +329,13 @@ struct AhciPortInner {
 }
 
 impl BlockDevice for AhciDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<block::ShutdownStep> {
+        Some(block::ShutdownStep::AhciPort {
+            port_base: self.port_base.as_u64(),
+        })
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }
@@ -590,6 +597,15 @@ fn request_sector_count(buffers: &[Arc<DmaBuffer>]) -> BlockResult<u16> {
     }
     let sectors = bytes / SECTOR_SIZE as usize;
     u16::try_from(sectors).map_err(|_| BlockError::Unsupported)
+}
+
+/// OT-90 P3b-2 (K6): stop the port's engines, registers only. Its ATA
+/// FLUSH CACHE and STANDBY IMMEDIATE (THINK §5.1) need the command path and
+/// its lock, so they aren't sent: K2's NeoFS drain already flushed the
+/// device it wrote.
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_stop_port(port_base: u64) {
+    stop_port(VirtAddr::new(port_base));
 }
 
 fn stop_port(port_base: VirtAddr) {

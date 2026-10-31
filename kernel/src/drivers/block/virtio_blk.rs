@@ -667,6 +667,13 @@ struct VirtioBlkDevice {
 }
 
 impl BlockDevice for VirtioBlkDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<block::ShutdownStep> {
+        Some(block::ShutdownStep::VirtioBlk {
+            common: self.inner.lock().common.as_u64(),
+        })
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }
@@ -1628,6 +1635,12 @@ fn write_driver_features(common: VirtAddr, features: u64) {
         mmio_write32(common, COMMON_DRIVER_FEATURE_SELECT, 1);
         mmio_write32(common, COMMON_DRIVER_FEATURE, (features >> 32) as u32);
     }
+}
+
+/// OT-90 P3b-2 (K6): reset the device (status 0), registers only.
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_reset(common: u64) {
+    reset_device(VirtAddr::new(common));
 }
 
 fn reset_device(common: VirtAddr) {

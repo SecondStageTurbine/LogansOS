@@ -916,6 +916,34 @@ pub fn map_mmio_for_probe(phys: u64, len: u64) -> VirtAddr {
     crate::mm::phys_to_virt(PhysAddr::new(phys))
 }
 
+/// OT-90 P3b-2 (K6): every function with Bus Master Enable set, read before
+/// K4 (the scan allocates).
+#[cfg(feature = "power-quiesce")]
+pub fn bus_masters() -> Vec<Device> {
+    const PCI_COMMAND_BUS_MASTER: u16 = 1 << 2;
+    enumerate_all()
+        .into_iter()
+        .filter(|d| {
+            config_read_u16(d.bus, d.device, d.function, 0x04) & PCI_COMMAND_BUS_MASTER != 0
+        })
+        .collect()
+}
+
+/// OT-90 P3b-2 (K6): clear Bus Master Enable, so the function can start no
+/// more DMA. Config space through CF8/CFC, no lock: K6 runs alone.
+#[cfg(feature = "power-quiesce")]
+pub fn clear_bus_master(dev: Device) {
+    const PCI_COMMAND_BUS_MASTER: u16 = 1 << 2;
+    let command = config_read_u16(dev.bus, dev.device, dev.function, 0x04);
+    config_write_u16(
+        dev.bus,
+        dev.device,
+        dev.function,
+        0x04,
+        command & !PCI_COMMAND_BUS_MASTER,
+    );
+}
+
 /// Clear bus-master (DMA) rights (the I2C-HID touchpad is PIO only).
 #[cfg(feature = "i2c-hid-touchpad")]
 pub fn disable_bus_mastering(dev: Device) {

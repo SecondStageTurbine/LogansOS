@@ -391,6 +391,11 @@ power-clean = ["power-control"]
 # After K4 the kernel prints to the UART only. Off: P3a's sequence, the
 # other CPUs live at K7, as before.
 power-stop-cpus = ["power-clean"]
+# OT-90 P3b-2 (K6): after K5, stop each disk the write guard armed (NVMe:
+# a shutdown notification; virtio-blk: a reset; AHCI: the port's engines),
+# clear every PCI function's Bus Master Enable, then turn the IOMMU off.
+# Registers only, planned before K4. Off: K4 and K5 only, as before.
+power-quiesce = ["power-stop-cpus"]
 # Aggregate-only kernel status syscall for neo-shell `status`. OFF by default;
 # when disabled SYS_SYSSTAT returns ENOSYS and exposes no observability surface.
 kernel-sysstat = []
@@ -1999,8 +2004,10 @@ neo-test-ot90-s5-durability = ["neo-test", "power-clean"]
 neo-test-ot90-straggler-forced = ["neo-test", "power-clean"]
 # Chad #199 item 2: a dirty NeoFS block on a disk that stops completing
 # requests; the shutdown's deadline must still reach S5. The control removes
-# the deadline (the run must then hang).
-neo-test-ot90-stuck-disk = ["neo-test", "power-clean"]
+# the deadline (the run must then hang). With `power-quiesce`, K4-K6 run
+# after the abandoned K2; the disk's guard judgement is stuck too, and K6's
+# plan must not wait on it.
+neo-test-ot90-stuck-disk = ["neo-test", "power-quiesce"]
 neo-test-ot90-stuck-disk-no-deadline = ["neo-test-ot90-stuck-disk"]
 # #267 (Chad 3b): an armed block log sink whose disk stops answering right
 # after K3; power-off and restart must still be reached (the sink is closed
@@ -2013,6 +2020,8 @@ neo-test-ot90-stuck-sink-no-close = ["power-clean"]
 # STOP IPI, so the NMI parks it.
 neo-test-ot90-stop-cpus = ["neo-test", "power-stop-cpus"]
 neo-test-ot90-stop-holdout = ["neo-test", "power-stop-cpus"]
+# OT-90 P3b-2: power-off with K6 on a NeoFS disk written this boot.
+neo-test-ot90-quiesce = ["neo-test", "power-quiesce"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]
