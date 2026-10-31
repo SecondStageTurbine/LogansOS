@@ -77,6 +77,7 @@ desktop-pointer-probe = ["desktop-home"]
 # DS-1c: a listing of `/` blooms the Lens through the LaunchCap instead of
 # going to the model. Off = DS-1b exactly.
 desktop-lens = ["desktop-home"]
+<<<<<<< ours
 # L1.3a (THINK-2026-10-30-l1.3): an explicit `read`, `list` or `write` line is
 # done through the WM's permission prompt (OP_PERMISSION): the WM lends a cap
 # for that one action and revokes it at OP_PERMISSION_DONE. Needs the WM's
@@ -85,6 +86,11 @@ desktop-actions = ["desktop-home", "libneo/atrium-permission"]
 # Boot test only: after each action, read through the lent cap again and log
 # the result (the WM's revoke must have taken it).
 desktop-actions-probe = ["desktop-actions"]
+=======
+# OT-88 A1a boot test: the line `open probe app` launches the probe app (a
+# second WM client) through Arthur's LaunchCap.
+atrium-apps-probe = ["desktop-home"]
+>>>>>>> theirs
 # Chad DS-1c F1 boot test: ask for the Lens again after a refused bloom (the
 # WM's `desktop-lens-fault-test` fails the first two).
 desktop-lens-fault-test = ["desktop-lens"]

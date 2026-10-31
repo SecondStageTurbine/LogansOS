@@ -275,6 +275,12 @@ pub const SYS_INPUT_POINTER_CLAIM: u64 = 0x1B1;
 pub const SYS_INPUT_POINTER_FORWARD: u64 = 0x1B2;
 pub const SYS_INPUT_SAK_TAKE: u64 = 0x1B3;
 pub const SYS_TRY_RECV: u64 = 0x1B4;
+/// OT-88 A0k: `SYS_SEND` / `SYS_GRANT` that complete only with the peer
+/// already parked in its receive; EAGAIN otherwise (ENOSYS on a kernel
+/// without `ipc-try-send`). They never park.
+pub const SYS_TRY_SEND: u64 = 0x1B6;
+pub const SYS_TRY_GRANT: u64 = 0x1B7;
+pub const SYS_TRY_RECV_GRANT: u64 = 0x1B8;
 /// OT-22 (kernel `wait-multiplex`; ENOSYS elsewhere): park until any of up
 /// to [`WAIT_ITEMS_MAX`] items is ready or a monotonic deadline passes.
 pub const SYS_WAIT_ANY: u64 = 0x1B5;
@@ -3025,6 +3031,50 @@ pub fn sys_wait_any(items: &[WaitItem], deadline_ns: u64) -> i64 {
             deadline_ns,
         )
     }
+}
+
+/// `sys_send` without parking: EAGAIN unless a receiver is already waiting.
+#[inline]
+pub fn sys_try_send(h: Handle, buf: &[u8]) -> i64 {
+    // SAFETY: buf is a valid slice; the kernel validates bounds.
+    unsafe {
+        raw3(
+            SYS_TRY_SEND,
+            h.0 as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+        )
+    }
+}
+
+/// `sys_grant` without parking: EAGAIN unless a `sys_recv_grant` is waiting.
+#[inline]
+pub fn sys_try_grant(channel: Handle, source: Handle, offered: CapRights) -> i64 {
+    // SAFETY: SYS_TRY_GRANT takes channel/source handle indices and packed rights.
+    unsafe {
+        raw3(
+            SYS_TRY_GRANT,
+            channel.0 as u64,
+            source.0 as u64,
+            offered.pack() as u64,
+        )
+    }
+}
+
+/// `sys_recv_grant` without parking: the new handle, or EAGAIN unless a
+/// grantor is already waiting (as `Err`).
+#[inline]
+pub fn sys_try_recv_grant(channel: Handle, max_rights: CapRights) -> Result<Handle, i64> {
+    // SAFETY: SYS_TRY_RECV_GRANT takes a channel handle index and packed rights.
+    let r = unsafe {
+        raw3(
+            SYS_TRY_RECV_GRANT,
+            channel.0 as u64,
+            max_rights.pack() as u64,
+            0,
+        )
+    };
+    if r < 0 { Err(r) } else { Ok(Handle(r as u32)) }
 }
 
 /// `sys_recv` without parking: EAGAIN when no sender is waiting.

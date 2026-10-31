@@ -1201,6 +1201,7 @@ fn run_desktop_session(
                 let action = showcase_logic::wants_root_lens(&input[..input_len]);
                 #[cfg(not(feature = "desktop-lens"))]
                 let action = false;
+<<<<<<< ours
                 // L1.3a: an explicit `read`, `list` or `write` line is done
                 // through the WM's permission prompt, never the model.
                 #[cfg(feature = "desktop-actions-probe")]
@@ -1237,6 +1238,16 @@ fn run_desktop_session(
                 #[cfg(not(feature = "desktop-actions"))]
                 let handled = false;
                 if handled {
+=======
+                // OT-88 A1a boot test: open the probe app, a second client.
+                #[cfg(feature = "atrium-apps-probe")]
+                let probe_app = &input[..input_len] == b"open probe app";
+                #[cfg(not(feature = "atrium-apps-probe"))]
+                let probe_app = false;
+                if probe_app {
+                    #[cfg(feature = "atrium-apps-probe")]
+                    open_probe_app(surface, launch_cap);
+>>>>>>> theirs
                 } else if action {
                     #[cfg(feature = "desktop-lens")]
                     {
@@ -1281,8 +1292,9 @@ fn run_desktop_session(
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
+                // (Opening the probe app is not one of the boot test's answers.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                {
+                if !probe_app {
                     answers += 1;
                 }
                 #[cfg(all(
@@ -1400,6 +1412,24 @@ fn run_desktop_session(
         // Enter is logged in its own branch, ahead of the line it submits.
         if byte != b'\n' {
             log_desktop_keystroke(byte);
+        }
+    }
+}
+
+/// OT-88 A1a boot test: launch the probe app through the LaunchCap. The WM
+/// brings it to the front before it answers, so the next keys are its.
+#[cfg(feature = "atrium-apps-probe")]
+fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Handle) {
+    const TOKEN: u64 = 0x5052_4F42_4150_544B;
+    let module = libneo::atrium_launch::MODULE_PROBE_APP;
+    match surface.launch(cap, module, TOKEN, Some(TOKEN)) {
+        Ok(()) => {
+            stage_b_log_line(b"DESKTOP arthur probe app opened");
+            surface.write_text(b"I opened the probe app.");
+        }
+        Err(_) => {
+            stage_b_log_line(b"DESKTOP arthur probe app refused");
+            surface.write_text(b"I could not open the probe app.");
         }
     }
 }
