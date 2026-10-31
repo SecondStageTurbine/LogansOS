@@ -101,8 +101,11 @@ Pieces:
    today (WRITE always denied; EXECUTE denied unless the exec flag). Kill-switch: with `fat-fs` off, `fs_type == 3`
    returns `Invalid` and no FAT code is linked (§5 of the lanes THINK). The `neo-test-phase3-fat32*` features imply
    `fat-fs`.
-3. **Retire `fat32.rs`** in the same build once the nine scenarios pass on rust-fatfs. The scenarios, not the old
-   driver, are what stays armed.
+3. **Keep `fat32.rs` as the kill-switch's previous layer (build decision, 2026-10-31).** With `fat-fs` off,
+   `fs_type == 3` is the native driver exactly as before (not `Invalid`), so "off ≡ the previous layer" holds bit
+   for bit, and a `phase3_fat32_native_control` scenario keeps it armed. Retiring `fat32.rs` is a later
+   consolidation, once the swap has run on hardware. The nine scenarios build with `fat-fs` and are the swap's
+   regression oracle.
 4. **Vendoring:** the kernel needs rust-fatfs with `default-features = false, features = ["alloc", "lfn",
    "unicode"]` (no `std`, no logging). `third_party/fatfs/VENDORED.md` changes its "the kernel never links it" line,
    which was true for OT-87; OT-87's statement that the kernel never formats or rewrites FAT still holds through L3a,
@@ -110,8 +113,8 @@ Pieces:
 
 ### Kill-switch proof
 
-- `fat-fs` off: `fs_type == 3` → `Invalid`; a build-time check (`nm` or a `cfg` grep in the close-gate) shows no
-  `fatfs` symbols in the kernel.
+- `fat-fs` off: `fs_type == 3` is the native driver, as before; `fs::fat` and the `fatfs` dependency are not
+  compiled (`#[cfg(feature = "fat-fs")]`, an optional dependency).
 - `fat-fs` on, write path: every `write` reaches the adapter's error; the T4/T5 sector hashes prove nothing was
   written. Bit-for-bit equality to "the previous layer" here means the same nine scenario outputs as before the swap.
 
