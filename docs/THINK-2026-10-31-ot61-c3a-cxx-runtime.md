@@ -140,8 +140,10 @@ No kernel concurrency code changes.
    its old value (this bit the smoke's own check, now a volatile read). The runtime does set it. This is a compiler
    modelling fact for consumers to know about, not a runtime bug.
 5. **The toolchain.** The gate's compiler is pinned in the dev image (`Dockerfile`): Debian trixie's `clang-19`, held
-   to major 19 (the image build fails on another), exported as `NEO_CRT_CLANG`. The QEMU gate and the `crt-build`
-   job both build in that image, so neither depends on a runner's clang (the #261 bounce). Third-party headers
+   to major 19 (the image build fails on another), exported as `NEO_CRT_CLANG`. The QEMU gate builds in that image.
+   The `crt-build` job runs on the hosted runner and installs `clang-19` itself (Ubuntu noble's package); it checks
+   that the Dockerfile pins the same major and fails if apt resolves another. Neither depends on whatever clang a
+   runner happens to have (the #261 bounce). Third-party headers
    (musl, libc++) reach the smoke through `-isystem`, so a newer clang's warnings in them can't fail its
    `-Werror`. Checked locally with clang 18.1.3 and 19.1.1.
 
@@ -149,7 +151,8 @@ No kernel concurrency code changes.
 
 1. **Compiler pin (done, #261 bounce).** The dev image's packaged clang 19 (§6 item 5). libc++ stays 18.1.8: clang
    supports the previous libc++ release, and moving libc++ to 19 is its own change if ever needed.
-2. **Runners need no clang.** `crt-build` runs in the dev image on the QEMU-shard runners (which have Docker).
+2. **Runners need no clang.** `crt-build` installs the pinned major in the job (the public repo has no self-hosted
+   QEMU-shard runners, so the job no longer runs in the dev image there).
 
 ## 8. Evidence
 

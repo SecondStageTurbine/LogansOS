@@ -89,78 +89,57 @@ jobs:
       - name: xtask ot61-closure-build (overlay std + closure + A4 checks)
         run: cargo run -p xtask -- ot61-closure-build
 
-  # In the dev container (Dockerfile), on the QEMU-shard runners that have
-  # Docker: the same pinned clang the QEMU gate builds cxx_runtime_smoke
-  # with, never whatever the runner happens to have (the #261 bounce: this
-  # job was red wherever a runner lacked clang).
+  # On the hosted runner, with clang installed in the job: the same LLVM
+  # major the Dockerfile pins for the QEMU gate (NEO_CRT_CLANG_MAJOR), and the
+  # job fails if apt resolves another major, so the compiler can't move
+  # silently. (It used to run in the dev container on the self-hosted
+  # qemu-shard runners, which the public repo doesn't have, so it never
+  # started.)
   crt-build:
     name: neo-crt C/C++ runtime (x86_64-unknown-neoplutarch)
-    runs-on: [self-hosted, qemu-shard]
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
     timeout-minutes: 60
 
     env:
-      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      NEO_CRT_CLANG_MAJOR: "19"
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Prepare container cache directories
-        run: mkdir -p .home .rustup-home .cargo-home
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      # The same per-runner layer cache as ci.yml's QEMU shards, keyed on the
-      # Dockerfile alone.
-      - name: Cache Docker layers
-        uses: actions/cache@v4
-        with:
-          path: /tmp/.buildx-cache-${{ runner.name }}
-          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
-          restore-keys: |
-            buildx-${{ runner.os }}-
-
-      - name: Build dev container (with buildx cache)
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          tags: neoplutarch-dev:latest
-          load: true
-          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.name }}
-          cache-to: type=local,dest=/tmp/.buildx-cache-new-${{ runner.name }},mode=max
-
-      - name: Rotate buildx cache
+      - name: Ensure rustup is present (self-hosted runners)
         run: |
-          rm -rf /tmp/.buildx-cache-${{ runner.name }}
-          mv /tmp/.buildx-cache-new-${{ runner.name }} /tmp/.buildx-cache-${{ runner.name }}
-
-      - name: Pinned Rust toolchain, in the container
-        run: |
-          if [ ! -x ".rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin/cargo" ]; then
-            docker compose run --rm \
-              --user "$(id -u):$(id -g)" \
-              -e HOME=/home/neo \
-              -e CARGO_HOME=/home/neo/.cargo \
-              -e RUSTUP_HOME=/workspace/.rustup-home \
-              neo \
-              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
-                --profile minimal \
-                --component rust-src,llvm-tools-preview \
-                --target x86_64-unknown-none
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
           fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
 
-      # The container's clang (NEO_CRT_CLANG, set by the Dockerfile).
-      - name: xtask ot61-crt-build (overlay std + neo-crt + smoke + A4 checks)
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none
+
+      # The Dockerfile's pin and this one must agree.
+      - name: Install clang (the Dockerfile's pinned major)
         run: |
-          docker compose run --rm \
-            --user "$(id -u):$(id -g)" \
-            -e HOME=/workspace/.home \
-            -e CARGO_HOME=/workspace/.cargo-home \
-            -e RUSTUP_HOME=/workspace/.rustup-home \
-            -e PATH="${CONTAINER_PATH}" \
-            -e CARGO_HTTP_MULTIPLEXING \
-            -e CARGO_NET_RETRY \
-            neo \
-            bash -c '"$NEO_CRT_CLANG" --version | head -1 && cargo run -p xtask -- ot61-crt-build'
+          set -e
+          grep -q "^ARG NEO_CRT_CLANG_MAJOR=${NEO_CRT_CLANG_MAJOR}\$" Dockerfile \
+            || { echo "ERROR: Dockerfile pins a different NEO_CRT_CLANG_MAJOR"; exit 1; }
+          if ! command -v "clang-${NEO_CRT_CLANG_MAJOR}" >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "clang-${NEO_CRT_CLANG_MAJOR}"
+          fi
+          "clang-${NEO_CRT_CLANG_MAJOR}" --version | head -1
+          test "$("clang-${NEO_CRT_CLANG_MAJOR}" -dumpversion | cut -d. -f1)" = "${NEO_CRT_CLANG_MAJOR}"
+          echo "NEO_CRT_CLANG=clang-${NEO_CRT_CLANG_MAJOR}" >> "$GITHUB_ENV"
+
+      - name: xtask ot61-crt-build (overlay std + neo-crt + smoke + A4 checks)
+        run: cargo run -p xtask -- ot61-crt-build
