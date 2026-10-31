@@ -175,6 +175,8 @@ const SCENARIO: &str = "cxx_runtime_smoke";
 const SCENARIO: &str = "swgl_smoke";
 #[cfg(feature = "neo-test-webrender-smoke")]
 const SCENARIO: &str = "webrender_smoke";
+#[cfg(feature = "neo-test-swgl-atrium-smoke")]
+const SCENARIO: &str = "swgl_atrium_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -1352,6 +1354,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-cxx-runtime-smoke",
     feature = "neo-test-swgl-smoke",
     feature = "neo-test-webrender-smoke",
+    feature = "neo-test-swgl-atrium-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -3086,6 +3089,61 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "swgl_smoke=ran exit=0 swgl=0.70.0 pattern=exact stride=padded canaries=intact frames_returned=1",
+        );
+    }
+
+    // OT-61 rung 4 (SWGL S3a): swgl-atrium-smoke rasters the S1 pattern into
+    // a kernel Atrium buffer through its client (RW) view and byte-compares
+    // it through a derived compositor (RO) view; it exits 0 only on an exact
+    // match. Its buffer, both mappings and both handles must be gone after
+    // exit: every frame comes back.
+    #[cfg(feature = "neo-test-swgl-atrium-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 64 * 256; // 64 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=swgl_atrium_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke =
+            process::spawn_user_by_name_budgeted("swgl-atrium-smoke", &handles, SMOKE_FRAMES)
+                .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!(
+            "[ kernel ] proc: swgl-atrium-smoke pid={} (64 MiB)",
+            smoke.0
+        );
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: swgl-atrium-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "swgl_atrium_smoke=ran exit=0 swgl=0.70.0 buffer=atrium views=rw+ro pattern=exact attenuation=checked frames_returned=1",
         );
     }
 
