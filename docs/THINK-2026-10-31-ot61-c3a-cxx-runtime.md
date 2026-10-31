@@ -92,7 +92,7 @@ moves with the toolchain's clang (§7, decision 1).
   - **C**, each against an independent oracle: printf conversions written out by hand from C11 7.21.6.1; `strtod`
     bit patterns from CPython's correctly rounded parser; libm exact where IEEE 754 requires it and within one ulp
     of glibc elsewhere; the POSIX `rand48` recurrence computed in the test; allocator sizes, alignment, zeroing and
-    overflow; the monotonic clock, with `CLOCK_REALTIME` refused.
+    overflow; the monotonic clock, and `CLOCK_REALTIME` counted from 1970 (C3c-1, below).
   - **C++:** a global constructor ran; containers; `to_chars` shortest round-trip strings; smart pointers;
     `function`, `optional`, `variant`, virtual dispatch; `new(nothrow)` failure; `steady_clock`.
   - **Threads:** six at once for `errno` (must be per thread), malloc (contents intact), and one function-local
@@ -133,8 +133,10 @@ No kernel concurrency code changes.
    That rebuild is an ABI change inside the bundle only, and it lifts this rule.
 2. **`atexit`/`__cxa_atexit` handlers never run.** Bundle processes end by `exit` or by being killed; SWGL and
    SpiderMonkey shut down explicitly.
-3. **No wall clock.** `clock_gettime(CLOCK_REALTIME)` is `EINVAL`, so `std::chrono::system_clock::now()` aborts (a
-   `system_error` with exceptions off). This is the same gap as std's `SystemTime`, and it closes with `rtc-epoch`.
+3. **No wall clock.** `clock_gettime(CLOCK_REALTIME)` answers with the same process-relative count as the monotonic
+   clock, read from 1970-01-01 (C3c-1, the C3c THINK's trap T1: SpiderMonkey's `PRMJ_Now` aborts if the call fails).
+   So `std::chrono::system_clock::now()` runs and advances, but every date reads as 1970. It is never the real date.
+   That is still the same gap as std's `SystemTime` (unsupported), and it closes when the bundle can trust `rtc-epoch`.
 4. **`errno` after a failed allocation, as clang sees it.** LLVM models `malloc`/`calloc` as writing no other memory,
    and musl's `__errno_location` is `const`. So a plain read of `errno` right after a failed allocation can fold to
    its old value (this bit the smoke's own check, now a volatile read). The runtime does set it. This is a compiler
