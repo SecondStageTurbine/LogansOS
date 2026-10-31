@@ -6,7 +6,8 @@
 //! The C checks live in `c/crt_checks.c`, each against an independent
 //! oracle (see that file's header), and the C++ ones in `c/cxx_checks.cpp`.
 //! This binary runs them in order, then runs three on several threads at
-//! once: `errno` must be per thread, the allocator must hold up under
+//! once (and, from C3b, the pthread and libc++ thread checks in
+//! `c/pthread_checks.c` and `c/cxx_thread_checks.cpp`): `errno` must be per thread, the allocator must hold up under
 //! concurrent use, and a function-local static must be built exactly once
 //! while every thread waits for it.
 //!
@@ -53,6 +54,15 @@ unsafe extern "C" {
     static stdout: *mut c_void;
     fn __lockfile(f: *mut c_void) -> i32;
     fn __unlockfile(f: *mut c_void);
+    fn pt_check_threads() -> i32;
+    fn pt_check_mutex_kinds() -> i32;
+    fn pt_check_condvar() -> i32;
+    fn pt_check_keys() -> i32;
+    fn pt_check_once() -> i32;
+    fn pt_check_rwlock() -> i32;
+    fn cxx_check_threads() -> i32;
+    fn cxx_check_condition_variable() -> i32;
+    fn cxx_check_sync() -> i32;
 }
 
 fn check(n: i32, what: &str, ok: bool) {
@@ -176,6 +186,43 @@ pub extern "C" fn _start() -> ! {
     let ran = on_threads(crt_stdio_hammer);
     unsafe { crt_stdio_end_runs() };
     check(17, "6 threads print 600-byte runs to stdout at once", ran);
+    c_check(
+        19,
+        "pthread: create/join, a mutex that excludes, self/equal",
+        pt_check_threads,
+    );
+    c_check(
+        20,
+        "pthread: recursive, error-checking and normal mutexes",
+        pt_check_mutex_kinds,
+    );
+    c_check(
+        21,
+        "pthread: cond wake, monotonic timeout, realtime refused",
+        pt_check_condvar,
+    );
+    c_check(
+        22,
+        "pthread: keys per thread, destructors at exit",
+        pt_check_keys,
+    );
+    c_check(23, "pthread: once under 6 threads", pt_check_once);
+    c_check(24, "pthread: rwlock", pt_check_rwlock);
+    c_check(
+        25,
+        "C++: std::thread + std::mutex, hardware_concurrency",
+        cxx_check_threads,
+    );
+    c_check(
+        26,
+        "C++: condition_variable wait_for timeout and wake",
+        cxx_check_condition_variable,
+    );
+    c_check(
+        27,
+        "C++: call_once, shared_mutex, atomic wait/notify",
+        cxx_check_sync,
+    );
     println!("{TAG} PASS");
     std::process::exit(0)
 }
