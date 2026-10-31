@@ -16,8 +16,8 @@ stub. Their survey (licences, last commits, what links and what only builds) is
 - `vendor/<crate>-<version>/` — each crate exactly as published on crates.io, unpacked by `cargo vendor`. The
   `.cargo-checksum.json` beside each holds the SHA-256 of the published `.crate` (`package`) and of every file,
   so the copy can be checked against crates.io at any time.
-- `patched/parking_lot_core-0.9.12/` — the one patched crate. The diff against the published crate is
-  `parking_lot_core-0.9.12-neoplutarch.patch`.
+- `patched/parking_lot_core-0.9.12/` and `patched/stylo-0.22.0/` — the two patched crates. Each one's diff
+  against the published crate is `<crate>-<version>-neoplutarch.patch`; the published copy stays in `vendor/`.
 - `stubs/windows-sys-0.61.2/` — an empty crate with `windows-sys`'s name, version, licence and feature table.
   It is in the C2.4 lockfile only behind `cfg(windows)` dependencies, and the published crate is 60 MB of
   Windows bindings that never build for our target.
@@ -45,6 +45,16 @@ unchanged; xtask's syscall-site check runs on the smoke ELF). It uses only std, 
 The copy's `Cargo.toml` also drops the `redox`, `unix` and `windows` parker dependencies (`redox_syscall`,
 `libc`, `windows-link`): this copy is built only for our target, and dropping them keeps 7 MB of `libc` sources
 out of the tree. That trim is local, not part of what would go upstream.
+
+## The patch: Stylo's thread handle
+
+Stylo's `global_style_data.rs` names a platform thread handle for its style pool: `RawPthread` on `unix`,
+`RawHandle` on `windows`, and a no-op `DummyThreadHandle` on `wasm32`. `x86_64-unknown-neoplutarch` is none of
+those (no `target_family`), so `PlatformThreadHandle` was undefined and the crate didn't build (CI run
+41254489164). The patch extends the `wasm32` no-op branch to `target_os = "neoplutarch"`: four `cfg`s, nothing
+else. The handles are only read by Gecko's embedding (`get_thread_handles`); Servo, and our smoke, never ask for
+them. The style pool's threads themselves are ordinary `std::thread`s on this target's C1.3 threads. Upstreamable
+as is.
 
 ## The crates
 

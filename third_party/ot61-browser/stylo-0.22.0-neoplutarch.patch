@@ -1,0 +1,32 @@
+diff -ruN -x .cargo-checksum.json -x .cargo-ok vendor/stylo-0.22.0/global_style_data.rs patched/stylo-0.22.0/global_style_data.rs
+--- vendor/stylo-0.22.0/global_style_data.rs
++++ patched/stylo-0.22.0/global_style_data.rs
+@@ -27,16 +27,16 @@
+ 
+ /// A noop thread join handle for wasm
+ /// The usize field is a dummy field to make this type non-zero sized so as not to confuse FFI
+-#[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
++#[cfg(all(any(target_arch = "wasm32", target_os = "neoplutarch"), not(feature = "gecko")))]
+ pub struct DummyThreadHandle;
+-#[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
++#[cfg(all(any(target_arch = "wasm32", target_os = "neoplutarch"), not(feature = "gecko")))]
+ impl DummyThreadHandle {
+     /// A noop thread join method for wasm
+     pub fn join(&self) {
+         // Do nothing
+     }
+ }
+-#[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
++#[cfg(all(any(target_arch = "wasm32", target_os = "neoplutarch"), not(feature = "gecko")))]
+ /// Platform-specific handle to a thread.
+ pub type PlatformThreadHandle = DummyThreadHandle;
+ 
+@@ -143,7 +143,7 @@
+             let handle = join_handle.as_pthread_t();
+             #[cfg(windows)]
+             let handle = join_handle.as_raw_handle();
+-            #[cfg(all(target_arch = "wasm32", not(feature = "gecko")))]
++            #[cfg(all(any(target_arch = "wasm32", target_os = "neoplutarch"), not(feature = "gecko")))]
+             let handle = {
+                 let _ = join_handle;
+                 DummyThreadHandle

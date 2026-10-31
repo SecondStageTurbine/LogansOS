@@ -136,7 +136,7 @@ string_cache = { path = "../../third_party/ot61-browser/vendor/string_cache-0.11
 string_cache_codegen = { path = "../../third_party/ot61-browser/vendor/string_cache_codegen-0.11.2" }
 strum = { path = "../../third_party/ot61-browser/vendor/strum-0.28.0" }
 strum_macros = { path = "../../third_party/ot61-browser/vendor/strum_macros-0.28.0" }
-stylo = { path = "../../third_party/ot61-browser/vendor/stylo-0.22.0" }
+stylo = { path = "../../third_party/ot61-browser/patched/stylo-0.22.0" }
 stylo_atoms = { path = "../../third_party/ot61-browser/vendor/stylo_atoms-0.22.0" }
 stylo_derive = { path = "../../third_party/ot61-browser/vendor/stylo_derive-0.22.0" }
 stylo_dom = { path = "../../third_party/ot61-browser/vendor/stylo_dom-0.22.0" }
