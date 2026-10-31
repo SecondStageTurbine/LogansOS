@@ -45,11 +45,8 @@
         feature = "user-copy-bounds-test",
         feature = "socket-teardown-test",
         feature = "exit-codes-test",
-<<<<<<< ours
         feature = "mount-authority-test",
-=======
         feature = "user-copy-fault-test",
->>>>>>> theirs
         feature = "interface-cap-derive-revoke",
         feature = "arthur-grant-revoke",
         feature = "atrium-slice1",
@@ -244,15 +241,14 @@ fn run_selected_scenario() -> i32 {
     exit_codes_tests::run()
 }
 
-<<<<<<< ours
 #[cfg(feature = "mount-authority-test")]
 fn run_selected_scenario() -> i32 {
     mount_authority_tests::run()
-=======
+}
+
 #[cfg(feature = "user-copy-fault-test")]
 fn run_selected_scenario() -> i32 {
     user_copy_fault_tests::run()
->>>>>>> theirs
 }
 
 #[cfg(feature = "vault-phase-b")]
@@ -2162,11 +2158,8 @@ mod gpu_glass_slice6_tests {
     feature = "user-copy-bounds-test",
     feature = "socket-teardown-test",
     feature = "exit-codes-test",
-<<<<<<< ours
     feature = "mount-authority-test",
-=======
     feature = "user-copy-fault-test",
->>>>>>> theirs
     feature = "interface-cap-derive-revoke",
     feature = "arthur-grant-revoke",
     feature = "atrium-slice1",
@@ -9980,7 +9973,6 @@ mod exit_codes_tests {
     }
 }
 
-<<<<<<< ours
 /// Dexter #187 item 3a, the `mount_authority` scenario. A worker with no
 /// caps opens `/` asking for `MOUNT`; its `SYS_UMOUNT` of `neofs` and its
 /// `SYS_MOUNT` of device 0 are both `EPERM`, and `neofs` is still mounted
@@ -9994,32 +9986,10 @@ mod mount_authority_tests {
         sys_chan_create, sys_close, sys_mount, sys_open, sys_spawn, sys_umount, sys_wait,
     };
 
-=======
-/// user-copy-fixup, the `user_copy_fault` scenario: syscalls whose user
-/// buffer faults return EFAULT instead of halting the kernel. Three buffers:
-/// a page that was mapped and then unmapped (`hole`), one that starts 8 bytes
-/// before it in a mapped page (`crossing`), and a read-only page (`ro`, for
-/// the kernel's writes). Output paths: SYS_HANDLE_INFO's record, SYS_READDIR's
-/// entry and its cursor. Input path: SYS_WRITE to stdout. Each must be
-/// EFAULT; then a well-formed call still works. Returns 0, or the first
-/// failed step.
-#[cfg(feature = "user-copy-fault-test")]
-mod user_copy_fault_tests {
-    use super::*;
-    use libneo::{
-        EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_HANDLE_INFO,
-        SYS_READDIR, SYS_WRITE, raw3, raw4, sys_chan_create, sys_open, sys_vm_map, sys_vm_protect,
-        sys_vm_unmap,
-    };
-
-    const PAGE: usize = 4096;
-
->>>>>>> theirs
     fn say(line: &[u8]) {
         sys_write(1, line.as_ptr(), line.len());
     }
 
-<<<<<<< ours
     /// `/neofs` opens as a directory (the volume is mounted).
     fn neofs_mounted() -> bool {
         match sys_open(
@@ -10076,7 +10046,46 @@ mod user_copy_fault_tests {
             return Err(11);
         }
         say(b"[ mount-authority ] the holder unmounted and mounted neofs\n");
-=======
+        Ok(())
+    }
+
+    pub fn run() -> i32 {
+        match steps() {
+            Ok(()) => {
+                say(b"[ mount-authority ] PASS\n");
+                0
+            }
+            Err(code) => {
+                say(b"[ mount-authority ] FAIL\n");
+                code
+            }
+        }
+    }
+}
+
+/// user-copy-fixup, the `user_copy_fault` scenario: syscalls whose user
+/// buffer faults return EFAULT instead of halting the kernel. Three buffers:
+/// a page that was mapped and then unmapped (`hole`), one that starts 8 bytes
+/// before it in a mapped page (`crossing`), and a read-only page (`ro`, for
+/// the kernel's writes). Output paths: SYS_HANDLE_INFO's record, SYS_READDIR's
+/// entry and its cursor. Input path: SYS_WRITE to stdout. Each must be
+/// EFAULT; then a well-formed call still works. Returns 0, or the first
+/// failed step.
+#[cfg(feature = "user-copy-fault-test")]
+mod user_copy_fault_tests {
+    use super::*;
+    use libneo::{
+        EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_HANDLE_INFO,
+        SYS_READDIR, SYS_WRITE, raw3, raw4, sys_chan_create, sys_open, sys_vm_map, sys_vm_protect,
+        sys_vm_unmap,
+    };
+
+    const PAGE: usize = 4096;
+
+    fn say(line: &[u8]) {
+        sys_write(1, line.as_ptr(), line.len());
+    }
+
     fn expect_efault(r: i64, step: i32) -> Result<(), i32> {
         if r == EFAULT { Ok(()) } else { Err(step) }
     }
@@ -10148,26 +10157,17 @@ mod user_copy_fault_tests {
         if r != 0 {
             return Err(40);
         }
->>>>>>> theirs
         Ok(())
     }
 
     pub fn run() -> i32 {
         match steps() {
             Ok(()) => {
-<<<<<<< ours
-                say(b"[ mount-authority ] PASS\n");
-                0
-            }
-            Err(code) => {
-                say(b"[ mount-authority ] FAIL\n");
-=======
                 say(b"[ user-copy ] PASS: every faulting copy returned EFAULT\n");
                 0
             }
             Err(code) => {
                 say(b"[ user-copy ] FAIL\n");
->>>>>>> theirs
                 code
             }
         }

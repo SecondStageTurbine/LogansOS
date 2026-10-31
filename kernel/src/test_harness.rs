@@ -1292,11 +1292,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-net-tick-retransmit",
     feature = "neo-test-tcp-listen-bounds",
     feature = "neo-test-exit-codes-bounded",
-<<<<<<< ours
     feature = "neo-test-mount-authority",
-=======
     feature = "neo-test-user-copy-fault",
->>>>>>> theirs
     feature = "neo-test-vault-phase-b",
     feature = "neo-test-arthur-grant-revoke",
     feature = "neo-test-sys-wait-blocking",

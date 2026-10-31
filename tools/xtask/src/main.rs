@@ -4326,11 +4326,13 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
-<<<<<<< ours
         name: "mount_authority",
         feature: "neo-test-mount-authority",
         user_feature: Some("mount-authority-test"),
-=======
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // user-copy-fixup: syscalls whose user buffer is unmapped, crosses
         // into an unmapped page, or is read-only return EFAULT, and the
         // kernel keeps running. Control:
@@ -4339,7 +4341,6 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "user_copy_fault",
         feature: "neo-test-user-copy-fault",
         user_feature: Some("user-copy-fault-test"),
->>>>>>> theirs
         ignored: false,
         limine_kaslr: None,
     },

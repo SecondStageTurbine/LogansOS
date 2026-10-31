@@ -81,13 +81,10 @@ user-copy-bounds-test = []
 socket-teardown-test = []
 # OT-91: the exit_codes_bounded scenario.
 exit-codes-test = []
-<<<<<<< ours
 # Dexter #187 item 3a: the mount_authority scenario.
 mount-authority-test = []
-=======
 # user_copy_fault: neo-init makes the calls; the worker has no role.
 user-copy-fault-test = []
->>>>>>> theirs
 sys-wait-blocking = []
 sys-wait-wnohang = []
 sys-wait-already-exited = []
