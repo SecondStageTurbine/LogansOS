@@ -1,5 +1,6 @@
 # OT-61 C2.3b: build the vendored html5ever + selectors closure for
-# x86_64-unknown-neoplutarch.
+# x86_64-unknown-neoplutarch. OT-61 C3a: and the private C/C++ runtime
+# (neo-crt: musl + libc++ compiled with clang), job crt-build.
 #
 # The closure's build scripts (web_atoms' atom tables) and proc macros
 # (cssparser-macros, derive_more-impl, phf_macros) run at build time. J.c.'s
@@ -19,6 +20,9 @@ on:
     paths:
       - 'third_party/ot61-browser/**'
       - 'userland/servo-closure-smoke/**'
+      - 'userland/neo-crt/**'
+      - 'userland/cxx-runtime-smoke/**'
+      - 'third_party/ot61-crt/**'
       - 'userland/neoplutarch-std-overlay/**'
       - 'userland/neo-std-pal/**'
       - 'userland/x86_64-unknown-neoplutarch.json'
@@ -26,6 +30,7 @@ on:
       - 'scripts/ci-disk-guard.sh'
       - 'tools/xtask/**'
       - 'rust-toolchain.toml'
+      - 'Dockerfile'
 
 env:
   CARGO_HTTP_MULTIPLEXING: "false"
@@ -104,3 +109,79 @@ jobs:
           bash scripts/ci-disk-guard.sh clean
           target userland/servo-closure-smoke/target userland/std-real-smoke/target
           .rustup-home .cargo-home
+
+  # In the dev container (Dockerfile), on the QEMU-shard runners that have
+  # Docker: the same pinned clang the QEMU gate builds cxx_runtime_smoke
+  # with, never whatever the runner happens to have (the #261 bounce: this
+  # job was red wherever a runner lacked clang).
+  crt-build:
+    name: neo-crt C/C++ runtime (x86_64-unknown-neoplutarch)
+    runs-on: [self-hosted, qemu-shard]
+    timeout-minutes: 60
+
+    env:
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare container cache directories
+        run: mkdir -p .home .rustup-home .cargo-home
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The same per-runner layer cache as ci.yml's QEMU shards, keyed on the
+      # Dockerfile alone.
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-${{ runner.name }}
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Build dev container (with buildx cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.name }}
+          cache-to: type=local,dest=/tmp/.buildx-cache-new-${{ runner.name }},mode=max
+
+      - name: Rotate buildx cache
+        run: |
+          rm -rf /tmp/.buildx-cache-${{ runner.name }}
+          mv /tmp/.buildx-cache-new-${{ runner.name }} /tmp/.buildx-cache-${{ runner.name }}
+
+      - name: Pinned Rust toolchain, in the container
+        run: |
+          if [ ! -x ".rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin/cargo" ]; then
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview \
+                --target x86_64-unknown-none
+          fi
+
+      # The container's clang (NEO_CRT_CLANG, set by the Dockerfile).
+      - name: xtask ot61-crt-build (overlay std + neo-crt + smoke + A4 checks)
+        run: |
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            neo \
+            bash -c '"$NEO_CRT_CLANG" --version | head -1 && cargo run -p xtask -- ot61-crt-build'

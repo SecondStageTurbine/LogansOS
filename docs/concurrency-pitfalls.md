@@ -4599,3 +4599,32 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
 - **Open.** Input-focus receive and stdin (above): a sibling's unmap after the check loses the event or
   bytes; the loss stays inside that process.
 
+### CP-100 — A C library's "unlocked until threads exist" streams, in a process whose threads aren't its own
+
+- **Shape.** musl starts the standard streams unlocked (`stdout`/`stderr` have `lock = -1`) and turns locking
+  on in `pthread_create` (`libc.threaded`, `__stdio_*` locks). That is sound in a process where only
+  `pthread_create` makes threads. In a bundle process the threads are std's (`std::thread::spawn` over
+  `SYS_THREAD_CREATE`), and any of them can call into C. neo-crt compiles none of musl's pthread code, so
+  locking never turns on. Two threads in `printf` on the same stream then share `__fwritex`'s static buffer
+  with no lock: a run with no newline overruns the buffer (two threads, a 600-byte string each). The
+  outcome is memory corruption next to the buffer, not just interleaved text.
+- **The general form.** A runtime that keys a safety mode on "has this program made a thread yet?" breaks
+  when the program's threads come from somewhere the runtime can't see: a host language's thread API, a
+  foreign pool, a callback from another runtime's thread.
+- **Guard (#261, C3a).**
+  - neo-crt's `c/stdout.c` and `c/stderr.c` are musl's with `.lock = 0`, so every `FLOCK` locks, with or
+    without pthreads.
+  - `__lockfile`/`__unlockfile` are Rust (`userland/neo-crt/src/lib.rs`): an owner table under a std
+    `Mutex` and `Condvar`, keyed by the stream's address, with musl's contract (1 = this call took the lock,
+    0 = this thread already holds it). musl's own versions need `__pthread_self()->tid` and its futex,
+    which neo-crt doesn't have.
+  - The other half of the same gap: libc++ is built `_LIBCPP_HAS_NO_THREADS` in C3a (`shared_ptr` counts
+    not atomic, `call_once` unsynchronised), so no multi-threaded C++ until C3b's pthread rebuild (C3a THINK
+    §6.1, a hard rule).
+- **Discriminators (`cxx_runtime_smoke`).**
+  - `ok(16)`: a thread holds stdout's lock through `__lockfile`, and a second thread's `fputs` to stdout
+    must not return for 200 ms, then return once the lock is let go; the holder taking it again gets 0.
+    Control: musl's `stdout.c` (`lock = -1`) makes the `fputs` return at once, `FAIL(16)`.
+  - `ok(17)`: six threads print 600-byte runs with no newline at once (the bounce's repro).
+- **Source.** The PM's AAG on #261 (2026-10-31). Principle: musl's `__stdio_*` locking and `libc.threaded`
+  (`src/thread/pthread_create.c`), read for the design only.
