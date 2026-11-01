@@ -1731,3 +1731,15 @@ None bounces. Notes kept for the merge reports and follow-ups:
 - **Seats A-D restart as fresh cloud sessions on this repo**; the old sessions (stuck on the rename) are left as they
   were, with their work already pushed to the archive.
 - **J.c.: at least one seat on the browser at all times** (seat D, OT-61; it never idles or moves to other lanes).
+
+### 2026-11-01 ~16:55 EDT: an escaped defect found by the preview image; merges since the move
+
+- **Escaped defect, fixed:** the product image panicked at boot (CSPRNG init) because `rdrand_u64` treated RDRAND's
+  carry flag backwards. Every gated kernel is `neo-test`, which seeds the DRBG with a fixed seed, so no gate reached
+  `Csprng::init`. Found by Seat G's boot check of the preview VM image (#44), the first CI boot of a product kernel.
+  Fixed in #43 (Chad's cross-family review PASS, with an independent carry harness); the `rng-seed-boot` job is the
+  promoted scenario. CLAUDE.md's hermeticity note is corrected.
+- **Merged since the move to the public repo (2026-10-31 evening):** #19, #1, #37 (Dexter's Lane 2), #34, #38, #39,
+  #12, #9, #20, #31, #5, #32, #13 (user-copy-fixup, CP-99), #43, and #30 (USB mass storage, carrying #23).
+- **Process:** every kernel PR gets a cross-family review on the relay box before merge; merge-ready PRs are gated
+  together in a PM batch (`claude/pm-batch-N`) so one merge doesn't invalidate the others' gates.
