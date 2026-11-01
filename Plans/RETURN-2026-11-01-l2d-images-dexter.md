@@ -6,6 +6,8 @@
 **Head (the THINK artifact; this RETURN's parent):** `e4f8d05f3`.
 **Kernel-touching:** no — this relay changes no code at all. The deliverable is one design THINK.
 
+*Revision 2 (Relay 254) is appended at the end; it names the current base and head.*
+
 ## Delivered
 
 | Item | Path | Notes |
@@ -119,3 +121,81 @@ Push CI:       not applicable (docs/Plans only; path-ignored)
    gate, and the falsification tests; the PM/PL decide whether to open the lane.
 4. **Disk reclaim.** After the PM merges: `cargo clean` in `~/workers/dexter` if desired; do
    not delete the worktree.
+
+## Revision 2 (Relay 254, answering Chad's #41 review)
+
+**Answers:** `Plans/DISPATCH-2026-11-01-relays-252-254.md`, §254. **Reviewed by:** Chad,
+`origin/codex/pr41-review-chad:Plans/RETURN-2026-11-01-pr41-review-chad.md` (relay 251).
+**Branch:** `dexter/l2d-images-think` (same branch, rebased). **Base:** `origin/main` @
+`65b42f3882943d237f44f95e6b9054e19b7c1b4e`.
+**New THINK head (this RETURN's parent):** `fa423c6dfe91238d434364f0d9380a23e19b4694`.
+
+SHA mapping after the rebase (the branch was rewritten to arrive ff-clean; content of the
+relay-250 commits is unchanged):
+
+| Commit | Old SHA | New SHA |
+|---|---|---|
+| THINK (relay 250) | `e4f8d05f3` | `999b6765f` |
+| RETURN (relay 250) | `6bc1a74db` (branch head Chad reviewed) | `5465cddbe` |
+| THINK rev 2 (this relay) | — | `fa423c6df` |
+
+### The three FAILs, and what changed
+
+1. **FAIL — per-image/per-session enforcement is overstated.** Fixed in §5.2 and §5.3 (plus
+   §1.4, §5.4). The document now separates four properties with their real scope:
+   the 16 MiB decoded cap and the 32 MiB encoded cap are enforced by the viewer on **every**
+   build (including the product desktop); the reader's process isolation is a kernel property
+   on every build; the per-process frame account is enforced **only on a `mem-quota` kernel**,
+   and the product desktop does not enable that feature (`kernel/Cargo.toml:118,227-237`). It
+   also says plainly that the 64 MiB is the **viewer's own account**, not a whole-session
+   ceiling — the WM is unlimited root and its planes are not charged to the viewer. The product
+   claim is narrowed to "per-image cap + process containment"; a hard product ceiling is named
+   as an L2d-1 prerequisite (enable `mem-quota` in `desktop`) or a later rung, for the PM/PL.
+2. **FAIL — the quota discriminator does not prove the stated cause.** §7.3 item 6 is now three
+   legs over `quota_2000x2000.png` (decoded `16,000,000` B = 15.26 MiB, **under** the 16 MiB
+   cap, so `TooLarge` cannot be the cause): Q1 is the 64 MiB control and prints the measured
+   `sys_mem_info` baseline; the gate checks `baseline_bytes + 16,000,000 > 16 MiB` so the
+   negative leg is valid. Q2 (16 MiB) passes the size check and is refused by
+   `Vec::try_reserve_exact(16_000_000)` with `ENOMEM` — an account refusal, not a size refusal.
+   Q3 keeps the 2048²/32 MiB case but recasts it honestly as the infallible decoder's allocator
+   abort (exit 137), contained by the process boundary. F6 is updated to match.
+3. **FAIL — one spawn citation is not the claimed file-cap template.** The Lens at
+   `desktop_session.rs:5454-5486` opens a directory with `LOOKUP|READDIR` (`:5462-5466`) and
+   uses plain `sys_spawn` (`:5482`); it derives no file `READ` cap and passes no budget. All
+   four cites (§1.3, §4.1, §7.1, §8) now point at `permission.rs:238-250` for the derived
+   `USE`-only cap and `libneo/src/lib.rs:1336-1367` for `sys_spawn_budgeted`, and label the
+   Lens only as the fd-slot layout example (`:5474-5481`).
+
+### One further correction found while fixing FAIL 1
+
+`SYS_SPAWN_BUDGETED` and `SYS_MEM_INFO` are behind `#[cfg(feature = "mem-quota")]`
+(`kernel/src/arch/x86_64/syscall.rs:1086-1104`) and fall to `_ => ENOSYS` (`:1364`) without it.
+Rev 1's pseudocode called `sys_spawn_budgeted` unconditionally, which would fail on the product
+desktop. §1.4 and §4.1 now require `sys_spawn_budgeted` on a `mem-quota` kernel and plain
+`sys_spawn` otherwise.
+
+Consequently, rev 1's summary item 6 ("an over-budget decode fails with `ENOMEM`") is corrected
+in the THINK: a refused direct kernel charge is `ENOMEM`, but heap growth inside the vendored
+decoder takes the allocator's OOM path (exit 137) unless the caller used a fallible allocation.
+The containment claim (the WM survives) holds either way; the `ENOMEM` claim does not.
+
+### Revision 2 verification
+
+| Check | Result |
+|---|---|
+| `git fetch origin` + rebase | branch rebased onto `origin/main` @ `65b42f388`; ff-clean |
+| Diff vs `origin/main` | `docs/THINK-2026-11-01-l2d-images-in-the-desktop.md` + this RETURN; no code |
+| Code changes | none — no `kernel/`, `tools/`, `userland/`, `Cargo.*` touched |
+| Line-number audit | every changed citation re-checked against `65b42f388` (only `permission.rs` moved, +12) |
+| SPDX | THINK and RETURN both still start with `<!-- SPDX-License-Identifier: CC-BY-4.0 -->` |
+| Personal-details scan | no local paths, LAN addresses, MACs, hostnames or emails in either file |
+| `worker-close-gate.sh` | not run: no code to fmt/test/clippy; CI is path-ignored for `docs/**` and `Plans/**` |
+
+```
+Branch:        dexter/l2d-images-think
+Base:          origin/main @ 65b42f388  (ff-clean)
+THINK rev 2:   fa423c6df  (1 file)
+This RETURN:   1 file, on top of the THINK
+Kernel-touching: no
+Push CI:       not applicable (docs/Plans only; path-ignored)
+```
