@@ -1331,9 +1331,10 @@ extern "C" fn syscall_dispatch(
         SYS_TEST_KERNEL_SPIN => sys_test_kernel_spin_impl(a0),
         #[cfg(feature = "neo-test-threads-exit-group")]
         SYS_TEST_TAIL_HOLD => {
-            // CP-99: the flag must be a writable user word now (the tail's
-            // write is also fault-tolerant, for an unmap after this).
-            match validate_user_buf(a0, 4).and_then(|()| probe_user_writable(a0 as *mut u8, 4)) {
+            // CP-99: the flag must be mapped user-writable now (checked in
+            // the page tables, not written); the tail's write is also
+            // fault-tolerant, for an unmap after this.
+            match validate_user_buf(a0, 4).and_then(|()| check_user_writable(a0 as *mut u8, 4)) {
                 Ok(()) => crate::sched::process::arm_tail_hold_for_test(a0),
                 Err(e) => e,
             }
@@ -1564,32 +1565,31 @@ fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), i64> {
     }
 }
 
-/// Check that every page of the user range `dst..dst+len` can be written,
-/// without changing it: one byte of each page is read and written back
-/// through the fault-tolerant copy. A syscall that consumes kernel state
-/// (a joined thread, a received datagram or input event) runs this BEFORE
-/// consuming, so a buffer that is unmapped or read-only is `EFAULT` with
-/// nothing taken. A sibling thread that unmaps the buffer after this check
-/// can still make the final copy fault (EFAULT then, after the consume): the
-/// loss is that process's own, from racing its own syscall.
-fn probe_user_writable(dst: *mut u8, len: usize) -> Result<(), i64> {
+/// Check, without touching it, that every page of the user range
+/// `dst..dst+len` is mapped user-writable in the caller's address space
+/// (`Pmap::translate_user`, a lock-free walk of its page tables). Used before
+/// an action that can't be undone, so a buffer that is unmapped or
+/// read-only is `EFAULT` first. It is only a check: a sibling thread can
+/// unmap or protect the buffer right after it, so the final copy still goes
+/// through the fault-tolerant routine and its error is still handled.
+fn check_user_writable(dst: *mut u8, len: usize) -> Result<(), i64> {
     if len == 0 {
         return Ok(());
     }
+    let pmap = pmap_for_caller()?;
     let start = dst as u64;
     let last = start + (len as u64 - 1);
-    let mut page = start;
-    loop {
-        let p = page as *mut u8;
-        let mut byte = 0u8;
-        user_copy(&mut byte, p, 1)?;
-        user_copy(p, &byte, 1)?;
-        let next = (page & !0xFFF) + 0x1000;
-        if next > last {
-            return Ok(());
+    let mut page = start & !0xFFF;
+    while page <= last {
+        if pmap
+            .translate_user(x86_64::VirtAddr::new(page), true)
+            .is_none()
+        {
+            return Err(EFAULT);
         }
-        page = next;
+        page += 0x1000;
     }
+    Ok(())
 }
 
 /// Read a `T` from user memory (any bytes are a valid `T`: plain data).
@@ -5556,10 +5556,12 @@ fn sys_net_tcp_enable_tls_impl(h: u32, key_ptr: *mut u8, key_len: usize) -> i64 
     };
     // CP-99: the caller's copy of the key is wiped BEFORE TLS is installed,
     // and a wipe that faults is EFAULT with nothing installed. Every page of
-    // it is probed first, so a key that is partly read-only is left whole
-    // (not half wiped).
+    // it is checked writable in the page tables first, so a key that is
+    // partly read-only is left whole (not half wiped). A sibling's unmap
+    // after the check can still leave it half wiped; TLS is then still not
+    // installed.
     if let Err(e) =
-        probe_user_writable(key_ptr, key_len).and_then(|()| zero_user_bytes(key_ptr, key_len))
+        check_user_writable(key_ptr, key_len).and_then(|()| zero_user_bytes(key_ptr, key_len))
     {
         tls_record::wipe_secret(&mut key_material);
         return e;
@@ -5761,21 +5763,15 @@ fn sys_socket_recv_impl(h: u32, buf: *mut u8, len: usize, flags: u32) -> i64 {
     if let Err(e) = validate_user_buf(buf as u64, len) {
         return e;
     }
-    // CP-99: probe the output before anything is consumed (`probe_user_writable`).
-    if let Err(e) = probe_user_writable(buf, len) {
-        return e;
-    }
+    // CP-99: each receive copies to the user buffer BEFORE the bytes leave
+    // the socket's queue (`recv_stream_with`/`recv_from_with`, under the
+    // socket lock); a copy that faults is EFAULT with nothing consumed.
     match tcp_socket_lookup(h, socket_rights::READ) {
         Ok(socket) => {
-            let mut tmp = alloc::vec![0u8; len];
             for _ in 0..1024 {
-                match socket.recv_stream(&mut tmp) {
-                    Ok(n) => {
-                        if let Err(e) = copy_kernel_bytes_to_user(buf, &tmp[..n]) {
-                            return e;
-                        }
-                        return n as i64;
-                    }
+                match socket.recv_stream_with(len, |bytes| copy_kernel_bytes_to_user(buf, bytes)) {
+                    Ok(Ok(n)) => return n as i64,
+                    Ok(Err(e)) => return e,
                     Err(TcpError::WouldBlock) => crate::sched::yield_now(),
                     Err(e) => return tcp_errno(e),
                 }
@@ -5789,15 +5785,10 @@ fn sys_socket_recv_impl(h: u32, buf: *mut u8, len: usize, flags: u32) -> i64 {
         Ok(socket) => socket,
         Err(e) => return e,
     };
-    let mut tmp = alloc::vec![0u8; len];
     for _ in 0..1024 {
-        match socket.recv(&mut tmp) {
-            Ok(n) => {
-                if let Err(e) = copy_kernel_bytes_to_user(buf, &tmp[..n]) {
-                    return e;
-                }
-                return n as i64;
-            }
+        match socket.recv_from_with(len, |bytes, _src| copy_kernel_bytes_to_user(buf, bytes)) {
+            Ok(Ok(n)) => return n as i64,
+            Ok(Err(e)) => return e,
             Err(SocketError::WouldBlock) => crate::sched::yield_now(),
             Err(e) => return socket_errno(e),
         }
@@ -5834,45 +5825,34 @@ fn sys_socket_recvfrom_impl(
         if let Err(e) = validate_user_buf(addr_out as u64, cap) {
             return e;
         }
-        if let Err(e) = probe_user_writable(addr_out, cap)
-            .and_then(|()| probe_user_writable(addr_len_io.cast(), core::mem::size_of::<usize>()))
-        {
-            return e;
-        }
         cap
     } else {
         0
     };
-    // CP-99: probe the output before anything is consumed (`probe_user_writable`).
-    if let Err(e) = probe_user_writable(buf, len) {
-        return e;
-    }
     let socket = match socket_lookup(h, socket_rights::RECV) {
         Ok(socket) => socket,
         Err(e) => return e,
     };
-    let mut tmp = alloc::vec![0u8; len];
-    for _ in 0..1024 {
-        match socket.recv_from(&mut tmp) {
-            Ok((n, src)) => {
-                if wants_addr {
-                    let mut encoded = [0u8; 20];
-                    let encoded_len = encode_socket_addr(src, &mut encoded);
-                    if addr_capacity < encoded_len {
-                        return EINVAL;
-                    }
-                    if let Err(e) = copy_kernel_bytes_to_user(addr_out, &encoded[..encoded_len]) {
-                        return e;
-                    }
-                    if let Err(e) = copy_kernel_usize_to_user(addr_len_io, encoded_len) {
-                        return e;
-                    }
-                }
-                if let Err(e) = copy_kernel_bytes_to_user(buf, &tmp[..n]) {
-                    return e;
-                }
-                return n as i64;
+    // CP-99: the address, its length and the data are all copied out BEFORE
+    // the datagram leaves the queue (`recv_from_with`, under the socket
+    // lock): a copy that faults, or an address buffer too small for the
+    // source (EINVAL), leaves the datagram queued.
+    let deliver = |bytes: &[u8], src: socket::SocketAddr| -> Result<(), i64> {
+        if wants_addr {
+            let mut encoded = [0u8; 20];
+            let encoded_len = encode_socket_addr(src, &mut encoded);
+            if addr_capacity < encoded_len {
+                return Err(EINVAL);
             }
+            copy_kernel_bytes_to_user(addr_out, &encoded[..encoded_len])?;
+            copy_kernel_usize_to_user(addr_len_io, encoded_len)?;
+        }
+        copy_kernel_bytes_to_user(buf, bytes)
+    };
+    for _ in 0..1024 {
+        match socket.recv_from_with(len, deliver) {
+            Ok(Ok(n)) => return n as i64,
+            Ok(Err(e)) => return e,
             Err(SocketError::WouldBlock) => crate::sched::yield_now(),
             Err(e) => return socket_errno(e),
         }
@@ -6603,8 +6583,11 @@ fn sys_read_impl(fd: u32, buf: *mut u8, len: usize) -> i64 {
     }
     #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
     if fd == STDIN_FD {
-        // CP-99: a byte taken from stdin is gone, so probe first.
-        if let Err(e) = probe_user_writable(buf, min(len, SYS_WRITE_CHUNK)) {
+        // CP-99: a byte taken from stdin is gone and can't be put back, so
+        // check the buffer first (page tables, no write). A sibling's unmap
+        // after the check still loses the bytes read: stdin is outside the
+        // no-partial-state guarantee.
+        if let Err(e) = check_user_writable(buf, min(len, SYS_WRITE_CHUNK)) {
             return e;
         }
         return sys_read_stdin(buf, len);
@@ -8898,8 +8881,12 @@ fn sys_input_focus_recv_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
     if let Err(e) = validate_user_buf(out as u64, out_len) {
         return e;
     }
-    // CP-99: probe the output before anything is consumed (`probe_user_writable`).
-    if let Err(e) = probe_user_writable(out, out_len) {
+    // CP-99: an event popped from the route can't be put back (Super+L's
+    // re-check has to follow the pop, so the copy can't go first), so check
+    // the output first (page tables, no write). A sibling's unmap after the
+    // check still loses that event: input-focus receive is outside the
+    // no-partial-state guarantee.
+    if let Err(e) = check_user_writable(out, out_len) {
         return e;
     }
     #[cfg(all(feature = "usb-hid", feature = "atrium-input-routing"))]

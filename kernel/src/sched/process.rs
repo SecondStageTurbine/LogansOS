@@ -5503,7 +5503,7 @@ pub fn tail_hold_for_test() {
         return;
     }
     let flag = TAIL_HOLD_FLAG.load(Ordering::Acquire);
-    // `flag` was validated as a 4-byte user range (and probed writable) when
+    // `flag` was validated as a 4-byte user range (and checked writable) when
     // armed, and this is the arming thread, so its address space is the
     // active one. The write goes through the fault-tolerant copy (CP-99): if
     // the page was unmapped since, nobody can see the go, so don't hold.
