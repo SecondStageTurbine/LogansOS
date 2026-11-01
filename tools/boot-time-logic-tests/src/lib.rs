@@ -424,17 +424,18 @@ mod tests {
     /// 48-byte `EFI_MEMORY_DESCRIPTOR`s (UEFI 2.10 §7.2; type u32 at 0,
     /// physical start u64 at 8, virtual start at 16, page count at 24,
     /// attribute at 32, then 8 bytes of a newer descriptor's tail):
-    /// - EfiReservedMemoryType (0) at 0x6b92_0000, 16 pages: the FBPT's home;
+    /// - EfiReservedMemoryType (0) at 0x6b92_0000, 16 pages, write-back
+    ///   cacheable (attribute 0xF): the FBPT's home;
     /// - EfiMemoryMappedIO (11) at 0xfee0_0000, 1 page: Janus's input;
     /// - EfiACPIMemoryNVS (10) at 0x7f00_0000, 2 pages.
     #[rustfmt::skip]
     const EFI_MAP: [u8; 144] = [
-        // reserved, 0x6b920000, 16 pages
+        // reserved, 0x6b920000, 16 pages, attribute UC|WC|WT|WB (0xF)
         0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x92, 0x6b,  0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
         0x10, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x0f, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
         // MMIO, 0xfee00000, 1 page
         0x0b, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
@@ -479,5 +480,74 @@ mod tests {
         map[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
         let n = efi_firmware_regions(&map, 48, &mut out);
         assert_eq!(&out[..n], &[(0x7f00_0000, 0x2000)]);
+    }
+
+    /// Janus's second #16 re-check: a reserved (type 0) descriptor is also
+    /// how firmware describes hardware the OS must not touch. His input:
+    /// type 0 at 0xfee00000, one page, attribute 0. Reserved and runtime
+    /// data count as firmware RAM only when write-back cacheable.
+    #[test]
+    fn reserved_hardware_is_not_firmware_ram() {
+        let mut map = [0u8; 48];
+        map[8..16].copy_from_slice(&0xfee0_0000u64.to_le_bytes());
+        map[24..32].copy_from_slice(&1u64.to_le_bytes());
+        let mut out = [(0u64, 0u64); 4];
+        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 0);
+        assert!(!in_firmware_memory(0xfee0_0000, 8, &out[..0]));
+        // Uncacheable only (a typical MMIO attribute, with RUNTIME): refused.
+        map[32..40].copy_from_slice(&0x8000_0000_0000_0001u64.to_le_bytes());
+        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 0);
+        // Write-back cacheable: RAM the firmware reserved.
+        map[32..40].copy_from_slice(&0x0fu64.to_le_bytes());
+        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 1);
+        // The rule itself: ACPI reclaim/NVS always; 0 and 6 only with WB;
+        // nothing else, whatever the attribute.
+        assert!(efi_is_firmware_ram(9, 0) && efi_is_firmware_ram(10, 0));
+        assert!(!efi_is_firmware_ram(0, 0x1) && efi_is_firmware_ram(0, 0x8));
+        assert!(!efi_is_firmware_ram(6, 0) && efi_is_firmware_ram(6, 0xf));
+        for kind in [1, 2, 3, 4, 5, 7, 8, 11, 12, 13] {
+            assert!(!efi_is_firmware_ram(kind, 0xf), "type {kind}");
+        }
+    }
+
+    /// Janus's second #16 re-check: the kernel cast the `Response` wrapper,
+    /// so it read (revision, map, size) as (map, size, descriptor size).
+    /// Built here as the real limine 0.6.3 type, from its five words:
+    /// revision 0, map 0xffff_8000_0010_0000, size 4800, descriptor size 48,
+    /// version 1.
+    #[test]
+    fn the_memmap_fields_come_from_the_response_data() {
+        let words: [u64; 5] = [0, 0xffff_8000_0010_0000, 4800, 48, 1];
+        // SAFETY: `Response<T>` is `repr(C)` { revision: u64, data: T } and
+        // `EfiMemmapRespData` is four u64s: five words in all.
+        let resp: &limine::request::Response<limine::request::EfiMemmapRespData> =
+            unsafe { &*(words.as_ptr() as *const _) };
+        let data: &limine::request::EfiMemmapRespData = resp;
+        assert_eq!(data.desc_size, 48);
+        // SAFETY: `data` is the response data, four readable u64s.
+        let fields = unsafe { efi_memmap_fields(data) };
+        assert_eq!(fields, (0xffff_8000_0010_0000, 4800, 48));
+        // The old cast (the wrapper itself) is off by one word.
+        // SAFETY: the wrapper is five readable u64s.
+        assert_eq!(
+            unsafe { efi_memmap_fields(resp) },
+            (0, 0xffff_8000_0010_0000, 4800)
+        );
+    }
+
+    #[test]
+    fn the_memmap_address_lands_in_the_hhdm() {
+        let hhdm = 0xffff_8000_0000_0000;
+        // The protocol's HHDM address is used as given.
+        assert_eq!(
+            efi_memmap_virt(0xffff_8000_0010_0000, hhdm),
+            Some(0xffff_8000_0010_0000)
+        );
+        // A physical one (the crate's base-revision-3 note) is moved in.
+        assert_eq!(
+            efi_memmap_virt(0x10_0000, hhdm),
+            Some(0xffff_8000_0010_0000)
+        );
+        assert_eq!(efi_memmap_virt(0x10_0000, u64::MAX), None);
     }
 }

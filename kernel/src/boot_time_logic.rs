@@ -187,13 +187,57 @@ pub fn fbpt_address(fpdt: &[u8], phys_bits: u32) -> Result<u64, FpdtError> {
     Ok(address)
 }
 
-/// UEFI memory types (UEFI 2.10 §7.2, `EFI_MEMORY_TYPE`) that hold firmware
-/// tables in RAM: reserved (0, where EDK2 puts the FBPT), runtime-services
-/// data (6), ACPI reclaim (9) and ACPI NVS (10). Not MMIO (11), MMIO port
-/// space (12) or unusable memory (8): Limine's own map folds those into its
-/// one RESERVED type (Janus's #16 re-check), which is why the raw UEFI map is
-/// read instead.
+/// UEFI memory types (UEFI 2.10 §7.2, `EFI_MEMORY_TYPE`) that can hold
+/// firmware tables in RAM: reserved (0, where EDK2 puts the FBPT),
+/// runtime-services data (6), ACPI reclaim (9) and ACPI NVS (10). Not MMIO
+/// (11), MMIO port space (12) or unusable memory (8): Limine's own map folds
+/// those into its one RESERVED type (Janus's #16 re-check), which is why the
+/// raw UEFI map is read instead.
 pub const EFI_FIRMWARE_RAM_TYPES: [u32; 4] = [0, 6, 9, 10];
+/// `EFI_MEMORY_WB`: the region supports write-back caching.
+pub const EFI_MEMORY_WB: u64 = 0x8;
+
+/// Whether a descriptor of `kind` with `attribute` is firmware RAM. ACPI
+/// reclaim and NVS are RAM by definition. Reserved (0) and runtime data (6)
+/// are used for hardware ranges too (UEFI: "reserved ... the OS must not
+/// access", Janus's second #16 re-check), so they count only when the
+/// firmware also says the range is write-back cacheable, which RAM it
+/// allocated as reserved is and device registers are not.
+pub fn efi_is_firmware_ram(kind: u32, attribute: u64) -> bool {
+    match kind {
+        9 | 10 => true,
+        0 | 6 => attribute & EFI_MEMORY_WB != 0,
+        _ => false,
+    }
+}
+
+/// The three fields of Limine's EFI memory-map response data, in order:
+/// the map's address, its size, and the descriptor size (`repr(C)`, the
+/// `limine_efi_memmap_response` after its `revision`). `data` must be the
+/// response's data (`&**response`), not the `Response` wrapper, whose first
+/// word is the revision (Janus's second #16 re-check found that cast).
+///
+/// # Safety
+///
+/// `data` points at a `limine_efi_memmap_response`'s data: at least three
+/// readable `u64`s.
+pub unsafe fn efi_memmap_fields<T>(data: &T) -> (u64, u64, u64) {
+    let raw = data as *const T as *const u64;
+    // SAFETY: per the contract.
+    unsafe { (*raw, *raw.add(1), *raw.add(2)) }
+}
+
+/// The map's virtual address: the protocol gives an HHDM address (Limine
+/// v8 PROTOCOL.md, "EFI Memory Map Feature"); a value below the HHDM is
+/// taken as physical and moved into it (the crate's note for base revision
+/// 3 says physical). `None` if the sum overflows.
+pub fn efi_memmap_virt(address: u64, hhdm_offset: u64) -> Option<u64> {
+    if address >= hhdm_offset {
+        Some(address)
+    } else {
+        address.checked_add(hhdm_offset)
+    }
+}
 /// The smallest UEFI memory descriptor: type, pad, physical start, virtual
 /// start, page count, attribute.
 pub const EFI_DESCRIPTOR_MIN: usize = 40;
@@ -215,7 +259,8 @@ pub fn efi_firmware_regions(map: &[u8], desc_size: usize, out: &mut [(u64, u64)]
             break;
         }
         let kind = u32::from_le_bytes([desc[0], desc[1], desc[2], desc[3]]);
-        if !EFI_FIRMWARE_RAM_TYPES.contains(&kind) {
+        let attribute = u64::from_le_bytes(desc[32..40].try_into().unwrap_or([0; 8]));
+        if !EFI_FIRMWARE_RAM_TYPES.contains(&kind) || !efi_is_firmware_ram(kind, attribute) {
             continue;
         }
         let base = u64::from_le_bytes(desc[8..16].try_into().unwrap_or([0; 8]));

@@ -26,24 +26,36 @@ const FIRMWARE_REGIONS_MAX: usize = 128;
 static FIRMWARE_REGIONS: Once<([(u64, u64); FIRMWARE_REGIONS_MAX], usize)> = Once::new();
 
 /// Capture [`FIRMWARE_REGIONS`] from Limine's EFI memory map response.
-/// Base revision 3: the response's map pointer is a physical address (the
-/// crate's `memmap()` would treat it as virtual), so it is read raw and
-/// reached through the HHDM, only if that page is mapped.
+/// The protocol gives the map's address in the HHDM; the crate's note says
+/// physical for base revision 3, so either form is accepted
+/// (`efi_memmap_virt`), and it is read only if its pages are mapped.
 pub fn capture_firmware_regions() {
     FIRMWARE_REGIONS.call_once(|| {
         let mut out = [(0u64, 0u64); FIRMWARE_REGIONS_MAX];
         let Some(resp) = crate::EFI_MEMMAP_REQUEST.response() else {
             return (out, 0);
         };
-        // SAFETY: `EfiMemmapRespData` is `repr(C)`: map pointer, map size,
+        // The response's data, not the `Response` wrapper (whose first word
+        // is the revision).
+        let data: &limine::request::EfiMemmapRespData = resp;
+        // SAFETY: `EfiMemmapRespData` is `repr(C)`: map address, map size,
         // descriptor size, descriptor version, each 8 bytes.
-        let raw = resp as *const _ as *const u64;
-        let (phys, size, desc_size) = unsafe { (*raw, *raw.add(1), *raw.add(2)) };
-        if phys == 0 || size == 0 || size > 1 << 20 {
+        let (address, size, desc_size) = unsafe { boot_time_logic::efi_memmap_fields(data) };
+        if address == 0 || size == 0 || size > 1 << 20 {
             return (out, 0);
         }
-        let start = crate::mm::phys_to_virt(x86_64::PhysAddr::new(phys));
-        let end = crate::mm::phys_to_virt(x86_64::PhysAddr::new(phys + size - 1));
+        let Some(virt) = boot_time_logic::efi_memmap_virt(address, crate::mm::hhdm_offset()) else {
+            return (out, 0);
+        };
+        let Some(last) = virt.checked_add(size - 1) else {
+            return (out, 0);
+        };
+        let (Ok(start), Ok(end)) = (
+            x86_64::VirtAddr::try_new(virt),
+            x86_64::VirtAddr::try_new(last),
+        ) else {
+            return (out, 0);
+        };
         if !crate::mm::kernel_virt_mapped(start) || !crate::mm::kernel_virt_mapped(end) {
             return (out, 0);
         }
