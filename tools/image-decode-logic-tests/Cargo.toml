@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "image-decode-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dependencies]
+# The API under test (Lane 2b), in its own host-only crate. The KAT deliberately
+# does not go through libneo's `image-decode` feature: enabling that feature in
+# the workspace build would unify std into every no_std userland binary that
+# links libneo (duplicate panic_impl). The libneo re-export is a one-line
+# `pub use`; this crate is the implementation under test.
+neo-image-decode = { path = "../../userland/neo-image-decode" }
+sha2 = { version = "0.10", default-features = false }
