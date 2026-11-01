@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-image-decode"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Lane 2b: host-only image decode (PNG + JPEG) to RGBA8, with a size cap"
+
+[lib]
+crate-type = ["rlib"]
+test = false
+bench = false
+
+[dependencies]
+# Vendored Lane 2b codecs. `png` 0.18 is std-only; `zune-jpeg` is alloc-only and
+# is used with no default features here.
+png = { path = "../../third_party/png" }
+zune-core = { path = "../../third_party/zune-core", default-features = false }
+zune-jpeg = { path = "../../third_party/zune-jpeg", default-features = false }
