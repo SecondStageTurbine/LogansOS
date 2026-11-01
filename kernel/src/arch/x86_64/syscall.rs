@@ -7539,12 +7539,22 @@ fn sys_boot_times_impl(out: u64, len: usize) -> i64 {
         return e;
     }
     let record = encode(&crate::boot_time::snapshot());
-    // SAFETY: validated user range of exactly BOOT_TIMES_V1_LEN bytes; SMAP
-    // opened for the copy.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, BOOT_TIMES_V1_LEN)
-    });
-    0
+    // The copy goes through the caller's page tables under the pmap lock
+    // (`Pmap::write_user_bytes`), never through the user mapping from ring 0:
+    // an unmapped, read-only or half-mapped buffer (including one another
+    // thread unmaps mid-call) is EFAULT with nothing written, never a
+    // kernel-mode page fault.
+    let proc = match current_process_for_syscall() {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let Some(pmap) = proc.pmap.as_ref() else {
+        return EFAULT;
+    };
+    match pmap.write_user_bytes(out, &record) {
+        Ok(()) => 0,
+        Err(_) => EFAULT,
+    }
 }
 
 /// The test harness's view of `SYS_BOOT_TIMES`, through its own checks.
