@@ -13,12 +13,21 @@
 //! on, so a CPU it parks holds no IRQ-safe lock (those are held with
 //! interrupts off), and nothing it was doing with interrupts off is cut
 //! short. It can hold a plain spin lock taken with interrupts on (the log
-//! sink's, for one), so after K4 the BSP prints only to the UART
-//! (`serial::enter_stopped_world`) and takes no shared lock, allocates
-//! nothing, maps nothing and sends no TLB shootdown (the parked CPUs would
-//! never acknowledge it). A CPU the NMI parks can hold anything; the UART
-//! lock is then forced (`serial::enter_stopped_world(true, false)`). K5-K7 are
-//! written to need none of the rest.
+//! sink's, for one); a CPU the NMI parks can hold anything. So after K4 the
+//! shutdown CPU takes no shared lock at all: it prints to the UART without
+//! its lock (`serial::enter_stopped_world`), allocates nothing, maps nothing,
+//! reads the power plan from a copy taken before K4, and sends no TLB
+//! shootdown: K4 first closes shootdowns for good
+//! (`tlb_shootdown::close_for_stop`, CP-64).
+//!
+//! **Holdouts.** A CPU that takes neither the STOP IPI nor the NMI (wedged in
+//! an NMI handler, or never answering) is still running, so nothing after K4
+//! may assume this is the only CPU. With holdouts the UART is still written
+//! lock-free (bytes may interleave, nothing waits), K5's masking, which
+//! assumes one CPU at the I/O APIC and PCI config ports, is skipped, and K7
+//! goes straight to the power-off or reset, which ends every CPU. Each wait
+//! is bounded twice: by the PM timer and by a poll count
+//! ([`POLLS_PER_US`]), so a frozen timer can't hold K4.
 //!
 //! **Parked, not discarded** (THINK §10). A parked CPU's per-CPU state is
 //! left alone, so a later resume path can restart it.
@@ -30,10 +39,14 @@ use crate::arch::x86_64::{apic, per_cpu};
 /// How long K4 waits for the STOP IPI's parks before the NMI, and again for
 /// the NMI's.
 pub const STOP_WAIT_US: u64 = 100_000;
-/// A bound on each wait's polls that needs no timer (Janus relay 228 item 2:
-/// a stuck-at-zero PM timer must not stall K4). Each poll reads the parked
-/// flags (and, through `spin_us`, the PM timer's port): seconds at most.
-pub const STOP_WAIT_MAX_POLLS: u64 = 5_000_000;
+
+/// The independent deadline (review #6 item 2): each wait also ends after
+/// `STOP_WAIT_US * POLLS_PER_US` polls, each with a write to the POST port
+/// (about 1 µs on real hardware), so a PM timer that reads a constant can't
+/// hold K4 forever. 4 polls per µs keeps the timed wait the one that ends
+/// first on a working timer (a TCG vCPU polls fast) while bounding a frozen
+/// one at well under a second.
+const POLLS_PER_US: u64 = 4;
 
 const NOT_PARKED: u8 = 0;
 const PARKED_BY_IPI: u8 = 1;
@@ -47,9 +60,7 @@ static STOPPER: AtomicU32 = AtomicU32::new(u32::MAX);
 static PARKED: [AtomicU8; per_cpu::MAX_CPUS] =
     [const { AtomicU8::new(NOT_PARKED) }; per_cpu::MAX_CPUS];
 
-/// K4's outcome, one bit per CPU index. A non-zero `holdouts` means a CPU is
-/// still running: the shutdown then takes the degraded path (K5 skipped,
-/// UART output only when its lock is free; `acpi::shutdown::stop_world`).
+/// K4's outcome, one bit per CPU index.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StopReport {
     /// The CPUs asked to stop (every started CPU but this one).
@@ -77,21 +88,25 @@ pub fn stop_others(spin_us: impl Fn(u64, &mut dyn FnMut() -> bool) -> bool) -> S
         apic::send_stop_ipi(cpu);
     }
     let all_parked = |targets: u64| bits(targets).all(|cpu| parked(cpu) != NOT_PARKED);
-    // Each wait ends when every target parked, when `spin_us`'s timer says
-    // the time is up, or after STOP_WAIT_MAX_POLLS polls, whichever is first.
-    let wait = |targets: u64| {
+    let targets = report.targets;
+    let wait = |spin_us: &dyn Fn(u64, &mut dyn FnMut() -> bool) -> bool| {
         let mut polls = 0u64;
         spin_us(STOP_WAIT_US, &mut || {
+            if all_parked(targets) {
+                return true;
+            }
             polls += 1;
-            all_parked(targets) || polls >= STOP_WAIT_MAX_POLLS
+            // SAFETY: the POST port; a write there has no effect but time.
+            unsafe { x86_64::instructions::port::Port::<u8>::new(0x80).write(0) };
+            polls >= STOP_WAIT_US * POLLS_PER_US
         });
         all_parked(targets)
     };
-    if !wait(report.targets) {
+    if !wait(&spin_us) {
         for cpu in bits(report.targets).filter(|&cpu| parked(cpu) == NOT_PARKED) {
             apic::send_nmi_ipi(cpu);
         }
-        wait(report.targets);
+        wait(&spin_us);
     }
     for cpu in bits(report.targets) {
         match parked(cpu) {
@@ -120,8 +135,8 @@ pub extern "x86-interrupt" fn stop_ipi(_frame: x86_64::structures::idt::Interrup
     if holdout_test_ignores_ipi() {
         return;
     }
-    #[cfg(feature = "neo-test-ot90-stop-final-holdout")]
-    if final_holdout_test_cpu() {
+    #[cfg(feature = "neo-test-ot90-stop-wedged")]
+    if is_highest_cpu() {
         return;
     }
     park(PARKED_BY_IPI);
@@ -134,9 +149,9 @@ pub fn park_from_nmi() {
     if !STOPPING.load(Ordering::Acquire) {
         return;
     }
-    #[cfg(feature = "neo-test-ot90-stop-final-holdout")]
-    if final_holdout_test_cpu() {
-        return;
+    #[cfg(feature = "neo-test-ot90-stop-wedged")]
+    if is_highest_cpu() {
+        wedged_in_nmi();
     }
     match apic::cpu_from_own_lapic_id() {
         Some(cpu) if cpu != STOPPER.load(Ordering::Acquire) => park(PARKED_BY_NMI),
@@ -155,6 +170,30 @@ fn park(by: u8) -> ! {
     }
 }
 
+/// `ot90_stop_wedged`: whether this is the highest-numbered started CPU.
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+fn is_highest_cpu() -> bool {
+    let Some(me) = apic::cpu_from_own_lapic_id() else {
+        return false;
+    };
+    let highest = (0..per_cpu::MAX_CPUS as u32)
+        .rev()
+        .find(|&cpu| apic::cpu_registered(cpu))
+        .unwrap_or(0);
+    me == highest && me != STOPPER.load(Ordering::Acquire)
+}
+
+/// `ot90_stop_wedged`: the highest AP, in its NMI handler, takes the UART
+/// lock and never lets go or acknowledges (an NMI-blocked CPU wedged
+/// mid-dump, the review's case): a holdout holding `SERIAL`.
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+fn wedged_in_nmi() -> ! {
+    crate::drivers::console::serial::hold_forever_for_test();
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 /// `ot90_stop_holdout`: the highest-numbered AP ignores the STOP IPI once, as
 /// a CPU with interrupts off for the whole wait would, so the NMI must park
 /// it.
@@ -169,19 +208,4 @@ fn holdout_test_ignores_ipi() -> bool {
         .find(|&cpu| apic::cpu_registered(cpu))
         .unwrap_or(0);
     me == highest && !IGNORED.swap(true, Ordering::AcqRel)
-}
-
-/// `ot90_stop_final_holdout` (Janus relay 228 item 2): the highest-numbered
-/// AP ignores both the STOP IPI and the NMI, so it is still running when K4
-/// gives up; the shutdown must take the degraded path and still reach S5.
-#[cfg(feature = "neo-test-ot90-stop-final-holdout")]
-fn final_holdout_test_cpu() -> bool {
-    let Some(me) = apic::cpu_from_own_lapic_id() else {
-        return false;
-    };
-    let highest = (0..per_cpu::MAX_CPUS as u32)
-        .rev()
-        .find(|&cpu| apic::cpu_registered(cpu))
-        .unwrap_or(0);
-    me == highest && me != STOPPER.load(Ordering::Acquire)
 }

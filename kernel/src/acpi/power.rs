@@ -156,13 +156,33 @@ pub fn spin_us(fadt: Option<&FadtPower>, us: u64, done: &mut dyn FnMut() -> bool
     }
 }
 
-/// OT-90 P3b: the FADT timer fields [`spin_us`] uses, read before K4.
+/// OT-90 P3b: the power plan, copied before K4 (review #6 item 5: K7 took
+/// `CACHE`'s lock after K4, which a parked CPU could hold). `SNAPSHOT_SET`
+/// is published after `SNAPSHOT`, by the one shutdown CPU.
+#[cfg(feature = "power-stop-cpus")]
+static mut SNAPSHOT: Option<Cached> = None;
+#[cfg(feature = "power-stop-cpus")]
+static SNAPSHOT_SET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// OT-90 P3b: copy the power plan before K4, and return the FADT timer
+/// fields [`spin_us`] uses. From then on [`cached`] reads the copy and takes
+/// no lock.
 #[cfg(feature = "power-stop-cpus")]
 pub fn stop_timer() -> Option<FadtPower> {
-    cached().map(|c| c.fadt)
+    let c = *CACHE.lock();
+    // SAFETY: written once, here, by the shutdown CPU before K4 and before
+    // `SNAPSHOT_SET` is published; read only after it is.
+    unsafe { *core::ptr::addr_of_mut!(SNAPSHOT) = c };
+    SNAPSHOT_SET.store(true, core::sync::atomic::Ordering::Release);
+    c.map(|c| c.fadt)
 }
 
 fn cached() -> Option<Cached> {
+    #[cfg(feature = "power-stop-cpus")]
+    if SNAPSHOT_SET.load(core::sync::atomic::Ordering::Acquire) {
+        // SAFETY: published by `stop_timer`, never written again.
+        return unsafe { *core::ptr::addr_of!(SNAPSHOT) };
+    }
     *CACHE.lock()
 }
 

@@ -1029,8 +1029,10 @@ const SCENARIO: &str = "ot90_stuck_sink_restart";
 const SCENARIO: &str = "ot90_stop_cpus";
 #[cfg(feature = "neo-test-ot90-stop-holdout")]
 const SCENARIO: &str = "ot90_stop_holdout";
-#[cfg(feature = "neo-test-ot90-stop-final-holdout")]
-const SCENARIO: &str = "ot90_stop_final_holdout";
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+const SCENARIO: &str = "ot90_stop_shootdown";
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+const SCENARIO: &str = "ot90_stop_wedged";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1586,7 +1588,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-straggler-forced",
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
-    feature = "neo-test-ot90-stop-final-holdout",
+    feature = "neo-test-ot90-stop-shootdown",
+    feature = "neo-test-ot90-stop-wedged",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -4823,9 +4826,11 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     #[cfg(any(
         feature = "neo-test-ot90-stop-cpus",
         feature = "neo-test-ot90-stop-holdout",
-        feature = "neo-test-ot90-stop-final-holdout"
+        feature = "neo-test-ot90-stop-wedged"
     ))]
     run_ot90_stop_cpus();
+    #[cfg(feature = "neo-test-ot90-stop-shootdown")]
+    run_ot90_stop_shootdown();
 
     #[cfg(any(
         feature = "neo-test-ot90-stuck-sink-off",
@@ -39615,9 +39620,65 @@ fn run_ot90_straggler_forced() -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
-    feature = "neo-test-ot90-stop-final-holdout"
+    feature = "neo-test-ot90-stop-wedged"
 ))]
 fn run_ot90_stop_cpus() -> ! {
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// `ot90_stop_shootdown`: shootdowns the sender completed.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_SENT: AtomicU64 = AtomicU64::new(0);
+/// Set by K4 (`acpi::shutdown::stop_world`) just before it closes
+/// shootdowns: the sender starts then, so the storm overlaps K4 and nothing
+/// earlier (a long storm on TCG starves the other vCPUs' acknowledgements).
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_GO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// The sender: once K4 says go, a full-flush shootdown to every other ready
+/// CPU (the shutdown CPU among them), interrupts off around each (the
+/// review's IF=0 sender), one after another with a yield between.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+extern "C" fn ot90_storm_sender() -> ! {
+    while !OT90_STORM_GO.load(Ordering::Acquire) {
+        crate::sched::yield_now();
+    }
+    loop {
+        crate::arch::x86_64::disable_interrupts();
+        crate::mm::tlb_shootdown::shootdown(None, crate::mm::tlb_shootdown::other_cpus_mask());
+        OT90_STORM_SENT.fetch_add(1, Ordering::Release);
+        crate::arch::x86_64::enable_interrupts();
+        crate::sched::yield_now();
+    }
+}
+
+/// Review #6 item 1 (CP-64): power-off while the highest AP sends
+/// shootdowns at every other CPU, the shutdown CPU among them. K4 starts the
+/// sender, waits until it has completed some, then closes shootdowns: it must
+/// take the sender lock (waiting out the one in flight and acknowledging it)
+/// before it stops answering, and the AP must park by the STOP IPI. A
+/// shootdown timeout panics the run.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+fn run_ot90_stop_shootdown() -> ! {
+    use crate::arch::x86_64::per_cpu::MAX_CPUS;
+    let me = crate::arch::x86_64::per_cpu::current_cpu_id();
+    let Some(ap) = (0..MAX_CPUS as u32)
+        .rev()
+        .find(|&cpu| cpu != me && crate::sched::scheduler::cpu_scheduler_ready(cpu))
+    else {
+        fail("reason=no_ap");
+    };
+    let t = crate::sched::thread::Thread::new("ot90-storm", ot90_storm_sender);
+    if crate::sched::scheduler::place_thread_on_cpu(t, ap).is_err() {
+        fail("reason=storm_place_failed");
+    }
+    frame("INFO", &alloc::format!("stage=storm_ready ap={ap}"));
     frame("INFO", "stage=power_off_requested");
     crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
     loop {

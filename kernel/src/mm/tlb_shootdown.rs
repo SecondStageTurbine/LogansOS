@@ -78,20 +78,18 @@ pub fn quiesce_local_cpu() -> LocalShootdownQuiesce {
     }
 }
 
-/// OT-90 K4 (CP-64, Janus relay 228 item 1): the shutdown CPU leaves the
-/// shootdown protocol for good before it stops servicing IPIs. As
-/// [`quiesce_local_cpu`]: the sender lock is taken first (its wait keeps
-/// interrupts on, so an in-flight sender targeting this CPU still gets its
-/// ACK and finishes), then IF is masked and this CPU's readiness withdrawn.
-/// Unlike quiesce, the lock is never released: no shootdown can start on any
-/// CPU from here on (a would-be sender spins on the lock with interrupts on,
-/// so it still takes the STOP IPI and parks), and the shutdown never returns
-/// (K7 is S5 or a reset). Nothing after K4 maps or unmaps memory.
+/// OT-90 P3b, K4 (review #6 item 1, CP-64): close TLB shootdowns for good
+/// before the shutdown CPU stops servicing IPIs. Taking the sender lock
+/// (interruptibly, as every sender does) waits out any sender in flight, so
+/// this CPU acknowledges its request first; the lock is then never released,
+/// so no sender starts again (a CPU that tries waits with interrupts on and
+/// takes the STOP IPI). Interrupts go off and this CPU leaves the ready set
+/// while no sender can race the change. Returns with IF=0, for good.
 #[cfg(feature = "power-stop-cpus")]
-pub fn freeze_for_shutdown() {
+pub fn close_for_stop() {
     let barrier = acquire_shootdown_lock();
     arch_x86_64::disable_interrupts();
-    let _ = per_cpu::set_current_tlb_shootdown_ready(false);
+    per_cpu::set_current_tlb_shootdown_ready(false);
     core::mem::forget(barrier);
 }
 

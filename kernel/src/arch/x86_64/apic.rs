@@ -280,9 +280,9 @@ fn send_fixed_ipi(target_cpu: u32, vector: u8) {
     write_reg(APIC_ICR_LOW, icr_low);
 }
 
-/// OT-90 P3b: `send_fixed_ipi`'s body for any ICR low word (the NMI).
-/// A copy, so a kernel without `power-stop-cpus` compiles `send_fixed_ipi`
-/// exactly as before (Janus relay 228 item 4: feature-off identity).
+/// OT-90 P3b: [`send_fixed_ipi`]'s body for any ICR low word (the NMI's
+/// delivery mode). A separate copy, so the feature-off `send_fixed_ipi` is the
+/// unchanged function (review #6 item 4: feature-off binary identity).
 #[cfg(feature = "power-stop-cpus")]
 fn send_ipi_low(target_cpu: u32, icr_low: u32) {
     let target = lapic_id_for_cpu(target_cpu);
