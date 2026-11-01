@@ -338,6 +338,8 @@ const SCENARIO: &str = "net_tick_retransmit";
 const SCENARIO: &str = "tcp_listen_bounds";
 #[cfg(feature = "neo-test-exit-codes-bounded")]
 const SCENARIO: &str = "exit_codes_bounded";
+#[cfg(feature = "neo-test-user-copy-fault")]
+const SCENARIO: &str = "user_copy_fault";
 #[cfg(feature = "neo-test-file-cap-derive-grant")]
 const SCENARIO: &str = "file_cap_derive_grant";
 #[cfg(feature = "neo-test-vault-phase-b")]
@@ -1291,6 +1293,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-tcp-listen-bounds",
     feature = "neo-test-exit-codes-bounded",
     feature = "neo-test-mount-authority",
+    feature = "neo-test-user-copy-fault",
     feature = "neo-test-vault-phase-b",
     feature = "neo-test-arthur-grant-revoke",
     feature = "neo-test-sys-wait-blocking",
@@ -3163,6 +3166,37 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
             exit_code,
             frames_before,
             frames_after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+
+    // user-copy-fixup: neo-init's syscalls with unmapped, page-crossing and
+    // read-only buffers each return EFAULT; reaching here at all means none
+    // of their faults halted the kernel.
+    #[cfg(feature = "neo-test-user-copy-fault")]
+    {
+        let exit_code = _ipc_smoke();
+        // CP-99: neo-init's parallel-unmap IPC leg. 7 = the hold ran (1), a
+        // sibling's unmap was seen waiting on the peer's lock (2), and the
+        // frame was still mapped when the copy finished (4).
+        let race = crate::ipc::copy_race_test::RESULT.load(Ordering::Acquire);
+        if exit_code == 0 && race != 7 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ipc_unmap_race result={}",
+                SCENARIO,
+                race
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+        if exit_code == 0 {
+            pass(
+                "user_copy_fault=ok unmapped=efault crossing=efault read_only=efault ipc_unmap_race=held kernel_alive=1",
+            );
+        }
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=user_copy_fault code={}",
+            SCENARIO,
+            exit_code
         );
         debug_exit(EXIT_FAILURE);
     }
@@ -41466,6 +41500,11 @@ fn run_exception_entry_flags() -> ! {
     // Error-code vectors continue with `mov rdi, rsp; and rsp, -16; call`, so
     // their body runs on a SysV-aligned stack (CP-46).
     const REALIGN: [u8; 8] = [0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8];
+    // The page fault's shim (`idt::page_fault_shim`) is longer: 102 bytes
+    // (two registered user-access instructions to compare), with its Rust
+    // path at 0x57. If it grows past this window the check fails closed (no
+    // match).
+    const PF_SCAN: usize = 112;
     // #DF, #TS, #NP, #SS, #GP, #PF, #AC, and #CP, #VC, #SX should they ever
     // be installed (not-present gates are skipped below).
     const ERROR_CODE_VECTORS: u32 = (1 << 8)
@@ -41639,15 +41678,32 @@ fn run_exception_entry_flags() -> ! {
             unmasked |= 1 << vector;
         }
         if ERROR_CODE_VECTORS & (1 << vector) != 0 {
-            // SAFETY: as above; the shim is longer than MASK + REALIGN.
-            let tail = unsafe {
-                core::slice::from_raw_parts(
-                    (handler as usize + MASK.len()) as *const u8,
-                    REALIGN.len(),
-                )
-            };
-            if tail != REALIGN {
-                unaligned |= 1 << vector;
+            let page_fault_shim = crate::arch::x86_64::idt::page_fault_shim as *const () as u64;
+            if vector == 14 && handler == page_fault_shim {
+                // CP-99: the page fault's shim checks for a user-copy fault
+                // between the mask and the realignment, so its Rust path
+                // (`pop rax`, then the realignment and the call) comes later.
+                // It must appear exactly once in the shim.
+                // SAFETY: as above; PF_SCAN bytes from the shim are kernel text.
+                let body = unsafe { core::slice::from_raw_parts(handler as *const u8, PF_SCAN) };
+                let hits = body[MASK.len()..]
+                    .windows(1 + REALIGN.len())
+                    .filter(|w| w[0] == 0x58 && w[1..] == REALIGN)
+                    .count();
+                if hits != 1 {
+                    unaligned |= 1 << vector;
+                }
+            } else {
+                // SAFETY: as above; the shim is longer than MASK + REALIGN.
+                let tail = unsafe {
+                    core::slice::from_raw_parts(
+                        (handler as usize + MASK.len()) as *const u8,
+                        REALIGN.len(),
+                    )
+                };
+                if tail != REALIGN {
+                    unaligned |= 1 << vector;
+                }
             }
         }
         // Installing a shim resets the gate options, so the IST slots that
