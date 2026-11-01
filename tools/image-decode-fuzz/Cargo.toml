@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "image-decode-fuzz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Lane 2c: deterministic host fuzzing for inflate, PNG and JPEG decoding"
+
+[[bin]]
+name = "image-decode-fuzz"
+path = "src/main.rs"
+
+[dependencies]
+# The vendored codecs and the one decode API they sit behind (Lane 2a/2b).
+# `neo-image-decode` is the implementation `libneo` re-exports as
+# `libneo::image_decode`; this harness links it directly because libneo is
+# `no_std` and the host harness is a std binary (the same split the Lane 2b KAT
+# crate uses).
+miniz_oxide = { path = "../../third_party/miniz_oxide" }
+neo-image-decode = { path = "../../userland/neo-image-decode" }
