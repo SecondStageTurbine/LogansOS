@@ -1765,6 +1765,11 @@ fn scenario_timeout(name: &str) -> Duration {
         // A9-D: two 64-token KAT generations under TCG; measured 186 s. (420 s
         // moved the shard balance enough to pair arthur_memory_encrypted with
         // arthur_real_brain_boot.)
+        // PROBE (seat D, not for merge): neofs_large_write pinned at the
+        // 180 s default on GitHub-hosted TCG runners (main's own gate, run
+        // 41244601019). 600 s tells a slow run (it passes; the log gives the
+        // elapsed time) from a hang (it pins at 600 s).
+        "neofs_large_write" => Duration::from_secs(600),
         "desktop_busy_boot" => Duration::from_secs(300),
         "login_kdf_timing" => Duration::from_secs(900),
         // Each boot of the VM-layout sign-in scenarios.
