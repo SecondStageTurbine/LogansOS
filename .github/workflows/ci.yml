@@ -5,6 +5,16 @@ on:
   # touch kernel/, tools/xtask/, scenario definitions, or Cargo.*. Routine branch
   # pushes stay cheap; the coder/PM triggers this on the branch ref before merge.
   workflow_dispatch:
+    inputs:
+      # OT-58 (docs/THINK-2026-11-01-ot58-tiered-gate.md): `full` is the gate
+      # as it always was (4 QEMU shards). `quick` runs one QEMU job instead:
+      # the 31-scenario smoke list plus the scenarios the branch adds or edits
+      # (`cargo neo-test --tier quick`), within a 12-minute budget.
+      tier:
+        description: "full (4 QEMU shards) or quick (the smoke tier)"
+        type: choice
+        options: [full, quick]
+        default: full
   # Nightly schedule REMOVED 2026-10-17 (PL decision): it re-ran CI on an
   # unchanged `main` daily — including through months with no work — and the
   # QEMU half has had no runner since ~2026-10-13. The QEMU gate now runs only
@@ -16,8 +26,11 @@ on:
   # jobs on the same two self-hosted runners and queued ahead of it. The gate
   # (required before every merge) runs the full host + QEMU set on the exact
   # head, so nothing merges unchecked.
+  # OT-58 S2: PRs also run on every push (`synchronize`) and get the quick
+  # tier's QEMU smoke job. On GitHub-hosted runners a re-run costs only a
+  # free-tier slot, and the concurrency group below cancels the stale run.
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - 'Plans/**'
       - 'docs/**'
@@ -89,6 +102,9 @@ jobs:
       actions: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
+      # OT-58: the QEMU matrix. `["quick"]` (one smoke job) for a PR or a
+      # `tier: quick` dispatch; the four shards otherwise.
+      shards: ${{ steps.check.outputs.shards }}
     steps:
       - id: check
         env:
@@ -102,10 +118,18 @@ jobs:
             [ "$last" = "${{ github.sha }}" ] && skip=true
           fi
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = pull_request ] || [ "${{ inputs.tier }}" = quick ]; then
+            echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+          fi
 
   neo-test:
-    name: QEMU Integration Tests (shard ${{ matrix.shard }}/4)
-    needs: [nightly-skip, host-checks, product-build]
+    name: ${{ matrix.shard == 'quick' && 'QEMU smoke (quick tier)' || format('QEMU Integration Tests (shard {0}/4)', matrix.shard) }}
+    # OT-58 S2: no longer waits for host-checks and product-build. On hosted
+    # runners a slot is the scarce thing, not minutes, and the quick tier's
+    # critical path is its smoke job alone (THINK 2.1).
+    needs: [nightly-skip]
     # HERMETICITY (gate invariant): every scenario in this 4-shard QEMU gate
     # MUST be hermetic — no dependence on the live internet or any other
     # host-variable input. A scenario that needs real external network is
@@ -129,7 +153,7 @@ jobs:
     # (A per-commit "run-on-main-only-if-kernel-changed" refinement was evaluated
     # and rejected: Cargo.lock churns for host-crate additions too, so path-based
     # kernel detection is leaky in the exact host-only case this fix targets.)
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     # Public repo: GitHub-hosted by default. A self-hosted pool can be opted in with the
     # QEMU_RUNNER_LABELS repo variable (e.g. ["self-hosted","qemu-shard"]); never for fork PRs.
     runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
@@ -165,8 +189,8 @@ jobs:
       # result so a real failure isn't masked by a sibling shard dying first.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    timeout-minutes: 240
+        shard: ${{ fromJSON(needs.nightly-skip.outputs.shards) }}
+    timeout-minutes: ${{ matrix.shard == 'quick' && 45 || 240 }}
 
     steps:
       # Pre-flight RAM guard (INFRA, not a test). Fails FAST with correct
@@ -239,6 +263,10 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The quick tier diffs against the base branch (gate-plan,
+          # --changed-from), so it needs history; a shard does not.
+          fetch-depth: ${{ matrix.shard == 'quick' && 0 || 1 }}
 
       - name: Prepare container cache directories
         run: mkdir -p .docker .home .rustup-home .cargo-home
@@ -378,8 +406,34 @@ jobs:
             -e NEO_SMP=4 \
             -e CARGO_HTTP_MULTIPLEXING \
             -e CARGO_NET_RETRY \
+            -e SHARD="${{ matrix.shard }}" \
+            -e GATE_BASE="origin/${{ github.base_ref || 'main' }}" \
             neo \
-            cargo neo-test --shard ${{ matrix.shard }}/4
+            bash -c '
+              set -e
+              if [ "$SHARD" = quick ]; then
+                mkdir -p target/neo-test
+                git config --global --add safe.directory /workspace
+                cargo xtask gate-plan --base "$GATE_BASE" | tee target/neo-test/gate-plan.txt
+                exec cargo neo-test --tier quick --changed-from "$GATE_BASE" --keep-going
+              fi
+              exec cargo neo-test --shard "$SHARD/4"
+            '
+
+      # OT-58 S2: the quick tier's budget (THINK 2.1). Twelve minutes of
+      # scenario wall time; over it, the job is red and names the slowest, so a
+      # slow scenario is a decision, not a silent drift.
+      - name: Quick-tier budget (12 min of scenarios)
+        if: matrix.shard == 'quick'
+        run: |
+          tsv=target/neo-test/timings.tsv
+          total=$(awk -F'\t' 'NR > 1 { s += $2 } END { printf "%d", s }' "$tsv")
+          echo "quick tier: ${total} s of scenario wall time (budget 720 s)"
+          if [ "$total" -gt 720 ]; then
+            echo "::error::quick tier over budget: ${total} s > 720 s. Slowest:"
+            tail -n +2 "$tsv" | sort -t$'\t' -k2,2 -rn | head -5
+            exit 1
+          fi
 
       # OT-58 S0: per-scenario timings (wall, QEMU, build) on the job's summary
       # page and as an artifact, pass or fail. The job-log API returns only the
