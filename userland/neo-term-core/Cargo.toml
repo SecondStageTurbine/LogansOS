@@ -13,3 +13,7 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
+# The VT parser and screen: vendored doy/vt100-rust (MIT) at fb0f54ec, with
+# its vendored alacritty/vte (Apache-2.0 OR MIT) at 89c9c22f; `std` off
+# (THINK L1a §9). See third_party/vt100/VENDORED.md.
+vt100 = { path = "../../third_party/vt100", default-features = false }

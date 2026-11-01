@@ -105,6 +105,12 @@ exclude = [
     "third_party/png",
     "third_party/zune-core",
     "third_party/zune-jpeg",
+    # Lane 1 L1a.2: vendored doy/vt100-rust (MIT) at fb0f54ec and its
+    # alacritty/vte dependency (Apache-2.0 OR MIT) at 89c9c22f, both with
+    # `std` off. Path dependencies of userland/neo-term-core only; the kernel
+    # never links them.
+    "third_party/vt100",
+    "third_party/vte",
     # Reserved for future phases:
     # "services/neo-inference",
     # "services/neo-models",

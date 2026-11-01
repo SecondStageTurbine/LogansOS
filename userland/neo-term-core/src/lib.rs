@@ -14,7 +14,9 @@
 //! - [`paste`]: the sanitizer and bracketing for the later clipboard rung
 //!   (§6.1).
 //!
-//! The VT parser and screen (vendored `vt100`) join in a later commit.
+//! - [`term`]: the VT parser and screen (vendored `vt100`, `std` off) with
+//!   the terminal's hooks, and the grid oracle's KATs (§5.3, §5.5).
+//!
 //! Userland only: the kernel never links it.
 
 #![cfg_attr(not(test), no_std)]
@@ -26,3 +28,4 @@ pub mod discipline;
 pub mod keys;
 pub mod page;
 pub mod paste;
+pub mod term;

@@ -24,6 +24,11 @@ around kibi's needs (a read with a timeout and a timeout-versus-EOF contract, a 
 word, the reset every child starts from, polled resize, handle kinds, `IsTerminal`); §5.3 gains kibi's key and grid
 rows; §8 gains two scenarios. Sections 3.3 and 3.4 swapped numbers so they read in order.
 
+**Revision 4 (2026-11-01), from L1a.2's build** (`neo-term-core`): two facts about the vendored `vt100` the KATs
+found. It drops invalid UTF-8 and C1 code points instead of drawing U+FFFD (§5.5 corrected). It keeps a pending
+wrap as the cursor one past the last column, so the answerback hook clamps a DSR 6n report to the last column, as
+xterm reports it (G4's KAT checks both). vt100's own fixtures are deferred (§5.2).
+
 ## 1. What L1a is, and where it sits
 
 L1a is the terminal app: a WM client whose window shows a VT text grid, running a child (first `neo-shell`) whose stdin
@@ -322,6 +327,9 @@ source: CUP, CUU/CUD/CUF/CUB, EL, `?25`, `?1049`, SGR 7 and 38;5, DSR 6n) plus t
 2. **Upstream's.** vt100's own fixtures (`tests/data/fixtures/*`, 68 files at `fb0f54e`: input plus expected screen),
    vendored with the crate as MIT test data and run as a second KAT. They test vt100 against itself, so they are a
    regression net for the vendored copy, not the oracle.
+   *Revision 4: deferred.* L1a.2 vendors `vt100` without its `tests/`, since running the fixtures needs its
+   serde-based harness. The hand-laid table (item 1) is the oracle either way; the fixtures are a later
+   regression-net step for whoever next updates the vendored copy.
 
 **The source.** `ctlseqs.txt` from xterm's maintainer's snapshot repository on GitHub, fetched raw with `git` on
 2026-11-01: `ThomasDickey/xterm-snapshots` at `5c75ead9a75d` (2026-10-11), sha256
@@ -396,7 +404,8 @@ of `6n` costs the child its own stdin, nothing else).
 
 KAT rows for: an unknown CSI final byte; OSC 52 set and query (no bytes out, grid unchanged); a CSI with 40
 parameters (vte caps them; the grid is unchanged); a truncated sequence at the end of a write followed by its rest in
-the next write (same grid as one write); invalid UTF-8 (U+FFFD cells).
+the next write (same grid as one write); invalid UTF-8 and C1 code points draw nothing (vt100 hands them to
+its `unhandled_char` callback, which the terminal ignores; revision 4, found by L1a.2's KAT).
 
 ## 6. The lock screen: no input reaches the terminal while it is up
 
