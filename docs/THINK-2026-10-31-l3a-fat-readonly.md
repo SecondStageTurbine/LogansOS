@@ -63,14 +63,15 @@ same images through `SYS_MOUNT`.
 | T1 | **The FAT type is decided only by the count of data clusters**: < 4085 FAT12, < 65525 FAT16, else FAT32 (MS FAT spec, "FAT Type Determination"). `mkfs.fat` can make "FAT32" volumes under 65525 clusters, which Windows reads as FAT16. rust-fatfs, in strict mode, refuses a BPB whose shape disagrees with the count. | Host KAT: one FAT12, one FAT16 and one FAT32 image each mount with the right `fat_type()`; a FAT32-shaped BPB with 60 000 clusters is refused with `Invalid`, not mis-read. |
 | T2 | **FAT12 entries straddle sector boundaries** (1.5 bytes each; an entry at byte offset 511 spans two sectors). A sector-at-a-time reader that ignores this returns wrong chains only for some files. | Host KAT: a FAT12 image with a file whose chain crosses the first FAT sector boundary reads back byte-exact. |
 | T3 | **Active FAT with mirroring off** (`BPB_ExtFlags`, FAT32 only). G2. | Host KAT: an image with ExtFlags = `0x0081` (mirroring off, FAT #1 active) and a deliberately stale FAT #0 reads the file through FAT #1. |
-| T4 | **Two dirty flags**, not one: FAT32 keeps "clean shutdown" (bit 27) and "hard error" (bit 26) in FAT[1]; Windows NT and Linux also use the BPB reserved byte (`0x25` on FAT12/16, `0x41` on FAT32). rust-fatfs reads only the BPB byte. Read-only mounts must **never clear or set either**. | Gate scenario: mount a volume marked dirty in both places, read, unmount; then hash sectors 0 and the first FAT sector and assert they are unchanged. Mount still succeeds read-only and the log says the volume is dirty. |
-| T5 | **A read-only session must not write.** rust-fatfs writes on `Drop` (`unmount_internal`: FSInfo flush, dirty flag) only if the session changed state, which a pure read doesn't. That holds only because of the library's internals, so we make it mechanical: the kernel's `IO` adapter for an L3a mount returns an error from every `write`. | Unit test on the adapter: `write` errors. Gate scenario: the T4 hash check also covers this. `FsOptions::update_accessed_date(false)` is asserted at the construction site. |
+| T4 | **Two dirty flags**, not one: FAT32 keeps "clean shutdown" (bit 27) and "hard error" (bit 26) in FAT[1] (FAT16: bits 15 and 14); Windows NT and Linux also use the BPB reserved byte (`0x25` on FAT12/16, `0x41` on FAT32). rust-fatfs reads only the BPB byte. Read-only mounts must **never clear or set either**. | The two indicators are discriminated **independently** (Chad's review): the mount reads both itself, read-only (the BPB byte through rust-fatfs's `status_flags()`, FAT[1] by reading the first FAT sector), and logs `fat: dirty bpb=B fat1=F`. Three fixtures, each patched by hand from a clean image (the patched bytes written out in the test): **BPB byte only** → `bpb=1 fat1=0`; **FAT[1] only** (clean-shutdown bit cleared) → `bpb=0 fat1=1`; **both** → `bpb=1 fat1=1`; and the clean image → `0 0`. Each mounts read-only and reads a file; after unmount, sectors 0, the first sector of each FAT copy and the FSInfo sector hash the same as before (gate scenario `phase3_fat32_readonly_no_write`, all four fixtures). Host KAT: the FAT[1] decoder on FAT16 and FAT32 entries, both bits, each alone. |
+| T5 | **A read-only session must not write.** rust-fatfs writes on `Drop` (`unmount_internal`: FSInfo flush, dirty flag) only if the session changed state, which a pure read doesn't. That holds only because of the library's internals, so we make it mechanical, by construction at the device boundary (§5, "Read-only, decided"). | The adapter's `write` returns `ReadOnly` (unit test); the scenario counts write attempts and expects 0; the T4 sector hashes are unchanged. `FsOptions::update_accessed_date(false)` is asserted at the construction site. |
 | T6 | **LFN edge cases** (Linux `vfat` namei comments; MS FAT spec, long-name chapter): orphaned LFN slots whose checksum doesn't match the short entry; LFN runs with a missing order number; `0xFFFF` padding after the `0x0000` terminator; names with UTF-16 surrogate pairs; a deleted entry (`0xE5`) in the middle of an LFN run. The rule: on any mismatch, fall back to the 8.3 name, never merge. | Host KAT over a hand-laid-out directory cluster (the byte oracle, laid out by hand, not by the writer): each case decodes to the expected name. Our `fat32.rs` already does checksum fallback; its LFN scenario stays as is. |
 | T7 | **Name matching**: lookup is case-insensitive for ASCII (and Windows upcases via its own table for non-ASCII); two entries can differ only in case only on a corrupted volume. | Host KAT: `README.TXT` is found as `readme.txt`; a non-ASCII name is found by exact match. |
 | T8 | **Directory and chain corruption**: cycles in the cluster chain; a chain pointing at cluster 0, 1, a bad cluster (`0x?FFFFFF7`) or past the end; a directory with `first_cluster` 0 that isn't `..`; a file whose size is longer than its chain. | Host KAT per case: an error (`Invalid`/`Io`), never a hang or a panic. A file shorter than its size reads the chain and then returns `Invalid` (not zero-fill). The existing cycle bound in `fat32.rs` is the model. |
 | T9 | **`..` with cluster 0 means the root** (FAT32 root is a real cluster, but `..` in a first-level directory still stores 0). | Covered by the existing `phase3_fat32_subdir_walk`; we keep refusing `..` in a lookup path as today. |
 | T10 | **Heap use from untrusted sizes** (G3, G4). | Host KAT: a BPB with `sectors_per_fat = 0xFFFF_FFFF` fails before any allocation larger than one sector. Reading a file larger than the kernel heap's budget for one request in 4 KiB chunks succeeds (streamed). |
 | T11 | **MBR vs superfloppy**: a stick may have no partition table (the FAT boot sector is at LBA 0, which also ends in `0x55AA`). The two look alike; Linux tells them apart by checking the boot sector's BPB fields for sanity before treating sector 0 as an MBR. | Belongs to G7, not L3a. Recorded here so the MBR rung starts from it. |
+| T13 | **Bad BPB geometry** (MS FAT spec, "Boot Sector and BPB"; Linux `fat_fill_super` checks; Chad's review): values that make the layout arithmetic meaningless, each of which a lenient reader turns into a divide by zero, an underflow or a wild read. | Host KAT per field, each on a hand-patched copy of a good FAT16 and FAT32 boot sector, each → `Invalid` with no panic and no read past sector 0: `bytes_per_sector` 0, 256, 768 (not a power of two) and 8192; `sectors_per_cluster` 0 and 3; `reserved_sectors` 0; `fats` 0 and 3; `root_entries` 0 on FAT16 and non-zero on FAT32; FAT12/16 `root_entries × 32` not a whole number of sectors; `total_sectors` (16 and 32 both zero, or both set and different); `sectors_per_fat` 0; and the geometry that leaves no data region (`reserved + fats × sectors_per_fat + root_sectors ≥ total_sectors`). The huge `sectors_per_fat` case stays in T10. |
 | T12 | **exFAT is not FAT.** SDXC cards (> 32 GB) ship exFAT. The boot sector says `EXFAT   ` at offset 3 and all BPB fields are zero. | Host KAT: an exFAT boot sector is refused with `Invalid` (clean refusal, no panic). exFAT itself is out of scope. |
 
 ## 5. Design: move FAT to the vendored rust-fatfs, keep the scenarios
@@ -93,14 +94,14 @@ Why replace and not extend:
 Pieces:
 
 1. **`kernel/src/fs/fat/` (new):** `BlockIo`, an implementation of rust-fatfs's `Read + Seek` (and `Write` that always
-   errors) over `Arc<dyn BlockDevice>`, with a small sector cache (one cluster or a few sectors; rust-fatfs reads the
+   errors) over a `ReadOnlyDevice` (below), not an `Arc<dyn BlockDevice>`, with a small sector cache (one cluster or a few sectors; rust-fatfs reads the
    FAT one entry at a time, which without a cache is one block request per entry). `FatMount`, the `MountedFs` impl.
    `FatInode`, the `Inode` impl, which keeps a path and re-opens through the `FileSystem` for each call (rust-fatfs's
    `File` borrows the `FileSystem`, so it can't be stored in an `Arc<dyn Inode>`).
 2. **`fs_type == 3`** dispatches to `FatMount::mount_readonly` when `fat-fs` is on. The rights mask stays exactly as
-   today (WRITE always denied; EXECUTE denied unless the exec flag). Kill-switch: with `fat-fs` off, `fs_type == 3`
-   returns `Invalid` and no FAT code is linked (§5 of the lanes THINK). The `neo-test-phase3-fat32*` features imply
-   `fat-fs`.
+   today (WRITE always denied; EXECUTE denied unless the exec flag). The `neo-test-phase3-fat32*` features imply
+   `fat-fs`. With `fat-fs` off, see item 3 (the earlier "returns `Invalid`" text is withdrawn; Chad's review found
+   the two items contradicting each other).
 3. **Keep `fat32.rs` as the kill-switch's previous layer (build decision, 2026-10-31).** With `fat-fs` off,
    `fs_type == 3` is the native driver exactly as before (not `Invalid`), so "off ≡ the previous layer" holds bit
    for bit, and a `phase3_fat32_native_control` scenario keeps it armed. Retiring `fat32.rs` is a later
@@ -111,10 +112,32 @@ Pieces:
    which was true for OT-87; OT-87's statement that the kernel never formats or rewrites FAT still holds through L3a,
    and L3b revisits it. Clippy and fmt still don't apply to the vendored source.
 
+### Read-only, decided (Chad's review): by construction at the device, by refusal at the library
+
+The dispatch asked for "no write path compiled". That can't hold at rust-fatfs's boundary: `FileSystem<IO>` requires
+`IO: ReadWriteSeek`, so the adapter must implement `Write`; the library won't build without one. What can hold, and
+does, is that **no code in the FAT module can reach a device write**:
+
+- `drivers::block` gains `ReadOnlyDevice`, a newtype over `Arc<dyn BlockDevice>` with a private field and only
+  `geometry()` and `read_block()`. `BlockIo` holds a `ReadOnlyDevice`, never the `Arc<dyn BlockDevice>` itself, so
+  `fs::fat` has no way to name `write_block`: the compiler refuses it (by construction).
+- The `Write` impl the library forces on `BlockIo` has nothing to write to; it returns `ReadOnly` (refusal), and in
+  `neo-test` builds counts the attempt.
+- Tests: a unit test that `BlockIo::write` returns `ReadOnly`; the gate scenario asserts 0 write attempts and the T4
+  sector hashes unchanged; and a grep-checkable invariant in the AAG checklist: `write_block` does not occur in
+  `kernel/src/fs/fat.rs`.
+
+#17 and #18 follow this: #18's `BlockIo` moves from `Arc<dyn BlockDevice>` to `ReadOnlyDevice`; #17's MBR view
+reads only (it registers partitions through the existing `Partition` wrapper, whose writes go through
+`GuardedDevice`, and the FAT path never asks for one).
+
 ### Kill-switch proof
 
-- `fat-fs` off: `fs_type == 3` is the native driver, as before; `fs::fat` and the `fatfs` dependency are not
-  compiled (`#[cfg(feature = "fat-fs")]`, an optional dependency).
+- `fat-fs` off: `fs_type == 3` is the native `fat32.rs` driver, exactly as before (one behavior, not `Invalid`);
+  `fs::fat` and the `fatfs` dependency are not compiled (`#[cfg(feature = "fat-fs")]`, an optional dependency).
+  The control that keeps it armed: `phase3_fat32_native_control`, the `phase3_fat32_mount_readonly` scenario built **without**
+  `fat-fs`, which must pass through the native driver (its log line `fat32: mounted` and no `fat: mounted`), so the
+  off branch is gated, not assumed.
 - `fat-fs` on, write path: every `write` reaches the adapter's error; the T4/T5 sector hashes prove nothing was
   written. Bit-for-bit equality to "the previous layer" here means the same nine scenario outputs as before the swap.
 
@@ -133,7 +156,7 @@ Pieces:
 - Host KATs for the MBR view (G7, now part of L3a, §6a): a hand-laid MBR sector written out byte by byte in the test
   (the byte oracle, independent of the parser), plus the T11 superfloppy cases.
 - The nine existing gate scenarios, unchanged, plus three new ones: `fat_fat16_mount_read` (a FAT16 image reads back
-  byte-exact), `fat_readonly_no_write` (the T4/T5 sector-hash check on a dirty-marked volume) and `fat_mbr_mount_read`
+  byte-exact), `phase3_fat32_readonly_no_write` (the T4/T5 sector-hash check on the four dirty fixtures) and `fat_mbr_mount_read`
   (an MBR-partitioned virtio disk, FAT32 partition at LBA 2048, mounted as `"deviceN:p1"`, reads back byte-exact).
 - Where the volume comes from: until USB mass storage lands (§7), L3a mounts from the block devices that exist today
   (virtio-blk in the gate, AHCI/NVMe on hardware). No USB in L3a.
