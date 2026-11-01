@@ -9641,15 +9641,6 @@ fn is_hardware_only_scenario(scenario: TestScenario) -> bool {
     )
 }
 
-/// `cargo xtask shard-coverage N` — the sharding analog of a byte-oracle.
-///
-/// Prints every shard's scenario list + count for `N` shards, then proves that
-/// the union over all `N` shards equals the canonical default suite with each
-/// scenario appearing exactly once (complete + pairwise-disjoint). Exits
-/// non-zero on any gap or overlap, so a sharded CI matrix can never produce a
-/// false green by silently dropping or double-running scenarios. Runs no QEMU —
-/// it is a fast, deterministic CI gate. N here MUST match the CI matrix's shard
-/// count.
 // === tiered gate (OT-58 S1) ===
 //
 // The quick tier (every PR) runs SMOKE_SCENARIOS plus the scenarios a diff adds
@@ -9933,6 +9924,15 @@ fn gate_plan_output(tier: &GateTier, changed: &[&str]) -> String {
     out
 }
 
+/// `cargo xtask shard-coverage N` — the sharding analog of a byte-oracle.
+///
+/// Prints every shard's scenario list + count for `N` shards, then proves that
+/// the union over all `N` shards equals the canonical default suite with each
+/// scenario appearing exactly once (complete + pairwise-disjoint). Exits
+/// non-zero on any gap or overlap, so a sharded CI matrix can never produce a
+/// false green by silently dropping or double-running scenarios. Runs no QEMU —
+/// it is a fast, deterministic CI gate. N here MUST match the CI matrix's shard
+/// count.
 fn cmd_shard_coverage(args: &[String]) -> Result<(), String> {
     let raw = args
         .first()
