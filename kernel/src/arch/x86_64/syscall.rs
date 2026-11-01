@@ -5552,11 +5552,18 @@ fn sys_net_tcp_enable_tls_impl(h: u32, key_ptr: *mut u8, key_len: usize) -> i64 
         Ok(bytes) => bytes,
         Err(e) => return e,
     };
+    // CP-99: the caller's copy of the key is wiped BEFORE TLS is installed,
+    // and a wipe that faults is EFAULT with nothing installed. Every page of
+    // it is probed first, so a key that is partly read-only is left whole
+    // (not half wiped).
+    if let Err(e) =
+        probe_user_writable(key_ptr, key_len).and_then(|()| zero_user_bytes(key_ptr, key_len))
+    {
+        tls_record::wipe_secret(&mut key_material);
+        return e;
+    }
     let result = socket.enable_tls(&mut key_material);
     tls_record::wipe_secret(&mut key_material);
-    // The caller's copy of the key is its own memory: if a page of it can't
-    // be written (EFAULT), it stays as it was, and the TLS result stands.
-    let _ = zero_user_bytes(key_ptr, key_len);
     match result {
         Ok(()) => 0,
         Err(e) => tcp_errno(e),
