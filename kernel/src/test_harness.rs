@@ -862,6 +862,10 @@ const SCENARIO: &str = "dhcp_rx_real_lease";
 const SCENARIO: &str = "phase4_tcp_connect_stream_close";
 #[cfg(feature = "neo-test-phase4-https-fetch")]
 const SCENARIO: &str = "phase4_https_fetch";
+#[cfg(feature = "neo-test-net-dial-public-only")]
+const SCENARIO: &str = "net_dial_public_only";
+#[cfg(feature = "neo-test-fetch-broker")]
+const SCENARIO: &str = "fetch_broker";
 #[cfg(feature = "neo-test-net-dial-cap-kill-switch")]
 const SCENARIO: &str = "net_dial_cap_kill_switch";
 #[cfg(feature = "neo-test-tensor-create-query-drop")]
@@ -1515,6 +1519,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-dhcp-rx-real-lease",
     feature = "neo-test-phase4-tcp-connect-stream-close",
     feature = "neo-test-phase4-https-fetch",
+    feature = "neo-test-net-dial-public-only",
+    feature = "neo-test-fetch-broker",
     feature = "neo-test-net-dial-cap-kill-switch",
     feature = "neo-test-tensor-create-query-drop",
     feature = "neo-test-model-load-cascade",
@@ -1856,6 +1862,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-dhcp-rx-real-lease",
         feature = "neo-test-phase4-tcp-connect-stream-close",
         feature = "neo-test-phase4-https-fetch",
+        feature = "neo-test-net-dial-public-only",
+        feature = "neo-test-fetch-broker",
         feature = "neo-test-net-dial-cap-kill-switch",
         feature = "neo-test-model-load-cascade",
         feature = "neo-test-infer-mlp-forward",
@@ -4880,6 +4888,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(any(
         feature = "neo-test-phase4-https-fetch",
+        feature = "neo-test-net-dial-public-only",
+        feature = "neo-test-fetch-broker",
         feature = "neo-test-net-dial-cap-kill-switch"
     ))]
     {
@@ -4899,14 +4909,41 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         {
             fail("reason=https_fetch_dns_a_inject_failed");
         }
+        // OT-61 rung 5c: a second name on loopback, outside the broker's
+        // fixture allowance, for the kernel's NON_PUBLIC refusal.
+        #[cfg(feature = "neo-test-fetch-broker")]
+        {
+            const REBIND: &[u8] = &[
+                6, b'r', b'e', b'b', b'i', b'n', b'd', 4, b't', b'e', b's', b't', 0,
+            ];
+            let mut v6_loopback = [0u8; 16];
+            v6_loopback[15] = 1;
+            let answers: [(u16, &[u8]); 2] = [
+                (crate::net::dns::TYPE_AAAA, &v6_loopback),
+                (crate::net::dns::TYPE_A, &[127, 0, 0, 1]),
+            ];
+            for (rr_type, rdata) in answers {
+                if crate::net::dns::inject(&phase4_dns_response(REBIND, rr_type, rdata)).is_err() {
+                    fail("reason=fetch_broker_dns_rebind_inject_failed");
+                }
+            }
+        }
         let exit_code = _ipc_smoke();
         if exit_code == 0 {
+            #[cfg(feature = "neo-test-fetch-broker")]
+            pass(
+                "fetch_broker=ok https_via_broker=body_ok private_literal=refused cleartext=refused loopback_name=kernel_refused",
+            );
             #[cfg(feature = "neo-test-phase4-https-fetch")]
             pass(
                 "https_fetch=ok dns=ok happy_eyeballs=ok tls13=rustls ktls=ok http_body=ok netdialcap=no_cap_denied,in_scope_ok,out_of_scope_denied,post_revoke_denied",
             );
             #[cfg(feature = "neo-test-net-dial-cap-kill-switch")]
             pass("netdialcap_kill_switch=ok enforcement=off ambient_dial=ok equality=pre_feature");
+            #[cfg(feature = "neo-test-net-dial-public-only")]
+            pass(
+                "net_dial_public_only=ok https_fetch=ok root_cap=loopback_ok narrowed_cap=loopback_denied",
+            );
         }
         serial_println!(
             "NEO_TEST/1 event=FAIL name={} reason=https_fetch_exit_nonzero code={}",
@@ -39029,9 +39066,28 @@ fn run_phase4_dhcpv4_ipv4_udp() -> ! {
 
 #[cfg(any(
     feature = "neo-test-phase4-https-fetch",
+    feature = "neo-test-net-dial-public-only",
+    feature = "neo-test-fetch-broker",
     feature = "neo-test-net-dial-cap-kill-switch"
 ))]
 fn phase4_dns_phase4_test_response(rr_type: u16, rdata: &[u8]) -> alloc::vec::Vec<u8> {
+    phase4_dns_response(
+        &[
+            6, b'p', b'h', b'a', b's', b'e', b'4', 4, b't', b'e', b's', b't', 0,
+        ],
+        rr_type,
+        rdata,
+    )
+}
+
+/// A one-answer DNS response for `qname` (wire-format labels).
+#[cfg(any(
+    feature = "neo-test-phase4-https-fetch",
+    feature = "neo-test-net-dial-public-only",
+    feature = "neo-test-fetch-broker",
+    feature = "neo-test-net-dial-cap-kill-switch"
+))]
+fn phase4_dns_response(qname: &[u8], rr_type: u16, rdata: &[u8]) -> alloc::vec::Vec<u8> {
     let mut packet = alloc::vec::Vec::new();
     packet.extend_from_slice(&0x4835u16.to_be_bytes());
     packet.extend_from_slice(&0x8180u16.to_be_bytes());
@@ -39039,9 +39095,7 @@ fn phase4_dns_phase4_test_response(rr_type: u16, rdata: &[u8]) -> alloc::vec::Ve
     packet.extend_from_slice(&1u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
-    packet.extend_from_slice(&[
-        6, b'p', b'h', b'a', b's', b'e', b'4', 4, b't', b'e', b's', b't', 0,
-    ]);
+    packet.extend_from_slice(qname);
     packet.extend_from_slice(&rr_type.to_be_bytes());
     packet.extend_from_slice(&crate::net::dns::CLASS_IN.to_be_bytes());
     packet.extend_from_slice(&[0xc0, 0x0c]);

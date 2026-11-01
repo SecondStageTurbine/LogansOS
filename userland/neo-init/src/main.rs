@@ -108,6 +108,7 @@
         feature = "phase4-slaac-udp-ipv6-loopback",
         feature = "phase4-https-fetch",
         feature = "net-dial-cap-kill-switch",
+        feature = "fetch-broker",
         feature = "vault-phase-b",
         feature = "desktop-session"
     ),
@@ -789,6 +790,11 @@ fn run_selected_scenario() -> i32 {
 #[cfg(feature = "net-dial-cap-kill-switch")]
 fn run_selected_scenario() -> i32 {
     https_fetch_kill_switch_tests::run()
+}
+
+#[cfg(feature = "fetch-broker")]
+fn run_selected_scenario() -> i32 {
+    fetch_broker_tests::run()
 }
 
 #[cfg(feature = "phase4-socket-udp-loopback")]
@@ -2217,6 +2223,7 @@ mod gpu_glass_slice6_tests {
     feature = "phase4-slaac-udp-ipv6-loopback",
     feature = "phase4-https-fetch",
     feature = "net-dial-cap-kill-switch",
+    feature = "fetch-broker",
     feature = "vm-primitives",
     feature = "wallclock-probe",
     feature = "threads-futex",
@@ -8455,6 +8462,75 @@ mod vfs_tests {
     }
 }
 
+/// OT-61 rung 5c: neo-init as the browser's launcher. It holds the root dial
+/// cap and hands it to the fetch broker; the content process it spawns gets
+/// only its channel to the broker, so it has no way to dial at all (#29 review
+/// item 1). The content process does the fetches and the checks
+/// (`userland/fetch-broker/src/content.rs`, THINK §7.1); its exit code is the
+/// verdict.
+#[cfg(feature = "fetch-broker")]
+mod fetch_broker_tests {
+    use libneo::{Handle, sys_chan_create, sys_recv, sys_spawn, sys_wait, sys_write};
+
+    const READY: &[u8] = b"ready";
+
+    fn say(msg: &[u8]) {
+        let _ = sys_write(1, msg.as_ptr(), msg.len());
+    }
+
+    pub fn run() -> i32 {
+        // The HTTPS fixture, as in phase4_https_fetch.
+        let (local, remote) = match sys_chan_create() {
+            Ok(pair) => pair,
+            Err(_) => return 81,
+        };
+        let (_pid, worker) = match sys_spawn("worker", &[remote, Handle(0)]) {
+            Ok(spawned) => spawned,
+            Err(_) => return 82,
+        };
+        let mut ready = [0u8; 8];
+        let n = sys_recv(local, &mut ready);
+        if n != READY.len() as i64 || &ready[..READY.len()] != READY {
+            return 83;
+        }
+
+        // One channel: the broker's end with the root dial cap, the content
+        // process's end alone. (A channel end is closed per handle, so this
+        // launcher keeps its copies of both ends: closing one would close the
+        // peer's side under the process using it.)
+        let (broker_end, content_end) = match sys_chan_create() {
+            Ok(pair) => pair,
+            Err(_) => return 84,
+        };
+        let (_bpid, broker) = match sys_spawn("fetch-broker", &[broker_end, Handle(0)]) {
+            Ok(spawned) => spawned,
+            Err(_) => return 85,
+        };
+        let (_cpid, content) = match sys_spawn("fetch-content", &[content_end]) {
+            Ok(spawned) => spawned,
+            Err(_) => return 93,
+        };
+
+        // The content process's verdict; its exit closes the channel, which
+        // ends the broker.
+        match sys_wait(content, 0) {
+            Ok(0) => {}
+            Ok(code) => return code,
+            Err(_) => return 94,
+        }
+        match sys_wait(broker, 0) {
+            Ok(0) => {}
+            _ => return 91,
+        }
+        match sys_wait(worker, 0) {
+            Ok(0) => {}
+            _ => return 92,
+        }
+        say(b"[ neo-init ] fetch_broker private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok\n");
+        0
+    }
+}
+
 #[cfg(feature = "phase4-https-fetch")]
 mod https_fetch_tests {
     use libneo::{
@@ -8524,6 +8600,34 @@ mod https_fetch_tests {
         ) != Err(EACCES)
         {
             return 91;
+        }
+
+        // OT-61 rung 5b: the same scope with NON_PUBLIC narrowed away must not
+        // reach the fixture, which resolves only to loopback (127.0.0.1, ::1).
+        // `cap` keeps the right, so the dial below still works.
+        #[cfg(feature = "net-dial-public-only")]
+        {
+            let narrow = match libneo::sys_derive(
+                cap.0,
+                libneo::CapRights::new(
+                    libneo::meta_rights::USE | libneo::meta_rights::DERIVE,
+                    libneo::net_dial_rights::DIAL,
+                ),
+            ) {
+                Ok(h) => NetDialCap(h),
+                Err(_) => return 95,
+            };
+            if sys_net_dial(
+                narrow,
+                libneo::tls::PHASE4_TEST_HOST,
+                libneo::tls::PHASE4_TEST_PORT,
+            ) != Err(EACCES)
+            {
+                return 96;
+            }
+            let _ = sys_revoke(narrow.0);
+            let msg = b"[ neo-init ] netdial public_only narrowed_to_loopback=denied\n";
+            let _ = sys_write(1, msg.as_ptr(), msg.len());
         }
 
         let socket = match dial_server(cap) {
