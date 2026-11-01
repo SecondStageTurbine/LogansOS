@@ -7539,26 +7539,22 @@ fn sys_boot_times_impl(out: u64, len: usize) -> i64 {
         return e;
     }
     let record = encode(&crate::boot_time::snapshot());
-    let pmap = match pmap_for_caller() {
-        Ok(pmap) => pmap,
+    // The copy goes through the caller's page tables under the pmap lock
+    // (`Pmap::write_user_bytes`), never through the user mapping from ring 0:
+    // an unmapped, read-only or half-mapped buffer (including one another
+    // thread unmaps mid-call) is EFAULT with nothing written, never a
+    // kernel-mode page fault.
+    let proc = match current_process_for_syscall() {
+        Ok(p) => p,
         Err(e) => return e,
     };
-    // Janus relay 232 item 2: every page of the range is checked present,
-    // user and writable under the Pmap's lock, which is held across the copy
-    // (no unmap can race it), so the kernel-mode write cannot fault; an
-    // unmapped, read-only or half-mapped buffer is EFAULT with nothing
-    // written.
-    let copied = pmap.with_user_writable(out, BOOT_TIMES_V1_LEN, || {
-        // SAFETY: the whole range was just checked mapped, user and writable,
-        // and stays so while the Pmap lock is held; SMAP opened for the copy.
-        crate::arch::x86_64::with_user_access(|| unsafe {
-            core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, BOOT_TIMES_V1_LEN)
-        })
-    });
-    if copied.is_none() {
+    let Some(pmap) = proc.pmap.as_ref() else {
         return EFAULT;
+    };
+    match pmap.write_user_bytes(out, &record) {
+        Ok(()) => 0,
+        Err(_) => EFAULT,
     }
-    0
 }
 
 /// The test harness's view of `SYS_BOOT_TIMES`, through its own checks.

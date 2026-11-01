@@ -33267,72 +33267,81 @@ fn run_boot_time() -> ! {
         );
         debug_exit(EXIT_FAILURE);
     }
-    let user_buffers = boot_time_user_buffer_checks();
+    let copyout = boot_time_copyout_legs(&encode(&times));
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={} user_buffers={}",
+        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={} copyout={}",
         SCENARIO,
         times.tsc_hz,
         times.tsc_kernel_entry,
         times.tsc_desktop_start,
         wrong_len,
         kernel_addr,
-        user_buffers
+        copyout
     );
     debug_exit(EXIT_SUCCESS);
 }
 
-/// Janus relay 232 item 2: `SYS_BOOT_TIMES`'s copy-out runs only through
-/// `Pmap::with_user_writable`. On a Pmap with one writable page at W, one
-/// read-only page at W + 4 KiB and nothing at W + 8 KiB: unmapped, read-only,
-/// a range from the writable page into the read-only one, and one from the
-/// read-only page into the hole are all refused without running the copy;
-/// an 80-byte range inside W, and one ending exactly at its last byte, run
-/// it. Returns `ok` (any failure ends the scenario).
+/// Review #16 item 2: `SYS_BOOT_TIMES` writes through `Pmap::write_user_bytes`
+/// (page-table walk under the pmap lock, HHDM write), so a bad user buffer is
+/// an error with nothing written, never a ring-0 fault. A scratch address
+/// space holds four pages: p0 and p1 writable, p2 unmapped, p3 read-only.
+/// Legs: a record straddling p0/p1 lands intact; one straddling p1/p2 (40
+/// bytes before the hole) is refused and leaves p1 untouched; p2 alone and
+/// p3 alone are refused; a range ending past the user half is refused.
 #[cfg(feature = "neo-test-boot-time")]
-fn boot_time_user_buffer_checks() -> &'static str {
-    use crate::boot_time_logic::BOOT_TIMES_V1_LEN as N;
+fn boot_time_copyout_legs(record: &[u8]) -> &'static str {
     use crate::mm::pmap::{Pmap, flags};
     use x86_64::VirtAddr;
-    use x86_64::structures::paging::FrameAllocator;
-    const W: u64 = 0x0000_4000_0000_0000;
-    let frame = || {
-        crate::mm::with_frame_alloc(|fa| fa.allocate_frame())
-            .unwrap_or_else(|| fail("reason=boot_time_out_of_frames"))
-    };
     let pmap = Pmap::new().unwrap_or_else(|_| fail("reason=boot_time_pmap_new"));
-    pmap.map_user(VirtAddr::new(W), frame(), flags::USER_DATA_RW)
-        .unwrap_or_else(|_| fail("reason=boot_time_map_rw"));
-    pmap.map_user(VirtAddr::new(W + 0x1000), frame(), flags::USER_DATA_RO)
-        .unwrap_or_else(|_| fail("reason=boot_time_map_ro"));
-    let ran = |va: u64| pmap.with_user_writable(va, N, || ()).is_some();
-    let cases: [(&str, u64, bool); 6] = [
-        ("unmapped", W + 0x2000, false),
-        ("read-only", W + 0x1000, false),
-        ("rw-into-ro", W + 0x1000 - 40, false),
-        ("ro-into-hole", W + 0x2000 - 40, false),
-        ("inside-rw", W + 16, true),
-        ("ends-at-rw-end", W + 0x1000 - N as u64, true),
-    ];
-    for (name, va, want) in cases {
-        if ran(va) != want {
-            serial_println!(
-                "NEO_TEST/1 event=FAIL name={} reason=boot_time_user_buffer case={} va={:#x} want_copy={}",
-                SCENARIO,
-                name,
-                va,
-                want
-            );
-            debug_exit(EXIT_FAILURE);
-        }
-    }
-    if pmap.with_user_writable(W, 0, || ()).is_some()
+    let base = pmap
+        .allocate_user_region(4 * 4096, flags::USER_DATA_RW)
+        .unwrap_or_else(|_| fail("reason=boot_time_region"));
+    let (p1, p2, p3) = (base + 4096, base + 2 * 4096, base + 3 * 4096);
+    if pmap.unmap_user_range(VirtAddr::new(p2), 4096).is_err()
         || pmap
-            .with_user_writable(0x0000_7fff_ffff_fff0, N, || ())
-            .is_some()
+            .protect_user(VirtAddr::new(p3), 4096, flags::USER_DATA_RO)
+            .is_err()
     {
-        fail("reason=boot_time_user_buffer_empty_or_kernel_half");
+        fail("reason=boot_time_region_setup");
     }
-    "ok"
+    let read = |va: u64, out: &mut [u8]| {
+        for (i, b) in out.iter_mut().enumerate() {
+            let pa = pmap
+                .translate(VirtAddr::new(va + i as u64))
+                .unwrap_or_else(|| fail("reason=boot_time_readback_unmapped"));
+            // SAFETY: a present frame of the scratch Pmap, read via the HHDM.
+            *b = unsafe { *crate::mm::phys_to_virt(pa).as_ptr::<u8>() };
+        }
+    };
+    let n = record.len() as u64;
+    let straddle_ok = pmap.write_user_bytes(p1 - 40, record).is_ok();
+    let mut back = [0u8; 80];
+    read(p1 - 40, &mut back[..record.len()]);
+    let landed = back[..record.len()] == *record;
+    let hole = pmap.write_user_bytes(p2 - 40, record).is_err();
+    let mut tail = [0u8; 40];
+    read(p2 - 40, &mut tail);
+    let untouched = tail == [0u8; 40];
+    let unmapped = pmap.write_user_bytes(p2, record).is_err();
+    let read_only = pmap.write_user_bytes(p3, record).is_err();
+    let past_half = pmap
+        .write_user_bytes(0x0000_8000_0000_0000 - n / 2, record)
+        .is_err();
+    if !(straddle_ok && landed && hole && untouched && unmapped && read_only && past_half) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_copyout straddle_ok={} landed={} hole={} untouched={} unmapped={} read_only={} past_half={}",
+            SCENARIO,
+            straddle_ok,
+            landed,
+            hole,
+            untouched,
+            unmapped,
+            read_only,
+            past_half
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    "straddle+hole+unmapped+ro+past-half"
 }
 
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]

@@ -54,50 +54,6 @@ mod tests {
         );
     }
 
-    /// Janus relay 232 item 1: the FBPT header's whole extent must fit
-    /// below the physical limit, not just its first byte.
-    #[test]
-    fn an_fbpt_header_crossing_the_physical_limit_is_refused() {
-        let mut fpdt = FPDT_ORACLE.to_vec();
-        // address = 0xf_ffff_fffc: its 8-byte header ends at 0x10_0000_0004,
-        // past the 36-bit limit 0x10_0000_0000 (Janus's input).
-        fpdt[0x2c..0x34].copy_from_slice(&0x0000_000f_ffff_fffcu64.to_le_bytes());
-        assert_eq!(fbpt_address(&fpdt, 36), Err(FpdtError::AddressOutOfRange));
-        // Eight bytes lower, the header ends exactly at the limit: allowed.
-        fpdt[0x2c..0x34].copy_from_slice(&0x0000_000f_ffff_fff8u64.to_le_bytes());
-        assert_eq!(fbpt_address(&fpdt, 36), Ok(0xf_ffff_fff8));
-    }
-
-    #[test]
-    fn extents_and_regions() {
-        assert!(extent_ok(0x1000, 8, 36));
-        assert!(extent_ok(0xf_ffff_fff8, 8, 36));
-        assert!(!extent_ok(0xf_ffff_fff9, 8, 36));
-        assert!(!extent_ok(u64::MAX - 3, 8, 64));
-        assert!(!extent_ok(0x1000, 0, 36));
-        assert!(extent_ok(u64::MAX - 8, 8, 64));
-        let regions = [(0x1000u64, 0x1000u64), (0x8000, 0x4000)];
-        assert!(inside_one(0x1000, 0x1000, regions));
-        assert!(inside_one(0x9000, 0x100, regions));
-        // Spanning two regions, a gap, or past the end: refused.
-        assert!(!inside_one(0x1f00, 0x200, regions));
-        assert!(!inside_one(0x3000, 8, regions));
-        assert!(!inside_one(0xbff9, 8, regions));
-        assert!(!inside_one(u64::MAX - 3, 8, regions));
-        assert!(!inside_one(0x1000, 8, []));
-    }
-
-    /// Janus relay 232 item 4: a quotient past u64 is unavailable, not
-    /// truncated (`tsc_ms(1 << 63, 500)` used to return `Some(0)`).
-    #[test]
-    fn an_unrepresentable_duration_is_unavailable() {
-        assert_eq!(tsc_ms(1u64 << 63, 500), None);
-        assert_eq!(tsc_ms(u64::MAX, 1), None);
-        assert_eq!(tsc_ms(3_000_000_000, 1_000_000_000), Some(3000));
-        assert_eq!(tsc_ms(u64::MAX, 1_000_000_000), Some(18_446_744_073_709));
-        assert_eq!(tsc_ms(5, 0), None);
-    }
-
     #[test]
     fn a_damaged_fpdt_is_refused() {
         let mut bad = FPDT_ORACLE.to_vec();
@@ -378,5 +334,88 @@ mod tests {
             line,
             "Sign-in 10.00 s after power-on (estimated clock) (firmware 4.12 s)."
         );
+    }
+
+    /// Review #16 item 1: the whole FBPT extent is inside the CPU's physical
+    /// width, not just its first byte. Janus's input: an FBPT pointer of
+    /// 0xf_ffff_fffc with a 36-bit width (its 8-byte header would end past
+    /// 0x10_0000_0000) is refused; so is one whose largest table would.
+    #[test]
+    fn the_whole_fbpt_extent_is_inside_the_physical_width() {
+        let with = |addr: u64| {
+            let mut t = FPDT_ORACLE.to_vec();
+            t[0x2c..0x34].copy_from_slice(&addr.to_le_bytes());
+            t
+        };
+        assert_eq!(
+            fbpt_address(&with(0x0000_000f_ffff_fffc), 36),
+            Err(FpdtError::AddressOutOfRange)
+        );
+        let last_ok = (1u64 << 36) - FBPT_MAX_LEN as u64;
+        assert_eq!(fbpt_address(&with(last_ok), 36), Ok(last_ok));
+        assert_eq!(
+            fbpt_address(&with(last_ok + 1), 36),
+            Err(FpdtError::AddressOutOfRange)
+        );
+        // An address that overflows when the extent is added.
+        assert_eq!(
+            fbpt_address(&with(u64::MAX - 2), 64),
+            Err(FpdtError::AddressOutOfRange)
+        );
+    }
+
+    /// Review #16 item 1: a firmware pointer is read only inside one
+    /// firmware-owned memory-map region, wholly.
+    #[test]
+    fn a_firmware_range_must_lie_in_one_firmware_region() {
+        let regions = [(0x6b92_0000u64, 0x1_0000u64), (0xe_0000, 0x2_0000)];
+        assert!(in_firmware_memory(0x6b92_8000, 8, &regions));
+        assert!(in_firmware_memory(0x6b92_f000, 0x1000, &regions)); // ends at the top
+        assert!(!in_firmware_memory(0x6b92_f001, 0x1000, &regions)); // one past
+        assert!(!in_firmware_memory(0x6b91_fffc, 8, &regions)); // starts below
+        assert!(!in_firmware_memory(0x1000_0000, 8, &regions)); // a hole
+        assert!(!in_firmware_memory(u64::MAX - 3, 8, &regions)); // wraps
+        assert!(!in_firmware_memory(0x6b92_8000, 8, &[])); // no map
+        assert!(!in_firmware_memory(0, 8, &[(u64::MAX, 2)])); // a region that wraps
+    }
+
+    /// Review #16 item 4: the conversion is checked, never truncated, and a
+    /// rate below 1 MHz is no rate.
+    #[test]
+    fn an_unrepresentable_time_is_unavailable() {
+        // Janus's input: 2^63 ticks at 500 Hz is 2^64 ms (it was Some(0)).
+        assert_eq!(tsc_ms(1u64 << 63, 500), None);
+        // At a real rate the largest reading still fits.
+        assert_eq!(tsc_ms(u64::MAX, MIN_TSC_HZ), Some(u64::MAX / 1000));
+        assert_eq!(tsc_ms(MIN_TSC_HZ, MIN_TSC_HZ), Some(1000));
+        assert_eq!(tsc_ms(1_000_000, MIN_TSC_HZ - 1), None);
+        assert_eq!(tsc_ms(5, 0), None);
+        // A slow, misread rate says so instead of a time.
+        let slow = BootTimes {
+            tsc_hz: 500,
+            tsc_kernel_entry: 1 << 63,
+            tsc_desktop_start: (1 << 63) + 1,
+            ..Default::default()
+        };
+        assert!(!power_on_origin(&slow));
+        let mut line = String::new();
+        write_kernel_line(&mut line, &slow, Some(FpdtError::NoFpdt)).unwrap();
+        assert!(line.contains("TSC time unavailable at 500 Hz"), "{line}");
+        let mut line = String::new();
+        write_milestone(&mut line, "Home", &slow, 7).unwrap();
+        assert_eq!(line, "Home at TSC 7 (TSC time unavailable at 500 Hz).");
+    }
+
+    /// Firmware after the kernel's entry (the TSC was reset after the
+    /// handoff): no negative interval, the origin is the TSC reset.
+    #[test]
+    fn firmware_after_entry_is_not_power_on() {
+        let mut t = after_handoff();
+        t.tsc_kernel_entry = 1; // ~0 ms, before the 4.12 s handoff
+        assert!(!power_on_origin(&t));
+        let mut line = String::new();
+        write_summary(&mut line, "Home", &t, 28_000_000_000).unwrap();
+        assert!(line.starts_with("Since TSC reset: "), "{line}");
+        assert!(!line.contains("firmware"), "{line}");
     }
 }

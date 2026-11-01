@@ -253,7 +253,7 @@ pub(crate) enum PmapLockSite {
     MapBorrowedRegion,
     UnmapBorrowedRegion,
     #[cfg(feature = "boot-time")]
-    CopyOutChecked,
+    WriteUserBytes,
 }
 
 impl PmapLockSite {
@@ -270,7 +270,7 @@ impl PmapLockSite {
             PmapLockSite::MapBorrowedRegion => "map_borrowed_region",
             PmapLockSite::UnmapBorrowedRegion => "unmap_borrowed_region",
             #[cfg(feature = "boot-time")]
-            PmapLockSite::CopyOutChecked => "copy_out_checked",
+            PmapLockSite::WriteUserBytes => "write_user_bytes",
         }
     }
 }
@@ -1081,6 +1081,94 @@ impl Pmap {
         }
     }
 
+    /// L7.1: copy `src` into this address space's user memory at `va`
+    /// without touching the user mapping from ring 0, so the copy cannot
+    /// fault. Under the pmap lock (which every unmap/protect takes), each
+    /// page of `[va, va + len)` must be a present 4 KiB leaf that is USER and
+    /// WRITABLE at every level; otherwise nothing is written and the call
+    /// returns `NotMapped`. The bytes then go through the HHDM to the backing
+    /// frames while the lock is still held, so no other thread can unmap or
+    /// downgrade a page between the check and the write. The caller has
+    /// checked `[va, va + len)` lies in the user half.
+    #[cfg(feature = "boot-time")]
+    pub fn write_user_bytes(&self, va: u64, src: &[u8]) -> Result<(), PmapError> {
+        let len = src.len() as u64;
+        if len == 0 {
+            return Ok(());
+        }
+        let end = va
+            .checked_add(len)
+            .ok_or(PmapError::UserHalfOverlapsKernel)?;
+        let first = va & !0xFFF;
+        let last = (end - 1) & !0xFFF;
+        let g = self.lock_inner(PmapLockSite::WriteUserBytes);
+        // Pass 1: every page writable by the user, or nothing is written.
+        let mut page = first;
+        loop {
+            self.user_writable_frame_locked(&g, page)
+                .ok_or(PmapError::NotMapped)?;
+            if page == last {
+                break;
+            }
+            page += 0x1000;
+        }
+        // Pass 2: the write, still under the lock.
+        let mut done = 0usize;
+        while done < src.len() {
+            let at = va + done as u64;
+            let frame = self
+                .user_writable_frame_locked(&g, at & !0xFFF)
+                .ok_or(PmapError::NotMapped)?;
+            let off = (at & 0xFFF) as usize;
+            let n = core::cmp::min(0x1000 - off, src.len() - done);
+            // SAFETY: `frame` backs a present user leaf of this Pmap, which
+            // can't be unmapped while `g` is held; the HHDM maps all of RAM
+            // writable to the kernel, and `off + n <= 4096`.
+            unsafe {
+                let dst = phys_to_virt(frame.start_address())
+                    .as_mut_ptr::<u8>()
+                    .add(off);
+                core::ptr::copy_nonoverlapping(src.as_ptr().add(done), dst, n);
+            }
+            done += n;
+        }
+        drop(g);
+        Ok(())
+    }
+
+    /// Lock-held walk for [`Pmap::write_user_bytes`]: the 4 KiB frame behind
+    /// `va` when every level is PRESENT + USER_ACCESSIBLE and the leaf is
+    /// also WRITABLE; `None` for any unmapped level or a huge page.
+    #[cfg(feature = "boot-time")]
+    fn user_writable_frame_locked(
+        &self,
+        _g: &IrqSafeGuard<'_, PmapState>,
+        va: u64,
+    ) -> Option<PhysFrame<Size4KiB>> {
+        if va >= 0x0000_8000_0000_0000 {
+            return None;
+        }
+        let need = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        let indices = page_indices(VirtAddr::new(va));
+        // SAFETY: read-only walk through HHDM-mapped tables, under the lock.
+        let mut current =
+            unsafe { &*(phys_to_virt(self.pml4_frame.start_address()).as_ptr::<PageTable>()) };
+        for &idx in indices.iter().take(3) {
+            let e = &current[idx as usize];
+            let f = e.flags();
+            if e.is_unused() || !f.contains(need) || f.contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+            current = unsafe { &*(phys_to_virt(e.addr()).as_ptr::<PageTable>()) };
+        }
+        let leaf = &current[indices[3] as usize];
+        let f = leaf.flags();
+        if leaf.is_unused() || !f.contains(need | PageTableFlags::WRITABLE) {
+            return None;
+        }
+        Some(PhysFrame::containing_address(leaf.addr()))
+    }
+
     /// Map caller-provided frames as **borrowed** leaves at the mmap
     /// cursor (atrium G1 shared pixel buffers). Differences from
     /// `allocate_user_region`:
@@ -1244,53 +1332,6 @@ impl Pmap {
         } else {
             Some(leaf.flags())
         }
-    }
-
-    /// L7.1 (Janus, relay 232 item 2): run `copy` only if every page of the
-    /// user range `[va, va + len)` is present, user-accessible and writable
-    /// at **every** level of this Pmap's tables (4 KiB leaves; a huge-page
-    /// entry is refused), with the Pmap's lock held across both the check
-    /// and `copy`. `unmap_user`/`unmap_user_range`/`protect_user` clear or
-    /// change PTEs under the same lock, so the range cannot be unmapped or
-    /// made read-only between the check and the write: a kernel-mode write
-    /// through it cannot fault. `None` (the caller's EFAULT) when any page
-    /// fails, the range is empty, wraps, or reaches the kernel half; then
-    /// nothing is written. The general fault-recovering copy is #13's; this
-    /// is the checked path for a fixed-size copy-out until it lands.
-    #[cfg(feature = "boot-time")]
-    pub fn with_user_writable<R>(
-        &self,
-        va: u64,
-        len: usize,
-        copy: impl FnOnce() -> R,
-    ) -> Option<R> {
-        use x86_64::structures::paging::PageTableFlags as F;
-        const NEED: F = F::PRESENT.union(F::USER_ACCESSIBLE).union(F::WRITABLE);
-        let end = va.checked_add(len as u64)?;
-        if len == 0 || end > 0x0000_8000_0000_0000 {
-            return None;
-        }
-        let _g = self.lock_inner(PmapLockSite::CopyOutChecked);
-        let mut page = va & !0xfff;
-        while page < end {
-            let indices = page_indices(VirtAddr::new(page));
-            // SAFETY: read-only walk through HHDM-mapped tables, under the
-            // lock every PTE writer of this Pmap takes.
-            let mut table =
-                unsafe { &*(phys_to_virt(self.pml4_frame.start_address()).as_ptr::<PageTable>()) };
-            for (level, &index) in indices.iter().enumerate() {
-                let entry = &table[index as usize];
-                let flags = entry.flags();
-                if !flags.contains(NEED) || flags.contains(F::HUGE_PAGE) {
-                    return None;
-                }
-                if level < 3 {
-                    table = unsafe { &*(phys_to_virt(entry.addr()).as_ptr::<PageTable>()) };
-                }
-            }
-            page += 0x1000;
-        }
-        Some(copy())
     }
 
     /// CR3 value to load when switching INTO this Pmap. The flags field is

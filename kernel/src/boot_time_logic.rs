@@ -84,10 +84,10 @@ pub enum FpdtError {
     BadRecord,
     NoFbptPointer,
     AddressOutOfRange,
-    /// The FBPT's extent is not inside one firmware-owned region of the
-    /// bootloader's memory map (Janus, relay 232 item 1).
-    NotFirmwareMemory,
     NoBootRecord,
+    /// The FBPT's range isn't wholly inside one firmware-owned region of the
+    /// boot memory map (reserved or ACPI), so it isn't read.
+    NotFirmwareMemory,
 }
 
 impl FpdtError {
@@ -99,8 +99,8 @@ impl FpdtError {
             Self::BadRecord => "bad-record",
             Self::NoFbptPointer => "no-fbpt-pointer",
             Self::AddressOutOfRange => "address-out-of-range",
-            Self::NotFirmwareMemory => "not-firmware-memory",
             Self::NoBootRecord => "no-boot-record",
+            Self::NotFirmwareMemory => "not-firmware-memory",
         }
     }
 }
@@ -175,12 +175,30 @@ pub fn fbpt_address(fpdt: &[u8], phys_bits: u32) -> Result<u64, FpdtError> {
         }
     })?
     .ok_or(FpdtError::NoFbptPointer)?;
-    // The whole FBPT header must fit below the physical-address limit, not
-    // just its first byte (Janus, relay 232 item 1).
-    if address == 0 || !extent_ok(address, FBPT_HEADER_LEN as u64, phys_bits) {
+    // The whole of the largest FBPT accepted (`FBPT_MAX_LEN`) must fit below
+    // the CPU's physical limit, not just its first byte: the header and the
+    // body are read from here before their length is known.
+    let end = address
+        .checked_add(FBPT_MAX_LEN as u64)
+        .ok_or(FpdtError::AddressOutOfRange)?;
+    if address == 0 || (phys_bits < 64 && end > 1u64 << phys_bits) {
         return Err(FpdtError::AddressOutOfRange);
     }
     Ok(address)
+}
+
+/// Whether `[start, start + len)` lies wholly inside one of `regions`
+/// (`(base, length)` pairs: the boot memory map's firmware-owned entries,
+/// reserved or ACPI). A firmware pointer is read only after this holds, so a
+/// bogus one into a hole, MMIO or the kernel's own RAM is refused instead.
+pub fn in_firmware_memory(start: u64, len: u64, regions: &[(u64, u64)]) -> bool {
+    let Some(end) = start.checked_add(len) else {
+        return false;
+    };
+    regions.iter().any(|&(base, length)| {
+        base.checked_add(length)
+            .is_some_and(|top| base <= start && end <= top)
+    })
 }
 
 /// The FBPT's length from its header (to size the read), refusing one
@@ -286,35 +304,30 @@ pub fn decode(rec: &[u8]) -> Option<BootTimes> {
     })
 }
 
-/// Milliseconds since the TSC's start for a reading, or `None` without a
-/// rate (power-on only when [`power_on_origin`] holds).
+/// The slowest TSC rate taken as real. No x86 TSC runs below 1 MHz; a
+/// smaller value is a misread CPUID leaf (e.g. 0x15 giving 500 Hz), and a
+/// time computed from it would be nonsense, so it counts as no rate.
+pub const MIN_TSC_HZ: u64 = 1_000_000;
+
+/// Milliseconds since the TSC's start for a reading (power-on only when
+/// [`power_on_origin`] holds), or `None` when the time is unavailable: no
+/// rate, a rate below [`MIN_TSC_HZ`], or a result that doesn't fit a `u64`
+/// (checked, never truncated).
 pub fn tsc_ms(tsc: u64, tsc_hz: u64) -> Option<u64> {
-    if tsc_hz == 0 {
+    if tsc_hz < MIN_TSC_HZ {
         return None;
     }
-    // A quotient past u64 (an absurdly low rate) is unavailable, never
-    // truncated (Janus, relay 232 item 4).
     u64::try_from(u128::from(tsc) * 1000 / u128::from(tsc_hz)).ok()
 }
 
-/// True when `[addr, addr + len)` is non-empty, does not wrap, and ends at
-/// or below the CPU's physical-address limit `1 << phys_bits`.
-pub fn extent_ok(addr: u64, len: u64, phys_bits: u32) -> bool {
-    let Some(end) = addr.checked_add(len) else {
-        return false;
-    };
-    len != 0 && (phys_bits >= 64 || end <= 1u64 << phys_bits)
-}
-
-/// True when `[addr, addr + len)` lies wholly inside one of `regions`
-/// (`(base, length)` pairs).
-pub fn inside_one(addr: u64, len: u64, regions: impl IntoIterator<Item = (u64, u64)>) -> bool {
-    let Some(end) = addr.checked_add(len) else {
-        return false;
-    };
-    regions
-        .into_iter()
-        .any(|(base, length)| base <= addr && base.checked_add(length).is_some_and(|e| end <= e))
+/// Why [`tsc_ms`] gave no time: the rate is missing, or it is too slow or
+/// the reading too large to give one.
+fn write_no_time(out: &mut impl core::fmt::Write, tsc_hz: u64) -> core::fmt::Result {
+    if tsc_hz == 0 {
+        write!(out, "no TSC rate")
+    } else {
+        write!(out, "TSC time unavailable at {tsc_hz} Hz")
+    }
 }
 
 /// `ms` as seconds with two decimals (truncated), e.g. `12.34 s`.
@@ -370,11 +383,14 @@ pub fn write_kernel_line(
                 }
             )
         }
-        _ => write!(
-            out,
-            "no TSC rate (kernel entry TSC {}, desktop start TSC {})",
-            times.tsc_kernel_entry, times.tsc_desktop_start
-        ),
+        _ => {
+            write_no_time(out, times.tsc_hz)?;
+            write!(
+                out,
+                " (kernel entry TSC {}, desktop start TSC {})",
+                times.tsc_kernel_entry, times.tsc_desktop_start
+            )
+        }
     }
 }
 
@@ -451,7 +467,11 @@ pub fn write_milestone(
                 ""
             }
         )?,
-        None => write!(out, "{what} at TSC {now_tsc} (no TSC rate)")?,
+        None => {
+            write!(out, "{what} at TSC {now_tsc} (")?;
+            write_no_time(out, times.tsc_hz)?;
+            write!(out, ")")?
+        }
     }
     match handoff_ms(times) {
         Some(handoff) if on || times.tsc_hz == 0 => write!(out, " (firmware {}).", Secs(handoff)),
