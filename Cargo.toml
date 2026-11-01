@@ -11,6 +11,7 @@ members = [
     "userland/neo-atrium",
     "userland/neo-text",
     "userland/neo-edit-core",
+    "userland/neo-term-core",
     "userland/vault-core",
     "userland/login-core",
     "userland/fetch-proto",
