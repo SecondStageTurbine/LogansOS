@@ -17390,7 +17390,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         require_serial_absent(
             scenario,
             observed,
-            "refused=no",
+            // (Narrowly: Arthur logs `refused=no-proof` for an unrelated launch.)
+            "DESKTOP apps stale activator client=1 refused=no\n",
             "PR #15 item 2: a released activator must be stale",
         )?;
     }
