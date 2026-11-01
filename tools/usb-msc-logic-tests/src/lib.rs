@@ -617,7 +617,7 @@ mod tests {
                 pending: None,
                 tag: [0; 4],
             };
-            let mut data = vec![0u8; 36];
+            let mut data = [0u8; 36];
             let len = if cdb[0] == 0x00 { 0 } else { 36 };
             let got = command(&mut pipe, TAG, 0, &cdb, &mut data[..len]);
             assert!(matches!(got, Outcome::Passed { .. }), "{cdb:02x?}: {got:?}");
