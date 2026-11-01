@@ -81,3 +81,4 @@ RELAY 260 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-relays-259-260.
 RELAY 261 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-relays-261-263.md | Section 261 (#15 re-check; RETURN `Plans/RETURN-2026-11-01-pr15-recheck-chad.md`)
 RELAY 262 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-relays-261-263.md | Section 262 (#16 re-check 3; RETURN `Plans/RETURN-2026-11-01-pr16-recheck3-janus.md`)
 RELAY 263 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-relays-261-263.md | Section 263 (#46 pipe step 1 review; RETURN `Plans/RETURN-2026-11-01-pr46-pipe-review-dexter.md`)
+RELAY 264 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-review-264-pr42.md | Section "Relay 264" (#42 term core review; RETURN `Plans/RETURN-2026-11-01-pr42-term-core-review-jarvis.md`)
