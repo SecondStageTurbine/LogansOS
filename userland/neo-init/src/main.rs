@@ -10068,19 +10068,65 @@ mod mount_authority_tests {
 /// a page that was mapped and then unmapped (`hole`), one that starts 8 bytes
 /// before it in a mapped page (`crossing`), and a read-only page (`ro`, for
 /// the kernel's writes). Output paths: SYS_HANDLE_INFO's record, SYS_READDIR's
-/// entry and its cursor. Input path: SYS_WRITE to stdout. Each must be
-/// EFAULT; then a well-formed call still works. Returns 0, or the first
-/// failed step.
+/// entry and its cursor (also a read-only cursor), SYS_READ (the offset must
+/// not move). Input path: SYS_WRITE to stdout. Also: futex waits (an
+/// unmapped word, and one the kernel unmaps between its translation and its
+/// re-check), IPC rendezvous in both directions, a join's status pointer (the
+/// thread stays joinable), and the TLS key wipe (EFAULT; a half read-only key
+/// stays whole). Each must be EFAULT; then a well-formed call still works.
+/// Returns 0, or the first failed step.
 #[cfg(feature = "user-copy-fault-test")]
 mod user_copy_fault_tests {
     use super::*;
+    use core::sync::atomic::{AtomicU64, Ordering};
+    use libneo::nthread;
     use libneo::{
-        EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_HANDLE_INFO,
-        SYS_READDIR, SYS_WRITE, raw3, raw4, sys_chan_create, sys_open, sys_vm_map, sys_vm_protect,
-        sys_vm_unmap,
+        EAGAIN, EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_FUTEX_WAIT,
+        SYS_HANDLE_INFO, SYS_NET_CONNECT_TCP, SYS_NET_TCP_ENABLE_TLS, SYS_READ, SYS_READDIR,
+        SYS_RECV, SYS_SEND, SYS_THREAD_JOIN, SYS_WRITE, SockAddr, SockAddrIn, TLS_KEY_MATERIAL_LEN,
+        TcpSocketHandle, raw3, raw4, sys_chan_create, sys_open, sys_tcp_close, sys_vm_map,
+        sys_vm_protect, sys_vm_unmap,
     };
 
     const PAGE: usize = 4096;
+    /// The kernel's `USER_COPY_FAULT_FUTEX_UNMAP`: a futex wait with this
+    /// `expected` has its word's page unmapped between the translation and
+    /// the value re-check (a sibling's unmap, made deterministic).
+    const FUTEX_UNMAP_MAGIC: u32 = 0xEFA0_17ED;
+    const THREAD_STACK: usize = 16 * 1024;
+
+    /// The IPC legs' receiver thread: its channel end and buffer.
+    static RECV_CHAN: AtomicU64 = AtomicU64::new(0);
+    static RECV_BUF: AtomicU64 = AtomicU64::new(0);
+    static RECV_LEN: AtomicU64 = AtomicU64::new(0);
+
+    /// Receive once into `RECV_BUF`; the exit code is SYS_RECV's result.
+    extern "C" fn receiver(_: usize) -> i32 {
+        let h = RECV_CHAN.load(Ordering::Acquire);
+        let buf = RECV_BUF.load(Ordering::Acquire);
+        let len = RECV_LEN.load(Ordering::Acquire);
+        // SAFETY: SYS_RECV(h, buf, len) writes at most `len` bytes at `buf`
+        // (or returns EFAULT).
+        unsafe { raw3(SYS_RECV, h, buf, len) as i32 }
+    }
+
+    extern "C" fn exits_seven(_: usize) -> i32 {
+        7
+    }
+
+    /// Run `receiver` into `buf..buf+len` on `peer` while this thread sends
+    /// `len` bytes from `src`; returns (send's result, the receiver's).
+    fn rendezvous(peer: u64, chan: u64, buf: u64, src: u64, len: u64) -> Result<(i64, i64), i32> {
+        RECV_CHAN.store(peer, Ordering::Release);
+        RECV_BUF.store(buf, Ordering::Release);
+        RECV_LEN.store(len, Ordering::Release);
+        let t = nthread::spawn(receiver, 0, THREAD_STACK).map_err(|_| 50)?;
+        // SAFETY: SYS_SEND(h, src, len) reads `len` bytes at `src` (or
+        // returns EFAULT).
+        let sent = unsafe { raw3(SYS_SEND, chan, src, len) };
+        let got = t.join().map_err(|_| 51)?;
+        Ok((sent, i64::from(got)))
+    }
 
     fn say(line: &[u8]) {
         sys_write(1, line.as_ptr(), line.len());
@@ -10144,6 +10190,145 @@ mod user_copy_fault_tests {
             expect_efault(r, 30 + i as i32)?;
         }
         say(b"[ user-copy ] write: unmapped, crossing -> EFAULT\n");
+
+        // SYS_READ: a faulting copy-out leaves the file offset where it was.
+        // /hello.txt (root testfs) is "NeoPlutarch testfs hello\n".
+        let hello =
+            sys_open("/hello.txt", OPEN_ROOT_TEMPORARY, FileRights::READ).map_err(|_| 60)?;
+        let read = |buf: u64, len: u64| unsafe { raw3(SYS_READ, hello.0 as u64, buf, len) };
+        expect_efault(read(hole as u64, 1), 61)?;
+        expect_efault(read(hole as u64 - 1, 2), 62)?;
+        expect_efault(read(ro as u64, 1), 63)?;
+        let mut byte = [0u8; 2];
+        if read(byte.as_mut_ptr() as u64, 2) != 2 || byte != *b"Ne" {
+            return Err(64);
+        }
+        say(b"[ user-copy ] read: unmapped, crossing, read-only -> EFAULT, offset kept\n");
+
+        // SYS_READDIR: a read-only cursor (holding 0, a valid first cursor)
+        // takes the entry, then faults writing the cursor back.
+        let r = unsafe {
+            raw4(
+                SYS_READDIR,
+                dir.0 as u64,
+                entry.as_mut_ptr() as u64,
+                entry.len() as u64,
+                ro as u64,
+            )
+        };
+        expect_efault(r, 65)?;
+        say(b"[ user-copy ] readdir: read-only cursor -> EFAULT\n");
+
+        // SYS_FUTEX_WAIT: an unmapped word; then the word's page unmapped
+        // after the translation, so the value re-check under the queue lock
+        // faults (CP-99). The queue still works after.
+        let futex = |word: u64, expected: u32| unsafe {
+            raw3(SYS_FUTEX_WAIT, word, u64::from(expected), 0)
+        };
+        expect_efault(futex(hole as u64, 0), 70)?;
+        let fpage = sys_vm_map(PAGE, rw, false).map_err(|_| 71)?;
+        expect_efault(futex(fpage as u64, FUTEX_UNMAP_MAGIC), 72)?;
+        expect_efault(futex(fpage as u64, 0), 73)?;
+        let word = 0u32;
+        if futex(&word as *const u32 as u64, 1) != EAGAIN {
+            return Err(74);
+        }
+        say(b"[ user-copy ] futex: unmapped, unmapped under the queue lock -> EFAULT\n");
+
+        // IPC (SYS_SEND/SYS_RECV, one process's two threads): a read-only or
+        // unmapped receive buffer and an unmapped send buffer are EFAULT to
+        // both sides; then a well-formed rendezvous delivers.
+        let (a, b) = sys_chan_create().map_err(|_| 80)?;
+        let (a, b) = (a.0 as u64, b.0 as u64);
+        let payload = *b"user-copy ipc ok";
+        let src = payload.as_ptr() as u64;
+        for (i, (dst, src, len)) in [
+            (ro as u64, src, 16),
+            (hole as u64, src, 16),
+            (crossing as u64, src, 16),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (sent, got) = rendezvous(b, a, dst, src, len)?;
+            if sent != EFAULT || got != EFAULT {
+                return Err(81 + i as i32);
+            }
+        }
+        let mut inbox = [0u8; 16];
+        for (i, src) in [hole as u64, crossing as u64].into_iter().enumerate() {
+            let (sent, got) = rendezvous(b, a, inbox.as_mut_ptr() as u64, src, 16)?;
+            if sent != EFAULT || got != EFAULT {
+                return Err(84 + i as i32);
+            }
+        }
+        let (sent, got) = rendezvous(b, a, inbox.as_mut_ptr() as u64, src, 16)?;
+        if sent != 16 || got != 16 || inbox != payload {
+            return Err(86);
+        }
+        say(b"[ user-copy ] ipc: read-only, unmapped, crossing -> EFAULT; then delivered\n");
+
+        // SYS_THREAD_JOIN: a faulting status pointer is EFAULT before the
+        // join takes the exit record, so the thread is still joinable.
+        let t = nthread::spawn(exits_seven, 0, THREAD_STACK).map_err(|_| 90)?;
+        let join = |out: u64| unsafe { raw3(SYS_THREAD_JOIN, t.tid(), out, 0) };
+        expect_efault(join(hole as u64), 91)?;
+        expect_efault(join(ro as u64), 92)?;
+        let mut code = 0i32;
+        if join(&mut code as *mut i32 as u64) != 0 || code != 7 {
+            return Err(93);
+        }
+        say(b"[ user-copy ] join: unmapped, read-only -> EFAULT, still joinable\n");
+
+        // SYS_NET_TCP_ENABLE_TLS: the caller's key is wiped before TLS is
+        // installed; a key that can't be wiped is EFAULT (it used to be
+        // dropped, and the call went on). A key that is half read-only is
+        // left whole. A writable key is still wiped (EINVAL: not
+        // established).
+        let remote = SockAddr::Inet(SockAddrIn::new_loopback(7019));
+        let r = unsafe {
+            raw3(
+                SYS_NET_CONNECT_TCP,
+                remote.as_ptr() as u64,
+                remote.len() as u64,
+                7013,
+            )
+        };
+        if r < 0 {
+            return Err(100);
+        }
+        let tcp = TcpSocketHandle(r as u32);
+        let tls = |key: u64| unsafe {
+            raw3(
+                SYS_NET_TCP_ENABLE_TLS,
+                tcp.0 as u64,
+                key,
+                TLS_KEY_MATERIAL_LEN as u64,
+            )
+        };
+        expect_efault(tls(ro as u64), 101)?;
+        let pair = sys_vm_map(2 * PAGE, rw, false).map_err(|_| 102)?;
+        let ro_half = pair.wrapping_add(PAGE);
+        let head = 40;
+        let key = ro_half.wrapping_sub(head);
+        // SAFETY: `key..ro_half` is the writable page's last 40 bytes.
+        unsafe { core::ptr::write_bytes(key, 0xAA, head) };
+        sys_vm_protect(ro_half, PAGE, PROT_READ).map_err(|_| 103)?;
+        expect_efault(tls(key as u64), 104)?;
+        // SAFETY: as above.
+        if unsafe { core::slice::from_raw_parts(key, head) }
+            .iter()
+            .any(|&b| b != 0xAA)
+        {
+            return Err(105);
+        }
+        let mut good = [0xAAu8; TLS_KEY_MATERIAL_LEN];
+        if tls(good.as_mut_ptr() as u64) == EFAULT || good.iter().any(|&b| b != 0) {
+            return Err(106);
+        }
+        let _ = sys_tcp_close(tcp);
+        say(b"[ user-copy ] tls: read-only, half read-only key -> EFAULT, key kept\n");
+
         // Still serving: a well-formed call works.
         let mut record = [0u8; 16];
         let r = unsafe {

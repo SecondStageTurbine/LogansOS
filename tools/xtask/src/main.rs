@@ -4334,8 +4334,9 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     },
     TestScenario {
         // user-copy-fixup: syscalls whose user buffer is unmapped, crosses
-        // into an unmapped page, or is read-only return EFAULT, and the
-        // kernel keeps running. Control:
+        // into an unmapped page, or is read-only return EFAULT, commit
+        // nothing (SYS_READ's offset, a join), and the kernel keeps running;
+        // futex, IPC and TLS legs too (CP-99). Control:
         // NEO_TEST_EXTRA_FEATURES=neo-test-user-copy-fault-control (the
         // page-fault shim's recovery off: the first fault halts).
         name: "user_copy_fault",
