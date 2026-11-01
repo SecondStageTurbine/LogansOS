@@ -1,9 +1,10 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # THINK: L2d — images in the desktop (the first one, and how it gets there)
 
-**Date:** 2026-11-01 · **Author:** Dexter (Relay 250) · **Status:** design; no code in this relay.
-**Read at:** `origin/main` @ `42b222cdab393b29b0047077ffae8ed5823b6726` (2026-11-01). Every
-`file:line` below is from that head unless it names another commit.
+**Date:** 2026-11-01 · **Author:** Dexter (Relay 250; Revision 2, Relay 254) · **Status:** design rev 2; no code in this relay.
+**Read at:** `origin/main` @ `65b42f3882943d237f44f95e6b9054e19b7c1b4e` (rev 2 rebased; rev 1 read
+`42b222cdab393b29b0047077ffae8ed5823b6726`). Every `file:line` below is from the current head
+unless it names another commit.
 **Inputs:** `docs/THINK-2026-10-31-lived-in-os-lanes.md` §4 (Lane 2 codecs),
 `docs/THINK-2026-07-08-gui-vision-cerebro.md`,
 `docs/THINK-2026-07-23-desktop-ux-SYNTHESIS.md`, the L2b/L2c RETURNs, and the WM scene spec.
@@ -83,23 +84,28 @@ object in the protocol.** Any image path must produce opaque, already-sized XRGB
 
 The WM is the desktop's grant authority. There are two existing ways a file reaches a client:
 
-1. **Spawn-with-cap** (the Lens pattern): the WM opens a path itself and passes the handle to
-   the child at spawn (`desktop_session.rs:5440-5490`; the Lens reads its directory handle
-   at `userland/neo-worker/src/lens.rs:35,145-170`). The child gets a handle, never a path
+1. **Spawn-with-cap**: the WM opens a path itself, derives a `USE`-only child cap
+   (`userland/neo-init/src/desktop_session/permission.rs:238-250`), and passes that handle to the child
+   at spawn (`sys_spawn_budgeted`, `libneo/src/lib.rs:1336-1367`); the child reads it as an
+   ordinary file handle. The Lens is a **layout** example, not this recipe:
+   `desktop_session.rs:5454-5486` opens its directory with `LOOKUP|READDIR` (`:5462-5466`) and
+   uses plain `sys_spawn` (`:5482`); it derives no file `READ` cap and passes no budget. What
+   it does show is the fd-slot layout (`:5474-5481`) and the child-reads-its-own-copy pattern
+   (`userland/neo-worker/src/lens.rs:35,145-170`). The child gets a handle, never a path
    or a root.
 2. **On-demand lend** (the permission pattern): a client sends `OP_PERMISSION` with a path;
    the WM prompts, opens the path itself, derives a `USE`-only child cap, lends it over the
    client's channel, and revokes it at `OP_PERMISSION_DONE`
-   (`userland/neo-init/src/desktop_session/permission.rs:9-22,226-238,301-451,446-474`).
+   (`userland/neo-init/src/desktop_session/permission.rs:9-22,238-250,311-468,470-500`).
    The path must be under `/neofs/`, cannot contain `..`, and cannot name `.system/`
-   (`permission.rs:154-167`).
+   (`permission.rs:166-179`).
 
 Both are compatible with the rule "decode in the app's process": the WM only *opens and
 lends*; it never reads the file's contents into the decode path. The first build should use
 (1) for the boot gate and (2) for a user-chosen file later. A hardening note for (1): a plain
 `sys_open` under `file-caps` carries `DERIVE|GRANT` meta (`kernel/src/arch/x86_64/syscall.rs:6445-6466`),
 so the WM should pass a **derived `USE`-only READ cap**, not its root open, exactly as
-`permission.rs:226-238` does. Otherwise a viewer could re-grant the file to another process.
+`permission.rs:238-250` does. Otherwise a viewer could re-grant the file to another process.
 
 Reads are 4 KiB at a time: `MAX_FILE_IO = 4096` (`kernel/src/arch/x86_64/syscall.rs:1529`), and
 the existing small-file helper loops on that (`userland/neo-init/src/desktop_session/login.rs:211-232`).
@@ -120,13 +126,20 @@ Three independent ceilings matter:
 There is also a real per-process quota: the `mem-quota` kernel feature charges frames to a
 `MemAccount` (and `obj-quota` adds kernel-object charges), nests accounts under their spawner,
 and lets a parent spawn a child with a frame budget (`kernel/src/mm/mem_account_logic.rs:1-10`;
-`kernel/src/atrium/buffer.rs:141-160`; `kernel/src/mm/pmap.rs:793-840`). `sys_spawn_budgeted`
-exposes the frame budget to userland (`userland/libneo/src/lib.rs:1337-1360`). The desktop
-feature set does
-not currently enable `mem-quota` (`kernel/Cargo.toml:118-121,229-240`), but the image scenario
-can add it — and should, because it turns the per-session budget from a policy into an
-enforced `ENOMEM` (§5.3). The child's image, stack and page tables count against the budget,
-so the budget must include headroom, not just the image bytes.
+`kernel/src/atrium/buffer.rs:144-162`; `kernel/src/mm/pmap.rs:484-498,793-840`).
+`sys_spawn_budgeted` exposes the frame budget to userland (`userland/libneo/src/lib.rs:1336-1367`),
+and `SYS_MEM_INFO` reports the caller's account (`kernel/src/arch/x86_64/syscall.rs:191-194,1103-1104`).
+
+**All of that is conditional on the kernel feature.** The desktop feature set does not enable
+`mem-quota` (`kernel/Cargo.toml:118,227-237`), and without it `SYS_SPAWN_BUDGETED` and
+`SYS_MEM_INFO` are absent from the dispatch table and return `ENOSYS`
+(`kernel/src/arch/x86_64/syscall.rs:1086-1104,1364`). So the WM must call
+`sys_spawn_budgeted` on a `mem-quota` kernel and plain `sys_spawn` on the product desktop, and
+the product desktop has no per-process frame ceiling today. The image scenario can build with
+`mem-quota` and prove the mechanism (§5.3, §7.3); making it a product default is a separate
+PM/PL decision. The per-image cap (§5.1) does not depend on the feature at all. When a budget
+does exist, the child's image, stack and page tables count against it, so the budget must
+include headroom, not just the image bytes.
 
 ### 1.5 The design language
 
@@ -169,7 +182,7 @@ XRGB pixels, through the same G1 buffer path every other client already uses.
  ─────────────                         ─────────────────                    ──────
  sys_open(path, READ)
  sys_derive(USE-only READ cap)  ──────► FileHandle (READ)
- sys_spawn_budgeted(view, 64 MiB)
+ sys_spawn_budgeted(view, 64 MiB)   // mem-quota kernel; else plain sys_spawn
                                        read 4 KiB chunks (MAX_FILE_IO)
                                        sniff magic + decode_with_limit
                                        RGBA → opaque XRGB (flatten alpha)
@@ -283,7 +296,8 @@ A `neo-view` client that shows one PNG from NeoFS is the smallest end-to-end pat
   (`:18-20`);
 - it needs no WM decoder, no base-layer change and no scaler (the image is sized to the
   client, 640×400, and drawn 1:1);
-- it exercises the real capability path, the real memory quota, and the real compositor;
+- it exercises the real capability path and the real compositor, and (on a `mem-quota` kernel)
+  the real frame account;
 - it produces a frame-hash gate that is independent end to end (Python PNG decode + Python
   scene + kernel readback);
 - it is the template for the next two uses: a wallpaper client is a full-screen viewer, and a
@@ -301,12 +315,16 @@ The viewer is spawned with a session channel and one file handle. The WM does th
 WM: sys_open("/neofs/images/first.png", OPEN_ROOT_TEMPORARY, FileRights::READ)
 WM: sys_derive(file, CapRights::new(USE, READ))       // no GRANT on the child
 WM: sys_spawn_budgeted("view", [session_client, placeholder, Handle(cap.0)], 64 MiB)
+                                                      // mem-quota kernel; else sys_spawn(...)
 WM: sys_close(cap); sys_close(file)                   // child holds its own copy
 ```
 
-The `placeholder` is index 1 because fd 1 is reserved for stdout; the Lens uses the same layout
-(`userland/neo-init/src/desktop_session.rs:5470-5486`,
-`userland/neo-worker/src/lens.rs:29-31`). The child reads
+The `placeholder` is index 1 because fd 1 is reserved for stdout; the Lens uses the same fd-slot
+layout (`userland/neo-init/src/desktop_session.rs:5474-5481`,
+`userland/neo-worker/src/lens.rs:29-31`). The spawn-with-cap recipe itself is
+`permission.rs:238-250` (derive the `USE`-only cap) plus `libneo/src/lib.rs:1336-1367`
+(`sys_spawn_budgeted`); the Lens call site is neither — it opens a directory and uses plain
+`sys_spawn` (`desktop_session.rs:5462-5466,5482`). The child reads
 with `sys_read` in 4 KiB chunks (`MAX_FILE_IO`, `syscall.rs:1529`), exactly as
 `login::read_small_up_to` does (`login.rs:211-232`), until `n == 0`.
 
@@ -431,7 +449,7 @@ Two structural limits sit under that:
   output (`:118-140`). At 1920×1080 a 2048² buffer is already `ExceedsOutput`; the viewer must
   size to the screen/client, not to the source image.
 
-### 5.2 Per session
+### 5.2 The WM and the viewer, measured
 
 At 1920×1080 the WM's own planes are roughly:
 
@@ -455,10 +473,10 @@ The viewer adds:
 | **viewer total** | **~6–8 MiB** |
 
 So the first build's whole desktop is well under 50 MiB, on a 2 GiB guest (desktop scenarios
-get `2048M`, `tools/xtask/src/main.rs:12589`). The budget tables matter for the general case,
+get `2048M`, `tools/xtask/src/main.rs:12777`). The budget tables matter for the general case,
 not for this image.
 
-**Recommended session budgets** (enforced, not aspirational):
+**Frame budgets** (enforced only on a `mem-quota` kernel; §5.3):
 
 | Process | Frame budget | Rationale |
 |---|---|---|
@@ -467,29 +485,67 @@ not for this image.
 | browser content process (OT-61) | 128–256 MiB | its own decoded cache; a browser is not one image |
 | WM (`neo-init`) | unlimited root, but ~35–40 MiB of planes | the WM is the trusted process; its planes are fixed |
 
-### 5.3 Enforcement: the I-18 account, not a promise
+The 64 MiB figure is the **viewer's own account**, not a whole-session ceiling. The WM is the
+unlimited root account by design, and its ~35 MiB of planes are neither charged to nor bounded
+by the viewer's budget. Nothing in this table caps the sum of the desktop's processes: on a
+`mem-quota` kernel each budgeted child is bounded by its own account and by every account above
+it, and the unbudgeted root (the WM) is not. On the product desktop (`mem-quota` off) no row in
+this table is enforced by the kernel at all.
 
-The `mem-quota` kernel charges `sys_map_region` frames and G1 buffers to the process's
-`MemAccount` (`kernel/src/mm/pmap.rs:793-840`; `kernel/src/atrium/buffer.rs:141-160`), and
-`sys_spawn_budgeted` gives the viewer a child account (`libneo/src/lib.rs:1337-1360`). So the
-viewer's 64 MiB is a hard ceiling; a deliberately tighter 32 MiB budget (the negative test in
-§7.3) makes a 2048² decode fail with `ENOMEM`, and the WM keeps compositing the last committed
-frame. That is exactly the containment property L2d needs: **an image cannot starve the
-desktop.**
+### 5.3 Enforcement: what is hard, and on which kernel
 
-The image scenario should enable `mem-quota` and spawn the viewer with a budget. The product
-desktop does not currently enable `mem-quota` (`kernel/Cargo.toml:118-121,229-240`); making it
-a product default is a separate decision (it changes accounting for every process), but the
-scenario proves the mechanism works for the viewer.
+Revision 1 conflated three separate claims here. They have different enforcement and different
+scope:
+
+| Property | Enforced by | Scope |
+|---|---|---|
+| **Per-image decoded cap** (16 MiB) | viewer: `decode_with_limit` checks `w*h*4` arithmetically before the pixel allocation (`neo-image-decode/src/lib.rs:133-145,155-178`) | **every build**, product included; a larger image is `TooLarge` and nothing is allocated for it |
+| **Encoded read cap** (32 MiB) | viewer: stops at the cap, `Vec::try_reserve` (§4.1) | **every build**, product included |
+| **Reader process isolation** | kernel process boundary; the WM never decodes (§2) | **every build**; a viewer crash or abort does not take the WM |
+| **Viewer frame account** (64 MiB; 16 MiB in the negative leg) | kernel `mem-quota`: `Pmap` frames (`kernel/src/mm/pmap.rs:484-498,793-840`) and G1 buffers (`kernel/src/atrium/buffer.rs:144-162`) are charged before allocation; a refused charge is `ENOMEM` (`syscall.rs:7107-7112`) | **only a `mem-quota` kernel.** The product desktop does not enable it (`kernel/Cargo.toml:118,227-237`) |
+| **Whole-session memory ceiling** | nothing in this design | **not claimed.** The WM is unlimited root |
+
+So the honest statement is: **the per-image cap and the process boundary are always enforced;
+the per-process account ceiling is enforced when the kernel is built with `mem-quota` — which
+the L2d-1 gate scenario does and the product desktop does not.** Until `mem-quota` is a product
+default (a separate PM/PL decision: it changes accounting for every process), a product-desktop
+viewer is bounded per image (16 MiB decoded, 32 MiB encoded) and contained by its process
+boundary, but it has **no hard total-memory ceiling**; a hostile file can still make that
+viewer's heap grow until the guest as a whole is under pressure. That is narrower than rev 1's
+"an image cannot starve the desktop," and it is the true claim. If a hard product ceiling is
+required for L2d-1, enabling `mem-quota` in `desktop` is a prerequisite of the build, not an
+optional extra.
+
+**How a refused charge reaches the app.** A charge failure inside `sys_map_region` is `ENOMEM`
+(`syscall.rs:7107-7112`), but the path after it matters:
+- a direct kernel-object allocation returns it: `sys_buffer_create` maps a refused G1 charge to
+  `ENOMEM` (`kernel/src/atrium/buffer.rs:155-161`), and the viewer can report it and keep its
+  surface;
+- a heap growth goes through the `libneo` allocator, which returns null when its
+  `sys_map_region` fails (`userland/libneo/src/lib.rs:2683-2694`). A fallible
+  `Vec::try_reserve` then returns an error the viewer prints as `ENOMEM`; an infallible
+  allocation — including the vendored decoder's internal buffers — calls the allocator error
+  handler and exits 137 (`userland/libneo/src/lib.rs:2729-2735`). The WM survives either way.
+  That containment is the property the design needs; "the decoder returns `ENOMEM`" is not
+  something a third-party decoder can be assumed to do.
+
+The L2d-1 gate proves both paths: a fallible same-size allocation is refused with `ENOMEM`
+under a tight budget (**Q2**), and an infallible decode under a tight budget aborts the viewer
+through the 137 path while the WM keeps presenting (**Q3**) — both after the size check has
+passed (§7.3).
 
 ### 5.4 What the budget does not cover
 
 - **CPU.** A pathological DEFLATE stream can burn a core for a long time. The viewer's process
   isolation keeps the WM live (the WM parks on its channel, not the viewer's decode), but a
   per-decode time budget is a later hardening, not a first-build gate.
+- **Product-desktop total memory.** With `mem-quota` off (the product default today) a viewer's
+  heap is not capped; the per-image and encoded caps bound one decode, not repeated work or the
+  process's live heap. This is the §5.3 gap, stated as a limit rather than hidden.
 - **The WM's own planes.** They are fixed and trusted; a hostile client cannot make the WM
   allocate an unbounded plane (the client's `client_copy` is sized by the WM, and the G1
-  buffer is charged to the client). This is the property to keep.
+  buffer is charged to the client). This is the property to keep. It is not a whole-session
+  ceiling: the WM's planes sit on the unlimited root account and are not charged to any viewer.
 - **Kernel memory.** The kernel copies file bytes and maps pages; it does not hold the decoded
   image. `MAX_BUFFER_BYTES` bounds the one image-shaped kernel object.
 
@@ -554,13 +610,16 @@ it is the same trade browsers make by decoding in their renderer/content process
 `desktop-image-boot-test`). It needs an entry in both the `TestScenario` table (the shape is
 `tools/xtask/src/main.rs:2798-2812`) and `DESKTOP_SCENARIOS` (`tools/xtask/src/main.rs:646`),
 which is what gives it the pinned 1920×1080 mode and the 2 GiB desktop memory tier
-(`tools/xtask/src/main.rs:12589`).
+(`tools/xtask/src/main.rs:12777`).
 
 ### 7.1 Boot shape
 
 1. The WM boots with `desktop-image` and `desktop-session-boot-test`, opens
-   `/neofs/images/first.png` `READ`, derives a `USE`-only READ cap, and spawns `neo-view` with
-   the session channel and the cap (the Lens spawn layout, `desktop_session.rs:5440-5490`).
+   `/neofs/images/first.png` `READ`, derives a `USE`-only READ cap (`permission.rs:238-250`),
+   and spawns `neo-view` with the session channel and the cap — `sys_spawn_budgeted`
+   (`libneo/src/lib.rs:1336-1367`) on a `mem-quota` kernel, plain `sys_spawn` otherwise. The
+   fd-slot layout is the Lens's (`desktop_session.rs:5474-5481`); the Lens itself derives no
+   cap and passes no budget.
 2. The viewer reads the file in 4 KiB chunks (encoded cap 32 MiB), sniffs PNG, decodes with a
    16 MiB limit, flattens to XRGB over the floor, creates its 640×400 G1 surface, writes it,
    and commits.
@@ -612,9 +671,41 @@ The fixture must record:
    unchanged digest; no allocation is attempted (the API pre-check is `lib.rs:155-178,193-229`).
 5. **Encoded cap.** A file larger than 32 MiB is refused before the whole read; the viewer
    reports `too large` and does not allocate the file.
-6. **Memory quota.** With `mem-quota` on and the viewer spawned with a 32 MiB budget, a
-   2048² decode (16 MiB RGBA + ~16 MiB raw) must fail with `ENOMEM`, not OOM the guest. The WM
-   stays live. This is the I-18 proof from §5.3.
+6. **Memory quota (`mem-quota` builds only).** Three legs, run in one boot, all through the
+   viewer's test-only decode mode (`desktop-image-quota-test`: read → sniff → size check →
+   optional preflight → decode, no surface, so the 640×400 fit rule does not intervene). They
+   distinguish the *account* check from the *image-size* check; rev 1's single 2048²/32 MiB
+   leg could not, because 2048² is exactly at the 16 MiB cap and the decoder's peak was only
+   estimated.
+   - **Image:** `quota_2000x2000.png`, decoded `2000*2000*4 = 16,000,000` B = 15.26 MiB —
+     **within** the 16 MiB cap (`16,777,216` B) with 777,216 B to spare. The cap check is
+     arithmetic and uses `<=` (`neo-image-decode/src/lib.rs:155-178`), so `TooLarge` cannot be
+     the cause. The image's compressed size is small (a solid or gently graded 2000² PNG), so
+     the 32 MiB encoded cap is nowhere near the failure.
+   - **Q1, control (64 MiB budget):** the viewer prints `image-size-ok w=2000 h=2000
+     rgba=16000000 limit=16777216`, then `image-quota reserve-ok`; it drops the probe, decodes
+     and prints `image-quota ok`. Before the reserve it prints `baseline-used=<frames>` from
+     `sys_mem_info`. The gate asserts `baseline_bytes + 16,000,000 > 16 MiB`; if that
+     inequality fails, the leg cannot prove quota and the gate fails with "test cannot prove
+     the quota" (a real discriminator, not a pass).
+   - **Q2, account refusal (16 MiB budget):** the same image. The viewer boots, prints
+     `image-size-ok`, then `Vec::try_reserve_exact(16_000_000)` is refused because the
+     process's own image/stack/page tables are already charged to its account. The viewer
+     prints `image-quota ENOMEM` and exits 0 (the marker is the line, not a crash). The gate
+     requires, in order: `image-size-ok` → `image-quota ENOMEM`; no `TooLarge`; no
+     `reserve-ok`. The size check passed and the only allocation attempted is within the
+     decoded cap, so the refusal is the account ceiling.
+   - **Q3, infallible decode under a tight budget:** the 2048×2048 PNG from rev 1's leg, a
+     16 MiB decoded RGBA (exactly at the cap, so the size check still passes) and a 32 MiB
+     budget, decoded in the same test-only mode with no preflight. The decoder's transient
+     allocations exceed the account, the allocator returns null, and the infallible path
+     aborts: `[ libneo ] allocation failed (OOM); exiting`, exit 137
+     (`userland/libneo/src/lib.rs:2729-2735`). The gate asserts that line and the exit, then
+     that the WM still presents the previous frame and answers its session channel. This is
+     the contained-death path a third-party decoder actually takes, stated as such.
+   The WM stays live in all three legs. What is proved is the **viewer's account being charged
+   and the refusal staying local**; on the product desktop (`mem-quota` off) Q2 and Q3 do not
+   exist, which is exactly why §5.3 does not claim a product session ceiling.
 7. **No decoder in the WM.** The dependency/symbol check from §2.
 8. **Kill-switch.** `desktop-image` off builds the existing scene byte-for-byte; the
    `desktop_glass_boot` digest is unchanged and the image scenario is not registered.
@@ -638,7 +729,7 @@ The fixture must record:
 | **App icons, runtime** | `neo-atrium/src/icons.rs:4-7,29-33` (build-time blobs; `include_bytes!`), `:40-66` (blend), `neo-atrium/src/scene.rs:948-975` (paint call sites), `tools/icon-raster/src/main.rs` (host rasteriser), the icon-box gate at `kernel/src/test_harness.rs:40460-40490`, `fixtures/desktop-ds1/icon_digests.rs` | **Not first.** A runtime path either puts a decoder in the WM (forbidden) or adds an icon-supply protocol; the build-time path already works and is pinned. |
 | **Wallpaper** | `neo-init/src/desktop_session.rs:293-341` (full-screen planes), `:888-1000` (layer order; base is layer 0), `libneo/src/atrium_wm.rs:311-336` (opaque full-scene base required), `:345-369` (1:1 copy, no scaling), `neo-atrium/src/backdrop.rs:44-81` (the Threshold ground it would replace or sit behind), `libneo/src/atrium_protocol.rs:154,834-841` (`ROLE_WORKFIELD_ROOT`, one full-screen root) | **Defer.** A compositor/base-layer change and a design decision, not a first image build. |
 | **Browser `<img>`** | `third_party/ot61-browser/` (Servo/vendor); `docs/RESEARCH-2026-10-30-ot61-stylo-layout-closure.md:17,214` (image stack in the 828-crate layout closure, not the 152-crate stylo scope); `neo-image-decode` (the API it could adopt) | **Later.** The real consumer, but gated on OT-61's layout closure and a decode-ownership decision. |
-| **One-image viewer (recommended)** | `neo-init/src/desktop_session.rs:5440-5490` (spawn-with-cap template), `:868-1000` (snapshot + compose), `libneo/src/atrium_wm.rs:204-264,315-372` (copy/composite), `libneo/src/atrium_protocol.rs:18-39,154-156` (surface verbs, `ROLE_TEXT`), `neo-worker/src/lens.rs:29-134` (client template), `neo-atrium/src/scene.rs:990,1014-1026` (hardcoded title, a later polish) | **First build.** No new protocol, no WM decoder, a real end-to-end gate. |
+| **One-image viewer (recommended)** | `neo-init/src/desktop_session.rs:5454-5486` (fd-slot layout only), `neo-init/src/desktop_session/permission.rs:238-250` (derived `USE`-only cap), `libneo/src/lib.rs:1336-1367` (`sys_spawn_budgeted`), `:868-1000` (snapshot + compose), `libneo/src/atrium_wm.rs:204-264,315-372` (copy/composite), `libneo/src/atrium_protocol.rs:18-39,154-156` (surface verbs, `ROLE_TEXT`), `neo-worker/src/lens.rs:29-134` (client template), `neo-atrium/src/scene.rs:990,1014-1026` (hardcoded title, a later polish) | **First build.** No new protocol, no WM decoder, a real end-to-end gate. |
 
 ## 9. Recommendation: the first build
 
@@ -646,9 +737,11 @@ The fixture must record:
 
 **`neo-view` + a `no_std` PNG backend in `neo-image-decode`, gated by
 `desktop_image_boot`.** The viewer is a normal `ROLE_TEXT` client; the WM opens and lends a
-`USE`-only READ cap and spawns it with a 64 MiB frame budget; the viewer reads, decodes,
-flattens, commits; the WM composites; the kernel hashes the frame against the independent
-oracle.
+`USE`-only READ cap and — on a `mem-quota` kernel — spawns it with a 64 MiB frame budget; the
+viewer reads, decodes, flattens, commits; the WM composites; the kernel hashes the frame
+against the independent oracle. On the product desktop (`mem-quota` off) the same build uses
+plain `sys_spawn`, and the claim is the per-image cap plus process containment, not a session
+ceiling (§5.3).
 
 It touches:
 
@@ -732,8 +825,10 @@ The design is wrong if any of these fails:
   sensitive to colour order (it is: FNV hashes all 24 bits).
 - **F4:** an over-cap `IHDR` allocates or panics. Then the size cap is bypassed.
 - **F5:** the WM binary contains a `png`/`zune` symbol. Then the decode boundary is violated.
-- **F6:** a 2048² decode under a 32 MiB `mem-quota` budget succeeds. Then the quota is not
-  charged, and §5.3 is false.
+- **F6:** the Q2 leg prints `reserve-ok` or `image-quota ok` under its 16 MiB budget, or
+  prints `TooLarge`, or the gate's `baseline_bytes + 16,000,000 > 16 MiB` check fails. Then
+  the account is not charged (or the test is mis-sized), and §5.3 is false. Likewise if Q3's
+  allocator abort takes the WM down, containment is false.
 - **F7:** `desktop-image` off changes the existing scene digest. Then the kill-switch is not
   bit-for-bit and the feature leaked into the base path.
 
@@ -775,3 +870,38 @@ trade, one process boundary cheaper than a system service.
 **Decision requested from the PM/PL:** approve `neo-view` + the `zune-png` OS backend as the
 first L2d build, with `desktop_image_boot` as its gate, and keep wallpaper/runtime icons/browser
 `<img>` as later, separately scoped builds.
+
+## Revision 2 (Relay 254, answering Chad's #41 review)
+
+Chad's read (`Plans/RETURN-2026-11-01-pr41-review-chad.md`, relay 251) returned three FAILs.
+Each is fixed in place above; the changes are:
+
+1. **Per-session enforcement was overstated (FAIL 1).** §5.2 and §5.3 now separate the
+   per-image decoded cap and the encoded read cap (enforced in the viewer on *every* build)
+   from the per-process frame account (enforced only on a `mem-quota` kernel), and say plainly
+   that the 64 MiB is the viewer's own account, not a whole-session ceiling — the WM is
+   unlimited root and its planes are not charged to the viewer. The product desktop does not
+   enable `mem-quota` (`kernel/Cargo.toml:118,227-237`), so the product claim is narrowed to
+   "per-image cap + process containment"; a hard product ceiling is named as an L2d-1
+   prerequisite or a later rung, for the PM/PL. §1.4 and §5.4 carry the same correction.
+   Also corrected here: without `mem-quota`, `SYS_SPAWN_BUDGETED` is absent and returns
+   `ENOSYS` (`syscall.rs:1086-1104,1364`), so the WM must fall back to plain `sys_spawn`; rev 1
+   called the budgeted spawn unconditionally.
+2. **The quota discriminator did not prove its cause (FAIL 2).** §7.3 item 6 is now three legs
+   over a 2000×2000 image whose decoded size (16,000,000 B = 15.26 MiB) is under the 16 MiB
+   cap, so `TooLarge` cannot be the cause. Q1 is the control (64 MiB) and prints the measured
+   account baseline; the gate checks `baseline + 16,000,000 > 16 MiB` so the negative leg is
+   valid. Q2 (16 MiB) passes the size check and is refused by
+   `Vec::try_reserve_exact(16_000_000)` with `ENOMEM` — an account refusal, not a size refusal.
+   Q3 keeps the rev-1 2048²/32 MiB case but recasts it as what it actually is: the infallible
+   decoder's allocator abort (exit 137), contained by the process boundary. F6 is updated to
+   match.
+3. **The spawn citation was wrong (FAIL 3).** The Lens at `desktop_session.rs:5454-5486` opens
+   a directory with `LOOKUP|READDIR` (`:5462-5466`) and uses plain `sys_spawn` (`:5482`); it
+   derives no file `READ` cap and passes no budget. All four "spawn-with-cap template" cites
+   (§1.3, §4.1, §7.1, §8) now cite `permission.rs:238-250` for the derived `USE`-only cap and
+   `libneo/src/lib.rs:1336-1367` for `sys_spawn_budgeted`, and label the Lens only as the
+   fd-slot layout example (`:5474-5481`).
+4. **Line numbers rebased.** The THINK was rebased from `42b222cda` onto `65b42f388` for this
+   revision; `permission.rs` moved by +12 lines, and its citations were re-derived against the
+   new head. Every `file:line` above is re-checked against `65b42f388`.
