@@ -17,12 +17,6 @@ on:
         description: "Publish to the `preview` release after the boot check passes"
         type: boolean
         default: true
-  # TEMPORARY (removed before the PR is ready): GitHub refuses
-  # workflow_dispatch for a workflow not yet on the default branch, so the
-  # branch iterates on push.
-  push:
-    branches: [claude/preview-vm-image]
-    paths: ['.github/workflows/preview-image.yml', 'scripts/preview/**']
   schedule:
     # Daily; skipped when main has not moved since the published preview.
     - cron: "17 9 * * *"
@@ -237,7 +231,7 @@ jobs:
   publish:
     name: Publish the preview release
     needs: build
-    if: github.event_name != 'workflow_dispatch' || inputs.publish
+    if: github.event_name == 'schedule' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -285,10 +279,13 @@ jobs:
             if [ -n "$prev_at" ]; then
               echo "### What's in this build since the previous preview (\`${prev_sha:0:12}\`)"
               echo
-              gh pr list --repo "$REPO" --state merged --base main --limit 100 \
-                --search "merged:>=${prev_at}" --json number,title \
-                --jq '.[] | "- #\(.number) \(.title)"' > prs.txt || true
-              if [ -s prs.txt ]; then cat prs.txt; else echo "- No pull requests merged since then."; fi
+              if gh pr list --repo "$REPO" --state merged --base main --limit 100 \
+                   --search "merged:>=${prev_at}" --json number,title \
+                   --jq '.[] | "- #\(.number) \(.title)"' > prs.txt; then
+                if [ -s prs.txt ]; then cat prs.txt; else echo "- No pull requests merged since then."; fi
+              else
+                echo "- (The list of merged pull requests could not be read for this build.)"
+              fi
             else
               echo "This is the first preview."
             fi
