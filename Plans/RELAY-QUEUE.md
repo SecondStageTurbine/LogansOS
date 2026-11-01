@@ -55,3 +55,4 @@ RELAY 234 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l2c-decoder-fuz
 RELAY 235 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-think-reviews-235-237.md | Section 235 (#31 tiered-gate THINK; RETURN `Plans/RETURN-2026-11-01-pr31-tiered-gate-review-dexter.md`)
 RELAY 236 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-think-reviews-235-237.md | Section 236 (#12 terminal THINK; RETURN `Plans/RETURN-2026-11-01-pr12-terminal-think-review-jarvis.md`)
 RELAY 237 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-think-reviews-235-237.md | Section 237 (#9 + #20 storage THINKs; RETURN `Plans/RETURN-2026-11-01-pr9-pr20-storage-thinks-review-chad.md`)
+RELAY 238 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-review-238-pr30.md | Section "Relay 238" (#30 review; RETURN `Plans/RETURN-2026-11-01-pr30-msc-bind-review-jarvis.md`)
