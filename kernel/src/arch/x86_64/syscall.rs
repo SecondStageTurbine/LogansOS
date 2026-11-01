@@ -406,7 +406,8 @@ pub const SYS_TEST_TLS: u64 = 0xF04;
 /// that scenario's builds; never ships.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 pub const SYS_TEST_THREAD_CREATE_ON: u64 = 0xF05;
 /// OT-61 C1.3b test-only: arm the calling thread so its next `SYS_FUTEX_WAIT`
@@ -1320,7 +1321,8 @@ extern "C" fn syscall_dispatch(
         SYS_TEST_TLS => sys_test_tls_impl(a0, a1),
         #[cfg(any(
             feature = "neo-test-threads-tls",
-            feature = "neo-test-threads-exit-group"
+            feature = "neo-test-threads-exit-group",
+            feature = "neo-test-user-copy-fault"
         ))]
         SYS_TEST_THREAD_CREATE_ON => sys_test_thread_create_on_impl(a0, a1, a2 as usize, a3),
         #[cfg(feature = "neo-test-threads-exit-group")]
@@ -7582,7 +7584,8 @@ fn sys_test_kernel_spin_impl(ms: u64) -> i64 {
 /// SYS_TEST_THREAD_CREATE_ON(entry, arg, stack_size, cpu) → tid | errno.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 fn sys_test_thread_create_on_impl(entry: u64, arg: u64, stack_size: usize, cpu: u64) -> i64 {
     if let Err(e) = browser_runtime_thread_cap_check() {

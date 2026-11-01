@@ -4787,7 +4787,8 @@ pub fn thread_create_for_current(entry: u64, arg: u64, stack_size: usize, guard:
 /// Panics if the placement fails: this scenario's target ring is never full.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 pub fn thread_create_for_current_on_cpu(
     entry: u64,

@@ -3176,9 +3176,21 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     #[cfg(feature = "neo-test-user-copy-fault")]
     {
         let exit_code = _ipc_smoke();
+        // CP-99: neo-init's parallel-unmap IPC leg. 7 = the hold ran (1), a
+        // sibling's unmap was seen waiting on the peer's lock (2), and the
+        // frame was still mapped when the copy finished (4).
+        let race = crate::ipc::copy_race_test::RESULT.load(Ordering::Acquire);
+        if exit_code == 0 && race != 7 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ipc_unmap_race result={}",
+                SCENARIO,
+                race
+            );
+            debug_exit(EXIT_FAILURE);
+        }
         if exit_code == 0 {
             pass(
-                "user_copy_fault=ok unmapped=efault crossing=efault read_only=efault kernel_alive=1",
+                "user_copy_fault=ok unmapped=efault crossing=efault read_only=efault ipc_unmap_race=held kernel_alive=1",
             );
         }
         serial_println!(

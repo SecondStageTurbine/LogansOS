@@ -10078,14 +10078,15 @@ mod mount_authority_tests {
 #[cfg(feature = "user-copy-fault-test")]
 mod user_copy_fault_tests {
     use super::*;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
     use libneo::nthread;
     use libneo::{
         EAGAIN, EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_FUTEX_WAIT,
         SYS_HANDLE_INFO, SYS_NET_CONNECT_TCP, SYS_NET_TCP_ENABLE_TLS, SYS_READ, SYS_READDIR,
         SYS_RECV, SYS_SEND, SYS_THREAD_JOIN, SYS_WRITE, SockAddr, SockAddrIn, TLS_KEY_MATERIAL_LEN,
-        TcpSocketHandle, raw3, raw4, sys_chan_create, sys_open, sys_tcp_close, sys_vm_map,
-        sys_vm_protect, sys_vm_unmap,
+        TcpSocketHandle, raw3, raw4, sys_chan_create, sys_open, sys_tcp_close,
+        sys_test_thread_create_on, sys_thread_exit, sys_thread_join, sys_vm_map, sys_vm_protect,
+        sys_vm_unmap,
     };
 
     const PAGE: usize = 4096;
@@ -10108,6 +10109,56 @@ mod user_copy_fault_tests {
         // SAFETY: SYS_RECV(h, buf, len) writes at most `len` bytes at `buf`
         // (or returns EFAULT).
         unsafe { raw3(SYS_RECV, h, buf, len) as i32 }
+    }
+
+    /// The parallel-unmap leg: the kernel's `copy_race_test::RACE_LEN`.
+    const RACE_LEN: usize = 72;
+    /// Its two pages (fresh, zeroed), and the channel ends (A low, B high).
+    static RACE_SRC: AtomicU64 = AtomicU64::new(0);
+    static RACE_DST: AtomicU64 = AtomicU64::new(0);
+    static RACE_CHANS: AtomicU64 = AtomicU64::new(0);
+    static UNMAPPER_READY: AtomicU32 = AtomicU32::new(0);
+
+    extern "C" fn race_sender(_: usize) -> ! {
+        let chan = RACE_CHANS.load(Ordering::Acquire) & 0xFFFF_FFFF;
+        let src = RACE_SRC.load(Ordering::Acquire);
+        // SAFETY: SYS_SEND reads RACE_LEN bytes of the source page.
+        let r = unsafe { raw3(SYS_SEND, chan, src, RACE_LEN as u64) };
+        sys_thread_exit(r as i32)
+    }
+
+    extern "C" fn race_receiver(_: usize) -> ! {
+        let chan = RACE_CHANS.load(Ordering::Acquire) >> 32;
+        let dst = RACE_DST.load(Ordering::Acquire);
+        // SAFETY: SYS_RECV writes at most RACE_LEN bytes of the destination page.
+        let r = unsafe { raw3(SYS_RECV, chan, dst, RACE_LEN as u64) };
+        sys_thread_exit(r as i32)
+    }
+
+    /// Wait for the kernel's go (a page address in the first word of either
+    /// page), then unmap that page; exits with SYS_VM_UNMAP's result (0), or
+    /// 1000 if no go came.
+    extern "C" fn race_unmapper(_: usize) -> ! {
+        UNMAPPER_READY.store(1, Ordering::Release);
+        let words = [
+            RACE_SRC.load(Ordering::Acquire) as *const AtomicU64,
+            RACE_DST.load(Ordering::Acquire) as *const AtomicU64,
+        ];
+        for _ in 0..2_000_000_000u64 {
+            for w in words {
+                // SAFETY: both pages stay mapped until this thread unmaps one.
+                let go = unsafe { (*w).load(Ordering::Acquire) };
+                if go != 0 {
+                    let code = match sys_vm_unmap(go as *mut u8, PAGE) {
+                        Ok(()) => 0,
+                        Err(e) => e as i32,
+                    };
+                    sys_thread_exit(code)
+                }
+            }
+            core::hint::spin_loop();
+        }
+        sys_thread_exit(1000)
     }
 
     extern "C" fn exits_seven(_: usize) -> i32 {
@@ -10267,6 +10318,37 @@ mod user_copy_fault_tests {
             return Err(86);
         }
         say(b"[ user-copy ] ipc: read-only, unmapped, crossing -> EFAULT; then delivered\n");
+
+        // IPC against a parallel unmap. A sender (CPU 3) and a receiver (CPU
+        // 1) rendezvous 72 bytes between two fresh pages; a sibling on CPU 2
+        // unmaps the peer side's page while the copy runs. The scenario
+        // kernel holds that copy open until the unmap is waiting on the
+        // peer's page-table lock (its go: the peer page's address, written
+        // into the live side's buffer), and the harness checks the frame was
+        // still mapped when the copy finished. Here: the copy delivers to
+        // both sides, then the unmap succeeds.
+        let src_page = sys_vm_map(PAGE, rw, false).map_err(|_| 110)?;
+        let dst_page = sys_vm_map(PAGE, rw, false).map_err(|_| 110)?;
+        RACE_SRC.store(src_page as u64, Ordering::Release);
+        RACE_DST.store(dst_page as u64, Ordering::Release);
+        RACE_CHANS.store(a | (b << 32), Ordering::Release);
+        UNMAPPER_READY.store(0, Ordering::Release);
+        let on = |f: extern "C" fn(usize) -> !, cpu: u32| {
+            sys_test_thread_create_on(f, 0, THREAD_STACK, cpu).map_err(|_| 111)
+        };
+        let u = on(race_unmapper, 2)?;
+        while UNMAPPER_READY.load(Ordering::Acquire) == 0 {
+            libneo::sys_sched_yield();
+        }
+        let r = on(race_receiver, 1)?;
+        let t = on(race_sender, 3)?;
+        let sent = sys_thread_join(t).map_err(|_| 112)?;
+        let got = sys_thread_join(r).map_err(|_| 112)?;
+        let unmapped = sys_thread_join(u).map_err(|_| 112)?;
+        if sent != RACE_LEN as i32 || got != RACE_LEN as i32 || unmapped != 0 {
+            return Err(113);
+        }
+        say(b"[ user-copy ] ipc: peer's page unmapped mid-copy -> unmap waits, copy delivers\n");
 
         // SYS_THREAD_JOIN: a faulting status pointer is EFAULT before the
         // join takes the exit record, so the thread is still joinable.
