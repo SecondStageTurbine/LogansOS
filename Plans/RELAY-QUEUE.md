@@ -51,3 +51,4 @@ RELAY 230 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-m910q-reviews-a
 RELAY 231 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 231 (#15 review; RETURN `Plans/RETURN-2026-11-01-pr15-client-table-review-chad.md`)
 RELAY 232 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 232 (#16 review; RETURN `Plans/RETURN-2026-11-01-pr16-boot-time-review-janus.md`)
 RELAY 233 | jarvis | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 233 (#29 review; RETURN `Plans/RETURN-2026-11-01-pr29-fetch-broker-review-jarvis.md`)
+RELAY 234 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l2c-decoder-fuzz-dexter.md | Section "Relay 234" (Lane 2c; RETURN `Plans/RETURN-2026-11-01-l2c-decoder-fuzz-dexter.md`)
