@@ -1,0 +1,10 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# Return 264: Jarvis review of #42 (neo-term-core)
+
+Reviewed head: `861a140af1355aefc01a1a8bc2f840221f71a640` (`pr42`).
+
+- [ ] **FAIL — 1.** The parser acts on CSI forms outside THINK §5.1: `third_party/vt100/src/perform.rs:98-101` dispatches HPA and REP, neither of which is in the committed subset. Concrete input `a\x1b[1b` repeats `a` into the grid. Also `userland/neo-term-core/src/term.rs:7-10` documents that `\x1b[6 n` is answered as DSR 6n after the parser drops the space intermediate; it should be consumed and ignored.
+- [x] **PASS — 2.** CSI parameters and intermediates have fixed capacities (`third_party/vte/src/params.rs:6`, `third_party/vte/src/lib.rs:47-72`); OSC has fixed 1024-byte storage and at most 16 parameters (`third_party/vte/src/lib.rs:47-68`); decimal accumulation saturates (`third_party/vte/src/lib.rs:510-518`). The parser does not accumulate an unterminated CSI or OSC without bound, and parameter arithmetic cannot overflow.
+- [x] **PASS — 3.** The key oracle covers normal and DECCKM cursor keys, Home/End, editing and function keys, modified examples, Ctrl+arrows, Backspace/Enter/Tab/Esc, Ctrl+/, and every Ctrl+letter (`userland/neo-term-core/src/keys.rs:225-278`). The encoder's modifier cases are at `userland/neo-term-core/src/keys.rs:95-159`.
+- [x] **PASS — 4.** Cursor movement uses saturating arithmetic and clamps column-setting/movement (`third_party/vt100/src/grid.rs:832-853`); wide glyphs wider than the screen are rejected before drawing (`third_party/vt100/src/screen.rs:860-877`). Resize takes nonzero dimensions through `userland/neo-term-core/src/term.rs:127-129` and the vendored screen resizes rows and cells (`third_party/vt100/src/grid.rs:130-153`).
+- [x] **PASS — 5.** `userland/neo-term-core/src/answer.rs:22-51` builds only the fixed DSR 5n, DSR 6n, and DA1 responses; the filter rejects private markers, intermediates, and other report parameters (`answer.rs:29-37`). The cursor numbers in DSR 6n come from the local screen position, not child-supplied bytes (`userland/neo-term-core/src/term.rs:51-62`).
