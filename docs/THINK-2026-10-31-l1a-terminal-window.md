@@ -13,11 +13,16 @@ Citations are to `origin/main` at `07d7f6e`.
 
 **Revision 2 (2026-11-01), answering the cross-family review** (relay 236,
 `Plans/RETURN-2026-11-01-pr12-terminal-think-review-jarvis.md` on `codex/pr12-review-jarvis`): item 1 (flow control
-and the term page's ordering) is §3.2's ordering table and the new §3.4; item 2 (a concrete byte oracle) is the new
+and the term page's ordering) is §3.2's ordering table and the new §3.3; item 2 (a concrete byte oracle) is the new
 §5.3, from xterm's `ctlseqs.txt` fetched raw; item 3 (paste) is the new §6.1. Items 4 and 5 passed. Revision 2 also
 fixes a bug the review's item 1 led to: revision 1 had the child `FUTEX_WAKE` a terminal that parks in
 `SYS_WAIT_ANY`, so a mode change could wait for the next key; the terminal now checks the request on every wake,
 at most 20 ms apart.
+
+**Revision 3 (2026-11-01), folding in Dexter's kibi survey** (#39, at the PM's request on #12): §3.4 is rewritten
+around kibi's needs (a read with a timeout and a timeout-versus-EOF contract, a `mode()` getter and the `mode_cur`
+word, the reset every child starts from, polled resize, handle kinds, `IsTerminal`); §5.3 gains kibi's key and grid
+rows; §8 gains two scenarios. Sections 3.3 and 3.4 swapped numbers so they read in order.
 
 ## 1. What L1a is, and where it sits
 
@@ -25,7 +30,7 @@ L1a is the terminal app: a WM client whose window shows a VT text grid, running 
 and stdout are byte streams the terminal owns.
 
 OT-88 §3 already decided most of it:
-- **Parser and screen:** vendor `vt100` (which brings `vte`). We write the renderer and the key encoder (§3.1, §3.3).
+- **Parser and screen:** vendor `vt100` (which brings `vte`). We write the renderer and the key encoder (OT-88 §3.1, §3.3).
 - **The stream:** a kernel pipe, `Handle::Pipe`, two per terminal (rung T1, §3.2). Its CP table is in §3.2 and stands.
 - **The child's stdio is named at spawn,** never by slot; the kernel routes fd 0/1 to a pipe only when the spawn
   selected one (§3.2, "How the child gets its stdio").
@@ -107,7 +112,8 @@ Little-endian, fixed offsets, the rest of the page zero. Each word has **one wri
 | 20 | 4 | `mode_req`: bit 0 cooked, bit 1 echo; other bits 0 | child |
 | 24 | 4 | `mode_req_seq`: the child adds 1 after writing `mode_req` (Release) | child |
 | 28 | 4 | `mode_ack_seq`: the terminal copies `mode_req_seq` here once the mode is in force | terminal |
-| 32 | 4064 | reserved, 0 | — |
+| 32 | 4 | `mode_cur`: the mode in force, bits as `mode_req` (revision 3, §3.4) | terminal |
+| 36 | 4060 | reserved, 0 | — |
 
 **Byte oracle (hand-laid, for L1a.2's KAT):** a page for 80 × 25, 640 × 400 px, cooked with echo, request 1
 acknowledged, `size_seq` 2:
@@ -115,7 +121,7 @@ acknowledged, `size_seq` 2:
 ```
 00: 4e 54 50 31  01 00 00 00  02 00 00 00  50 00 19 00
 10: 80 02 90 01  03 00 00 00  01 00 00 00  01 00 00 00
-20: 00 ... (4064 zero bytes)
+20: 03 00 00 00  00 ... (4060 zero bytes)
 ```
 
 The encoder and decoder are tested against these bytes, not only against each other.
@@ -139,8 +145,10 @@ orderings are:
 | child, mode | `mode_req` | store Relaxed |
 | | `mode_req_seq += 1` | store Release |
 | terminal, mode | `q = mode_req_seq` | load Acquire; if changed since the last one it applied, load `mode_req` (Relaxed), mask, apply |
-| | `mode_ack_seq = q` | store Release, then `FUTEX_WAKE` on that word |
+| | `mode_cur` = the bits now in force | store Relaxed |
+| | `mode_ack_seq = q` | store Release (orders `mode_cur` before it), then `FUTEX_WAKE` on that word |
 | child, mode | wait for `mode_ack_seq >= its q` | load Acquire, `FUTEX_WAIT` on that word between loads |
+| child, `mode()` | `a = mode_ack_seq`, then `mode_cur` | load Acquire, then load Relaxed |
 
 The size query retries at most 8 times, then returns the last consistent read (the terminal writes the size only on a
 configure, so a reader never starves). The seqlock is the standard one, the same pattern as the DI-1b resize
@@ -155,7 +163,7 @@ and checks `mode_req_seq` on every wake, before it handles any key from that wak
 terminal costs the child one deadline (`TimedOut`), never a hang; the stdout pipe's EPIPE is the liveness signal after
 that. The futex wakes across processes (keyed by physical address: OT-88 §3.2, T-b row).
 
-### 3.4 Flow control: pipe sizes, and when a side stops reading (review item 1)
+### 3.3 Flow control: pipe sizes, and when a side stops reading (review item 1)
 
 Both pipes are L1a.1's `Handle::Pipe` (OT-88 §3.2, T-a): a bounded byte buffer, written and read as a byte stream with
 no framing (a write may be split across reads; a read returns what is there, up to its length).
@@ -164,7 +172,7 @@ no framing (a write may be split across reads; a read returns what is there, up 
 |---|---|---|
 | Capacity | 4 KiB | 64 KiB |
 | Writer | the terminal: **never blocks** (a try-write; a full pipe drops the key and shows the bell, §4) | the child: **blocks** when the pipe is full, as a Unix pipe write does; resumes as soon as the terminal reads |
-| Reader | the child: blocks when empty (or waits with a deadline, §3.3) | the terminal: never blocks (it reads only after `SYS_WAIT_ANY` says the pipe is ready) |
+| Reader | the child: blocks when empty (or waits with a deadline, §3.4) | the terminal: never blocks (it reads only after `SYS_WAIT_ANY` says the pipe is ready) |
 | Last other end closes | the child reads the bytes still buffered, then EOF | the terminal reads the rest, then EOF, and shows "[process exited]" |
 | Reader side gone | the terminal's write gets EPIPE: it shows the child as gone | the child's write gets EPIPE at once (std: `ErrorKind::BrokenPipe`) |
 
@@ -188,14 +196,75 @@ byte; EOF after the last writer closes, with the buffered bytes delivered first;
 reader closes; and (L1a.3) `terminal_output_flood`: the child writes 10 MiB, and the terminal's End process lands
 within one wake while the flood is running.
 
-### 3.3 What the child's side looks like
+### 3.4 What the child's side looks like (with kibi's needs, Dexter's L1b survey #39)
 
-- **libneo:** `libneo::term::{size(), set_mode(Mode), is_terminal()}` on the term page; `is_terminal` is false when the
-  spawn selected no term page.
-- **std:** a `std::os::neoplutarch::term` extension with the same three calls, plus `std::io::IsTerminal` answering
-  from `is_terminal`. termion's backend (for later apps) maps `terminal_size` and raw mode onto them. kibi's Unix
-  path needs exactly these (`TIOCGWINSZ`, `cfmakeraw`) and a read that times out (VMIN/VTIME) to tell a lone Esc from
-  a sequence: `SYS_WAIT_ANY` on the pipe item with a deadline gives that (L1a.1).
+Dexter's survey (`docs/THINK-2026-11-01-l1b-kibi-on-logansos.md` on #39, §3.6 and §7) maps every terminal call kibi
+makes onto revision 2 and lists eight gaps. This section closes the six that are this THINK's to close; the other two
+are kibi-port constraints, recorded at the end.
+
+**The calls** (libneo `libneo::term`, and the std extension `std::os::neoplutarch::term` with the same shape):
+
+| Call | Returns | What it does | kibi's use (survey ref) |
+|---|---|---|---|
+| `is_terminal()` | `bool` | true when the spawn's stdio selection named a term page | the backend fails loudly instead of falling into the DSR path (gap 7) |
+| `size()` | `(cols, rows)` | the seqlock read of §3.2 | `TIOCGWINSZ` (§3.2 of the survey) |
+| `size_seq()` | `u32` | the even `size_seq` of the last consistent read | resize polling (gap 4) |
+| `mode()` | `Mode { cooked, echo }` | the mode **in force**: the new `mode_cur` word (below) | `tcgetattr` before raw mode, so the restore target is read, not assumed (gap 3) |
+| `set_mode(Mode)` | `io::Result<()>` | §3.2's request and ack; `TimedOut` after 1 s | `cfmakeraw` + `tcsetattr` |
+| `read_timeout(buf, d)` | `io::Result<usize>` | read stdin, waiting at most `d` | `VMIN=0, VTIME=1` (gap 1) |
+
+**The read-timeout contract (gaps 1 and 2).** `read_timeout` parks in `SYS_WAIT_ANY` on the stdin pipe item with the
+deadline `now + d` (L1a.1 provides the pipe item), then does one non-blocking read. It has exactly three outcomes, and
+they never overlap:
+
+| Outcome | Return | When |
+|---|---|---|
+| bytes | `Ok(n)`, `n > 0` | at least one byte was buffered by the deadline |
+| timeout | `Err(ErrorKind::TimedOut)` | nothing arrived by the deadline; the write end is still open |
+| EOF | `Ok(0)` | the write end is closed (the terminal exited or sent Ctrl+D on an empty cooked line) and the buffer is empty |
+
+So **a timeout is never `Ok(0)`**: `Ok(0)` keeps std's meaning (EOF), and a caller that loops on "no key yet" sees
+`TimedOut`. kibi's backend maps them at its `BufRead` boundary: `TimedOut` → an empty `fill_buf` (kibi loops, as on
+Unix), EOF → `Err(BrokenPipe)` (kibi exits with `Error: Io`). That is the survey's §7.2 fix, and it rules out the hot
+spin: an EOF can't look like a timeout. Plain `std::io::stdin().read` (no deadline) blocks until bytes or EOF, as on
+any OS. L1a.2 has a host KAT for the three outcomes on a fake pipe, plus "write end closes while waiting": `Ok(0)`, not
+`TimedOut`.
+
+**`mode_cur` (gap 3).** The term page gains one word, at offset 32 (taken from the reserved area, so no offset moves):
+`mode_cur`, written by the terminal in the same step as `mode_ack_seq` (store Relaxed before the ack's Release store),
+read by the child after an Acquire load of `mode_ack_seq`. Bits as `mode_req`. §3.2's byte oracle gains the row
+`20: 03 00 00 00` (cooked with echo in force) and the zero area starts at 36.
+
+**Every child starts the same (gap 3, and the survey's DECCKM finding §3.4).** When the terminal spawns a child it
+resets its own state for that child: cooked with echo (`mode_cur = 3`), DECCKM off, keypad numeric, bracketed paste
+off, autowrap on, cursor shown, main screen. A child that crashes in raw mode or with DECCKM set leaves nothing behind
+for the next one. kibi reads arrows only as `ESC [ A-D` (its parser has no `ESC O` arm), so DECCKM must be off unless a
+child sets it; the L1b gate asserts the arrows arrive as `1b 5b 4x`.
+
+**Resize is polled, not signalled (gap 4).** There are no signals. A child that wants to notice a resize compares
+`size_seq()` (or `size()`) against its cached value each time `read_timeout` returns; with kibi's 100 ms timeout, a
+resize is seen within 100 ms plus a frame. The terminal doesn't `FUTEX_WAKE` on a configure in L1a. A size wake is a
+possible later row in §3.2's ordering table, not needed for the first editor.
+
+**Finding the page and the pipes (gap 6).** The spawn's stdio selection (L1a.1) names which inherited handles are
+stdin, stdout and the term page, and the kernel reports each one's kind. L1a.1 adds `HandleKind::Pipe` and
+`HandleKind::TermPage` to the std overlay's list (`userland/neoplutarch-std-overlay/std/os_neoplutarch.rs:68-111`), so
+the std side never has to guess among `Buffer` handles (pixel buffers are `Buffer` too).
+
+**`IsTerminal` (gap 7).** The std overlay gains `sys/io/is_terminal/neoplutarch.rs`: fd 0 and fd 1 answer
+`is_terminal()`; std's fallback (always false) stops applying. In L1a.3, with the std extension.
+
+**Answerbacks still have a deadline problem; the page removes the need (survey §7.4).** kibi falls back to DSR `6n`
+only when the size query fails. With `is_terminal()` true, `size()` always succeeds, so the fallback never runs. If a
+port keeps it, it must read the answer with `read_timeout`: answerbacks are dropped when stdin is full (§5.4).
+
+**Two kibi-port constraints, not protocol changes (gaps 5 and 8 are in §5.3's tables).**
+- **stderr is the screen.** As on any Unix tty, a child's stderr goes to the same terminal as its stdout (fd 2 is fd 1
+  today: `userland/neo-std-pal/src/lib.rs:86-95`). kibi's config and syntax warnings (`eprintln!`) would paint over
+  the grid; L1b's v1 gives kibi empty config and syntax directories (the survey's recommendation). A separate log
+  channel is not part of L1a.
+- **Esc then a key within 100 ms is ambiguous** in kibi on any OS (survey §7.3). The L1b gate types Esc, waits
+  longer than 100 ms, then the next key; L1a never lengthens a timeout a child asked for.
 
 ## 4. Raw and cooked mode
 
@@ -276,7 +345,9 @@ blocked from this seat's network; the snapshot is the same file.) The line numbe
 | Ctrl+Right | `1b 5b 31 3b 35 43` | same | modifier code 5 (l.2567-2572), with the `1 ;` prefix; kibi sends exactly this |
 | Backspace | `7f` | same | DECBKM reset: "Backarrow key sends delete" (l.1109) |
 | Enter, Tab, Esc | `0d`, `09`, `1b` | same | C0 |
-| Ctrl+A, Ctrl+C, Ctrl+D, Ctrl+U | `01`, `03`, `04`, `15` | same | C0: the letter's code AND `1f` |
+| Ctrl+A … Ctrl+Z | `01` … `1a` (e.g. kibi's Ctrl+Q/S/F/G/O/X/C/V/D/E/R/L/H: `11 13 06 07 0f 18 03 16 04 05 12 0c 08`) | same | C0: the letter's code AND `1f`; every one is a KAT row |
+| Ctrl+/ | `1f` | same | Ctrl+/ is Ctrl+_ on a VT keyboard; kibi binds `1f` (its `editor.rs:27`, survey §3.4). Not in ctlseqs: cite kibi |
+| Ctrl+Up, Ctrl+Down, Ctrl+Left | `1b 5b 31 3b 35 41`, `1b 5b 31 3b 35 42`, `1b 5b 31 3b 35 44` | same | as Ctrl+Right; kibi parses this `1 ; 5` form |
 
 **Grid** (a 10 × 3 screen; cells are row, column from 0; `_` is a blank cell; the cursor is where the next character
 goes):
@@ -292,6 +363,10 @@ goes):
 | G7 | `61 62 1b 5b 32 4a` | blank, blank, blank | (0, 2) | ED 2 clears and doesn't move the cursor |
 | G8 | `61 62 1b 5b 3f 31 30 34 39 68 63 64 1b 5b 3f 31 30 34 39 6c` | `ab________`, blank, blank | (0, 2) | 1049 round trip: the main screen and cursor come back; `cd` stayed on the alternate screen |
 | G9 | `1b 5b 31 3b 32 72 61 0a 62 0a 63` | `_b________`, `__c_______`, blank | (1, 3) | DECSTBM 1;2 homes the cursor; LF alone keeps the column; LF at the bottom margin scrolls only rows 0-1 |
+| G10 | `1b 5b 39 39 39 43 1b 5b 39 39 39 42` | blank, blank, blank | (2, 9), no wrap pending | kibi's size probe: CUF 999 and CUD 999 clamp at the edge (survey §3.5) |
+| G11 | `1b 5b 37 6d 41 1b 5b 6d 42` | `AB________` with A inverse, B plain | (0, 2) | `ESC [ m` with no parameter is SGR 0 (kibi's reset) |
+| G12 | `1b 5b 33 38 3b 35 3b 32 34 30 6d 41` | `A_________`, A's foreground indexed colour 240 | (0, 1) | SGR `38;5;n` (kibi's gutter colour) |
+| G13 | `1b 5b 3f 32 35 6c` then `1b 5b 3f 32 35 68` | blank | (0, 0); hidden after the first, shown after the second | DECTCEM, as kibi hides the cursor while it draws |
 
 **Answerbacks** (written to the child's stdin; the screen is unchanged):
 
@@ -412,7 +487,11 @@ On the hosted 4-shard gate:
 - `terminal_child_dies`: the child exits nonzero; the terminal shows it and the WM and Arthur live on.
 - `terminal_stalled_child`: the child stops reading; 5000 keys are typed; the terminal keeps repainting and the WM
   serves Arthur throughout.
-- §6's three discriminators.
+- `terminal_read_timeout`: a child calls `read_timeout(100 ms)` with nothing typed and gets `TimedOut`; a typed key
+  gets `Ok(1)`; after the terminal closes stdin (Ctrl+D on an empty cooked line) it gets `Ok(0)`, never `TimedOut`.
+- `terminal_child_reset`: a child sets raw mode and DECCKM and exits; the next child reads `mode() == cooked+echo`, and
+  Up arrives as `1b 5b 41`.
+- §6's discriminators.
 - With `neo-terminal` off, every desktop scenario's captures unchanged.
 
 Scenario timeouts are set from a measured hosted run (the `desktop_home_cycle` lesson, main `76a1f03`).
@@ -425,8 +504,8 @@ Heads read by `git clone --depth 1` today; licences from each repository's licen
 |---|---|---|---|---|
 | `doy/vt100-rust` | `fb0f54e`, 2026-10-19 | MIT | `#![no_std]` with `std` off (`src/lib.rs:36`), `alloc`; deps `vte` (no default features), `itoa`, `unicode-width`; edition 2024 (our toolchain is a 2026-04 nightly, edition 2024). Callbacks for bells, clipboard, title, and unhandled CSI/OSC (`src/callbacks.rs`), which is where §5.4's filter hooks in | **The code, vendored** (parser driver + screen), with its fixtures as test data |
 | `alacritty/vte` | `89c9c22`, 2026-10-25 | Apache-2.0 OR MIT | `no_std` without `std` (`src/lib.rs:30`); deps `arrayvec`, `memchr` (both already in our `Cargo.lock`) | **The code**, as vt100's dependency |
-| `redox-os/termion` | `c784cec`, 2025-11-21 | MIT | Raw mode and ANSI helpers for apps; its Unix backend expects termios. About a year since the last commit: alive, not busy | **A LogansOS backend** on §3.3's calls, for later apps; nothing in L1a links it |
-| `ilai-deutel/kibi` | `d42f6e3`, 2026-10-27 | MIT OR Apache-2.0 | L1b's editor; per-OS backends (`src/unix.rs`, `src/wasi.rs`, `src/windows.rs`) | Nothing in L1a. Read to fix the subset (§5.1) and the size/raw/timeout needs (§3.3), so L1b is a backend file, not a terminal change |
+| `redox-os/termion` | `c784cec`, 2025-11-21 | MIT | Raw mode and ANSI helpers for apps; its Unix backend expects termios. About a year since the last commit: alive, not busy | **A LogansOS backend** on §3.4's calls, for later apps; nothing in L1a links it |
+| `ilai-deutel/kibi` | `d42f6e3`, 2026-10-27 | MIT OR Apache-2.0 | L1b's editor; per-OS backends (`src/unix.rs`, `src/wasi.rs`, `src/windows.rs`) | Nothing in L1a. Read to fix the subset (§5.1) and the size/raw/timeout needs (§3.4), so L1b is a backend file, not a terminal change |
 
 Not re-checked here, and why: OT-88 §9 and `Plans/SURVEY-2026-10-27-ot88-terminal-emulator.md` cover the wider field
 (alacritty_terminal, wezterm's term crate); vt100 was chosen there. Archived status was not checked (no API from this
