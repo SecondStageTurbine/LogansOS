@@ -68,3 +68,4 @@ RELAY 247 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-01-rechecks-24
 RELAY 248 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-01-rechecks-245-250.md | Section 248 (#12 rev 3 re-check; RETURN `Plans/RETURN-2026-11-01-pr12-recheck-jarvis.md`)
 RELAY 249 | chad | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-01-rechecks-245-250.md | Section 249 (#9 + #20 re-check; RETURN `Plans/RETURN-2026-11-01-pr9-pr20-recheck-chad.md`)
 RELAY 250 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-rechecks-245-250.md | Section 250 (L2d images THINK; RETURN `Plans/RETURN-2026-11-01-l2d-images-dexter.md`)
+RELAY 251 | chad | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-01-review-251-pr41.md | Section "Relay 251" (#41 design read; RETURN `Plans/RETURN-2026-11-01-pr41-review-chad.md`)
