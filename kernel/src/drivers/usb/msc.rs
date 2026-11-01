@@ -41,6 +41,12 @@ const BOUNCE_LEN: usize = msc_logic::MAX_READ_BLOCKS as usize * 512;
 const WAIT_POLLS: u32 = 400_000;
 /// TEST UNIT READY attempts while the device reports UNIT ATTENTION (U9).
 const READY_TRIES: u32 = 5;
+/// Spin-up (Chad's #20 review): while the device says NOT READY, becoming
+/// ready (04/01), TEST UNIT READY is asked again every [`SPIN_UP_PAUSE_POLLS`]
+/// of ~10 µs (about 250 ms), at most this many times (about 10 s in all,
+/// on top of the UNIT ATTENTION retries).
+const SPIN_UP_WAITS: u32 = 40;
+const SPIN_UP_PAUSE_POLLS: u32 = 25_000;
 
 /// xHCI completion codes (xHCI §6.4.5).
 const CC_SUCCESS: u32 = 1;
@@ -459,24 +465,41 @@ fn bind_inner(
         }
     }
 
-    // U9: TEST UNIT READY, through UNIT ATTENTION.
+    // U9: TEST UNIT READY, through UNIT ATTENTION (asked again at once) and
+    // spin-up (asked again after a pause, within a budget).
     let mut ready = false;
-    for _ in 0..READY_TRIES {
+    let (mut attentions, mut waits) = (0u32, 0u32);
+    while attentions < READY_TRIES && waits <= SPIN_UP_WAITS {
         match t.run(&msc_logic::cdb_test_unit_ready(), &mut []) {
             Outcome::Passed { .. } => {
                 ready = true;
                 break;
             }
             Outcome::Failed { .. } => match t.sense().map(msc_logic::ready_action) {
-                Some(ReadyAction::Retry) => continue,
+                Some(ReadyAction::Retry) => attentions += 1,
+                Some(ReadyAction::Wait) => {
+                    waits += 1;
+                    for _ in 0..SPIN_UP_PAUSE_POLLS {
+                        for _ in 0..20_000 {
+                            core::hint::spin_loop();
+                        }
+                    }
+                }
                 Some(ReadyAction::NoMedium) => {
                     crate::serial_println!("msc: no medium");
                     return Err((t.claimed, "no medium"));
+                }
+                Some(ReadyAction::NeedsStart) => {
+                    crate::serial_println!("msc: needs START UNIT (not sent: read-only allowlist)");
+                    return Err((t.claimed, "needs start unit"));
                 }
                 _ => break,
             },
             Outcome::Reset { .. } => break,
         }
+    }
+    if waits > 0 {
+        crate::serial_println!("msc: spin-up waits={} ready={}", waits, u8::from(ready));
     }
     if !ready {
         return Err((t.claimed, "not ready"));
