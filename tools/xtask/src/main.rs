@@ -18802,6 +18802,29 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "net_dial denied reason=non_public",
             "the loopback-resolving name must be refused by the kernel's dial, not only by the broker",
         )?;
+        // #29 item 4: the broker drops its GRANT-bearing root, so no dial cap
+        // it holds can leave it; and (the re-check's new item) each request's
+        // scope is revoked when the request ends. Request 3's refused dial
+        // revokes its scope before the broker answers, so that line always
+        // precedes the content process's exit.
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] root dial cap closed: derive_from_root=refused grant_request_cap=refused",
+            "the broker must close its GRANT-bearing root and keep only a cap it can't hand on",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] request scope revoked",
+            "a request's scope must be revoked when the request ends",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "revoke of a request scope failed",
+            "every request scope revoke must succeed (REVOKE kept on the request root)",
+        )?;
     }
     if scenario.name == "net_dial_cap_kill_switch" {
         require_serial_contains(

@@ -6914,11 +6914,21 @@ fn sys_close_impl(fd: u32) -> i64 {
         Ok(proc) => proc,
         Err(e) => return e,
     };
-    let removed = process::close_handle(&proc, fd, |h| {
-        matches!(h, Handle::File { .. } | Handle::Channel { .. })
+    // OT-61 rung 5 (#29 item 4): on a `net-dial-public-only` kernel a NetDial
+    // cap can be closed too, so a holder can drop a GRANT-bearing dial cap once
+    // it has derived the GRANT-less one it keeps (the fetch broker's root).
+    // Like every close, its children re-parent to its parent, so the donor's
+    // revoke still reaches them. Off, SYS_CLOSE is unchanged.
+    let removed = process::close_handle(&proc, fd, |h| match h {
+        Handle::File { .. } | Handle::Channel { .. } => true,
+        #[cfg(feature = "net-dial-public-only")]
+        Handle::NetDial { .. } => true,
+        _ => false,
     });
     match removed {
         Ok(Handle::File { .. }) => 0,
+        #[cfg(feature = "net-dial-public-only")]
+        Ok(Handle::NetDial { .. }) => 0,
         Ok(Handle::Channel { channel, side, .. }) => {
             // Explicit endpoint drop has the same observable peer semantics
             // as process death: a blocked/next peer operation receives EPIPE.

@@ -32,9 +32,9 @@ use fetch_proto::http::{Framing, Head, parse_head};
 use fetch_proto::policy::{self, Target};
 use fetch_proto::wire::{self, ErrorCode, Header, Method, Msg};
 use libneo::{
-    CapRights, EACCES, EAGAIN, Handle, NetDialCap, meta_rights, net_dial_rights, sys_derive,
-    sys_exit, sys_net_dial, sys_net_dial_cap_derive, sys_recv, sys_revoke, sys_send, sys_tcp_close,
-    sys_write,
+    CapRights, EACCES, EAGAIN, EBADF, EPERM, FileHandle, Handle, NetDialCap, meta_rights,
+    net_dial_rights, sys_close, sys_derive, sys_exit, sys_grant, sys_net_dial,
+    sys_net_dial_cap_derive, sys_recv, sys_revoke, sys_send, sys_tcp_close, sys_write,
 };
 
 use tls::TlsStream;
@@ -94,23 +94,63 @@ fn fail(id: u32, code: ErrorCode) {
 }
 
 /// The cap every request's scope is derived from: the root's dial rights
-/// without `GRANT` (#29 review item 4). The root (`ROOT_DIAL`) is the
-/// launcher's authority and keeps `GRANT`; scope derivation copies its
-/// parent's rights, so scopes taken straight from the root could be granted
-/// or spawned onward and outlive this process. Taken from this cap, no
-/// request cap the broker makes can leave it. `NON_PUBLIC` is kept when the
-/// root has it (a `net-dial-public-only` kernel); the per-request leaf drops
-/// it again (rung 5b). Without this cap the broker can't serve anything.
+/// without `GRANT` but with `REVOKE` (#29 review item 4 and its re-check).
+///
+/// The launcher's root (`ROOT_DIAL`) carries `GRANT`, and scope derivation
+/// copies its parent's rights, so a scope taken straight from it could be
+/// spawned or granted onward and outlive this process. So the broker derives
+/// this cap, then closes the root: from here on it holds no dial cap with
+/// `GRANT`, nothing it derives can leave it, and every dial cap it has is in
+/// its own table, which its teardown drains. The derived cap re-parents to the
+/// launcher's root, so the launcher's revoke still reaches it.
+///
+/// `REVOKE` is kept so each request's scope (which inherits these rights) can
+/// be revoked when the request ends; without it `Conn::close`'s revoke fails
+/// with EPERM and scopes pile up. `NON_PUBLIC` is kept when the root has it
+/// (a `net-dial-public-only` kernel); the per-request leaf drops it again
+/// (rung 5b). Without this cap the broker can't serve anything.
 fn request_root() -> NetDialCap {
-    let meta = meta_rights::USE | meta_rights::DERIVE;
+    let meta = meta_rights::USE | meta_rights::DERIVE | meta_rights::REVOKE;
     let wide = CapRights::new(meta, net_dial_rights::DIAL | net_dial_rights::NON_PUBLIC);
     let narrow = CapRights::new(meta, net_dial_rights::DIAL);
-    match sys_derive(ROOT_DIAL.0, wide).or_else(|_| sys_derive(ROOT_DIAL.0, narrow)) {
+    let requests = match sys_derive(ROOT_DIAL.0, wide).or_else(|_| sys_derive(ROOT_DIAL.0, narrow))
+    {
         Ok(h) => NetDialCap(h),
         Err(_) => {
             say("[ fetch-broker ] no request cap from the root dial cap\n");
             sys_exit(2);
         }
+    };
+    if sys_close(FileHandle(ROOT_DIAL.0.0)) != 0 {
+        say("[ fetch-broker ] could not close the root dial cap\n");
+        sys_exit(2);
+    }
+    // Self-check, on the serial oracle: the root is gone, and the cap the
+    // broker keeps can't be handed on.
+    let root_gone = sys_derive(ROOT_DIAL.0, narrow) == Err(EBADF);
+    let grant_refused = sys_grant(
+        CHANNEL,
+        requests.0,
+        CapRights::new(meta_rights::USE, net_dial_rights::DIAL),
+    ) == EPERM;
+    say(&format!(
+        "[ fetch-broker ] root dial cap closed: derive_from_root={} grant_request_cap={}\n",
+        if root_gone { "refused" } else { "ALLOWED" },
+        if grant_refused { "refused" } else { "ALLOWED" },
+    ));
+    requests
+}
+
+/// Revoke a request's scope (and the narrowed leaf under it). A failure is
+/// said on serial, never ignored: a scope left installed is a leak.
+fn revoke_scope(scope: NetDialCap) {
+    let r = sys_revoke(scope.0);
+    if r == 0 {
+        say("[ fetch-broker ] request scope revoked\n");
+    } else {
+        say(&format!(
+            "[ fetch-broker ] revoke of a request scope failed: {r}\n"
+        ));
     }
 }
 
@@ -158,7 +198,7 @@ impl Conn {
             ) {
                 Ok(h) => NetDialCap(h),
                 Err(_) => {
-                    let _ = sys_revoke(scope.0);
+                    revoke_scope(scope);
                     return Err(ErrorCode::PolicyRefused);
                 }
             }
@@ -169,7 +209,7 @@ impl Conn {
                 Err(EAGAIN) => core::hint::spin_loop(),
                 Err(e) => {
                     // Revoking the scope revokes the narrowed child too.
-                    let _ = sys_revoke(scope.0);
+                    revoke_scope(scope);
                     return Err(if e == EACCES {
                         ErrorCode::PolicyRefused
                     } else {
@@ -200,7 +240,7 @@ impl Conn {
     fn close(&mut self) {
         self.tls = None;
         let _ = sys_tcp_close(self.socket);
-        let _ = sys_revoke(self.scope.0);
+        revoke_scope(self.scope);
     }
 
     /// Send the request and forward the response. `Ok(Some(url))`: a redirect
@@ -222,7 +262,8 @@ impl Conn {
              Accept-Encoding: identity\r\nUser-Agent: LogansOS-fetch/0\r\n\r\n",
             target.path
         );
-        tls.write_all(request.as_bytes()).map_err(|e| tls_failed("write", e))?;
+        tls.write_all(request.as_bytes())
+            .map_err(|e| tls_failed("write", e))?;
 
         // The head.
         let mut raw: Vec<u8> = Vec::new();
