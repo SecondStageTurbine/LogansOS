@@ -64,6 +64,24 @@ stack. Re-stack only onto a base that is already a public PR.
 Re-land private #271 here (a syscall's user copy that faults returns EFAULT instead of halting the kernel; CP-99).
 It is SMP/concurrency-adjacent kernel code: the AAG needs a cross-family lens, which the PM routes. Then gate.
 
+### Seat A, next: tiered testing that fits the free tier (OT-58, J.c. 2026-11-01)
+
+J.c. will never pay for GitHub, and the free tier runs 20 jobs at once while one full gate is about 20 jobs, so
+five seats' gates queue behind each other for an hour or more. Build the tiered gate OT-58 planned
+(`docs/THINK-2026-07-12-ci-gate-scaling-SYNTHESIS.md`):
+
+1. **Per PR, a quick tier:** fmt, clippy, host tests, SPDX and one short QEMU smoke shard. Target 3-5 jobs,
+   about 15 minutes, so every seat can gate at once.
+2. **The full tier on a batch:** the 4-shard QEMU set and the feature matrix run once on a merge of several
+   quick-green PRs before they land (the PM's batch-gating practice, made a workflow input), and on any PR that
+   touches the SMP/concurrency core (scheduler, thread lifecycle, futex, per-CPU, locks, kill paths), which still
+   gates alone.
+3. **Main stays green:** a red batch is bisected by PR; the escaped-defect contract (revert first) is unchanged.
+   The scenario that caught an escape is promoted into the quick tier.
+4. Write the THINK first (which scenarios go in the smoke shard and why, the batch input, the concurrency-core path
+   filter), open it as a PR for the PM, then build it without breaking the current `CI` workflow the other seats
+   are using.
+
 ## Seat B: the WM lane and the terminal window
 
 1. Re-land private #220 (OT-88 A1a, the WM's client table). If it isn't yours, say so in your first `PM:` comment.
