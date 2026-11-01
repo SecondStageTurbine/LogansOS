@@ -572,6 +572,76 @@ improvement — e.g. a scenario not yet on `main` that would arrive red (the C1.
 change that would panic on the target hardware (the rung-5 `boot-neofs` case). Those are merge-blockers on the
 merge bar itself, not acceptance questions.
 
+## The tiered gate: quick per PR, full per batch (OT-58, PM-approved 2026-11-01)
+
+The design is `docs/THINK-2026-11-01-ot58-tiered-gate.md`; section 6 there is the authority for these rule changes.
+**On GitHub-hosted runners the free tier runs 20 jobs at once, account-wide, and one full gate was 22 jobs**, so
+per-PR full gates queue behind each other. The gate now has two tiers. The rules below change the merge bar, the
+close-gate evidence and the AAG to match.
+
+**Quick tier, on every PR (automatic).**
+- `CI` runs on every PR push. Its QEMU job is one cell, `QEMU smoke (quick tier)`:
+  - `cargo xtask gate-plan`, then `cargo neo-test --tier quick` (the smoke list plus the PR's changed scenarios
+    within the cost budget);
+  - a 12-minute budget check.
+- A seat can also dispatch `CI` with `tier: quick` on a branch.
+- The RETURN or `PM:` comment cites **this run's URL** as the close-gate evidence. This replaces "the PR's own
+  `workflow_dispatch` QEMU run".
+
+**Full tier: one run over a batch, before anything lands.**
+- The PM dispatches `CI` with `batch: "<PR numbers in landing order>"`:
+  - `base_sha` defaults to main's tip;
+  - `prefix=N` is a bisect leg; `prefix=0` is the base alone.
+- **A member must be quick-green on its exact head**, and `tier=quick` by `gate-plan`.
+- **A PR `gate-plan` puts in `full-alone` is gated as a batch of one.** That covers the SMP/concurrency core, the
+  harness and xtask (except a scenario-only addition), `scripts/`, the workflows and the build configuration.
+- Every job rebuilds the same tree with `scripts/batch-assemble.sh` and fails unless its hash is the plan's.
+- `batch-report` lists every failing scenario and flags infra.
+
+**Merge bar.** It replaces "4-shard gate green on the exact SHA". The batch run must be green on the batch tree. The
+merge report names:
+- the batch base SHA;
+- every member's head SHA;
+- the batch tree hash;
+- the run URL;
+- the batch AAG (below).
+
+The PM's own `git show --stat` stays **per PR**.
+
+**Landing.**
+- **Before pushing**, the PM re-runs `scripts/batch-assemble.sh <base> <heads…>` locally and checks it prints the
+  report's tree. The assembly is deterministic (fixed author, committer and date), so it gives the same commit too.
+- The PM then lands that commit, or the same merges in the same order, in **one push**.
+- If `main` moved past the base:
+  - by docs only, the landing is fine when `git diff --quiet <batch tree> <landed main> -- . ':!Plans' ':!docs' ':!*.md'`
+    holds;
+  - by any code, re-batch.
+
+**Red batch.**
+- **Bisect by prefix** (`prefix=N`): binary search, one job per round, running only the failing scenarios. The first
+  failing prefix's last member is the owner, and that PR is bounced.
+- **Infra reds are re-fired, never bisected:** a shard with no timing table, runner loss, disk-full or OOM.
+- **A timeout is re-run once** before bisecting.
+- A red batch never lands, so it never reaches `main`.
+
+**Revert unit.** `scripts/revert-batch.sh <base>` reverts a landed batch's merges as **one commit**. That is the "one
+action from green" of the escaped-defect contract, and the ~4-hour fix-forward window applies to the named owner.
+
+**AAG.**
+- Still per kernel-touching PR, **plus one AAG over the batch's composed diff** when two or more members touch the
+  kernel, because the composition is a new seam.
+- SMP-core PRs are `full-alone`, so they never share a batch, and their cross-family lens stays per PR.
+
+**QEMU stagger.** The "at most ~2-3 kernel-touching QEMU gates in flight" rule is **superseded for GitHub-hosted
+runs** by the 20-job limit. While a batch runs, at most 4 quick tiers run alongside it. The stagger still applies if
+`QEMU_RUNNER_LABELS` points the QEMU jobs back at self-hosted runners.
+
+**Tree identity** (a docs-only rebase keeps a gate): compare everything **except** `Plans/`, `docs/` and `*.md`, not
+only `kernel`/`userland`/`tools`/`Cargo.*`.
+
+**Transition.** Until the first batch lands, a PR's own green `tier: full` dispatch is still valid merge evidence.
+`tier: full` without `batch` is today's gate, and it stays the kill-switch.
+
 ## The adversarial-audit gate — every kernel-touching merge (PM standing rule)
 
 When a model can author a booting kernel in minutes, **authoring stops being the constraint and verification
