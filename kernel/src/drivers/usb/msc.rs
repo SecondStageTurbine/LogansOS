@@ -21,6 +21,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::drivers::block::{
     BlockDevice, BlockDeviceIdentity, BlockError, BlockGeometry, BlockResult, DmaBuffer,
@@ -80,6 +81,11 @@ impl UsbClassDriver for MscDriver {
         find_bot(device).is_some()
     }
 
+    #[cfg(feature = "usb-hotplug")]
+    fn detach(&self, device: &UsbDevice) {
+        detach_disk(device.slot_id);
+    }
+
     fn bind(&self, device: &Arc<UsbDevice>, claimed: ClaimedDevice) -> Result<(), ClaimedDevice> {
         match bind_inner(device, claimed) {
             Ok(()) => Ok(()),
@@ -117,12 +123,18 @@ struct Transport {
     bounce: Arc<DmaBuffer>,
     tag: u32,
     lun: u8,
+    /// Set when the device is unplugged (#30); shared with its `MscDisk`.
+    gone: Arc<AtomicBool>,
 }
 
 /// Wait for the transfer at ring index `index` on `pipe`: `(code, residue)`,
-/// or `None` on timeout.
-fn wait(pipe: &mut EndpointPipe, index: usize) -> Option<(u32, u32)> {
+/// or `None` on timeout, or as soon as `gone` is set (the stick was pulled:
+/// #30, an in-flight read fails at once rather than after the timeout).
+fn wait(pipe: &mut EndpointPipe, index: usize, gone: &AtomicBool) -> Option<(u32, u32)> {
     for _ in 0..WAIT_POLLS {
+        if gone.load(Ordering::Acquire) {
+            return None;
+        }
         xhci::poll_events();
         for event in pipe.completions() {
             if pipe.index_of(event.parameter) == Some(index) {
@@ -197,7 +209,7 @@ impl Pipe for PipeView<'_> {
             return Xfer::Error;
         };
         let index = t.bulk_out.submit(addr, data.len() as u32);
-        classify(wait(&mut t.bulk_out, index), data.len())
+        classify(wait(&mut t.bulk_out, index, &t.gone), data.len())
     }
 
     fn bulk_in(&mut self, buf: &mut [u8]) -> Xfer {
@@ -212,7 +224,7 @@ impl Pipe for PipeView<'_> {
         };
         let target = target.clone();
         let index = t.bulk_in.submit(addr, buf.len() as u32);
-        let got = classify(wait(&mut t.bulk_in, index), buf.len());
+        let got = classify(wait(&mut t.bulk_in, index, &t.gone), buf.len());
         if let Xfer::Done(n) = got {
             // SAFETY: the transfer completed; nothing else uses the buffer.
             buf[..n].copy_from_slice(unsafe { &target.as_slice()[..n] });
@@ -221,14 +233,23 @@ impl Pipe for PipeView<'_> {
     }
 
     fn clear_halt_in(&mut self) -> bool {
+        if self.0.gone.load(Ordering::Acquire) {
+            return false;
+        }
         self.0.clear(true)
     }
 
     fn clear_halt_out(&mut self) -> bool {
+        if self.0.gone.load(Ordering::Acquire) {
+            return false;
+        }
         self.0.clear(false)
     }
 
     fn mass_storage_reset(&mut self) -> bool {
+        if self.0.gone.load(Ordering::Acquire) {
+            return false;
+        }
         let iface = u16::from(self.0.interface);
         // bmRequestType 0x21: host-to-device, class, interface.
         self.0
@@ -244,6 +265,9 @@ struct MscDisk {
     identity: BlockDeviceIdentity,
     geometry: BlockGeometry,
     transport: SwitchMutex<Transport>,
+    /// The stick was unplugged (#30): every read from now on, and the one in
+    /// flight, fails `NoDevice`.
+    gone: Arc<AtomicBool>,
 }
 
 impl BlockDevice for MscDisk {
@@ -268,6 +292,9 @@ impl BlockDevice for MscDisk {
         {
             return Err(BlockError::InvalidRequest);
         }
+        if self.gone.load(Ordering::Acquire) {
+            return Err(BlockError::NoDevice);
+        }
         let mut t = self.transport.lock();
         let mut out = alloc::vec::Vec::with_capacity(bytes as usize);
         let mut done = 0;
@@ -279,8 +306,12 @@ impl BlockDevice for MscDisk {
             msc_logic::next_read(lba, count.min(done + per_command), done)
         {
             let len = blocks as usize * block as usize;
+            if self.gone.load(Ordering::Acquire) {
+                return Err(BlockError::NoDevice);
+            }
             match t.run(&msc_logic::cdb_read_10(at, blocks), &mut chunk[..len]) {
                 Outcome::Passed { len: got } if got == len => out.extend_from_slice(&chunk[..len]),
+                _ if self.gone.load(Ordering::Acquire) => return Err(BlockError::NoDevice),
                 other => {
                     crate::serial_println!(
                         "msc: read failed lba={} blocks={} outcome={:?}{}",
@@ -301,6 +332,11 @@ impl BlockDevice for MscDisk {
             done += u64::from(blocks);
         }
         drop(t);
+        // Pulled after the last command: the data may be whole, but the
+        // device is gone, so the read reports it rather than racing it.
+        if self.gone.load(Ordering::Acquire) {
+            return Err(BlockError::NoDevice);
+        }
         let mut at = 0;
         for buffer in buffers {
             // SAFETY: the caller's buffers are not part of any device request
@@ -402,6 +438,7 @@ fn bind_inner(
         bounce,
         tag: 0,
         lun: 0,
+        gone: Arc::new(AtomicBool::new(false)),
     };
     crate::serial_println!("msc: maxlun={} using lun=0", max_lun);
 
@@ -484,6 +521,7 @@ fn bind_inner(
         )
         .into_boxed_str(),
     );
+    let gone = t.gone.clone();
     let disk = MscDisk {
         identity: BlockDeviceIdentity {
             driver: "usb-storage",
@@ -496,8 +534,54 @@ fn bind_inner(
             block_count: capacity.blocks,
         },
         transport: SwitchMutex::new(t),
+        gone,
     };
-    let index = crate::drivers::block::register_device(Arc::new(disk));
+    let disk = Arc::new(disk);
+    let index = crate::drivers::block::register_device(disk.clone());
     crate::serial_println!("msc: registered block device index={}", index);
+    #[cfg(feature = "usb-hotplug")]
+    BOUND_DISKS.lock().push((device.slot_id, index, disk));
+    #[cfg(not(feature = "usb-hotplug"))]
+    let _ = disk;
     Ok(())
+}
+
+/// #30: the disks this driver registered, by slot, so a detach finds its own.
+#[cfg(feature = "usb-hotplug")]
+static BOUND_DISKS: SwitchMutex<alloc::vec::Vec<(u8, usize, Arc<MscDisk>)>> =
+    SwitchMutex::new(alloc::vec::Vec::new());
+
+/// #30: disks whose stick was pulled. Kept, never freed: the controller may
+/// still hold their rings' and buffers' addresses (the retired-hubs rule,
+/// `xhci_hotplug`); a stick is a few KiB plus the 64 KiB bounce buffer.
+#[cfg(feature = "usb-hotplug")]
+static RETIRED_DISKS: SwitchMutex<alloc::vec::Vec<Arc<MscDisk>>> =
+    SwitchMutex::new(alloc::vec::Vec::new());
+
+/// #30: the stick in `slot` was unplugged. Its reads fail from now on (the
+/// one in flight stops waiting at once), its block device leaves the
+/// registry, and its transport is retired once no read holds it.
+#[cfg(feature = "usb-hotplug")]
+fn detach_disk(slot: u8) {
+    let found = {
+        let mut disks = BOUND_DISKS.lock();
+        disks
+            .iter()
+            .position(|(s, _, _)| *s == slot)
+            .map(|at| disks.swap_remove(at))
+    };
+    let Some((_, index, disk)) = found else {
+        return;
+    };
+    disk.gone.store(true, Ordering::Release);
+    crate::drivers::block::unregister_device(index);
+    // Wait out the read in flight (it sees `gone` at its next poll), so
+    // nothing is using the transport after this returns.
+    drop(disk.transport.lock());
+    crate::serial_println!(
+        "msc: slot={} detached; block device index={} gone",
+        slot,
+        index
+    );
+    RETIRED_DISKS.lock().push(disk);
 }

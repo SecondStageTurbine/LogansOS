@@ -1938,6 +1938,10 @@ neo-test-usb-enumerate = ["neo-test", "usb-host"]
 # reads back; `-off` (no `usb-storage`) is the kill-switch.
 neo-test-usb-storage-read = ["neo-test-phase3-fat32", "usb-storage"]
 neo-test-usb-storage-off = ["neo-test", "usb-host"]
+# #30: a stick hot-plugged, bound and read, then pulled while a reader runs:
+# the driver is told, the block device leaves the registry, and every read
+# after (and the one in flight) fails NoDevice.
+neo-test-usb-storage-unplug = ["neo-test", "usb-storage", "usb-hotplug", "tick-sleep"]
 neo-test-usb-storm = ["neo-test", "usb-host", "accel-sim"]
 neo-test-usb-baremetal-probe = ["neo-test", "usb-host"]
 neo-test-usb-ethernet = ["neo-test", "usb-host"]

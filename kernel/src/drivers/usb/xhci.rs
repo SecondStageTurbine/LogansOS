@@ -1516,6 +1516,8 @@ fn address_and_describe(
     let device = super::UsbDevice {
         slot_id,
         port: route.root_port as u8,
+        #[cfg(feature = "usb-hotplug")]
+        route: route.route_string,
         speed,
         vendor_id,
         product_id,

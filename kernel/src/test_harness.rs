@@ -912,6 +912,8 @@ const SCENARIO: &str = "vtd_fence";
 const SCENARIO: &str = "graphics_vtd_domain";
 #[cfg(feature = "neo-test-usb-storage-read")]
 const SCENARIO: &str = "usb_storage_read";
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+const SCENARIO: &str = "usb_storage_unplug";
 #[cfg(feature = "neo-test-usb-storage-off")]
 const SCENARIO: &str = "usb_storage_off";
 #[cfg(feature = "neo-test-usb-enumerate")]
@@ -1363,6 +1365,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-usb-hid-mouse",
     feature = "neo-test-usb-xhci-select",
     feature = "neo-test-usb-hotplug",
+    feature = "neo-test-usb-storage-unplug",
     feature = "neo-test-ps2-keyboard",
     feature = "neo-test-ps2-key-repeat",
     feature = "neo-test-rtl8125-absent",
@@ -1727,6 +1730,7 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-usb-hid-mouse",
         feature = "neo-test-usb-xhci-select",
         feature = "neo-test-usb-hotplug",
+        feature = "neo-test-usb-storage-unplug",
         feature = "neo-test-ps2-keyboard",
         feature = "neo-test-ps2-key-repeat",
         feature = "neo-test-rtl8125-absent",
@@ -4695,6 +4699,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-usb-storage-off")]
     run_usb_storage_off();
+
+    #[cfg(feature = "neo-test-usb-storage-unplug")]
+    run_usb_storage_unplug();
 
     #[cfg(feature = "neo-test-usb-storm")]
     run_usb_storm();
@@ -16594,6 +16601,32 @@ fn run_usb_storage_read() -> ! {
         );
         debug_exit(EXIT_FAILURE);
     }
+    // Boundary (U12, Chad's #20 review): the reported last LBA reads; one
+    // past it, and a two-block read that ends one past it, are refused
+    // before any command is sent.
+    {
+        use crate::drivers::block::{BlockError, DmaBuffer};
+        let one = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+        let two = DmaBuffer::alloc_in_arena(1024).unwrap_or_else(|_| fail("reason=alloc"));
+        let last = g.block_count - 1;
+        let at_last = device.read_block(last, core::slice::from_ref(&one));
+        let past = device.read_block(last + 1, core::slice::from_ref(&one));
+        let straddle = device.read_block(last, core::slice::from_ref(&two));
+        if at_last.is_err()
+            || past != Err(BlockError::InvalidRequest)
+            || straddle != Err(BlockError::InvalidRequest)
+        {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=usb_storage_boundary last={} at_last={:?} past={:?} straddle={:?}",
+                SCENARIO,
+                last,
+                at_last,
+                past,
+                straddle
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
     let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
     let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
     let source = alloc::format!("device{index}");
@@ -16617,12 +16650,158 @@ fn run_usb_storage_read() -> ! {
         Ok(_) => fail("reason=usb_storage_write_open_allowed"),
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} device_index={} blocks={} block_len=512 source={} entries={} hello=match nested=match lfn=match write=refused",
+        "NEO_TEST/1 event=PASS name={} device_index={} blocks={} block_len=512 last_lba=read past_last=refused source={} entries={} hello=match nested=match lfn=match write=refused",
         SCENARIO,
         index,
         g.block_count,
         source,
         entries.len()
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// `usb_storage_unplug`: the device the reader thread reads, its reads that
+/// succeeded, and the error that ended it (0 = none yet; else 1 + the
+/// `BlockError` discriminant: NoDevice is 1).
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_DEVICE: spin::Once<alloc::sync::Arc<dyn crate::drivers::block::BlockDevice>> =
+    spin::Once::new();
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_READER_ERR: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+fn unplug_err_code(e: crate::drivers::block::BlockError) -> u64 {
+    use crate::drivers::block::BlockError as E;
+    match e {
+        E::NoDevice => 1,
+        E::Unsupported => 2,
+        E::InvalidRequest => 3,
+        E::Io => 4,
+        E::WriteRefused => 5,
+    }
+}
+
+/// The reader: reads block after block from the stick until a read fails,
+/// records that error, and exits. The stick is pulled while it runs, so one
+/// of its reads is in flight or next when the detach lands.
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+extern "C" fn usb_unplug_reader() -> ! {
+    let device = UNPLUG_DEVICE
+        .get()
+        .expect("reader started after the device");
+    let buffer = crate::drivers::block::DmaBuffer::alloc_in_arena(4096)
+        .unwrap_or_else(|_| fail("reason=unplug_reader_alloc"));
+    let mut lba = 0u64;
+    loop {
+        match device.read_block(lba, core::slice::from_ref(&buffer)) {
+            Ok(()) => {
+                UNPLUG_READS.fetch_add(1, Ordering::Release);
+                lba = (lba + 8) % 1024;
+            }
+            Err(e) => {
+                UNPLUG_READER_ERR.store(unplug_err_code(e), Ordering::Release);
+                crate::sched::exit();
+            }
+        }
+    }
+}
+
+/// #30 (Jarvis, relay 238): hot-unplug of a bound stick. xtask plugs a
+/// usb-storage stick into root port 2; it binds and registers. A held handle
+/// reads block 0, and a reader thread reads continuously. xtask then removes
+/// the stick. The port service must tell the driver: the reader's read fails
+/// (NoDevice) and the thread ends, the held handle's next read is NoDevice,
+/// the registry slot answers NoDevice and is named `detached`, and no
+/// `usb-storage` device is found any more.
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+fn run_usb_storage_unplug() -> ! {
+    use crate::drivers::block::{self, BlockError, DmaBuffer};
+    use crate::drivers::usb::{self, xhci};
+
+    fn wait_for(ticks: u64, mut done: impl FnMut() -> bool) -> bool {
+        let start = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
+        loop {
+            if done() {
+                return true;
+            }
+            let now = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
+            if now.saturating_sub(start) >= ticks {
+                return false;
+            }
+            usb::nap_ticks(5);
+        }
+    }
+
+    if block::find_device_by_driver("usb-storage").is_some() {
+        fail("reason=stick_bound_before_plug");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} msc-unplug=ready-for-plug",
+        SCENARIO
+    );
+    if !wait_for(3000, || {
+        block::find_device_by_driver("usb-storage").is_some()
+    }) {
+        fail("reason=stick_not_bound");
+    }
+    let Some((index, held)) = block::find_device_by_driver("usb-storage") else {
+        fail("reason=stick_not_bound");
+    };
+    let buffer = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+    if held.read_block(0, core::slice::from_ref(&buffer)).is_err() {
+        fail("reason=read_before_unplug_failed");
+    }
+    UNPLUG_DEVICE.call_once(|| held.clone());
+    crate::sched::scheduler::push_ready(crate::sched::thread::Thread::new(
+        "msc-unplug-reader",
+        usb_unplug_reader,
+    ));
+    if !wait_for(1000, || UNPLUG_READS.load(Ordering::Acquire) >= 3) {
+        fail("reason=reader_not_reading");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} msc-unplug=unplug-now",
+        SCENARIO
+    );
+    if !wait_for(3000, || xhci::hotplug::counters().2 >= 1) {
+        fail("reason=unplug_not_seen");
+    }
+    if !wait_for(1000, || UNPLUG_READER_ERR.load(Ordering::Acquire) != 0) {
+        fail("reason=reader_still_running_after_unplug");
+    }
+    let reader_err = UNPLUG_READER_ERR.load(Ordering::Acquire);
+    let reads = UNPLUG_READS.load(Ordering::Acquire);
+    let held_after = held.read_block(0, core::slice::from_ref(&buffer));
+    let by_index = block::get_device(index);
+    let index_after = by_index
+        .as_ref()
+        .map(|d| d.read_block(0, core::slice::from_ref(&buffer)));
+    let index_name = by_index.as_ref().map(|d| d.identity().driver);
+    let still_found = block::find_device_by_driver("usb-storage").is_some();
+    if reader_err != 1
+        || held_after != Err(BlockError::NoDevice)
+        || index_after != Some(Err(BlockError::NoDevice))
+        || index_name != Some("detached")
+        || still_found
+    {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=unplug_not_handled reader_err={} held_after={:?} index_after={:?} index_driver={:?} still_found={}",
+            SCENARIO,
+            reader_err,
+            held_after,
+            index_after,
+            index_name,
+            still_found
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} usb_storage_unplug=ok index={} reads_before={} reader=NoDevice held=NoDevice registry=detached lookup=none",
+        SCENARIO,
+        index,
+        reads
     );
     debug_exit(EXIT_SUCCESS);
 }
