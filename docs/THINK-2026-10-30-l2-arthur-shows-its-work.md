@@ -41,7 +41,12 @@ external anchor; noted for later, e.g. the head hash shown in the inspector).
 **Appending.** There is no append flag or seek: the WM opens the log, reads to its end (which also gives it the head
 and the next sequence number, verifying as it goes), and writes the record there, then fsyncs. *As built after the
 #253 bounce:*
-- **The record comes first.** A lend whose record can't be appended isn't made, so no action runs unrecorded.
+- **The record comes first.** A lend whose record can't be appended isn't made, so no action runs unrecorded. An Always
+  whose record can't be appended isn't saved either: the grants record is put back as it was.
+- **A log the WM can't read blocks every lend.** The WM reads the whole log before it appends; past `CAP` plus one
+  4 KiB read (or on a read error) the append fails, so every request is refused until the log is repaired. Rotation
+  keeps a log the WM wrote under `CAP`; only a log grown some other way (a write outside the WM, a smaller `CAP` in a
+  later build) reaches this. The refusal is the safe side: nothing runs unrecorded.
 - **A broken chain** is cut back to its last good record. The bytes cut off are kept in `.system/actions.broken`
   (up to 64 KiB), and a record of kind 6 (detail 0xFFFF_FFFF, "chain broken") goes first, so the break is itself on
   the record. Records after a break can't be vouched for by the chain, which is why they're kept aside, not trusted.

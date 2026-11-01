@@ -381,6 +381,30 @@ jobs:
             neo \
             cargo neo-test --shard ${{ matrix.shard }}/4
 
+      # OT-58 S0: per-scenario timings (wall, QEMU, build) on the job's summary
+      # page and as an artifact, pass or fail. The job-log API returns only the
+      # last 5,000 lines of a shard's ~33k-line log, so this is where the
+      # numbers survive. Diagnostics only: never a test verdict.
+      - name: neo-test timing summary
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f target/neo-test/timings-summary.md ]; then
+            cat target/neo-test/timings-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload neo-test timings
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-test-timings-shard-${{ matrix.shard }}
+          path: |
+            target/neo-test/timings.tsv
+            target/neo-test/timings-summary.md
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Dump neo-test serial logs on failure
         if: failure()
         run: |
@@ -391,11 +415,20 @@ jobs:
             exit 0
           fi
 
+          # Only the logs that never reached `event=PASS` (OT-58 S0): dumping
+          # all ~230 pushed the failure out of the 5,000-line tail the job-log
+          # API returns. Every log is still in the artifact below.
+          shown=0
           for log in "${logs[@]}"; do
+            if grep -q 'NEO_TEST/1 event=PASS' "${log}"; then
+              continue
+            fi
+            shown=$((shown + 1))
             echo "::group::${log}"
             tail -n 240 "${log}"
             echo "::endgroup::"
           done
+          echo "dumped ${shown} of ${#logs[@]} serial log(s): those without event=PASS"
 
       # An artifact/storage-upload failure is infra, never a test verdict: a
       # full GitHub artifact-storage quota must NOT flip a shard whose tests
@@ -413,6 +446,22 @@ jobs:
           path: target/neo-test/*.serial.log
           if-no-files-found: ignore
           retention-days: 3
+
+      # OT-58 S0: the failures and the timing table again, last, so they sit in
+      # the tail of the job log even after the dump above.
+      - name: neo-test failures and timings (end of log)
+        if: always()
+        continue-on-error: true
+        run: |
+          tsv=target/neo-test/timings.tsv
+          if [ ! -f "$tsv" ]; then
+            echo "no $tsv"
+            exit 0
+          fi
+          echo "--- failed scenarios ---"
+          awk -F'\t' 'NR > 1 && $6 != "pass"' "$tsv"
+          echo "--- all scenarios, slowest first (scenario wall_s qemu_s build_s qemu_runs result) ---"
+          tail -n +2 "$tsv" | sort -t$'\t' -k2,2 -rn
 
       - name: Probe disk usage (after QEMU tests)
         if: always()

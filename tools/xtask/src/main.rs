@@ -8640,6 +8640,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     let mut build_only = false;
     let mut bare_metal_mode = false;
     let mut include_explicit = false;
+    let mut keep_going = false;
     let mut shard: Option<ShardSpec> = None;
     let mut requested: Vec<&str> = Vec::new();
 
@@ -8652,6 +8653,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
             "--meta-only" => meta_only = true,
             "--build-only" => build_only = true,
             "--bare-metal-mode" => bare_metal_mode = true,
+            "--keep-going" => keep_going = true,
             "all" => include_explicit = true,
             "-h" | "--help" => {
                 print_neo_test_help();
@@ -8741,9 +8743,13 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     } else {
         ScenarioBundleMode::Vmware
     };
-    for scenario in scenarios {
-        run_test_scenario_with_retries(scenario, mode)?;
-    }
+    let label = match shard {
+        Some(spec) => format!("shard {}/{}", spec.index, spec.count),
+        None => "run".to_string(),
+    };
+    run_scenarios_timed(&scenarios, &label, keep_going, |scenario| {
+        run_test_scenario_with_retries(scenario, mode)
+    })?;
 
     // The deliberate-failure meta-test is a runner self-check that the
     // un-sharded suite runs exactly once at the end. Under sharding it must
@@ -8757,6 +8763,185 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// === neo-test timings (OT-58 S0) ===
+//
+// Per-scenario wall-clock and QEMU time, kept where CI can still read them when
+// the job log is too long to fetch whole (the job-log API returns only its last
+// 5,000 lines): appended row by row to `target/neo-test/timings.tsv`, printed as a
+// sorted table at the end of the run (inside that tail), and written as Markdown
+// to `target/neo-test/timings-summary.md` for the workflow's job summary.
+
+/// QEMU time and run count since the last `take_qemu_runs` (every QEMU run goes
+/// through `run_with_timeout_and_dump`).
+static QEMU_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static QEMU_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn record_qemu_run(elapsed: Duration) {
+    use std::sync::atomic::Ordering;
+    QEMU_MILLIS.fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
+    QEMU_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
+fn take_qemu_runs() -> (Duration, u32) {
+    use std::sync::atomic::Ordering;
+    (
+        Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
+        QEMU_RUNS.swap(0, Ordering::Relaxed),
+    )
+}
+
+const TIMINGS_TSV_REL: &str = "target/neo-test/timings.tsv";
+const TIMINGS_SUMMARY_REL: &str = "target/neo-test/timings-summary.md";
+const TIMINGS_TSV_HEADER: &str = "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n";
+
+#[derive(Clone, Debug, PartialEq)]
+struct ScenarioTiming {
+    name: &'static str,
+    wall: Duration,
+    qemu: Duration,
+    qemu_runs: u32,
+    passed: bool,
+}
+
+impl ScenarioTiming {
+    /// Everything that isn't QEMU: the kernel and userland builds, the image.
+    fn build(&self) -> Duration {
+        self.wall.saturating_sub(self.qemu)
+    }
+}
+
+fn timings_tsv_row(t: &ScenarioTiming) -> String {
+    format!(
+        "{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\n",
+        t.name,
+        t.wall.as_secs_f64(),
+        t.qemu.as_secs_f64(),
+        t.build().as_secs_f64(),
+        t.qemu_runs,
+        if t.passed { "pass" } else { "FAIL" }
+    )
+}
+
+/// The end-of-run table, slowest first, with totals. `markdown` selects the
+/// job-summary form; otherwise plain text for the log.
+fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> String {
+    let mut sorted: Vec<&ScenarioTiming> = rows.iter().collect();
+    sorted.sort_by(|a, b| b.wall.cmp(&a.wall).then_with(|| a.name.cmp(b.name)));
+    let wall: Duration = rows.iter().map(|t| t.wall).sum();
+    let qemu: Duration = rows.iter().map(|t| t.qemu).sum();
+    let failed = rows.iter().filter(|t| !t.passed).count();
+    let mut out = String::new();
+    if markdown {
+        out.push_str(&format!(
+            "### neo-test timings, {label}\n\n{} scenario(s), {failed} failed; wall {:.0} s, QEMU {:.0} s, build and image {:.0} s\n\n\
+             | Scenario | Wall s | QEMU s | Build s | QEMU runs | Result |\n|---|---|---|---|---|---|\n",
+            rows.len(),
+            wall.as_secs_f64(),
+            qemu.as_secs_f64(),
+            wall.saturating_sub(qemu).as_secs_f64(),
+        ));
+        for t in sorted {
+            out.push_str(&format!(
+                "| {} | {:.1} | {:.1} | {:.1} | {} | {} |\n",
+                t.name,
+                t.wall.as_secs_f64(),
+                t.qemu.as_secs_f64(),
+                t.build().as_secs_f64(),
+                t.qemu_runs,
+                if t.passed { "pass" } else { "FAIL" }
+            ));
+        }
+    } else {
+        out.push_str(&format!(
+            "[xtask] neo-test timings, {label}: {} scenario(s), {failed} failed; wall {:.0}s qemu {:.0}s build+image {:.0}s\n",
+            rows.len(),
+            wall.as_secs_f64(),
+            qemu.as_secs_f64(),
+            wall.saturating_sub(qemu).as_secs_f64(),
+        ));
+        for t in sorted {
+            out.push_str("[xtask] timing\t");
+            out.push_str(&timings_tsv_row(t));
+        }
+    }
+    out
+}
+
+/// Run `scenarios` in order through `run`, timing each one. Without
+/// `keep_going`, stop at the first failure and return its error (the behaviour
+/// before S0). With it, run them all and fail with the list of failures. The
+/// timings are written either way.
+fn run_scenarios_timed(
+    scenarios: &[TestScenario],
+    label: &str,
+    keep_going: bool,
+    mut run: impl FnMut(TestScenario) -> Result<(), String>,
+) -> Result<(), String> {
+    let root = workspace_root();
+    let tsv_path = root.join(TIMINGS_TSV_REL);
+    // Best effort: timings are diagnostics, never a test verdict.
+    let _ = fs::write(&tsv_path, TIMINGS_TSV_HEADER);
+    let mut rows: Vec<ScenarioTiming> = Vec::new();
+    let mut failures: Vec<(&'static str, String)> = Vec::new();
+    for &scenario in scenarios {
+        let _ = take_qemu_runs();
+        let start = Instant::now();
+        let result = run(scenario);
+        let (qemu, qemu_runs) = take_qemu_runs();
+        let row = ScenarioTiming {
+            name: scenario.name,
+            wall: start.elapsed(),
+            qemu,
+            qemu_runs,
+            passed: result.is_ok(),
+        };
+        if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&tsv_path) {
+            let _ = f.write_all(timings_tsv_row(&row).as_bytes());
+        }
+        rows.push(row);
+        if let Err(e) = result {
+            if !keep_going {
+                emit_timings_summary(label, &rows);
+                return Err(e);
+            }
+            eprintln!(
+                "[xtask] neo-test: `{}` FAILED (keep-going): {e}",
+                scenario.name
+            );
+            failures.push((scenario.name, e));
+        }
+    }
+    emit_timings_summary(label, &rows);
+    keep_going_verdict(&failures)
+}
+
+fn emit_timings_summary(label: &str, rows: &[ScenarioTiming]) {
+    eprint!("{}", timings_summary(label, rows, false));
+    let _ = fs::write(
+        workspace_root().join(TIMINGS_SUMMARY_REL),
+        timings_summary(label, rows, true),
+    );
+}
+
+fn keep_going_verdict(failures: &[(&'static str, String)]) -> Result<(), String> {
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let mut msg = format!(
+        "{} scenario(s) failed: {}",
+        failures.len(),
+        failures
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    for (name, e) in failures {
+        msg.push_str(&format!("\n  `{name}`: {e}"));
+    }
+    Err(msg)
 }
 
 fn cmd_neo_test_build(args: &[String]) -> Result<(), String> {
@@ -9102,6 +9287,9 @@ fn print_neo_test_help() {
     println!("USAGE:");
     println!("    cargo neo-test [all|SCENARIO] [--include-ignored] [--no-meta]");
     println!("    cargo neo-test --shard I/N      run scenario subset I of N (1-based)");
+    println!(
+        "    cargo neo-test ... --keep-going run every selected scenario, then fail with the list"
+    );
     println!("    cargo neo-test SCENARIO --bare-metal-mode");
     println!("    cargo neo-test --build-only SCENARIO");
     println!("    cargo neo-test --build-only SCENARIO --bare-metal-mode");
@@ -16120,6 +16308,7 @@ fn run_with_timeout_and_dump(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("[xtask] qemu stderr for `{label}`:\n{stderr}");
             }
+            record_qemu_run(start.elapsed());
             eprintln!(
                 "[xtask] neo-test: `{label}` qemu elapsed={:.1}s status={} budget={}s",
                 start.elapsed().as_secs_f64(),
@@ -16131,6 +16320,7 @@ fn run_with_timeout_and_dump(
 
         if start.elapsed() >= timeout {
             let elapsed = start.elapsed();
+            record_qemu_run(elapsed);
             if let Some(dump_path) = dump_target {
                 attempt_timeout_monitor_dump(label, dump_path);
             }
@@ -21307,6 +21497,103 @@ mod tests {
     /// matrix shards. This is the partition's "full set" of record.
     fn canonical_suite() -> Vec<TestScenario> {
         select_test_scenarios(&[], false, false).expect("default scenario selection")
+    }
+
+    fn timing(
+        name: &'static str,
+        wall_ms: u64,
+        qemu_ms: u64,
+        runs: u32,
+        passed: bool,
+    ) -> ScenarioTiming {
+        ScenarioTiming {
+            name,
+            wall: Duration::from_millis(wall_ms),
+            qemu: Duration::from_millis(qemu_ms),
+            qemu_runs: runs,
+            passed,
+        }
+    }
+
+    /// OT-58 S0: the TSV row and both summary forms, against hand-written bytes.
+    #[test]
+    fn timings_rows_and_summary_match_hand_written_bytes() {
+        assert_eq!(
+            TIMINGS_TSV_HEADER,
+            "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n"
+        );
+        let a = timing("alpha", 12_340, 4_000, 1, true);
+        let b = timing("beta", 30_050, 21_000, 2, false);
+        assert_eq!(timings_tsv_row(&a), "alpha\t12.3\t4.0\t8.3\t1\tpass\n");
+        assert_eq!(timings_tsv_row(&b), "beta\t30.1\t21.0\t9.1\t2\tFAIL\n");
+        // QEMU longer than the wall (can't happen, but never underflows).
+        assert_eq!(
+            timings_tsv_row(&timing("odd", 1_000, 2_000, 1, true)),
+            "odd\t1.0\t2.0\t0.0\t1\tpass\n"
+        );
+
+        let rows = [a, b];
+        assert_eq!(
+            timings_summary("shard 2/4", &rows, false),
+            "[xtask] neo-test timings, shard 2/4: 2 scenario(s), 1 failed; wall 42s qemu 25s build+image 17s\n\
+             [xtask] timing\tbeta\t30.1\t21.0\t9.1\t2\tFAIL\n\
+             [xtask] timing\talpha\t12.3\t4.0\t8.3\t1\tpass\n"
+        );
+        assert_eq!(
+            timings_summary("shard 2/4", &rows, true),
+            "### neo-test timings, shard 2/4\n\n\
+             2 scenario(s), 1 failed; wall 42 s, QEMU 25 s, build and image 17 s\n\n\
+             | Scenario | Wall s | QEMU s | Build s | QEMU runs | Result |\n\
+             |---|---|---|---|---|---|\n\
+             | beta | 30.1 | 21.0 | 9.1 | 2 | FAIL |\n\
+             | alpha | 12.3 | 4.0 | 8.3 | 1 | pass |\n"
+        );
+    }
+
+    /// OT-58 S0 kill-switch: without `--keep-going` the timed runner stops at
+    /// the first failure with that scenario's own error, exactly as the plain
+    /// loop did; with it, every scenario runs and the error lists the failures.
+    #[test]
+    fn run_scenarios_timed_stops_at_first_failure_unless_keep_going() {
+        let suite = canonical_suite();
+        let picked: Vec<TestScenario> = suite.iter().copied().take(4).collect();
+        assert_eq!(picked.len(), 4);
+        let fail_on = |s: TestScenario| s.name == picked[1].name || s.name == picked[3].name;
+
+        let mut ran = Vec::new();
+        let err = run_scenarios_timed(&picked, "test", false, |s| {
+            ran.push(s.name);
+            if fail_on(s) {
+                Err(format!("boom {}", s.name))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(ran, vec![picked[0].name, picked[1].name]);
+        assert_eq!(err, format!("boom {}", picked[1].name));
+
+        let mut ran = Vec::new();
+        let err = run_scenarios_timed(&picked, "test", true, |s| {
+            ran.push(s.name);
+            if fail_on(s) {
+                Err(format!("boom {}", s.name))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(ran, picked.iter().map(|s| s.name).collect::<Vec<_>>());
+        assert_eq!(
+            err,
+            format!(
+                "2 scenario(s) failed: {a} {b}\n  `{a}`: boom {a}\n  `{b}`: boom {b}",
+                a = picked[1].name,
+                b = picked[3].name
+            )
+        );
+
+        assert!(run_scenarios_timed(&picked, "test", true, |_| Ok(())).is_ok());
     }
 
     /// S2-F1: every licence file the ISO stages exists and is non-empty, and
