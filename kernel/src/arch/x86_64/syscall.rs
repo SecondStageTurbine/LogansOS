@@ -3750,6 +3750,14 @@ fn infer_run_routed(
         Err(e) => return e,
     };
     let mut out_handles: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(outputs.len());
+    // CP-99: a failure after some outputs are installed (an install refused,
+    // or the handle array's copy-out faulting) closes the ones installed, so
+    // the error leaves the caller's table as it was.
+    let undo = |installed: &[u32]| {
+        for &idx in installed {
+            let _ = process::close_handle(&proc, idx, |h| matches!(h, Handle::Tensor { .. }));
+        }
+    };
     for tensor in outputs {
         let meta = tensor.meta();
         let slot = crate::ai::arena::alloc(tensor, crate::ai::arena::default_home());
@@ -3765,11 +3773,17 @@ fn infer_run_routed(
         crate::ai::arena::release(slot);
         let idx = match installed {
             Ok(idx) => idx,
-            Err(_) => return EINVAL,
+            Err(_) => {
+                undo(&out_handles);
+                return EINVAL;
+            }
         };
         let idx = match u32::try_from(idx) {
             Ok(idx) => idx,
-            Err(_) => return EINVAL,
+            Err(_) => {
+                undo(&out_handles);
+                return EINVAL;
+            }
         };
         out_handles.push(idx);
     }
@@ -3780,6 +3794,7 @@ fn infer_run_routed(
         let bytes =
             unsafe { core::slice::from_raw_parts(out_handles.as_ptr().cast::<u8>(), output_bytes) };
         if let Err(e) = copy_kernel_bytes_to_user(outputs_ptr.cast::<u8>(), bytes) {
+            undo(&out_handles);
             return e;
         }
     }
@@ -5737,6 +5752,10 @@ fn sys_socket_recv_impl(h: u32, buf: *mut u8, len: usize, flags: u32) -> i64 {
     if let Err(e) = validate_user_buf(buf as u64, len) {
         return e;
     }
+    // CP-99: probe the output before anything is consumed (`probe_user_writable`).
+    if let Err(e) = probe_user_writable(buf, len) {
+        return e;
+    }
     match tcp_socket_lookup(h, socket_rights::READ) {
         Ok(socket) => {
             let mut tmp = alloc::vec![0u8; len];
@@ -5806,10 +5825,19 @@ fn sys_socket_recvfrom_impl(
         if let Err(e) = validate_user_buf(addr_out as u64, cap) {
             return e;
         }
+        if let Err(e) = probe_user_writable(addr_out, cap)
+            .and_then(|()| probe_user_writable(addr_len_io.cast(), core::mem::size_of::<usize>()))
+        {
+            return e;
+        }
         cap
     } else {
         0
     };
+    // CP-99: probe the output before anything is consumed (`probe_user_writable`).
+    if let Err(e) = probe_user_writable(buf, len) {
+        return e;
+    }
     let socket = match socket_lookup(h, socket_rights::RECV) {
         Ok(socket) => socket,
         Err(e) => return e,
@@ -6566,6 +6594,10 @@ fn sys_read_impl(fd: u32, buf: *mut u8, len: usize) -> i64 {
     }
     #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
     if fd == STDIN_FD {
+        // CP-99: a byte taken from stdin is gone, so probe first.
+        if let Err(e) = probe_user_writable(buf, min(len, SYS_WRITE_CHUNK)) {
+            return e;
+        }
         return sys_read_stdin(buf, len);
     }
     let (file, rights) = match file_lookup_with_rights(fd) {
@@ -6578,15 +6610,21 @@ fn sys_read_impl(fd: u32, buf: *mut u8, len: usize) -> i64 {
     // CP-2). That lock is IRQ-safe since OT-74 (2026-10-16), but the NeoFS
     // inode-level locks (`entries`/`root`/`record`, plain `SwitchMutex`es) can
     // still be held across a block-I/O park here, so the read keeps running
-    // IF-on (into a kernel buffer); the user copy below stays IF-off.
-    let n = match crate::arch::x86_64::with_interrupts_enabled(|| file.read_as(&mut tmp, rights)) {
-        Ok(n) => n,
-        Err(e) => return vfs_errno(e),
-    };
-    if let Err(e) = copy_kernel_bytes_to_user(buf, &tmp[..n]) {
-        return e;
+    // IF-on (into a kernel buffer); the user copy stays IF-off.
+    //
+    // CP-99: the copy to the user buffer runs before the file offset moves
+    // (`read_as_then`), so a read whose buffer faults is EFAULT with the
+    // offset where it was.
+    let read = crate::arch::x86_64::with_interrupts_enabled(|| {
+        file.read_as_then(&mut tmp, rights, |bytes| {
+            crate::arch::x86_64::without_interrupts(|| copy_kernel_bytes_to_user(buf, bytes))
+        })
+    });
+    match read {
+        Ok(Ok(n)) => n as i64,
+        Ok(Err(e)) => e,
+        Err(e) => vfs_errno(e),
     }
-    n as i64
 }
 
 #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
@@ -7713,8 +7751,12 @@ fn sys_thread_exit_impl(code: i32) -> i64 {
 fn sys_thread_join_impl(tid: u64, exit_out: *mut i32) -> i64 {
     use crate::sched::process::WAIT_EXITED_TAG;
 
+    // CP-99: probe the status word before the join consumes the exit record,
+    // so an unmapped or read-only pointer is EFAULT with the thread still
+    // joinable.
     if !exit_out.is_null()
         && let Err(e) = validate_user_buf(exit_out as u64, core::mem::size_of::<i32>())
+            .and_then(|()| probe_user_writable(exit_out.cast(), core::mem::size_of::<i32>()))
     {
         return e;
     }
@@ -8845,6 +8887,10 @@ fn sys_input_focus_recv_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
         return EINVAL;
     }
     if let Err(e) = validate_user_buf(out as u64, out_len) {
+        return e;
+    }
+    // CP-99: probe the output before anything is consumed (`probe_user_writable`).
+    if let Err(e) = probe_user_writable(out, out_len) {
         return e;
     }
     #[cfg(all(feature = "usb-hid", feature = "atrium-input-routing"))]
