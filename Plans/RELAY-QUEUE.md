@@ -48,3 +48,6 @@ RELAY 227 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-m910q-reviews-
 RELAY 228 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 228 (#6 review; RETURN `Plans/RETURN-2026-11-01-pr6-stop-cpus-review-janus.md`)
 RELAY 229 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 229 (#23 review; RETURN `Plans/RETURN-2026-11-01-pr23-msc-review-jarvis.md`)
 RELAY 230 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 230 (Lane 2b; RETURN `Plans/RETURN-2026-11-01-l2b-image-decode-dexter.md`)
+RELAY 231 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 231 (#15 review; RETURN `Plans/RETURN-2026-11-01-pr15-client-table-review-chad.md`)
+RELAY 232 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 232 (#16 review; RETURN `Plans/RETURN-2026-11-01-pr16-boot-time-review-janus.md`)
+RELAY 233 | jarvis | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 233 (#29 review; RETURN `Plans/RETURN-2026-11-01-pr29-fetch-broker-review-jarvis.md`)
