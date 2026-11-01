@@ -15,6 +15,20 @@ on:
         type: choice
         options: [full, quick]
         default: full
+      # OT-58 S2b (THINK 2.4): the full tier over a batch. Every job builds
+      # the same tree (base + each PR merged in order) and checks its hash.
+      batch:
+        description: "PR numbers to gate as one batch, in landing order (space-separated); empty = this branch"
+        type: string
+        default: ""
+      base_sha:
+        description: "Batch base SHA (default: main's tip at plan time)"
+        type: string
+        default: ""
+      prefix:
+        description: "Bisect leg: only the first N batch members (0 = the base alone); empty = all"
+        type: string
+        default: ""
   # Nightly schedule REMOVED 2026-10-17 (PL decision): it re-ran CI on an
   # unchanged `main` daily — including through months with no work — and the
   # QEMU half has had no runner since ~2026-10-13. The QEMU gate now runs only
@@ -100,8 +114,14 @@ jobs:
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
     permissions:
       actions: read
+      contents: read
+      pull-requests: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
+      # OT-58 S2b: a batch's resolved plan (empty when not a batch).
+      batch_base: ${{ steps.batch.outputs.base }}
+      batch_members: ${{ steps.batch.outputs.members }}
+      batch_tree: ${{ steps.batch.outputs.tree }}
       # OT-58: the QEMU matrix. `["quick"]` (one smoke job) for a PR or a
       # `tier: quick` dispatch; the four shards otherwise.
       shards: ${{ steps.tier.outputs.shards }}
@@ -158,6 +178,28 @@ jobs:
           else
             echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
           fi
+
+      # OT-58 S2b: resolve a batch once (heads, quick-green, gate-plan, tree).
+      - name: Checkout (batch plan)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain (batch plan)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+      - name: Plan the batch
+        id: batch
+        if: inputs.batch != '' || inputs.prefix != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BATCH: ${{ inputs.batch }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          PREFIX: ${{ inputs.prefix }}
+        run: scripts/batch-plan.sh | tee -a "$GITHUB_OUTPUT"
 
   neo-test:
     name: ${{ matrix.shard == 'quick' && 'QEMU smoke (quick tier)' || format('QEMU Integration Tests (shard {0}/4)', matrix.shard) }}
@@ -304,6 +346,14 @@ jobs:
           # not numbers: `&& 0 ||` would yield 1, since 0 is falsy here.
           fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Prepare container cache directories
         run: mkdir -p .docker .home .rustup-home .cargo-home
 
@@ -443,6 +493,7 @@ jobs:
             -e CARGO_HTTP_MULTIPLEXING \
             -e CARGO_NET_RETRY \
             -e SHARD="${{ matrix.shard }}" \
+            -e BATCH="${{ inputs.batch }}${{ inputs.prefix }}" \
             -e GATE_BASE="origin/${{ github.base_ref || 'main' }}" \
             neo \
             bash -c '
@@ -452,6 +503,9 @@ jobs:
                 git config --global --add safe.directory /workspace
                 cargo xtask gate-plan --base "$GATE_BASE" | tee target/neo-test/gate-plan.txt
                 exec cargo neo-test --tier quick --changed-from "$GATE_BASE" --keep-going
+              fi
+              if [ -n "$BATCH" ]; then
+                exec cargo neo-test --shard "$SHARD/4" --keep-going
               fi
               exec cargo neo-test --shard "$SHARD/4"
             '
@@ -588,6 +642,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Prepare container cache directories
         run: mkdir -p .docker .home .rustup-home .cargo-home
 
@@ -666,6 +728,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Check SPDX headers on source files
         run: |
           echo "Checking SPDX-License-Identifier headers..."
@@ -714,6 +784,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Check monolithic identity in docs
         run: |
           echo "Checking for microkernel-identity drift..."
@@ -758,6 +836,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
 
       # dtolnay/rust-toolchain drives `rustup` and does not install it. That is
       # safe on ubuntu-latest (preinstalled) but NOT guaranteed on a self-hosted
@@ -922,6 +1008,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Install pinned Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
@@ -983,6 +1077,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
 
       - name: Ensure rustup is present (self-hosted runners)
         run: |
@@ -1161,6 +1263,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Ensure rustup is present (self-hosted runners)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
@@ -1218,3 +1328,54 @@ jobs:
           fi
           echo "all ${#configs[@]} feature-gated configurations clean"
 
+  # OT-58 S2b (THINK 2.4, 2.5): a batch's report. Every failing scenario from
+  # every shard (they ran with --keep-going), and the block the PM's merge
+  # report carries: base, members, tree, run.
+  batch-report:
+    name: Batch report
+    needs: [nightly-skip, neo-test]
+    if: always() && (inputs.batch != '' || inputs.prefix != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download every shard's timings
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: neo-test-timings-shard-*
+          path: timings
+      - name: Report
+        env:
+          BASE: ${{ needs.nightly-skip.outputs.batch_base }}
+          MEMBERS: ${{ needs.nightly-skip.outputs.batch_members }}
+          TREE: ${{ needs.nightly-skip.outputs.batch_tree }}
+          QEMU_RESULT: ${{ needs.neo-test.result }}
+        run: |
+          {
+            echo "### Batch"
+            echo
+            echo "- base: \`$BASE\`"
+            echo "- members (PR:head, landing order): \`$MEMBERS\`"
+            echo "- tree: \`$TREE\`"
+            echo "- run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "- QEMU shards: $QEMU_RESULT"
+            echo
+            echo "#### Failing scenarios"
+            echo
+            found=0
+            for tsv in timings/*/timings.tsv; do
+              [ -f "$tsv" ] || continue
+              shard="$(basename "$(dirname "$tsv")")"
+              while IFS=$'\t' read -r name wall qemu build runs result; do
+                [ "$result" = pass ] && continue
+                echo "- \`$name\` ($shard): wall ${wall} s, QEMU ${qemu} s, ${runs} QEMU run(s)"
+                found=1
+              done < <(tail -n +2 "$tsv")
+            done
+            [ "$found" = 0 ] && echo "none"
+            missing=$(( 4 - $(ls -d timings/*/ 2>/dev/null | wc -l) ))
+            if [ "$missing" -gt 0 ]; then
+              echo
+              echo "**${missing} shard(s) left no timing table: infra (runner loss, disk, OOM), so re-fire them; don't bisect.**"
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
