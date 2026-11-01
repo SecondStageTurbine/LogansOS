@@ -282,6 +282,7 @@ fn stop_world() {
         report.holdouts
     );
     if report.holdouts != 0 {
+        super::power::note_holdouts();
         crate::serial_println!(
             "[ power ] K5 skipped: holdouts={:#x} still run; straight to K7",
             report.holdouts

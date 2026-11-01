@@ -510,6 +510,18 @@ pub enum ResetStep {
     TripleFault,
 }
 
+/// OT-90 P3b (Janus's #6 re-check, item 2): whether `step` uses a register
+/// pair another CPU could be in the middle of using: a FADT reset register
+/// in PCI configuration space goes through 0xCF8 (address) then 0xCFC (data),
+/// and a CPU still running between the two writes redirects the reset byte
+/// to its own function. With a K4 holdout such a step is skipped and the
+/// chain goes on (the keyboard pulse, 0xCF9 and the triple fault are single
+/// port writes, or no port at all).
+#[cfg_attr(not(feature = "power-stop-cpus"), allow(dead_code))]
+pub fn step_uses_shared_ports(step: &ResetStep) -> bool {
+    matches!(step, ResetStep::FadtRegister { reg, .. } if reg.space == SPACE_PCI_CONFIG)
+}
+
 /// The restart chain, in order. At most four steps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResetChain {
