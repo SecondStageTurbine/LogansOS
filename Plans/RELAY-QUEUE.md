@@ -52,3 +52,6 @@ RELAY 231 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-23
 RELAY 232 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 232 (#16 review; RETURN `Plans/RETURN-2026-11-01-pr16-boot-time-review-janus.md`)
 RELAY 233 | jarvis | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-reviews-231-233.md | Section 233 (#29 review; RETURN `Plans/RETURN-2026-11-01-pr29-fetch-broker-review-jarvis.md`)
 RELAY 234 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l2c-decoder-fuzz-dexter.md | Section "Relay 234" (Lane 2c; RETURN `Plans/RETURN-2026-11-01-l2c-decoder-fuzz-dexter.md`)
+RELAY 235 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-think-reviews-235-237.md | Section 235 (#31 tiered-gate THINK; RETURN `Plans/RETURN-2026-11-01-pr31-tiered-gate-review-dexter.md`)
+RELAY 236 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-think-reviews-235-237.md | Section 236 (#12 terminal THINK; RETURN `Plans/RETURN-2026-11-01-pr12-terminal-think-review-jarvis.md`)
+RELAY 237 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-think-reviews-235-237.md | Section 237 (#9 + #20 storage THINKs; RETURN `Plans/RETURN-2026-11-01-pr9-pr20-storage-thinks-review-chad.md`)
