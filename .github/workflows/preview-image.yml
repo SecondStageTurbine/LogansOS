@@ -207,6 +207,7 @@ jobs:
             -e MODEL_REPO \
             -e MODEL_REV \
             -e SHA="${{ github.sha }}" \
+            -e REF="${{ github.ref_name }}" \
             -e SHORT="$short" \
             -e BUILD_DATE="$(date -u +%Y-%m-%d)" \
             neo \

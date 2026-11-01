@@ -7,7 +7,7 @@
 # product image's disks with `cargo xtask vm-image --with-model`, convert them
 # to qcow2, package the Windows zip and boot-check the zip.
 #
-# Environment: MODEL_FILE MODEL_REPO MODEL_REV SHA SHORT BUILD_DATE.
+# Environment: MODEL_FILE MODEL_REPO MODEL_REV SHA REF SHORT BUILD_DATE.
 set -euo pipefail
 
 out=target/preview
@@ -48,9 +48,8 @@ Licence:  Apache License 2.0; the upstream LICENSE file at that revision is
           MODEL-LICENSE-Apache-2.0.txt next to this file. The upstream
           repository has no NOTICE file at that revision.
 
-Changes made by LogansOS: the GGUF was converted, without retraining or
-changing any weight value, into LogansOS's own .neom container and a
-tokenizer vocabulary file, by the neomc tool (tools/neomc in
+Changes made by LogansOS: the GGUF was converted into LogansOS's own .neom
+container and a tokenizer vocabulary file (no retraining), by the neomc tool (tools/neomc in
 https://github.com/SecondStageTurbine/LogansOS at ${SHA}):
   neomc import ${MODEL_FILE} -o model-qwen2.5-0.5b.neom
                --vocab-output model-qwen2.5-0.5b.vocab
@@ -75,6 +74,7 @@ python3 scripts/preview/preview.py package \
     --license MODEL-LICENSE-Apache-2.0.txt="$model/LICENSE" \
     --license MODEL-NOTICE.txt="$out/MODEL-NOTICE.txt" \
     --sha "$SHA" \
+    --ref "$REF" \
     --date "$BUILD_DATE" \
     --with-model yes
 echo yes > "$out/with-model.txt"

@@ -209,7 +209,7 @@ exit /b 1
     return body + BAT_MISSING
 
 
-def readme(sha, date, with_model):
+def readme(sha, ref, date, with_model):
     short = sha[:12]
     if with_model:
         arthur = (
@@ -228,7 +228,7 @@ def readme(sha, date, with_model):
     text = f"""LogansOS preview
 ================
 
-Built from main @ {short} on {date}.
+Built from {ref} @ {short} on {date}.
 This is a test build of an operating system that is still being made.
 It runs inside a virtual machine: nothing on your PC is changed.
 
@@ -316,7 +316,7 @@ def cmd_package(a):
         crlf(safe_bat()).encode("ascii")
     )
     (root / "README.txt").write_bytes(
-        readme(a.sha, a.date, a.with_model == "yes").encode("utf-8")
+        readme(a.sha, a.ref, a.date, a.with_model == "yes").encode("utf-8")
     )
     if out.exists():
         out.unlink()
@@ -392,6 +392,7 @@ def main():
     pk.add_argument("--ovmf-dir", required=True)
     pk.add_argument("--license", action="append", default=[], help="NAME=PATH")
     pk.add_argument("--sha", required=True)
+    pk.add_argument("--ref", default="main")
     pk.add_argument("--date", required=True)
     pk.add_argument("--with-model", choices=["yes", "no"], required=True)
     bc = sub.add_parser("boot-check")
