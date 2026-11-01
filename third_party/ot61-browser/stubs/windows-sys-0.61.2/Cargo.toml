@@ -1,13 +1,24 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
-# LogansOS stub (third_party/ot61-browser/VENDORED.md): windows-sys is reached only
-# through stylo's build-time walkdir on a Windows build host. No LogansOS build
-# host or target is Windows, so it never compiles; this manifest (the real
-# name, version, licence and feature table) only lets Cargo resolve.
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stub: windows-sys").
+# - What: an empty crate (no code; src/lib.rs is a doc line) carrying the published
+#   windows-sys 0.61.2's name, version, licence and [features] table, so Cargo can
+#   resolve the lockfile without the 60 MB published crate.
+# - Why it's in the lockfile: stylo's build script uses walkdir, which reaches
+#   winapi-util -> windows-sys only under [target."cfg(windows)".dependencies]
+#   (walkdir 2.5.0 and same-file 1.0.6 -> winapi-util 0.1.11 -> windows-sys).
+# - Why it's safe: no LogansOS build host or target is Windows, so that cfg is
+#   never true and this crate is never compiled or linked. If it ever were, it
+#   would fail to compile (winapi-util needs real bindings), not build wrongly.
+# - Licence: MIT OR Apache-2.0, the upstream crate's; the feature table is taken
+#   from its published Cargo.toml, and both licence texts sit beside this file.
 [package]
 name = "windows-sys"
 version = "0.61.2"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "LogansOS empty stand-in for windows-sys 0.61.2 (cfg(windows)-only; never compiled)"
+repository = "https://github.com/microsoft/windows-rs"
 
 [lib]
 path = "src/lib.rs"

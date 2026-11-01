@@ -675,6 +675,26 @@ diff -ruN -x .cargo-checksum.json -x .cargo-ok vendor/stylo-0.22.0/prefs.rs patc
  /* This Source Code Form is subject to the terms of the Mozilla Public
   * License, v. 2.0. If a copy of the MPL was not distributed with this
   * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+diff -ruN -x .cargo-checksum.json -x .cargo-ok vendor/stylo-0.22.0/properties/build.py patched/stylo-0.22.0/properties/build.py
+--- vendor/stylo-0.22.0/properties/build.py
++++ patched/stylo-0.22.0/properties/build.py
+@@ -67,13 +67,9 @@
+     )
+     as_json = json.dumps(properties_dict, indent=4, sort_keys=True)
+ 
+-    # Four dotdots: /path/to/target(4)/debug(3)/build(2)/style-*(1)/out
+-    # Do not ascend above the target dir, because it may not be called target
+-    # or even have a parent (see CARGO_TARGET_DIR).
+-    doc_servo = os.path.join(OUT_DIR, "..", "..", "..", "..", "doc", "stylo")
+-
+-    write(doc_servo, "css-properties.html", as_html)
+-    write(doc_servo, "css-properties.json", as_json)
++    # LogansOS: upstream also copies both files to OUT_DIR/../../../../doc/stylo,
++    # outside OUT_DIR. A build script writes only under OUT_DIR, so that copy is
++    # dropped; the same two files are still written to OUT_DIR below.
+     write(OUT_DIR, "css-properties.json", as_json)
+     write(OUT_DIR, "css-properties.html", as_html)
+ 
 diff -ruN -x .cargo-checksum.json -x .cargo-ok vendor/stylo-0.22.0/properties/cascade.rs patched/stylo-0.22.0/properties/cascade.rs
 --- vendor/stylo-0.22.0/properties/cascade.rs
 +++ patched/stylo-0.22.0/properties/cascade.rs

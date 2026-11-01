@@ -19,6 +19,7 @@ import tomllib
 
 PATCHED_CRATE_SHA256 = {
     "parking_lot_core-0.9.12": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
+    "stylo-0.22.0": "7a255e46af2478628c48daab3774090caabd7812b1dd3ca98801c2b9c53491ed",
 }
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -68,7 +69,7 @@ for kind in ("vendor", "patched", "stubs"):
         else:
             sha = "— (a stub, not the published crate)"
             label = f"{name} (stub)"
-            commit = "—"
+            commit = "— (stands in for this repository's crate; no code)"
         rows.append(
             (kind != "vendor", name.lower(), version,
              f"| {label} | {version} | {pkg.get('license', '—')} | {repo(pkg.get('repository'))} | {commit} | {sha} |")

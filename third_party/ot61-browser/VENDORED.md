@@ -46,7 +46,7 @@ The copy's `Cargo.toml` also drops the `redox`, `unix` and `windows` parker depe
 `libc`, `windows-link`): this copy is built only for our target, and dropping them keeps 7 MB of `libc` sources
 out of the tree. That trim is local, not part of what would go upstream.
 
-## The patch: Stylo's thread handle
+## The patch: Stylo's thread handle, and its build script's output
 
 Stylo's `global_style_data.rs` names a platform thread handle for its style pool: `RawPthread` on `unix`,
 `RawHandle` on `windows`, and a no-op `DummyThreadHandle` on `wasm32`. `x86_64-unknown-neoplutarch` is none of
@@ -55,8 +55,34 @@ those (no `target_family`), so `PlatformThreadHandle` was undefined and the crat
 them. The style pool's threads themselves are ordinary `std::thread`s on this target's C1.3 threads. Upstreamable
 as is.
 
+The patch also stops `properties/build.py` writing outside `OUT_DIR`. Upstream copies `css-properties.html` and
+`css-properties.json` to `OUT_DIR/../../../../doc/stylo` (the `target/doc` tree) as well as to `OUT_DIR`; a build
+script must write only under `OUT_DIR`, so the copy outside it is dropped (`properties/build.py`, the
+`doc_servo` lines). The same two files are still written to `OUT_DIR`, and nothing reads the `doc/stylo` copy.
+Upstreamable as an opt-out.
+
 Each source file of the copy also starts with its SPDX line (`MPL-2.0`, the crate's licence and the notice every
 file already carries), as `parking_lot_core`'s do: a patched crate is checked like first-party code.
+
+## The stub: `windows-sys`
+
+`stubs/windows-sys-0.61.2/` is **not** the published crate. It is an empty crate (its `src/lib.rs` is one doc line)
+with the published `windows-sys` 0.61.2's name, version, licence and `[features]` table, which is all Cargo needs
+to resolve the lockfile.
+
+- **Why it's in the lockfile.** Stylo's build script uses `walkdir`. `walkdir` 2.5.0 and `same-file` 1.0.6 depend
+  on `winapi-util` 0.1.11 under `[target."cfg(windows)".dependencies]`, and `winapi-util` depends on
+  `windows-sys`. Cargo resolves every target's dependencies into the lockfile, so the crate must exist, even
+  though nothing on our build hosts or target compiles it.
+- **Why it's safe.** No LogansOS build host or target is Windows, so `cfg(windows)` is never true and the stub is
+  never compiled or linked. If a Windows host ever built this closure, `winapi-util` would fail to compile against
+  the empty stub: a loud build failure, never a silently wrong build.
+- **Licence.** `MIT OR Apache-2.0`, the upstream crate's (github.com/microsoft/windows-rs). The only upstream text
+  in the stub is the feature table, copied from the published 0.61.2 `Cargo.toml`; both licence texts sit beside
+  its manifest. The manifest's `repository` names the project it stands in for, and its header comment repeats
+  this section.
+- **Why not vendor the real crate.** The published `windows-sys` 0.61.2 is about 60 MB of Windows API bindings that
+  never build for our target.
 
 ## The crates
 
@@ -208,7 +234,8 @@ No GPL, LGPL or AGPL.
 | zerovec | 0.11.9 | Unicode-3.0 | github.com/unicode-org/icu4x | `031d9e89f6a3fd26a14491e090729d46094328fd` | `f58a2799cfe9a1670c7ea8edbd52ef8edb93cb37a7f83bf31ba9e35d9dae6a40` |
 | zerovec-derive | 0.11.7 | Unicode-3.0 | github.com/unicode-org/icu4x | `031d9e89f6a3fd26a14491e090729d46094328fd` | `c3743ddbf47738d929cd1ae2e199d40d0162979dfe31aef8ae646d2bf00bf97a` |
 | parking_lot_core (patched) | 0.9.12 | MIT OR Apache-2.0 | github.com/Amanieu/parking_lot | `d7828fff7b5d6327ae608e82db45f888b344449a` | `2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1` |
-| windows-sys (stub) | 0.61.2 | MIT OR Apache-2.0 | — | — | — (a stub, not the published crate) |
+| stylo (patched) | 0.22.0 | MPL-2.0 | github.com/servo/stylo | `34d25f741765a0bdb894f8271852e633299352d8` | `7a255e46af2478628c48daab3774090caabd7812b1dd3ca98801c2b9c53491ed` |
+| windows-sys (stub) | 0.61.2 | MIT OR Apache-2.0 | github.com/microsoft/windows-rs | — (stands in for this repository's crate; no code) | — (a stub, not the published crate) |
 
 ¹ Published without `.cargo_vcs_info.json` (precomputed-hash 0.1.1, void 1.0.2); its integrity is the crates.io checksum.
 

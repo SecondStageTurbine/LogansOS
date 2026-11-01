@@ -67,13 +67,9 @@ def main():
     )
     as_json = json.dumps(properties_dict, indent=4, sort_keys=True)
 
-    # Four dotdots: /path/to/target(4)/debug(3)/build(2)/style-*(1)/out
-    # Do not ascend above the target dir, because it may not be called target
-    # or even have a parent (see CARGO_TARGET_DIR).
-    doc_servo = os.path.join(OUT_DIR, "..", "..", "..", "..", "doc", "stylo")
-
-    write(doc_servo, "css-properties.html", as_html)
-    write(doc_servo, "css-properties.json", as_json)
+    # LogansOS: upstream also copies both files to OUT_DIR/../../../../doc/stylo,
+    # outside OUT_DIR. A build script writes only under OUT_DIR, so that copy is
+    # dropped; the same two files are still written to OUT_DIR below.
     write(OUT_DIR, "css-properties.json", as_json)
     write(OUT_DIR, "css-properties.html", as_html)
 
