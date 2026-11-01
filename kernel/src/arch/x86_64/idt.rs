@@ -160,11 +160,13 @@ macro_rules! set_error_code_entry {
 /// The page fault's entry: `set_error_code_entry!`'s shim, with the user-copy
 /// fixup in front of the call (`user_copy`).
 ///
-/// A ring-0 fault whose saved RIP is `neo_user_copy_insn` (the copy's one
-/// `rep movsb`) on a user-half address (CR2 below 2^47) resumes at
+/// A ring-0 fault whose saved RIP is one of the two registered instructions,
+/// `neo_user_copy_insn` (the copy's one `rep movsb`) or
+/// `neo_user_load_u32_insn` (the futex word's one aligned load), on a
+/// user-half address (CR2 below 2^47) resumes at
 /// `neo_user_copy_fixup` instead: the saved RIP is rewritten, the error code
-/// dropped and `iretq` returns to it. RCX still counts the bytes left, which
-/// the fixup returns. Nothing else is touched: RAX is saved and restored, the
+/// dropped and `iretq` returns to it. RCX still counts the bytes left (4 for
+/// the load), which the fixup returns. Nothing else is touched: RAX is saved and restored, the
 /// CPU frame's RFLAGS (the copy's AC=1, its IF) comes back with `iretq`, and
 /// at CPL 0 there is no GS to swap (CP-44). Every other fault, at any RIP or
 /// address, takes the unchanged path into `page_fault` (CP-40's flags mask,
@@ -185,7 +187,11 @@ pub(crate) extern "C" fn page_fault_shim() {
         // [rsp+16]: RIP now.
         "lea rax, [rip + {insn}]",
         "cmp rax, qword ptr [rsp + 16]",
+        "je 3f",
+        "lea rax, [rip + {insn32}]",
+        "cmp rax, qword ptr [rsp + 16]",
         "jne 1f",
+        "3:",
         "cmp byte ptr [rip + {enabled}], 0",
         "je 1f",
         "mov rax, cr2",
@@ -204,6 +210,7 @@ pub(crate) extern "C" fn page_fault_shim() {
         "call {body}",
         "ud2",
         insn = sym neo_user_copy_insn,
+        insn32 = sym neo_user_load_u32_insn,
         fixup = sym neo_user_copy_fixup,
         enabled = sym USER_COPY_FIXUP_ENABLED,
         body = sym page_fault,
@@ -212,6 +219,7 @@ pub(crate) extern "C" fn page_fault_shim() {
 
 unsafe extern "C" {
     static neo_user_copy_insn: u8;
+    static neo_user_load_u32_insn: u8;
     static neo_user_copy_fixup: u8;
 }
 

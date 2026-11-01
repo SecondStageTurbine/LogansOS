@@ -5015,7 +5015,7 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
         }
         let r = crate::sched::futex::wait_on_key(
             crate::sched::futex::join_key(target_tid),
-            || unsafe { (*done_word_ptr).load(Ordering::Acquire) } == 0,
+            || Ok(unsafe { (*done_word_ptr).load(Ordering::Acquire) } == 0),
             crate::sched::futex::DEADLINE_INFINITE,
         );
         if r == ESRCH {

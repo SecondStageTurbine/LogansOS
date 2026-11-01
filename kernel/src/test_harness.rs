@@ -41488,10 +41488,11 @@ fn run_exception_entry_flags() -> ! {
     // Error-code vectors continue with `mov rdi, rsp; and rsp, -16; call`, so
     // their body runs on a SysV-aligned stack (CP-46).
     const REALIGN: [u8; 8] = [0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8];
-    // The page fault's shim (`idt::page_fault_shim`) is longer: 88 bytes,
-    // padded to 96, with its Rust path at 0x49. If it grows past this window
-    // the check fails closed (no match).
-    const PF_SCAN: usize = 96;
+    // The page fault's shim (`idt::page_fault_shim`) is longer: 102 bytes
+    // (two registered user-access instructions to compare), with its Rust
+    // path at 0x57. If it grows past this window the check fails closed (no
+    // match).
+    const PF_SCAN: usize = 112;
     // #DF, #TS, #NP, #SS, #GP, #PF, #AC, and #CP, #VC, #SX should they ever
     // be installed (not-present gates are skipped below).
     const ERROR_CODE_VECTORS: u32 = (1 << 8)

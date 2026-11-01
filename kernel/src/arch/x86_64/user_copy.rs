@@ -10,9 +10,15 @@
 //! fault still halts. This is the shape of Redox's `arch_copy_to_user` (a
 //! RIP-ranged `rep movsb`) and FreeBSD's `pcb_onfault`, read for principle.
 //!
-//! The caller opens the SMAP window (`with_user_access`) and has checked the
-//! range is in the user half (`validate_user_buf`): this routine only makes
-//! the fault on a valid-looking address survivable. Kill-switch:
+//! `load_u32` is the second registered instruction: one aligned 4-byte load
+//! (`mov eax, [rdi]`), for the futex word's compare, which must read the word
+//! in one access, not byte by byte. It shares the fixup: its RCX holds 4 (the
+//! bytes not loaded) before the load, so a fault returns nonzero.
+//!
+//! The caller has checked the range is in the user half
+//! (`validate_user_buf`); `try_copy` and `try_load_u32` open the SMAP window
+//! (`with_user_access`) around the one access. This only makes the fault on
+//! a valid-looking address survivable. Kill-switch:
 //! `user-copy-fixup` (off: the shim does not look, and a fault halts, as
 //! before).
 
@@ -33,12 +39,26 @@ neo_user_copy_fixup:
     mov rax, rcx
     ret
 .size neo_user_copy, . - neo_user_copy
+.global neo_user_load_u32
+.type neo_user_load_u32, @function
+neo_user_load_u32:
+    mov ecx, 4
+.global neo_user_load_u32_insn
+neo_user_load_u32_insn:
+    mov eax, dword ptr [rdi]
+    mov dword ptr [rsi], eax
+    xor eax, eax
+    ret
+.size neo_user_load_u32, . - neo_user_load_u32
 .text
 "#
 );
 
 unsafe extern "C" {
     fn neo_user_copy(dst: *mut u8, src: *const u8, len: usize) -> usize;
+    // The futex is its only caller.
+    #[cfg(feature = "browser-runtime")]
+    fn neo_user_load_u32(src: *const u32, out: *mut u32) -> usize;
 }
 
 /// Copy `len` bytes from `src` to `dst`, one of them user memory. Returns
@@ -60,4 +80,33 @@ pub unsafe fn copy(dst: *mut u8, src: *const u8, len: usize) -> usize {
     // function that clobbers rcx, rsi, rdi and rax only, with DF clear
     // (the ABI's state at a call).
     unsafe { neo_user_copy(dst, src, len) }
+}
+
+/// `copy` inside its own SMAP window: `true` when all `len` bytes moved,
+/// `false` when a user page faulted (some prefix may have moved).
+///
+/// # Safety
+///
+/// As `copy`, except that the caller must NOT be inside `with_user_access`
+/// (this opens it; the window refuses to nest, CP-49).
+pub unsafe fn try_copy(dst: *mut u8, src: *const u8, len: usize) -> bool {
+    // SAFETY: per this function's contract.
+    crate::arch::x86_64::with_user_access(|| unsafe { copy(dst, src, len) }) == 0
+}
+
+/// Read the user word at `src` with one aligned 4-byte load, in its own SMAP
+/// window: `None` when its page faults.
+///
+/// # Safety
+///
+/// `src` is 4-aligned and in the user half (`validate_user_buf`); the caller
+/// is not inside `with_user_access`.
+#[cfg(feature = "browser-runtime")]
+pub unsafe fn try_load_u32(src: *const u32) -> Option<u32> {
+    let mut out = 0u32;
+    // SAFETY: per this function's contract; `neo_user_load_u32` is a SysV
+    // function that clobbers rcx and rax only and writes `out`.
+    let left =
+        crate::arch::x86_64::with_user_access(|| unsafe { neo_user_load_u32(src, &mut out) });
+    if left == 0 { Some(out) } else { None }
 }

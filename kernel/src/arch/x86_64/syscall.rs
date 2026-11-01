@@ -1551,10 +1551,39 @@ fn unpack_rights(packed: u16) -> CapRights {
 fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), i64> {
     // SAFETY: the kernel side is the caller's buffer of `len` bytes; the user
     // side is in the user half, and a fault on it is recovered (EFAULT).
-    let left = crate::arch::x86_64::with_user_access(|| unsafe {
-        crate::arch::x86_64::user_copy::copy(dst, src, len)
-    });
-    if left == 0 { Ok(()) } else { Err(EFAULT) }
+    if unsafe { crate::arch::x86_64::user_copy::try_copy(dst, src, len) } {
+        Ok(())
+    } else {
+        Err(EFAULT)
+    }
+}
+
+/// Check that every page of the user range `dst..dst+len` can be written,
+/// without changing it: one byte of each page is read and written back
+/// through the fault-tolerant copy. A syscall that consumes kernel state
+/// (a joined thread, a received datagram or input event) runs this BEFORE
+/// consuming, so a buffer that is unmapped or read-only is `EFAULT` with
+/// nothing taken. A sibling thread that unmaps the buffer after this check
+/// can still make the final copy fault (EFAULT then, after the consume): the
+/// loss is that process's own, from racing its own syscall.
+fn probe_user_writable(dst: *mut u8, len: usize) -> Result<(), i64> {
+    if len == 0 {
+        return Ok(());
+    }
+    let start = dst as u64;
+    let last = start + (len as u64 - 1);
+    let mut page = start;
+    loop {
+        let p = page as *mut u8;
+        let mut byte = 0u8;
+        user_copy(&mut byte, p, 1)?;
+        user_copy(p, &byte, 1)?;
+        let next = (page & !0xFFF) + 0x1000;
+        if next > last {
+            return Ok(());
+        }
+        page = next;
+    }
 }
 
 /// Read a `T` from user memory (any bytes are a valid `T`: plain data).
@@ -7339,14 +7368,31 @@ fn sys_futex_wait_impl(uaddr: u64, expected: u32, deadline_ns: u64) -> i64 {
             Ok(p) => p,
             Err(e) => return e,
         };
-        match pmap.translate(x86_64::VirtAddr::new(uaddr)) {
+        let paddr = match pmap.translate(x86_64::VirtAddr::new(uaddr)) {
             Some(pa) => pa.as_u64(),
             None => return EFAULT,
+        };
+        // `user_copy_fault` test only: the word's page goes away after the
+        // translation, as a sibling's unmap on another CPU could do, so the
+        // value re-check under the queue guard faults (CP-99) and must come
+        // back EFAULT instead of halting.
+        #[cfg(feature = "neo-test-user-copy-fault")]
+        if expected == USER_COPY_FAULT_FUTEX_UNMAP {
+            let page = x86_64::VirtAddr::new(uaddr & !0xFFF);
+            if pmap.unmap_user_range(page, 0x1000).is_err() {
+                return EINVAL;
+            }
         }
+        paddr
         // pmap Arc dropped here.
     };
     crate::sched::futex::wait(paddr, uaddr, expected, deadline_ns)
 }
+
+/// `user_copy_fault` test only: a `SYS_FUTEX_WAIT` whose `expected` is this
+/// unmaps the word's page between its translation and its value re-check.
+#[cfg(feature = "neo-test-user-copy-fault")]
+const USER_COPY_FAULT_FUTEX_UNMAP: u32 = 0xEFA0_17ED;
 
 /// SYS_FUTEX_WAKE(uaddr, count) → number of threads woken (PRESERVED — the
 /// rwlock's writer→reader fallback consumes it).
