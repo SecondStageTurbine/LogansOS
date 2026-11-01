@@ -265,8 +265,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           # The quick tier diffs against the base branch (gate-plan,
-          # --changed-from), so it needs history; a shard does not.
-          fetch-depth: ${{ matrix.shard == 'quick' && 0 || 1 }}
+          # --changed-from), so it needs history; a shard does not. Strings,
+          # not numbers: `&& 0 ||` would yield 1, since 0 is falsy here.
+          fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}
 
       - name: Prepare container cache directories
         run: mkdir -p .docker .home .rustup-home .cargo-home

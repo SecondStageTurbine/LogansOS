@@ -23474,8 +23474,12 @@ mod tests {
         let qemu_start = workflow.find("\n  neo-test:\n").expect("neo-test job");
         let qemu_end = workflow.find("\n  spdx-lint:\n").expect("SPDX job");
         let qemu = &workflow[qemu_start..qemu_end];
-        assert!(qemu.contains("needs: [nightly-skip, host-checks, product-build]"));
-        assert!(qemu.contains("timeout-minutes: 240"));
+        // OT-58 S2 (THINK 2.1, approved): the QEMU job waits only for the
+        // plan job, so the quick tier's critical path is its smoke job. The
+        // shards keep their 240-minute cold-cache headroom.
+        assert!(qemu.contains("needs: [nightly-skip]\n"));
+        assert!(qemu.contains("timeout-minutes: ${{ matrix.shard == 'quick' && 45 || 240 }}"));
+        assert!(qemu.contains("fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}"));
 
         let host_start = workflow
             .find("\n  host-checks:\n")
