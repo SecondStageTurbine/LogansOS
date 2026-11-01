@@ -381,6 +381,30 @@ jobs:
             neo \
             cargo neo-test --shard ${{ matrix.shard }}/4
 
+      # OT-58 S0: per-scenario timings (wall, QEMU, build) on the job's summary
+      # page and as an artifact, pass or fail. The job-log API returns only the
+      # last 5,000 lines of a shard's ~33k-line log, so this is where the
+      # numbers survive. Diagnostics only: never a test verdict.
+      - name: neo-test timing summary
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f target/neo-test/timings-summary.md ]; then
+            cat target/neo-test/timings-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload neo-test timings
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-test-timings-shard-${{ matrix.shard }}
+          path: |
+            target/neo-test/timings.tsv
+            target/neo-test/timings-summary.md
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Dump neo-test serial logs on failure
         if: failure()
         run: |
