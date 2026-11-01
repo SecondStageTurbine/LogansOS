@@ -40,7 +40,6 @@
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::arch::x86_64::timer::TICKS;
-use crate::arch::x86_64::with_user_access;
 use crate::errno::{EAGAIN, ESRCH, ETIMEDOUT};
 use crate::sync::IrqSafeMutex;
 
@@ -143,7 +142,11 @@ fn recompute_earliest(q: &FutexQueue) {
 /// Holds **no owned `Arc`/`Box` across the park** (CP-30) — the caller passes
 /// a `Copy` key and a borrow-free closure — so a thread force-zombified while
 /// parked here leaks nothing.
-pub fn wait_on_key<F: Fn() -> bool>(key: u64, should_park: F, deadline_ns: u64) -> i64 {
+pub fn wait_on_key<F: Fn() -> Result<bool, i64>>(
+    key: u64,
+    should_park: F,
+    deadline_ns: u64,
+) -> i64 {
     let deadline_ticks = deadline_ns_to_ticks(deadline_ns);
     // Read the pid BEFORE taking the queue guard: current_pid() takes the
     // scheduler lock, and while queue→scheduler is the documented order,
@@ -164,9 +167,12 @@ pub fn wait_on_key<F: Fn() -> bool>(key: u64, should_park: F, deadline_ns: u64) 
         return ESRCH;
     }
 
-    // The value/condition re-check under the queue guard (CP-8/CP-14).
-    if !should_park() {
-        return EAGAIN;
+    // The value/condition re-check under the queue guard (CP-8/CP-14). An
+    // `Err` (the user word's page faulted: CP-99) is returned as is, unparked.
+    match should_park() {
+        Ok(true) => {}
+        Ok(false) => return EAGAIN,
+        Err(e) => return e,
     }
 
     // Absolute deadline already reached (including the `0` = already-expired
@@ -275,14 +281,23 @@ fn late_park_hold(pid: super::process::ProcessId) {
 /// `Arc<Pmap>` is on this thread's stack across the block** (CP-30). The
 /// value re-check reads `uaddr` directly: this is the caller's thread, so its
 /// address space (CR3) is active and the read needs no Arc.
+///
+/// CP-99: the read is the registered aligned load (`user_copy::try_load_u32`,
+/// one 4-byte access, so the compare stays atomic). A sibling thread can
+/// unmap the word's page between the caller's translation and this read;
+/// the load then faults, the page-fault shim recovers it, and the wait
+/// returns `EFAULT` without parking (the queue guard drops normally).
 pub fn wait(paddr: u64, uaddr: u64, expected: u32, deadline_ns: u64) -> i64 {
     // should_park == "the word still holds `expected`" (unchanged ⇒ park).
     // SAFETY: `uaddr` is a validated, 4-aligned user address in the caller's
-    // live address space; SMAP is opened for exactly this read, under the
-    // queue guard (inside `wait_on_key`).
+    // live address space; the load opens SMAP for exactly this read, under
+    // the queue guard (inside `wait_on_key`), and a fault on it is recovered.
     wait_on_key(
         paddr,
-        || with_user_access(|| unsafe { (uaddr as *const u32).read_volatile() }) == expected,
+        || match unsafe { crate::arch::x86_64::user_copy::try_load_u32(uaddr as *const u32) } {
+            Some(v) => Ok(v == expected),
+            None => Err(crate::errno::EFAULT),
+        },
         deadline_ns,
     )
 }

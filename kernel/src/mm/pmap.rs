@@ -252,6 +252,7 @@ pub(crate) enum PmapLockSite {
     ProtectUser,
     MapBorrowedRegion,
     UnmapBorrowedRegion,
+    WithUserFrame,
 }
 
 impl PmapLockSite {
@@ -267,6 +268,7 @@ impl PmapLockSite {
             PmapLockSite::ProtectUser => "protect_user",
             PmapLockSite::MapBorrowedRegion => "map_borrowed_region",
             PmapLockSite::UnmapBorrowedRegion => "unmap_borrowed_region",
+            PmapLockSite::WithUserFrame => "with_user_frame",
         }
     }
 }
@@ -923,6 +925,10 @@ impl Pmap {
             return Err(PmapError::UserHalfOverlapsKernel);
         }
         let pages = pages_for_size(size)?;
+        // `user_copy_fault` test only: tell an IPC copy that is holding a
+        // frame of this range open that the unmap is now waiting for it.
+        #[cfg(feature = "neo-test-user-copy-fault")]
+        crate::ipc::copy_race_test::note_unmap_waiting();
         let mut g = self.lock_inner(PmapLockSite::UnmapUserRange);
         // First pass: verify every page is mapped (fail-closed, no partial).
         // `checked_page_va` uses checked-add + try_new so a range crossing the
@@ -1246,6 +1252,57 @@ impl Pmap {
     /// 0 (no PCID for Phase 1.4 — full TLB flush on every CR3 write).
     pub fn cr3(&self) -> (PhysFrame<Size4KiB>, Cr3Flags) {
         (self.pml4_frame, Cr3Flags::empty())
+    }
+
+    /// Run `f` on the HHDM address of the user byte at `va`, with this
+    /// Pmap's `inner` lock held from the translation until `f` returns, so
+    /// the frame can't be unmapped and freed under `f` (every path that frees
+    /// a mapped frame clears its PTE under `inner` first, CP-37). `None`
+    /// (and `f` not run) unless ring 3 could make the access
+    /// (`translate_user`). `f` must stay within `va`'s page, take no lock
+    /// that is taken under `inner`, and not block: `inner` is an
+    /// `IrqSafeMutex`. The IPC copy reaches its peer's buffer through this
+    /// (CP-99).
+    pub fn with_user_frame<R>(
+        &self,
+        va: VirtAddr,
+        write: bool,
+        f: impl FnOnce(*mut u8) -> R,
+    ) -> Option<R> {
+        let _g = self.lock_inner(PmapLockSite::WithUserFrame);
+        let phys = self.translate_user(va, write)?;
+        Some(f(phys_to_virt(phys).as_mut_ptr::<u8>()))
+    }
+
+    /// `translate`, for a user access: `None` unless every level of the walk
+    /// is present and user-accessible, the walk ends at a 4 KiB leaf, and,
+    /// when `write`, every level is writable, i.e. exactly when ring 3 could
+    /// make that access. The IPC copy resolves its peer's buffer through
+    /// this (CP-99): a peer's read-only page is `EFAULT`, not written through
+    /// the HHDM. Lock-free, like `translate` (ADR-006 §Q4).
+    pub fn translate_user(&self, va: VirtAddr, write: bool) -> Option<PhysAddr> {
+        let mut need = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        if write {
+            need |= PageTableFlags::WRITABLE;
+        }
+        let indices = page_indices(va);
+        // SAFETY: read-only walk through HHDM-mapped tables.
+        let mut current =
+            unsafe { &*(phys_to_virt(self.pml4_frame.start_address()).as_ptr::<PageTable>()) };
+        for level in 0..3 {
+            let entry = &current[indices[level] as usize];
+            let flags = entry.flags();
+            if !flags.contains(need) || flags.contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+            current = unsafe { &*(phys_to_virt(entry.addr()).as_ptr::<PageTable>()) };
+        }
+        let leaf = &current[indices[3] as usize];
+        if leaf.flags().contains(need) {
+            Some(leaf.addr() + (va.as_u64() & 0xFFF))
+        } else {
+            None
+        }
     }
 
     /// Walk the page tables and return the physical address that backs `va`,

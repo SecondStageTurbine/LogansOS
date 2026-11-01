@@ -4333,6 +4333,19 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // user-copy-fixup: syscalls whose user buffer is unmapped, crosses
+        // into an unmapped page, or is read-only return EFAULT, commit
+        // nothing (SYS_READ's offset, a join), and the kernel keeps running;
+        // futex, IPC and TLS legs too (CP-99). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-user-copy-fault-control (the
+        // page-fault shim's recovery off: the first fault halts).
+        name: "user_copy_fault",
+        feature: "neo-test-user-copy-fault",
+        user_feature: Some("user-copy-fault-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "model_load_cascade",
         feature: "neo-test-model-load-cascade",
         user_feature: Some("model-load-cascade"),
@@ -6327,7 +6340,7 @@ const FXSAVE_KERNEL_SCENARIOS: &[&str] = &["servo_closure_smoke"];
 
 /// The kernel's default features less `inference-preemptible` (see
 /// `kernel/Cargo.toml`'s `default`).
-const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim"];
+const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim", "user-copy-fixup"];
 
 fn build_test_kernel(scenario: TestScenario, mode: ScenarioBundleMode) -> Result<(), String> {
     let mut features = vec!["neo-test", scenario.feature];

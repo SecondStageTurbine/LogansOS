@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: CC-BY-4.0
+# PR #13 control evidence: user_copy_fault built with neo-test-user-copy-fault-control (the page-fault shim's recovery off).
+# Kernel and userland at 22c84090 (code head; only Plans/ and docs/ change after it), NEO_SMP=4, QEMU 8.2.2 TCG, 2026-11-01.
+# Command: NEO_SMP=4 NEO_TEST_ATTEMPTS=1 NEO_TEST_EXTRA_FEATURES=neo-test-user-copy-fault-control cargo xtask neo-test user_copy_fault
+# Expected and seen: the first leg's ring-0 write to the unmapped page (cr2 0x400000001000, cs 0x8, rflags AC set) halts: unexpected_trap trap=page_fault.
+limine: Loading executable `boot():/boot/kernel`...
+limine: Loading module `boot():/modules/neo-init`...
+limine: Loading module `boot():/modules/neo-worker`...
+limine: Loading module `boot():/modules/neo-shell`...
+limine: Loading module `boot():/modules/neo-arthur`...
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] gdt: cpu=0 loaded (tss_sel=0x30)
+[ kernel ] idt: loaded (18 exception handlers + timer at vector 32 + AHCI MSI at vector 240 + NVMe MSI/MSI-X at vector 241 + TLB shootdown IPI at vector 252 + resched IPI at vector 253)
+[ kernel ] per_cpu: PER_CPU[0] at 0xffffffffca5842c0 → IA32_GS_BASE (BSP)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffca495a40), SFMASK=IF|TF|AC|DF|NT)
+
+================================================
+  LOGANSOS  v0.0.1
+  build 22c84090f4ae81ea96f7fc2351-dirty | debug-assertions=on overflow-checks=on ub-checks=on
+  Intelligence as a kernel primitive.
+================================================
+
+[ kernel ] entered _kernel_start, long mode, ring 0 (limine rev: supported=true, actual=Some(3))
+[ kernel ] limine: executable phys=0x000000001d6b2000 virt=0xffffffffca249000
+[ kernel ] interrupts: enabled
+[ trap  ] BREAKPOINT (#BP) InterruptStackFrame { instruction_pointer: VirtAddr(0xffffffffca2d2351), code_segment: SegmentSelector { index: 1, rpl: Ring0 }, cpu_flags: RFlags(INTERRUPT_FLAG | SIGN_FLAG | PARITY_FLAG | 0x2), stack_pointer: VirtAddr(0xffff80001fed8b18), stack_segment: SegmentSelector { index: 2, rpl: Ring0 } }
+[ kernel ] breakpoint smoke test: returned cleanly
+[ kernel ] mm: hhdm_offset=0xffff800000000000, memmap_entries=27
+[ kernel ] mm: primary zone region=0x100000..0x17b61000 trimmed_base=0x4000000 trim_pages=16128 max_order=14
+[ kernel ] mm: usable physical memory = 378 MiB
+[ kernel ] mm: hhdm_phys_end=0x000000001fe97000
+[hhdm] required_end=0x1fe97000 exec=[0x1d6b2000,0x1de14000) modules=[module0=[0x1c00e000,0x1d69e278),module1=[0x1a9a1000,0x1c008ad0),module2=[0x19317000,0x1a99bc08),module3=[0x17b87000,0x19312bd8)] repair_pages=0
+[ kernel ] paging: CR4.PGE was not set; enabled it.
+[ kernel ] paging: GLOBAL fixup complete - 4K leaves: 6344, 2M leaves: 249, 1G leaves: 0
+[ kernel ] paging: sanity OK - kernel .text sample virt VirtAddr(0xffffffffca293530) -> phys PhysAddr(0x1d6fc530) (global=true)
+[ kernel ] heap: ready (4 MiB at VirtAddr(0xffffffffcac00000), 1024 pages mapped)
+[ kernel ] heap: smoke test passed (Box, Vec, String)
+[ kernel ] mm: kernel PML4 phys = 0x000000001fec8000
+[ kernel ] slab: initialized per-CPU state cpu=0 at 0xffffffffcac000d0
+[ kernel ] apic: mode=xAPIC
+[ kernel ] apic: cpu=0 lapic_id=0 enabled xAPIC (BSP, base_phys=0x00000000fee00000)
+[ kernel ] block: init (generic block-device substrate)
+[ kernel ] pci: AHCI controller 00:1f.2 vendor=0x8086 device=0x2922 class=0x010601
+[ kernel ] block: pci scan complete functions=6 virtio_blk=0 ahci=1 ahci_ok=0 nvme=0 nvme_ok=0 attached_devices=0
+[ kernel ] net: init (generic link-device substrate)
+[ kernel ] net: pci scan complete functions=6 virtio_net=0 virtio_net_ok=0 attached_devices=0
+[ kernel ] framebuffer: 1280x800 @ 32 bpp, pitch 5120 addr 0xffff8000fd000000
+[ kernel ] fs: init (Phase 3 BUILD-4B mount table; root testfs)
+[ kernel ] accel: registered device index=0 driver=accel_cpu name=accel_cpu0 device=0x80000000
+[ kernel ] accel: registered device index=1 driver=accel_sim name=accel_sim0 device=0x80000001
+[ kernel ] accel: init complete attached_devices=2
+[ kernel ] smp: Limine reports 4 cpu(s); bsp_lapic_id=0
+[ kernel ] smp: starting cpu_id=1 lapic_id=1
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffca584340 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=1 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[1] at 0xffffffffca584340 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=1 lapic_id=1 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffca495a40), SFMASK=IF|TF|AC|DF|NT)
+[ kernel ] slab: initialized per-CPU state cpu=1 at 0xffffffffcac00608
+[ kernel ] smp: AP cpu_id=1 ready (lapic_id=1, processor_id=1)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=1, bootstrap='ap-1-main', ready_queue empty)
+[ kernel ] smp: starting cpu_id=2 lapic_id=2
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffca5843c0 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=2 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[2] at 0xffffffffca5843c0 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=2 lapic_id=2 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffca495a40), SFMASK=IF|TF|AC|DF|NT)
+[ kernel ] slab: initialized per-CPU state cpu=2 at 0xffffffffcac091f8
+[ kernel ] smp: AP cpu_id=2 ready (lapic_id=2, processor_id=2)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=2, bootstrap='ap-2-main', ready_queue empty)
+[ kernel ] smp: starting cpu_id=3 lapic_id=3
+[ kernel ] cpu: FPU save=fxsave area=512 mask=0x3
+[ kernel ] cpu: SSE/SSE2 ready; SMEP=true SMAP=true
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffca584440 → IA32_GS_BASE (AP)
+[ kernel ] gdt: cpu=3 loaded (tss_sel=0x30)
+[ kernel ] per_cpu: PER_CPU[3] at 0xffffffffca584440 → IA32_GS_BASE (AP)
+[ kernel ] apic: cpu=3 lapic_id=3 enabled xAPIC (AP, base_phys=0x00000000fee00000)
+[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR=VirtAddr(0xffffffffca495a40), SFMASK=IF|TF|AC|DF|NT)
+[ kernel ] slab: initialized per-CPU state cpu=3 at 0xffffffffcac11df8
+[ kernel ] smp: AP cpu_id=3 ready (lapic_id=3, processor_id=3)
+[ kernel ] sched: AP per-CPU scheduler ready (cpu=3, bootstrap='ap-3-main', ready_queue empty)
+[ kernel ] smp: started 3 AP(s) (serialized bringup)
+[ kernel ] smp: AP ready-barrier cleared (3/3 AP(s) up)
+[ kernel ] sched: BSP per-CPU scheduler ready (cpu=0, bootstrap='main', ready_queue empty)
+[ kernel ] sched: preemption ready (cpu=0, PIT @ 100 Hz)
+[ kernel ] sched: spawned 'ping' (id=8)
+[ kernel ] sched: spawned 'pong' (id=9)
+[ kernel ] sched: spawned 'hog' (id=10)
+[ ping ] 1
+[ pong ] 1
+[ ping ] 2
+[ pong ] 2
+[ ping ] 3
+[ pong ] 3
+[ ping ] 4
+[ pong ] 4
+[ ping ] 5
+[ pong ] 5
+[ kernel ] sched: reaped 'ping' (id=8)
+[ kernel ] sched: reaped 'pong' (id=9)
+[ hog  ] preempted at least 5 ticks (start=1, now=7)
+[ hog  ] HOG_TRIGGER seen, exiting
+[ kernel ] sched: reaped 'hog' (id=10)
+[ kernel ] sched: smoke test passed (5 ping, 5 pong, hog reaped, ticks=7)
+NEO_TEST/1 event=BEGIN name=user_copy_fault phase=dispatch
+[ kernel ] elf: neo-init module at 0xffff80001c00e000 size=23659128 bytes
+[ frame ] phase=baseline-pre-spawn used=1028 delta=+1028
+[ kernel ] elf: loaded entry=0x0000000000404b70 segments=3
+[ kernel ] sched: enqueued user thread (id=11)
+[ kernel ] proc: spawned 'neo-init' (pid=1) entry=0x0000000000404b70 user_rsp=0x00007fffffffeff8 handles_inherited=1
+[ frame ] phase=post-spawn used=1077 delta=+49
+[ kernel ] proc: neo-init spawned with pid=1
+[ trap  ] PAGE_FAULT (#PF) cr2=0x0000400000001000
+[ trap  ] PAGE_FAULT err = PageFaultErrorCode(CAUSED_BY_WRITE)
+[ trap  ] PAGE_FAULT rip=0xffffffffca2db9aa cs=0x8 rflags=0x40002 rsp=0xffffffffcac32f48 ss=0x10
+NEO_TEST/1 event=FAIL name=user_copy_fault reason=unexpected_trap trap=page_fault

@@ -250,6 +250,32 @@ impl Socket {
         self.recv_from(out).map(|(n, _src)| n)
     }
 
+    /// Hand the front datagram (its first `max` bytes, and its source) to
+    /// `deliver` BEFORE it leaves the queue, under the socket lock: it is
+    /// dequeued only if `deliver` succeeds, else its error comes back as the
+    /// inner `Err` and the queue is as it was. `SYS_SOCKET_RECV` and
+    /// `SYS_SOCKET_RECVFROM` deliver to the user buffers here (CP-99).
+    /// `deliver` must not block or take this socket's lock.
+    pub fn recv_from_with<E>(
+        &self,
+        max: usize,
+        deliver: impl FnOnce(&[u8], SocketAddr) -> Result<(), E>,
+    ) -> Result<Result<usize, E>, SocketError> {
+        if max == 0 {
+            return Err(SocketError::Invalid);
+        }
+        let mut inner = self.inner.lock();
+        let Some(datagram) = inner.rx_queue.front() else {
+            return Err(SocketError::WouldBlock);
+        };
+        let n = core::cmp::min(max, datagram.data.len());
+        if let Err(e) = deliver(&datagram.data[..n], datagram.src) {
+            return Ok(Err(e));
+        }
+        inner.rx_queue.pop_front();
+        Ok(Ok(n))
+    }
+
     pub fn recv_from(&self, out: &mut [u8]) -> Result<(usize, SocketAddr), SocketError> {
         if out.is_empty() {
             return Err(SocketError::Invalid);
