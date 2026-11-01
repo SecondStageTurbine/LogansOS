@@ -60,3 +60,5 @@ RELAY 239 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l1d-coreutils-s
 RELAY 240 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l1b-kibi-survey-dexter.md | Section "Relay 240" (L1b kibi survey THINK; RETURN `Plans/RETURN-2026-11-01-l1b-kibi-survey-dexter.md`)
 RELAY 241 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-recheck-241-pr13.md | Section "Relay 241" (#13 narrow re-check; RETURN `Plans/RETURN-2026-11-01-pr13-recheck-chad.md`)
 RELAY 242 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-recheck-242-pr31.md | Section "Relay 242" (#31 re-check; RETURN `Plans/RETURN-2026-11-01-pr31-recheck-dexter.md`)
+RELAY 243 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-recheck-243-244.md | Section 243 (#16 re-check; RETURN `Plans/RETURN-2026-11-01-pr16-recheck-janus.md`)
+RELAY 244 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-recheck-243-244.md | Section 244 (#6 re-check; RETURN `Plans/RETURN-2026-11-01-pr6-recheck-janus.md`)
