@@ -44,6 +44,33 @@ What this shows:
      the seats. **So the first build slice is to record timings in a form that survives log truncation** (section 5,
      S0). This is the synthesis's own §3 rule: measure before tuning.
 
+### 1.1 Measured: the full suite on hosted runners (S0, run 41267613561, 2026-11-01)
+
+S0 (#32) prints every scenario's wall, QEMU and build time at the end of each shard. Its second gate gave the first
+complete table: 449 scenarios, and every one ran. Shard 3's `neofs_large_write` timed out 4 × 180 s; it passes in
+156 s, and #32 raises its limit.
+
+| What | Measured |
+|---|---|
+| Whole suite, scenario time only | 307 min (shards 75 / 89 / 65 / 77 min) |
+| Median scenario | 13.8 s: about 9 s build, 4-5 s QEMU |
+| The 5 slowest | 90 min of the 307: `install_stop_finish` 1,839 s, `login_settings_cut` 1,227 s (71 boots), `login_cut_steps` 1,065 s (48 boots), `login_arthur_permission` 541 s, `install_console` 509 s |
+| The 24-scenario smoke list | 352 s in total; slowest `wait_any_core` at 34 s. Every candidate meets the 20 s QEMU cost rule. |
+
+What a partition on measured times (longest first, onto the lightest shard) would give, scenario time only:
+
+| Shards (K) | Largest shard |
+|---|---|
+| 4 | 77 min (today's split: 89) |
+| 6 | 51 min |
+| 8 | 38 min |
+
+Past K = 8, `install_stop_finish` alone (31 min) is the floor, so the next lever is that scenario, not more shards.
+
+So the quick tier's smoke job is about 6 minutes of scenarios plus about 5 of setup. K = 6 is about 51 minutes plus
+setup, in 6 + 4 = 10 jobs; K = 8 is about 38 minutes, in 12 jobs. With seats running quick tiers alongside, K = 6 still
+looks like the right default. S3 will make the partition use these measured times.
+
 ## 2. The two tiers
 
 ### 2.1 Quick tier: every PR, 4 jobs
