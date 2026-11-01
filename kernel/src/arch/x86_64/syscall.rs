@@ -7758,16 +7758,21 @@ fn sys_thread_exit_impl(code: i32) -> i64 {
 fn sys_thread_join_impl(tid: u64, exit_out: *mut i32) -> i64 {
     use crate::sched::process::WAIT_EXITED_TAG;
 
-    // CP-99: probe the status word before the join consumes the exit record,
-    // so an unmapped or read-only pointer is EFAULT with the thread still
-    // joinable.
     if !exit_out.is_null()
         && let Err(e) = validate_user_buf(exit_out as u64, core::mem::size_of::<i32>())
-            .and_then(|()| probe_user_writable(exit_out.cast(), core::mem::size_of::<i32>()))
     {
         return e;
     }
-    let ret = crate::sched::process::thread_join_for_current(tid);
+    // CP-99: the status is written while the join still holds the exit
+    // record, before collecting it; a write that faults is EFAULT and leaves
+    // the thread joinable (`thread_join_for_current`).
+    let ret = crate::sched::process::thread_join_for_current(tid, |code| {
+        if exit_out.is_null() {
+            Ok(())
+        } else {
+            write_user(exit_out, code)
+        }
+    });
     if ret < 0 {
         return ret;
     }
@@ -7775,12 +7780,6 @@ fn sys_thread_join_impl(tid: u64, exit_out: *mut i32) -> i64 {
         // A woken join always carries the tag; anything else is a kernel
         // logic error surfaced as an errno, never a bogus success.
         return EINVAL;
-    }
-    let code = (ret & 0xFFFF_FFFF) as u32 as i32;
-    if !exit_out.is_null() {
-        if let Err(e) = write_user(exit_out, code) {
-            return e;
-        }
     }
     0
 }

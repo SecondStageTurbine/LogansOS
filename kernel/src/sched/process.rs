@@ -4941,7 +4941,16 @@ pub fn thread_exit_current(code: i32) -> ! {
 /// ENCODED exit status (`WAIT_EXITED_TAG | code`) or a negative errno; the
 /// syscall layer decodes and writes the user out-param.
 #[cfg(feature = "browser-runtime")]
-pub fn thread_join_for_current(target_tid: u64) -> i64 {
+///
+/// `deliver` receives the exit code under the registry lock, BEFORE the
+/// record is collected (CP-99): `SYS_THREAD_JOIN` writes the caller's status
+/// word there. If it fails (EFAULT), its error is returned and the record is
+/// left as it was, still done and joinable, so a faulting status pointer
+/// commits nothing.
+pub fn thread_join_for_current(
+    target_tid: u64,
+    deliver: impl FnOnce(i32) -> Result<(), i64>,
+) -> i64 {
     use crate::errno::{EINVAL, ESRCH};
 
     let pid = scheduler::current_pid();
@@ -4985,6 +4994,9 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
             // the created-stack unmap (blocker B) still happens exactly once.
             let code = rec.exit_code;
             let reaped = rec.reaped;
+            if let Err(e) = deliver(code) {
+                return e;
+            }
             if reaped {
                 reg.records.remove(pos);
             } else {
@@ -5031,6 +5043,11 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
     let mut reg = reg_lock.lock();
     if let Some(pos) = reg.records.iter().position(|r| r.tid == target_tid) {
         let code = reg.records[pos].exit_code;
+        if let Err(e) = deliver(code) {
+            // Un-claim: the record is done, so the next join collects it.
+            reg.records[pos].join_claimed = false;
+            return e;
+        }
         if reg.records[pos].reaped {
             reg.records.remove(pos);
         } else {
