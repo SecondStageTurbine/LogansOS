@@ -28147,6 +28147,26 @@ mod ipc_try_send {
         crate::sched::exit();
     }
 
+    /// PR #15 review item 1: the receiver's read-only destination page.
+    pub const RO_VA: u64 = 0x0000_0000_00b0_0000;
+    pub static RO_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+
+    /// CPU 1: one `recv` on side B into the receiver's read-only page.
+    pub extern "C" fn ro_receiver() -> ! {
+        let f = fixture();
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            f.channel.recv(
+                crate::ipc::EndpointSide::B,
+                RO_VA,
+                f.len,
+                f.receiver_pmap.clone(),
+            )
+        });
+        RO_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+
     /// CPU 1: one ordinary send from side B (the receiver page carries it).
     pub extern "C" fn sender() -> ! {
         let f = fixture();
@@ -28391,13 +28411,54 @@ fn run_ipc_try_send() -> ! {
     }
     serial_println!("TRYSEND recv_grant idle=eagain parked=one_handle");
 
+    // read-only destination (PR #15 review item 1): a receiver parked on a
+    // MAP_READ-only page gets EFAULT, and the page is not written.
+    let ro_frame = {
+        use x86_64::structures::paging::FrameAllocator;
+        crate::mm::with_frame_alloc(|fa| fa.allocate_frame())
+            .unwrap_or_else(|| fail("reason=try_send_ro_frame"))
+    };
+    let ro_base = crate::mm::phys_to_virt(ro_frame.start_address()).as_mut_ptr::<u8>();
+    unsafe { core::ptr::write_bytes(ro_base, 0x5A, 4096) };
+    f.receiver_pmap
+        .map_user(
+            x86_64::VirtAddr::new(RO_VA),
+            ro_frame,
+            crate::mm::pmap::flags::USER_DATA_RO,
+        )
+        .unwrap_or_else(|_| fail("reason=try_send_ro_map"));
+    write_rendezvous_payload(&f, 7, 0);
+    let t = crate::sched::thread::Thread::new("try-send-ro", ro_receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_ro");
+    }
+    spin_until("ro receiver parked", &|| {
+        f.channel.debug_endpoint_is_recv_blocked(B)
+    });
+    if try_send() != crate::errno::EFAULT {
+        fail("reason=try_send_ro_dest_not_efault");
+    }
+    spin_until("ro receiver done", &|| {
+        RO_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if RO_RESULT.load(Ordering::Acquire) != crate::errno::EFAULT {
+        fail("reason=try_send_ro_receiver_not_efault");
+    }
+    let untouched = unsafe { core::slice::from_raw_parts(ro_base, f.len) }
+        .iter()
+        .all(|&b| b == 0x5A);
+    if !untouched {
+        fail("reason=try_send_ro_dest_written");
+    }
+    serial_println!("TRYSEND ro_dest=efault untouched=yes");
+
     // closed.
     f.channel.close_peer(A, process::ProcessId(u32::MAX));
     if try_send() != crate::errno::EPIPE {
         fail("reason=try_send_closed_not_epipe");
     }
     pass(
-        "ipc_try_send idle=eagain parked=delivered race=exactly_once sending=eagain grant=one_or_none recv_grant=one_or_none closed=epipe",
+        "ipc_try_send idle=eagain parked=delivered race=exactly_once sending=eagain grant=one_or_none recv_grant=one_or_none ro_dest=efault closed=epipe",
     )
 }
 
