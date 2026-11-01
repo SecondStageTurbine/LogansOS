@@ -16547,6 +16547,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         for needle in [
             "[ stylo ] ok: Stylo built no thread pool (num_cpus is 1 here)",
             "[ stylo ] ok: the traversal styled <html>",
+            "[ stylo ] ok: the style thread ran to the end",
             "[ stylo ] pass",
         ] {
             require_serial_contains(

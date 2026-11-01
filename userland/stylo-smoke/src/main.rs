@@ -1278,9 +1278,32 @@ fn margin_left_px(style: &ComputedValues) -> Option<f32> {
     }
 }
 
+/// The stack the style traversal runs on. The process's main thread has the
+/// kernel's 64 KiB user stack, and Stylo's debug-build traversal overflowed
+/// it (a ring-3 #PF about 21 KiB below the stack's base, CI run 41276778648).
+/// Servo styles on threads with large stacks for the same reason; 8 MiB is
+/// half the kernel's per-thread ceiling (`MAX_MAP_REGION_SIZE`, 16 MiB).
+const STYLE_STACK: usize = 8 * 1024 * 1024;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     println!("{TAG} start: stylo 0.22.0 over html5ever 0.40.1 (vendored), sequential traversal");
+    let styled = std::thread::Builder::new()
+        .name("style".into())
+        .stack_size(STYLE_STACK)
+        .spawn(run)
+        .map(|t| t.join().is_ok());
+    check(
+        3,
+        "the style thread ran to the end",
+        matches!(styled, Ok(true)),
+    );
+    println!("{TAG} pass");
+    std::process::exit(0)
+}
+
+/// The checks, on the style thread. A failed check exits the whole process.
+fn run() {
     let tree = style_page();
     // Survey §3b item 1: num_cpus has no arm for our OS (it returns 1), so
     // Stylo's default builds no pool and styles on this thread. A change
@@ -1330,6 +1353,4 @@ pub extern "C" fn _start() -> ! {
                 && got_margin.is_some_and(|m| (m - margin_px).abs() < 0.01),
         );
     }
-    println!("{TAG} pass");
-    std::process::exit(0)
 }
