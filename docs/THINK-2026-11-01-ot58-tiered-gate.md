@@ -139,15 +139,29 @@ CLAUDE.md's pitfall-bank and cross-family-AAG rules. The path list:
 
 - **Scheduler, threads, kill, futex, wait:** `kernel/src/sched/{scheduler,thread,process,kthread,futex,wait_any,tick_sleep,mod}.rs`.
 - **Locks:** `kernel/src/sync/**`.
-- **TLB shootdown and address-space teardown:** `kernel/src/mm/{tlb_shootdown,pmap}.rs`.
-- **Per-CPU, SMP bring-up, entry paths, IPIs, timers:**
-  `kernel/src/arch/x86_64/{smp,per_cpu,context,idt,apic,apic_logic,timer,lapic_timer,syscall}.rs`.
+- **Memory, all of `kernel/src/mm/**`:**
+  - TLB shootdown and address-space teardown (`tlb_shootdown`, `pmap`);
+  - the buddy/frame allocator, named 10 times in the pitfall bank; CP-29 is a cross-CPU deadlock on its lock;
+  - the per-CPU slab (9 times) and the heap (35 times).
+  
+  The only files there that look non-core are pure `*_logic.rs` helpers, and the classification test lists them by
+  name.
+- **Per-CPU, SMP bring-up, entry paths, IPIs, timers, the SMAP window, FPU state:**
+  `kernel/src/arch/x86_64/{smp,per_cpu,context,idt,apic,apic_logic,timer,lapic_timer,syscall,mod,gdt,fpu}.rs`.
+  - `mod.rs` holds `with_user_access`, the SMAP window (CP-49).
+  - `gdt.rs` holds the per-CPU TSS.
+  - `fpu.rs` is the context-switch FPU save.
+- **Cross-CPU kernel work outside these directories:**
+  - `kernel/src/ai/par_matmul.rs` (threaded matmul, 3 bank entries);
+  - `kernel/src/ipc/mod.rs` (channel parks and wakes);
+  - `kernel/src/watchdog.rs`.
 - **The test harness itself and xtask's runner:** `kernel/src/test_harness.rs`, `tools/xtask/**`.
   - A change to these changes what every scenario *means*, so it is also gated alone.
   - Adding a scenario touches both files. So `gate-plan` treats a diff that touches them *only* in lines that add a
     scenario as a quick-tier change.
   - That is a narrow, host-tested pattern: a new `TestScenario { … }` block, its `cfg` arm and its `SCENARIO`
     const, and nothing else in either file.
+  - **Not built yet.** S1 treats every change to these two files as full-alone until the PM answers question 3.
 - **The workflow itself:** `.github/workflows/**`.
 
 `syscall.rs` is on the list because every syscall's entry, exit and SMAP window runs there. #13 is the example: it
@@ -155,8 +169,11 @@ would have been gated alone.
 
 **Fail-safe (synthesis C4):** a path `gate-plan` can't classify, or a diff it can't compute (no merge base, a
 shallow fetch), gives `full-alone`, never `quick`. An xtask host test pins the path list and asserts that every file
-under `kernel/src/sched`, `kernel/src/sync` and `kernel/src/arch/x86_64` is either on the core list or on an explicit
-non-core list. So a new file must be classified before CI goes green.
+under `kernel/src/sched`, `kernel/src/sync`, `kernel/src/mm` and `kernel/src/arch/x86_64` is either on the core list
+or on an explicit non-core list.
+
+The list was checked against `docs/concurrency-pitfalls.md`. I counted the kernel files each entry names, and every
+file named twice or more is on the core list. So a new file must be classified before CI goes green.
 
 ### 2.4 Full tier: on a batch, before landing
 
