@@ -9752,8 +9752,18 @@ const FULL_ALONE_PATHS: &[&str] = &[
     "kernel/src/sched/tick_sleep.rs",
     "kernel/src/sched/mod.rs",
     "kernel/src/sync/",
+    // All of mm/ except the pure logic helpers below: the buddy/frame
+    // allocator (CP-29), the per-CPU slab, the heap, TLB shootdown, pmap.
     "kernel/src/mm/tlb_shootdown.rs",
     "kernel/src/mm/pmap.rs",
+    "kernel/src/mm/frame.rs",
+    "kernel/src/mm/frame_reentry_guard.rs",
+    "kernel/src/mm/slab.rs",
+    "kernel/src/mm/heap.rs",
+    "kernel/src/mm/heap_policy.rs",
+    "kernel/src/mm/paging.rs",
+    "kernel/src/mm/inference_stack.rs",
+    "kernel/src/mm/mod.rs",
     "kernel/src/arch/x86_64/smp.rs",
     "kernel/src/arch/x86_64/per_cpu.rs",
     "kernel/src/arch/x86_64/context.rs",
@@ -9763,6 +9773,14 @@ const FULL_ALONE_PATHS: &[&str] = &[
     "kernel/src/arch/x86_64/timer.rs",
     "kernel/src/arch/x86_64/lapic_timer.rs",
     "kernel/src/arch/x86_64/syscall.rs",
+    // The SMAP window (`with_user_access`, CP-49), the per-CPU TSS, FPU state.
+    "kernel/src/arch/x86_64/mod.rs",
+    "kernel/src/arch/x86_64/gdt.rs",
+    "kernel/src/arch/x86_64/fpu.rs",
+    // Cross-CPU work outside the classified directories.
+    "kernel/src/ai/par_matmul.rs",
+    "kernel/src/ipc/mod.rs",
+    "kernel/src/watchdog.rs",
     "kernel/src/test_harness.rs",
     "tools/xtask/",
     ".github/workflows/",
@@ -9782,23 +9800,25 @@ const QUICK_OK_CORE_DIR_FILES: &[&str] = &[
     "kernel/src/sched/wake_trace.rs",
     "kernel/src/arch/x86_64/cpufreq.rs",
     "kernel/src/arch/x86_64/cpufreq_logic.rs",
-    "kernel/src/arch/x86_64/fpu.rs",
-    "kernel/src/arch/x86_64/gdt.rs",
     "kernel/src/arch/x86_64/ioapic.rs",
     "kernel/src/arch/x86_64/ioapic_logic.rs",
     "kernel/src/arch/x86_64/lapic_timer_logic.rs",
-    "kernel/src/arch/x86_64/mod.rs",
     "kernel/src/arch/x86_64/pic.rs",
     "kernel/src/arch/x86_64/pit.rs",
     "kernel/src/arch/x86_64/refclock.rs",
     "kernel/src/arch/x86_64/rtc.rs",
     "kernel/src/arch/x86_64/rtc_logic.rs",
+    "kernel/src/mm/hhdm_requirements.rs",
+    "kernel/src/mm/inference_stack_logic.rs",
+    "kernel/src/mm/mem_account_logic.rs",
+    "kernel/src/mm/module_reclaim_logic.rs",
 ];
 
 /// Directories whose every file must be on one of the two lists.
 const CLASSIFIED_DIRS: &[&str] = &[
     "kernel/src/sched/",
     "kernel/src/sync/",
+    "kernel/src/mm/",
     "kernel/src/arch/x86_64/",
 ];
 
