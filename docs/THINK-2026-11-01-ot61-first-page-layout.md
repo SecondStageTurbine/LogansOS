@@ -160,6 +160,29 @@ narrow PAL seam. L2 is the deep one: the reflow driver (§3.2) is the least know
 satisfy layout's `unsafe` assumptions about node lifetimes (script keeps nodes alive in its GC; our host keeps them
 in an arena that outlives the reflow). Expect several gate cycles there.
 
+### 5.1 L0, first pass (local, 2026-11-01)
+
+A local probe built `servo-layout` 0.7.0's 52 direct dependencies other than `servo-script` (and not layout itself)
+for `x86_64-unknown-neoplutarch`: the overlay std, `-Z build-std`, crates.io sources, unpatched, `--keep-going`.
+378 crates started compiling. Nine failed, and everything above them was left unbuilt, so this is the **first
+layer** of answers, not the last:
+
+| Crate | First error | Already solved in our tree? | The fix it needs |
+|---|---|---|---|
+| `stylo` 0.22.0 | `PlatformThreadHandle` undefined | **Yes**: #4's patched copy | none |
+| `wr_glyph_rasterizer` 0.70.1 | no `platform::font` for our target | **Yes**: #25's patched copy (a `neoplutarch` font backend) | none |
+| `getrandom` 0.4.3 and 0.2.17 | "target is not supported" | No | Its documented custom backend over our entropy call (a narrow entropy seam, which ADR-078 allows) |
+| `mio` 1.2.4 | no `sys` backend (47 errors) | No | Async sockets for `tokio`. The content process has no dial capability, so either the `tokio` features layout's crates enable leave out `net`, or a target-cfg stub of the socket half |
+| `socket2` 0.6.5 | no `sys` module | No | Same as `mio`: a stub, never a working socket |
+| `libz-sys` 1.1.31 | `libc::off_t` missing; no zlib found | No | Build its bundled zlib (the `static` feature) with an `off_t` for our `libc`, or route `fontsan`/`freetype-sys` to `miniz_oxide` (Lane 2a) |
+| `servo-allocator` 0.7.0 | `libc::{malloc, free, realloc}` missing | No | A target-cfg arm on std's allocator (upstream's own non-jemalloc path) |
+| `surfman` 0.14.0 | no platform `default` module | No | A target-cfg stub: SWGL answers GL (#22), and surfman's contexts are never created |
+
+`harfbuzz-sys` (C++) built for our target unchanged. `freetype-sys` and `fontsan` sit behind `libz-sys`, and
+`tokio`, `ipc-channel` and the `servo-*` traits crates sit behind `mio`/`socket2`/`getrandom`, so they are the
+probe's second layer. **None of the first layer needs a layout or DOM change**: each is a provider seam (entropy,
+sockets, allocator, GL context, zlib) of the kind ADR-078 §2.1 allows, or is already patched by #4/#25.
+
 ## 6. What would prove this wrong
 
 - **§1's answer:** a `servo-layout` 0.7.0 build with `servo-script` removed that compiles without the patch. The
@@ -168,6 +191,7 @@ in an arena that outlives the reflow). Expect several gate cycles there.
   module (layout calling a `ServoLayoutNode` inherent method that isn't in the traits, beyond `new`), then A is a
   bigger fork than stated here, and the recommendation goes back to J.c. with the diff.
 - **The closure numbers:** they are for x86_64 Linux. L0 reports the real count for our target.
+- **§5.1's "provider seams only":** if L0's second layer (`tokio`, `ipc-channel`, the `servo-*` traits crates) needs a change to a type layout passes around, not just a stub of a provider, the claim fails and the fix list grows.
 
 ## 7. Prior-art survey (the 2026-10-27 rule)
 
