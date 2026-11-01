@@ -58,3 +58,4 @@ RELAY 237 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-think-reviews-2
 RELAY 238 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-review-238-pr30.md | Section "Relay 238" (#30 review; RETURN `Plans/RETURN-2026-11-01-pr30-msc-bind-review-jarvis.md`)
 RELAY 239 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l1d-coreutils-survey-dexter.md | Section "Relay 239" (L1d survey THINK; RETURN `Plans/RETURN-2026-11-01-l1d-coreutils-survey-dexter.md`)
 RELAY 240 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-l1b-kibi-survey-dexter.md | Section "Relay 240" (L1b kibi survey THINK; RETURN `Plans/RETURN-2026-11-01-l1b-kibi-survey-dexter.md`)
+RELAY 241 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-recheck-241-pr13.md | Section "Relay 241" (#13 narrow re-check; RETURN `Plans/RETURN-2026-11-01-pr13-recheck-chad.md`)
