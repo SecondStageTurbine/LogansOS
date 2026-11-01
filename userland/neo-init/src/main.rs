@@ -10411,6 +10411,51 @@ mod user_copy_fault_tests {
         let _ = sys_tcp_close(tcp);
         say(b"[ user-copy ] tls: read-only, half read-only key -> EFAULT, key kept\n");
 
+        // SYS_SOCKET_RECV / SYS_SOCKET_RECVFROM: the datagram is copied out
+        // before it leaves the queue, so an unmapped or read-only buffer (or
+        // a read-only address buffer) is EFAULT and the datagram is still
+        // there for the next receive.
+        let udp =
+            libneo::sys_socket_create(libneo::AF_INET, libneo::SOCK_DGRAM).map_err(|_| 120)?;
+        let here = SockAddrIn::new_loopback(7021);
+        if libneo::sys_socket_bind_in(udp, &here) != 0 {
+            return Err(121);
+        }
+        let dgram = *b"keep-me!";
+        if libneo::sys_socket_sendto(udp, &dgram, &SockAddr::Inet(here)) != dgram.len() as i64 {
+            return Err(122);
+        }
+        let recv = |buf: u64| unsafe {
+            raw4(
+                libneo::SYS_SOCKET_RECV,
+                udp.0 as u64,
+                buf,
+                dgram.len() as u64,
+                0,
+            )
+        };
+        expect_efault(recv(hole as u64), 123)?;
+        expect_efault(recv(ro as u64), 124)?;
+        let mut got = [0u8; 8];
+        let mut addr_len = 16usize;
+        let r = unsafe {
+            libneo::raw6(
+                libneo::SYS_SOCKET_RECVFROM,
+                udp.0 as u64,
+                got.as_mut_ptr() as u64,
+                got.len() as u64,
+                0,
+                ro as u64,
+                &mut addr_len as *mut usize as u64,
+            )
+        };
+        expect_efault(r, 125)?;
+        if recv(got.as_mut_ptr() as u64) != dgram.len() as i64 || got != dgram {
+            return Err(126);
+        }
+        let _ = libneo::sys_socket_close(udp);
+        say(b"[ user-copy ] udp recv: unmapped, read-only, read-only address -> EFAULT, datagram kept\n");
+
         // Still serving: a well-formed call works.
         let mut record = [0u8; 16];
         let r = unsafe {
