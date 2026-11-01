@@ -1423,12 +1423,52 @@ fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Ha
         Ok(()) => {
             stage_b_log_line(b"DESKTOP arthur probe app opened");
             surface.write_text(b"I opened the probe app.");
+            #[cfg(feature = "atrium-apps-arthur-flood")]
+            arthur_flood(surface);
         }
         Err(_) => {
             stage_b_log_line(b"DESKTOP arthur probe app refused");
             surface.write_text(b"I could not open the probe app.");
         }
     }
+}
+
+/// PR #15 review item 3 boot test: commit back to back for `FLOOD_NS`, each
+/// commit a request the WM must serve and reply to, so a request of Arthur's
+/// is ready at nearly every poll. The probe app (in front) still gets its keys.
+#[cfg(feature = "atrium-apps-arthur-flood")]
+fn arthur_flood(surface: &mut showcase_surface::ArthurSurface) {
+    const FLOOD_NS: u64 = 10_000_000_000;
+    let now = || libneo::sys_clock_gettime(libneo::CLOCK_MONOTONIC).unwrap_or(u64::MAX);
+    let until = now().saturating_add(FLOOD_NS);
+    let mut commits = 0u64;
+    while now() < until {
+        if surface.commit_next().is_err() {
+            break;
+        }
+        commits += 1;
+    }
+    let mut line = [0u8; 64];
+    let head = b"DESKTOP arthur flood done commits=";
+    line[..head.len()].copy_from_slice(head);
+    let mut len = head.len();
+    let mut digits = [0u8; 20];
+    let mut n = commits;
+    let mut d = 0;
+    loop {
+        digits[d] = b'0' + (n % 10) as u8;
+        d += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    while d > 0 {
+        d -= 1;
+        line[len] = digits[d];
+        len += 1;
+    }
+    stage_b_log_line(&line[..len]);
 }
 
 /// DS-1c: the first token Arthur's Lens requests count up from.

@@ -216,6 +216,11 @@ const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_
 const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
 const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
 const DESKTOP_APPS_DROP_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_drop_boot.ppm";
+const DESKTOP_APPS_HANDOFF_DEATH_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_apps_handoff_death_boot.ppm";
+const DESKTOP_APPS_REUSE_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_reuse_boot.ppm";
+const DESKTOP_APPS_FLOOD_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_flood_boot.ppm";
+const DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_grab_boot.ppm";
 const DESKTOP_CLOCK_BOOT_MID_REL: &str = "target/neo-test/desktop_clock_boot_mid.ppm";
 const V1_CONSOLE_LIVENESS_CAPTURE_REL: &str = "target/neo-test/v1_console_liveness.ppm";
 
@@ -589,6 +594,78 @@ const DESKTOP_APPS_DROP_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP apps front client=1 via=launch", b"a"),
     step(b"DESKTOP apps front client=0 via=client-ended", b"again\n"),
 ];
+/// PR #15 review item 2, a client dead mid-handoff: the probe app exits on
+/// the handoff's `K`, after the route was swapped to it. The route and the
+/// front go back to Arthur, whose next line is exactly `again` (with the
+/// route left on the dead client, his keys would never arrive).
+const DESKTOP_APPS_HANDOFF_DEATH_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(
+        b"DESKTOP apps front client=0 via=handoff-failed",
+        b"again\n",
+    ),
+];
+/// PR #15 review item 2, slot reuse: the probe app exits after its first key
+/// (exit 7), is reaped and released, and Arthur opens it again into the same
+/// slot, a new generation; its key reaches the new instance, which exits too.
+const DESKTOP_APPS_REUSE_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"a"),
+    step(
+        b"DESKTOP apps client ended client=1 value=7",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"b"),
+    step(b"DESKTOP apps client ended client=1 value=7", b"again\n"),
+];
+/// PR #15 review item 3, a flooding client: once the probe app is open,
+/// Arthur commits back to back (`atrium-apps-arthur-flood`). The probe app
+/// still gets its keys and Super+Tab is still served while he floods.
+const DESKTOP_APPS_FLOOD_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"ab"),
+    step(b"PROBEAPP key code=5 count=2", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP arthur flood done commits=", b"again\n"),
+];
+/// PR #15 review item 4, a held button across a front change and a death:
+/// a press in Arthur's client held while he opens the probe app (the move
+/// after the switch is consumed), then a press held on the probe app while
+/// its key ends it (the move after its death is consumed). Then `again`.
+const DESKTOP_APPS_GRAB_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP arthur answer composited round=1", &[0x03]),
+    step(
+        b"DESKTOP pointer forward client=arthur phase=down",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", &[0x05]),
+    step(
+        b"DESKTOP pointer grab consumed reason=front-changed",
+        &[0x04, 0x03],
+    ),
+    step(b"DESKTOP pointer forward client=arthur phase=down", b"a"),
+    step(b"DESKTOP apps front client=0 via=client-ended", &[0x05]),
+    step(
+        b"DESKTOP pointer grab consumed reason=front-changed",
+        b"\x04again\n",
+    ),
+];
 /// DI-1b resize: desktop_pointer_boot's script, then (after the clamped
 /// grab, the cursor at 332,462) to the moved frame's bottom-right corner
 /// handle: 7 × `mouse_move 124 0`, 3 × `mouse_move 0 124`, `mouse_move 6 0`
@@ -716,7 +793,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 30] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 34] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -844,6 +921,32 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 30] = [
         DESKTOP_APPS_DROP_BOOT_HID_STEPS,
         DESKTOP_APPS_DROP_BOOT_CAPTURE_REL,
         b"again\n",
+    ),
+    // PR #15 review: death mid-handoff, slot reuse, a flooding Arthur, and a
+    // held button across a front change and a death.
+    desktop(
+        "desktop_apps_handoff_death_boot",
+        DESKTOP_APPS_HANDOFF_DEATH_BOOT_HID_STEPS,
+        DESKTOP_APPS_HANDOFF_DEATH_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_reuse_boot",
+        DESKTOP_APPS_REUSE_BOOT_HID_STEPS,
+        DESKTOP_APPS_REUSE_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_flood_boot",
+        DESKTOP_APPS_FLOOD_BOOT_HID_STEPS,
+        DESKTOP_APPS_FLOOD_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_grab_boot",
+        DESKTOP_APPS_GRAB_BOOT_HID_STEPS,
+        DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL,
+        b"\x04again\n",
     ),
     // DS-1c: captured once the answer (and the Lens) is composited.
     DesktopScenario {
@@ -3203,6 +3306,42 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_apps_drop_boot",
         feature: "neo-test-desktop-apps-drop-boot",
         user_feature: Some("desktop-apps-drop-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 2: the probe app dies mid-handoff (after the
+        // route swap, before its discard ack); the route returns to Arthur.
+        name: "desktop_apps_handoff_death_boot",
+        feature: "neo-test-desktop-apps-handoff-death-boot",
+        user_feature: Some("desktop-apps-handoff-death-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 2: an ended client's handles are released (its
+        // stale activator refused) and its slot is reused, a new generation.
+        name: "desktop_apps_reuse_boot",
+        feature: "neo-test-desktop-apps-reuse-boot",
+        user_feature: Some("desktop-apps-reuse-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 3: Arthur floods commits; the probe app's keys
+        // and Super+Tab are still served.
+        name: "desktop_apps_flood_boot",
+        feature: "neo-test-desktop-apps-flood-boot",
+        user_feature: Some("desktop-apps-flood-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 4: a held button's grab is consumed when the
+        // front changes and when its client dies.
+        name: "desktop_apps_grab_boot",
+        feature: "neo-test-desktop-apps-grab-boot",
+        user_feature: Some("desktop-apps-grab-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -7010,7 +7149,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-fault-boot-test")
         | Some("desktop-apps-hang-boot-test")
         | Some("desktop-apps-stall-boot-test")
-        | Some("desktop-apps-drop-boot-test") => {
+        | Some("desktop-apps-drop-boot-test")
+        | Some("desktop-apps-handoff-death-boot-test")
+        | Some("desktop-apps-reuse-boot-test")
+        | Some("desktop-apps-flood-boot-test")
+        | Some("desktop-apps-grab-boot-test") => {
             vec!["atrium-apps", "desktop-home-boot-test"]
         }
         // M2: neo-init drives the encrypted scenario, so it needs the marker
@@ -7153,6 +7296,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
         Some("desktop-apps-drop-boot-test") => vec!["probe-app-drop-reply"],
+        Some("desktop-apps-handoff-death-boot-test") => vec!["probe-app-die-on-discard"],
+        Some("desktop-apps-reuse-boot-test") | Some("desktop-apps-grab-boot-test") => {
+            vec!["probe-app-exit-after-key"]
+        }
+        Some("desktop-apps-flood-boot-test") => vec!["probe-app"],
         // DS-1c: the worker is the Lens (and, with no handles, DS-1b's probe).
         Some("desktop-lens")
         | Some("desktop-lens-pointer")
@@ -7289,10 +7437,18 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-fault-boot-test")
         | Some("desktop-apps-hang-boot-test")
         | Some("desktop-apps-stall-boot-test")
-        | Some("desktop-apps-drop-boot-test") => vec![
+        | Some("desktop-apps-drop-boot-test")
+        | Some("desktop-apps-handoff-death-boot-test")
+        | Some("desktop-apps-reuse-boot-test")
+        | Some("desktop-apps-grab-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-probe",
+        ],
+        Some("desktop-apps-flood-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-arthur-flood",
         ],
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
@@ -17113,7 +17269,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             scenario,
             observed,
             &[
-                "DESKTOP apps client connected client=1 value=0",
+                "DESKTOP apps client connected client=1 value=1",
                 "DESKTOP apps front client=1 via=launch",
                 // Super+Tab while the WM owes the probe app a reply.
                 "DESKTOP apps front client=0 via=sak-tab",
@@ -17178,6 +17334,117 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    // PR #15 review item 2: a client dead mid-handoff leaves no route on it.
+    if scenario.name == "desktop_apps_handoff_death_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps client discard-failed client=1",
+                "DESKTOP apps front client=0 via=handoff-failed",
+                // His keys arrive: the route is his again.
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 2: a failed handoff rolls the route back to Arthur",
+        )?;
+        for needle in [
+            "PROBEAPP dying before discard ack",
+            "DESKTOP apps released client=1 closed=5 failed=0",
+            "DESKTOP apps stale activator client=1 refused=yes",
+            "DESKTOP apps client ended client=1 value=5",
+        ] {
+            require_serial_contains(scenario, observed, needle, "PR #15 item 2: handoff death")?;
+        }
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP apps front client=1",
+            "PR #15 item 2: the dead client never became the front",
+        )?;
+    }
+    // PR #15 review item 2: release, the stale handle, and slot reuse.
+    if scenario.name == "desktop_apps_reuse_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP apps released client=1 closed=5 failed=0",
+                "DESKTOP apps stale activator client=1 refused=yes",
+                "DESKTOP apps client ended client=1 value=7",
+                // The same slot, a new generation.
+                "DESKTOP apps client connected client=1 value=2",
+                "DESKTOP apps front client=1 via=launch",
+                "PROBEAPP key code=5 count=1",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP apps released client=1 closed=5 failed=0",
+                "DESKTOP apps stale activator client=1 refused=yes",
+                "DESKTOP apps client ended client=1 value=7",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 2: an ended client is released and its slot reused",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "refused=no",
+            "PR #15 item 2: a released activator must be stale",
+        )?;
+    }
+    // PR #15 review item 3: Arthur's flood starves nobody.
+    if scenario.name == "desktop_apps_flood_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps front client=1 via=launch",
+                "PROBEAPP key code=5 count=2",
+                // Served while he still floods.
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP arthur flood done commits=",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 3: a client's stream of requests starves no other client nor the SAK",
+        )?;
+        let serial = read_serial(observed)?;
+        let commits = serial
+            .split("DESKTOP arthur flood done commits=")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
+            })
+            .unwrap_or(0);
+        // Non-vacuity: he did flood.
+        if commits < 20 {
+            return Err(format!(
+                "`{}` Arthur's flood made only {commits} commits (want >= 20)",
+                scenario.name
+            ));
+        }
+    }
+    // PR #15 review item 4: a grab follows the front, not its press.
+    if scenario.name == "desktop_apps_grab_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP pointer forward client=arthur phase=down",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP pointer grab consumed reason=front-changed",
+                "DESKTOP pointer forward client=arthur phase=down",
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP pointer grab consumed reason=front-changed",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 4: a held button reaches only the client in front",
+        )?;
+    }
     if scenario.name == "desktop_apps_boot" || scenario.name == "desktop_apps_fault_boot" {
         let fault = scenario.name == "desktop_apps_fault_boot";
         let ended = if fault {
@@ -17191,7 +17458,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             &[
                 "DESKTOP launchcap minted client=arthur",
                 "DESKTOP arthur line=open probe app",
-                "DESKTOP apps client connected client=1 value=0",
+                "DESKTOP apps client connected client=1 value=1",
                 "DESKTOP apps front client=1 via=launch",
                 "PROBEAPP key code=4 count=1",
                 "DESKTOP apps front client=0",

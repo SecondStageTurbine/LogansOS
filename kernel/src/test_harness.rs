@@ -555,6 +555,14 @@ const SCENARIO: &str = "desktop_apps_hang_boot";
 const SCENARIO: &str = "desktop_apps_stall_boot";
 #[cfg(feature = "neo-test-desktop-apps-drop-boot")]
 const SCENARIO: &str = "desktop_apps_drop_boot";
+#[cfg(feature = "neo-test-desktop-apps-handoff-death-boot")]
+const SCENARIO: &str = "desktop_apps_handoff_death_boot";
+#[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
+const SCENARIO: &str = "desktop_apps_reuse_boot";
+#[cfg(feature = "neo-test-desktop-apps-flood-boot")]
+const SCENARIO: &str = "desktop_apps_flood_boot";
+#[cfg(feature = "neo-test-desktop-apps-grab-boot")]
+const SCENARIO: &str = "desktop_apps_grab_boot";
 /// DL-1: every desktop feature on — the Lens docked to a window that moves
 /// and resizes (same oracle, same Home end view).
 #[cfg(feature = "neo-test-desktop-full-boot")]
@@ -610,6 +618,15 @@ const DESKTOP_PASS: &str = "desktop_apps_hang_boot=ok view=home probe_app=never_
 const DESKTOP_PASS: &str = "desktop_apps_stall_boot=ok view=home probe_app=never_finishes_handshake launch=refused wm=live";
 #[cfg(feature = "neo-test-desktop-apps-drop-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_drop_boot=ok view=home probe_app=exits_before_reply ends=that_client_only front=back_to_arthur";
+#[cfg(feature = "neo-test-desktop-apps-handoff-death-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_handoff_death_boot=ok view=home probe_app=dies_mid_handoff route=back_to_arthur handles=released";
+#[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_reuse_boot=ok view=home slot=reused generation=new handles=released stale_activator=refused";
+#[cfg(feature = "neo-test-desktop-apps-flood-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_apps_flood_boot=ok view=home arthur=floods probe_app_keys=served sak_tab=served";
+#[cfg(feature = "neo-test-desktop-apps-grab-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_grab_boot=ok view=home grab=consumed_on_switch_and_death";
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const DESKTOP_PASS: &str = "desktop_pointer_boot=ok view=home scene=independent_oracle_digest sprite=hidden_on_home pointer=b_ref_forward sak=escape click=refocus_then_forward";
 #[cfg(feature = "neo-test-desktop-lens-fault-boot")]

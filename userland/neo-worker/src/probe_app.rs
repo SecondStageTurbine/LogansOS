@@ -209,6 +209,12 @@ pub fn run() -> i32 {
         };
         match got {
             1 if byte[0] == b'K' => {
+                // PR #15 review item 2 (test only): die mid-handoff, after
+                // the WM swapped the route to us and before our `D`.
+                if cfg!(feature = "probe-app-die-on-discard") {
+                    log_line(b"PROBEAPP dying before discard ack\n");
+                    return 5;
+                }
                 // Discard what the queue kept from before the turn (bounded:
                 // a focus queue holds at most 64 events).
                 let mut event = [0u8; INPUT_EVENT_V1_LEN];
