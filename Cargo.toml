@@ -34,6 +34,8 @@ members = [
     "tools/module-reclaim-logic-tests",
     "tools/install-claim-logic-tests",
     "tools/block-guard-logic-tests",
+    # L3u-1: USB mass storage (BOT + SCSI) logic, host KATs.
+    "tools/usb-msc-logic-tests",
     "tools/install-bundle-logic-tests",
     "tools/neofs-tree-logic-tests",
     "tools/install-state-logic-tests",
