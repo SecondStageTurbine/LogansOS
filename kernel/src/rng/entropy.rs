@@ -46,7 +46,10 @@ fn rdrand_256() -> Option<(u64, u64, u64, u64)> {
 /// Single 64-bit RDRAND draw with up to `RDRAND_MAX_RETRIES` attempts.
 ///
 /// SAFETY: `rdrand` is a CPU instruction that writes to the destination
-/// register and sets the carry flag on failure. No memory or stack access.
+/// register and sets the carry flag when the value is valid (Intel SDM Vol. 2,
+/// RDRAND: "CF=1 indicates that the data in the destination is valid";
+/// CF=0 means no data was available and the destination is zero). No memory
+/// or stack access.
 fn rdrand_u64() -> Option<u64> {
     for _ in 0..RDRAND_MAX_RETRIES {
         let val: u64;
@@ -57,15 +60,25 @@ fn rdrand_u64() -> Option<u64> {
                 "setc {cf}",
                 val = out(reg) val,
                 cf = out(reg_byte) cf,
-                options(nomem, nostack, preserves_flags)
+                // Not `preserves_flags`: RDRAND writes CF and clears the rest.
+                options(nomem, nostack)
             );
         }
-        if cf == 1 {
-            continue;
+        if rdrand_valid(cf) {
+            return Some(val);
         }
-        return Some(val);
     }
     None
+}
+
+/// Whether an RDRAND draw is usable, from its `setc` byte: CF=1 is a valid
+/// value, CF=0 an underflow to retry. This was inverted until the preview VM's
+/// boot check (the first CI boot of a non-`neo-test` kernel with `kernel-rng`;
+/// `neo-test` seeds the DRBG with a fixed seed) caught the product kernel
+/// panicking at `Csprng::init` under QEMU TCG, whose RDRAND sets CF=1.
+#[inline]
+const fn rdrand_valid(cf: u8) -> bool {
+    cf == 1
 }
 
 /// Timer-jitter sample: RDTSC with a variable-delay gap.
