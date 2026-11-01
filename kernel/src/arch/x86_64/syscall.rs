@@ -6988,7 +6988,7 @@ fn sys_close_impl(fd: u32) -> i64 {
         Err(e) => return e,
     };
     let removed = process::close_handle(&proc, fd, |h| {
-        matches!(h, Handle::File { .. } | Handle::Channel { .. })
+        matches!(h, Handle::File { .. } | Handle::Channel { .. }) || closes_object(h)
     });
     match removed {
         Ok(Handle::File { .. }) => 0,
@@ -7000,9 +7000,36 @@ fn sys_close_impl(fd: u32) -> i64 {
             channel.close_peer(side, crate::sched::current_pid());
             0
         }
-        Ok(_) => unreachable!(),
+        // `close-object-handles`: the handle is gone from the table; its
+        // object reference drops here, after `close_handle` released the
+        // table and CAP_GRAPH locks (a focus's route goes with its last Arc).
+        Ok(_) => 0,
         Err(e) => e,
     }
+}
+
+/// PR #15 review item 2: `SYS_CLOSE` also releases a buffer, an input-focus
+/// and a process handle, so a WM can let go of an ended client's handles.
+/// Off: only files and channels, exactly as before (EBADF for the rest).
+#[cfg(all(feature = "close-object-handles", feature = "atrium-compositor-g1"))]
+fn closes_object(h: &Handle) -> bool {
+    matches!(
+        h,
+        Handle::Buffer { .. } | Handle::InputFocus { .. } | Handle::Process { .. }
+    )
+}
+
+#[cfg(all(
+    feature = "close-object-handles",
+    not(feature = "atrium-compositor-g1")
+))]
+fn closes_object(h: &Handle) -> bool {
+    matches!(h, Handle::Process { .. })
+}
+
+#[cfg(not(feature = "close-object-handles"))]
+fn closes_object(_: &Handle) -> bool {
+    false
 }
 
 fn sys_fsync_impl(fd: u32) -> i64 {
