@@ -78,3 +78,6 @@ RELAY 257 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-recheck-257
 RELAY 258 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-review-258-pr43.md | Section "Relay 258" (#43 RDRAND review, priority; RETURN `Plans/RETURN-2026-11-01-pr43-rdrand-review-chad.md`)
 RELAY 259 | chad | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-01-relays-259-260.md | Section 259 (#41 re-check; RETURN `Plans/RETURN-2026-11-01-pr41-recheck-chad.md`)
 RELAY 260 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-relays-259-260.md | Section 260 (#45 quick-tier review; RETURN `Plans/RETURN-2026-11-01-pr45-quick-tier-review-dexter.md`)
+RELAY 261 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-relays-261-263.md | Section 261 (#15 re-check; RETURN `Plans/RETURN-2026-11-01-pr15-recheck-chad.md`)
+RELAY 262 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-relays-261-263.md | Section 262 (#16 re-check 3; RETURN `Plans/RETURN-2026-11-01-pr16-recheck3-janus.md`)
+RELAY 263 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-relays-261-263.md | Section 263 (#46 pipe step 1 review; RETURN `Plans/RETURN-2026-11-01-pr46-pipe-review-dexter.md`)
