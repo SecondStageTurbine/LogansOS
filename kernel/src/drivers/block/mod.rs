@@ -678,6 +678,63 @@ pub(crate) fn guard_allows_raw_write(ident: &BlockDeviceIdentity, lba: u64, len:
     guard.is_some_and(|g| g.write_range_allowed(lba, len))
 }
 
+/// What a registry slot holds after its device was unplugged (#30): the
+/// old name, and every request answered `NoDevice`.
+#[cfg(all(feature = "usb-storage", feature = "usb-hotplug"))]
+struct DetachedDevice {
+    identity: BlockDeviceIdentity,
+}
+
+#[cfg(all(feature = "usb-storage", feature = "usb-hotplug"))]
+impl BlockDevice for DetachedDevice {
+    fn identity(&self) -> &BlockDeviceIdentity {
+        &self.identity
+    }
+
+    fn geometry(&self) -> BlockGeometry {
+        BlockGeometry {
+            logical_block_size: 512,
+            physical_block_size: 512,
+            block_count: 0,
+        }
+    }
+
+    fn read_block(&self, _lba: u64, _buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        Err(BlockError::NoDevice)
+    }
+
+    fn write_block(&self, _lba: u64, _buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        Err(BlockError::NoDevice)
+    }
+}
+
+/// #30: the device registered at `index` is gone (a USB stick pulled). Its
+/// slot keeps its index (other indices don't move) but now holds a
+/// [`DetachedDevice`] named `detached`, so a lookup by driver no longer
+/// finds it and a new lookup by index gets `NoDevice`. Holders of the old
+/// device object are failed by the driver itself (`MscDisk`'s gone flag).
+#[cfg(all(feature = "usb-storage", feature = "usb-hotplug"))]
+pub fn unregister_device(index: usize) -> bool {
+    let mut registry = REGISTRY.lock();
+    let Some(slot) = registry.devices.get_mut(index) else {
+        return false;
+    };
+    let name = slot.identity().name;
+    *slot = Arc::new(DetachedDevice {
+        identity: BlockDeviceIdentity {
+            driver: "detached",
+            name,
+            pci_bdf: None,
+        },
+    });
+    serial_println!(
+        "[ kernel ] block: unregistered device index={} name={} (detached)",
+        index,
+        name
+    );
+    true
+}
+
 #[allow(dead_code)]
 pub fn get_device(index: usize) -> Option<Arc<dyn BlockDevice>> {
     REGISTRY.lock().devices.get(index).cloned()

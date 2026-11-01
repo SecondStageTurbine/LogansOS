@@ -34,6 +34,8 @@ neo-test-sys-generate-kv-persist-equivalence = []
 # check-cfg; the CB-2 endpoint-recovery logic compiles into the host oracle via
 # the `test` arm, not this feature.
 mt7601u = []
+# L3u-2: the same gate also names `usb-storage` (declared, never enabled here).
+usb-storage = []
 # Declared (never enabled here) so mounted neo-arthur agentic grammar cfgs are
 # known under check-cfg.
 arthur-real-vocab = []

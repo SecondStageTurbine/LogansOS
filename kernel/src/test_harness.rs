@@ -338,6 +338,8 @@ const SCENARIO: &str = "net_tick_retransmit";
 const SCENARIO: &str = "tcp_listen_bounds";
 #[cfg(feature = "neo-test-exit-codes-bounded")]
 const SCENARIO: &str = "exit_codes_bounded";
+#[cfg(feature = "neo-test-user-copy-fault")]
+const SCENARIO: &str = "user_copy_fault";
 #[cfg(feature = "neo-test-file-cap-derive-grant")]
 const SCENARIO: &str = "file_cap_derive_grant";
 #[cfg(feature = "neo-test-vault-phase-b")]
@@ -914,6 +916,12 @@ const SCENARIO: &str = "dma_arena_fence";
 const SCENARIO: &str = "vtd_fence";
 #[cfg(feature = "neo-test-graphics-vtd-domain")]
 const SCENARIO: &str = "graphics_vtd_domain";
+#[cfg(feature = "neo-test-usb-storage-read")]
+const SCENARIO: &str = "usb_storage_read";
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+const SCENARIO: &str = "usb_storage_unplug";
+#[cfg(feature = "neo-test-usb-storage-off")]
+const SCENARIO: &str = "usb_storage_off";
 #[cfg(feature = "neo-test-usb-enumerate")]
 const SCENARIO: &str = "usb_enumerate";
 #[cfg(feature = "neo-test-usb-storm")]
@@ -1295,6 +1303,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-tcp-listen-bounds",
     feature = "neo-test-exit-codes-bounded",
     feature = "neo-test-mount-authority",
+    feature = "neo-test-user-copy-fault",
     feature = "neo-test-vault-phase-b",
     feature = "neo-test-arthur-grant-revoke",
     feature = "neo-test-sys-wait-blocking",
@@ -1363,6 +1372,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-usb-hid-mouse",
     feature = "neo-test-usb-xhci-select",
     feature = "neo-test-usb-hotplug",
+    feature = "neo-test-usb-storage-unplug",
     feature = "neo-test-ps2-keyboard",
     feature = "neo-test-ps2-key-repeat",
     feature = "neo-test-rtl8125-absent",
@@ -1538,6 +1548,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-vtd-fence",
     feature = "neo-test-graphics-vtd-domain",
     feature = "neo-test-usb-enumerate",
+    feature = "neo-test-usb-storage-read",
+    feature = "neo-test-usb-storage-off",
     feature = "neo-test-usb-storm",
     feature = "neo-test-usb-baremetal-probe",
     feature = "neo-test-usb-ethernet",
@@ -1727,6 +1739,7 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-usb-hid-mouse",
         feature = "neo-test-usb-xhci-select",
         feature = "neo-test-usb-hotplug",
+        feature = "neo-test-usb-storage-unplug",
         feature = "neo-test-ps2-keyboard",
         feature = "neo-test-ps2-key-repeat",
         feature = "neo-test-rtl8125-absent",
@@ -1877,6 +1890,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-vtd-fence",
         feature = "neo-test-graphics-vtd-domain",
         feature = "neo-test-usb-enumerate",
+        feature = "neo-test-usb-storage-read",
+        feature = "neo-test-usb-storage-off",
         feature = "neo-test-usb-storm",
         feature = "neo-test-usb-baremetal-probe",
         feature = "neo-test-usb-ethernet",
@@ -3171,6 +3186,37 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
             exit_code,
             frames_before,
             frames_after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+
+    // user-copy-fixup: neo-init's syscalls with unmapped, page-crossing and
+    // read-only buffers each return EFAULT; reaching here at all means none
+    // of their faults halted the kernel.
+    #[cfg(feature = "neo-test-user-copy-fault")]
+    {
+        let exit_code = _ipc_smoke();
+        // CP-99: neo-init's parallel-unmap IPC leg. 7 = the hold ran (1), a
+        // sibling's unmap was seen waiting on the peer's lock (2), and the
+        // frame was still mapped when the copy finished (4).
+        let race = crate::ipc::copy_race_test::RESULT.load(Ordering::Acquire);
+        if exit_code == 0 && race != 7 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ipc_unmap_race result={}",
+                SCENARIO,
+                race
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+        if exit_code == 0 {
+            pass(
+                "user_copy_fault=ok unmapped=efault crossing=efault read_only=efault ipc_unmap_race=held kernel_alive=1",
+            );
+        }
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=user_copy_fault code={}",
+            SCENARIO,
+            exit_code
         );
         debug_exit(EXIT_FAILURE);
     }
@@ -4689,6 +4735,15 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-usb-enumerate")]
     run_usb_enumerate();
+
+    #[cfg(feature = "neo-test-usb-storage-read")]
+    run_usb_storage_read();
+
+    #[cfg(feature = "neo-test-usb-storage-off")]
+    run_usb_storage_off();
+
+    #[cfg(feature = "neo-test-usb-storage-unplug")]
+    run_usb_storage_unplug();
 
     #[cfg(feature = "neo-test-usb-storm")]
     run_usb_storm();
@@ -16575,6 +16630,255 @@ fn run_graphics_vtd_domain() -> ! {
 /// address fenced (admits > 0, refusals == 0 — the driver never even
 /// ATTEMPTED an out-of-arena address), the F4 command counters balanced,
 /// and MSI delivery observed (the F6 counted side).
+/// L3u-2: QEMU's `usb-storage` (Bulk-Only, 46f4:0001) holds the FAT32
+/// fixture. The driver binds it, its capacity is the image's, and FAT on it
+/// mounts as `deviceN` and reads back byte-exact (file, subdirectory, LFN);
+/// a write open is refused.
+#[cfg(feature = "neo-test-usb-storage-read")]
+fn run_usb_storage_read() -> ! {
+    let Some((index, device)) = crate::drivers::block::find_device_by_driver("usb-storage") else {
+        fail("reason=usb_storage_not_registered");
+    };
+    let g = device.geometry();
+    if g.logical_block_size != 512 || g.block_count != USB_STORAGE_FIXTURE_BLOCKS {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_storage_capacity block_len={} blocks={}",
+            SCENARIO,
+            g.logical_block_size,
+            g.block_count
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    // Boundary (U12, Chad's #20 review): the reported last LBA reads; one
+    // past it, and a two-block read that ends one past it, are refused
+    // before any command is sent.
+    {
+        use crate::drivers::block::{BlockError, DmaBuffer};
+        let one = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+        let two = DmaBuffer::alloc_in_arena(1024).unwrap_or_else(|_| fail("reason=alloc"));
+        let last = g.block_count - 1;
+        let at_last = device.read_block(last, core::slice::from_ref(&one));
+        let past = device.read_block(last + 1, core::slice::from_ref(&one));
+        let straddle = device.read_block(last, core::slice::from_ref(&two));
+        if at_last.is_err()
+            || past != Err(BlockError::InvalidRequest)
+            || straddle != Err(BlockError::InvalidRequest)
+        {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=usb_storage_boundary last={} at_last={:?} past={:?} straddle={:?}",
+                SCENARIO,
+                last,
+                at_last,
+                past,
+                straddle
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let source = alloc::format!("device{index}");
+    let req = mount4b_build_request_v1(3, &source, "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=usb_storage_mount_rc", rc as u64);
+    }
+    let entries = fat32_collect_dirents("/fat32");
+    fat32_expect_dirent(&entries, "hello.txt", 2);
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    fat32_expect_file_bytes("/fat32/long filename with spaces.txt", b"LFN test\n");
+    match crate::fs::open_root_temporary(
+        "/fat32/hello.txt",
+        crate::fs::OPEN_ROOT_TEMPORARY,
+        crate::fs::FileRights::WRITE,
+    ) {
+        Err(crate::fs::VfsError::InsufficientRights) => {}
+        Err(err) => neofs_2c_fail_vfs("usb_storage_write_open_wrong_error", err),
+        Ok(_) => fail("reason=usb_storage_write_open_allowed"),
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} device_index={} blocks={} block_len=512 last_lba=read past_last=refused source={} entries={} hello=match nested=match lfn=match write=refused",
+        SCENARIO,
+        index,
+        g.block_count,
+        source,
+        entries.len()
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// `usb_storage_unplug`: the device the reader thread reads, its reads that
+/// succeeded, and the error that ended it (0 = none yet; else 1 + the
+/// `BlockError` discriminant: NoDevice is 1).
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_DEVICE: spin::Once<alloc::sync::Arc<dyn crate::drivers::block::BlockDevice>> =
+    spin::Once::new();
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_READER_ERR: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+fn unplug_err_code(e: crate::drivers::block::BlockError) -> u64 {
+    use crate::drivers::block::BlockError as E;
+    match e {
+        E::NoDevice => 1,
+        E::Unsupported => 2,
+        E::InvalidRequest => 3,
+        E::Io => 4,
+        E::WriteRefused => 5,
+    }
+}
+
+/// The reader: reads block after block from the stick until a read fails,
+/// records that error, and exits. The stick is pulled while it runs, so one
+/// of its reads is in flight or next when the detach lands.
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+extern "C" fn usb_unplug_reader() -> ! {
+    let device = UNPLUG_DEVICE
+        .get()
+        .expect("reader started after the device");
+    let buffer = crate::drivers::block::DmaBuffer::alloc_in_arena(4096)
+        .unwrap_or_else(|_| fail("reason=unplug_reader_alloc"));
+    let mut lba = 0u64;
+    loop {
+        match device.read_block(lba, core::slice::from_ref(&buffer)) {
+            Ok(()) => {
+                UNPLUG_READS.fetch_add(1, Ordering::Release);
+                lba = (lba + 8) % 1024;
+            }
+            Err(e) => {
+                UNPLUG_READER_ERR.store(unplug_err_code(e), Ordering::Release);
+                crate::sched::exit();
+            }
+        }
+    }
+}
+
+/// #30 (Jarvis, relay 238): hot-unplug of a bound stick. xtask plugs a
+/// usb-storage stick into root port 2; it binds and registers. A held handle
+/// reads block 0, and a reader thread reads continuously. xtask then removes
+/// the stick. The port service must tell the driver: the reader's read fails
+/// (NoDevice) and the thread ends, the held handle's next read is NoDevice,
+/// the registry slot answers NoDevice and is named `detached`, and no
+/// `usb-storage` device is found any more.
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+fn run_usb_storage_unplug() -> ! {
+    use crate::drivers::block::{self, BlockError, DmaBuffer};
+    use crate::drivers::usb::{self, xhci};
+
+    fn wait_for(ticks: u64, mut done: impl FnMut() -> bool) -> bool {
+        let start = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
+        loop {
+            if done() {
+                return true;
+            }
+            let now = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
+            if now.saturating_sub(start) >= ticks {
+                return false;
+            }
+            usb::nap_ticks(5);
+        }
+    }
+
+    if block::find_device_by_driver("usb-storage").is_some() {
+        fail("reason=stick_bound_before_plug");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} msc-unplug=ready-for-plug",
+        SCENARIO
+    );
+    if !wait_for(3000, || {
+        block::find_device_by_driver("usb-storage").is_some()
+    }) {
+        fail("reason=stick_not_bound");
+    }
+    let Some((index, held)) = block::find_device_by_driver("usb-storage") else {
+        fail("reason=stick_not_bound");
+    };
+    let buffer = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+    if held.read_block(0, core::slice::from_ref(&buffer)).is_err() {
+        fail("reason=read_before_unplug_failed");
+    }
+    UNPLUG_DEVICE.call_once(|| held.clone());
+    crate::sched::scheduler::push_ready(crate::sched::thread::Thread::new(
+        "msc-unplug-reader",
+        usb_unplug_reader,
+    ));
+    if !wait_for(1000, || UNPLUG_READS.load(Ordering::Acquire) >= 3) {
+        fail("reason=reader_not_reading");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} msc-unplug=unplug-now",
+        SCENARIO
+    );
+    if !wait_for(3000, || xhci::hotplug::counters().2 >= 1) {
+        fail("reason=unplug_not_seen");
+    }
+    if !wait_for(1000, || UNPLUG_READER_ERR.load(Ordering::Acquire) != 0) {
+        fail("reason=reader_still_running_after_unplug");
+    }
+    let reader_err = UNPLUG_READER_ERR.load(Ordering::Acquire);
+    let reads = UNPLUG_READS.load(Ordering::Acquire);
+    let held_after = held.read_block(0, core::slice::from_ref(&buffer));
+    let by_index = block::get_device(index);
+    let index_after = by_index
+        .as_ref()
+        .map(|d| d.read_block(0, core::slice::from_ref(&buffer)));
+    let index_name = by_index.as_ref().map(|d| d.identity().driver);
+    let still_found = block::find_device_by_driver("usb-storage").is_some();
+    if reader_err != 1
+        || held_after != Err(BlockError::NoDevice)
+        || index_after != Some(Err(BlockError::NoDevice))
+        || index_name != Some("detached")
+        || still_found
+    {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=unplug_not_handled reader_err={} held_after={:?} index_after={:?} index_driver={:?} still_found={}",
+            SCENARIO,
+            reader_err,
+            held_after,
+            index_after,
+            index_name,
+            still_found
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} usb_storage_unplug=ok index={} reads_before={} reader=NoDevice held=NoDevice registry=detached lookup=none",
+        SCENARIO,
+        index,
+        reads
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// The FAT32 fixture image's size in 512-byte blocks (xtask's 64 MiB).
+#[cfg(feature = "neo-test-usb-storage-read")]
+const USB_STORAGE_FIXTURE_BLOCKS: u64 = 64 * 1024 * 1024 / 512;
+
+/// L3u-2 kill-switch: built without `usb-storage`, the same stick enumerates
+/// (46f4:0001, interface class 8) and no block device is registered for it.
+#[cfg(feature = "neo-test-usb-storage-off")]
+fn run_usb_storage_off() -> ! {
+    let devices = crate::drivers::usb::devices();
+    if !devices
+        .iter()
+        .any(|d| (d.vendor_id, d.product_id) == (0x46f4, 0x0001))
+    {
+        fail("reason=usb_storage_off_stick_not_enumerated");
+    }
+    if crate::drivers::block::find_device_by_driver("usb-storage").is_some() {
+        fail("reason=usb_storage_off_bound");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} usb_storage=off stick_enumerated=1 block_device=none",
+        SCENARIO
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 #[cfg(feature = "neo-test-usb-enumerate")]
 fn run_usb_enumerate() -> ! {
     use crate::drivers::dma_arena;
@@ -41548,6 +41852,11 @@ fn run_exception_entry_flags() -> ! {
     // Error-code vectors continue with `mov rdi, rsp; and rsp, -16; call`, so
     // their body runs on a SysV-aligned stack (CP-46).
     const REALIGN: [u8; 8] = [0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8];
+    // The page fault's shim (`idt::page_fault_shim`) is longer: 102 bytes
+    // (two registered user-access instructions to compare), with its Rust
+    // path at 0x57. If it grows past this window the check fails closed (no
+    // match).
+    const PF_SCAN: usize = 112;
     // #DF, #TS, #NP, #SS, #GP, #PF, #AC, and #CP, #VC, #SX should they ever
     // be installed (not-present gates are skipped below).
     const ERROR_CODE_VECTORS: u32 = (1 << 8)
@@ -41721,15 +42030,32 @@ fn run_exception_entry_flags() -> ! {
             unmasked |= 1 << vector;
         }
         if ERROR_CODE_VECTORS & (1 << vector) != 0 {
-            // SAFETY: as above; the shim is longer than MASK + REALIGN.
-            let tail = unsafe {
-                core::slice::from_raw_parts(
-                    (handler as usize + MASK.len()) as *const u8,
-                    REALIGN.len(),
-                )
-            };
-            if tail != REALIGN {
-                unaligned |= 1 << vector;
+            let page_fault_shim = crate::arch::x86_64::idt::page_fault_shim as *const () as u64;
+            if vector == 14 && handler == page_fault_shim {
+                // CP-99: the page fault's shim checks for a user-copy fault
+                // between the mask and the realignment, so its Rust path
+                // (`pop rax`, then the realignment and the call) comes later.
+                // It must appear exactly once in the shim.
+                // SAFETY: as above; PF_SCAN bytes from the shim are kernel text.
+                let body = unsafe { core::slice::from_raw_parts(handler as *const u8, PF_SCAN) };
+                let hits = body[MASK.len()..]
+                    .windows(1 + REALIGN.len())
+                    .filter(|w| w[0] == 0x58 && w[1..] == REALIGN)
+                    .count();
+                if hits != 1 {
+                    unaligned |= 1 << vector;
+                }
+            } else {
+                // SAFETY: as above; the shim is longer than MASK + REALIGN.
+                let tail = unsafe {
+                    core::slice::from_raw_parts(
+                        (handler as usize + MASK.len()) as *const u8,
+                        REALIGN.len(),
+                    )
+                };
+                if tail != REALIGN {
+                    unaligned |= 1 << vector;
+                }
             }
         }
         // Installing a shim resets the gate options, so the IST slots that
