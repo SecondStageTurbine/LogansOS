@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MIT
+# Vendored copy of image-rs/image-png at b2f10c6a7e3127d4aaf231f3eae731a33e6eb0bc
+# (2026-09-23; crate 0.18.1). Upstream licence kept: LICENSE-MIT, LICENSE-APACHE;
+# this copy is used under MIT. Upstream's manifest is `Cargo.toml.upstream`; this
+# one differs only in `publish = false`, the removed `[[bench]]` targets and
+# `[dev-dependencies]` (benches and tests are not vendored), and `license = "MIT"`
+# naming the option this copy is used under. `src/` is upstream's plus one SPDX
+# line per .rs file (see VENDORED.md).
+[package]
+name = "png"
+version = "0.18.1"
+license = "MIT"
+description = "PNG decoding and encoding library in pure Rust"
+categories = ["multimedia::images"]
+authors = ["The image-rs Developers"]
+repository = "https://github.com/image-rs/image-png"
+edition = "2021"
+rust-version = "1.81"
+include = [
+    "/LICENSE-MIT",
+    "/LICENSE-APACHE",
+    "/README.md",
+    "/CHANGES.md",
+    "/src/",
+]
+publish = false
+
+[dependencies]
+bitflags = "2.0"
+crc32fast = "1.5.1"
+fdeflate = "0.3.3"
+flate2 = "1.0.35"
+
+[features]
+# Enable use of nightly features. Sometimes makes performance worse.
+unstable = []
+# Use zlib-rs for faster PNG encoding at the cost of some `unsafe` code.
+# WARNING: this changes the flate2 backend for your entire dependency tree!
+# While the `png` crate always uses fully memory-safe decoding,
+# this enables zlib-rs and introduces some unsafe code to all other crates
+# that rely on flate2, including the decoding codepaths.
+zlib-rs = ["flate2/zlib-rs"]
+benchmarks = []
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
