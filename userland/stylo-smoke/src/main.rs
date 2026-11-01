@@ -426,7 +426,7 @@ impl Node {
     fn with(&self, id: usize) -> &Node {
         // SAFETY: `tree` points at the `Tree` that owns this node; the tree is
         // boxed and outlives every handle given out.
-        unsafe { &(*self.tree).nodes[id] }
+        unsafe { &(&(*self.tree).nodes)[id] }
     }
 
     fn tree(&self) -> &Tree {
