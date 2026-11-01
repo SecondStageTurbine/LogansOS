@@ -22,6 +22,13 @@ spin = { version = "0.9", default-features = false, features = ["spin_mutex"] }
 getrandom = { version = "0.2", default-features = false, features = ["custom"] }
 rustls = { version = "0.23.34", default-features = false, features = ["custom-provider"] }
 rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["alloc", "zeroize"] }
+# Lane 2b (host-only, feature `image-decode`): the image-decode crate, which
+# vendors `png`/`zune-jpeg`. `png` 0.18 requires std, so this feature is never
+# enabled for the OS target; see `src/lib.rs` for the re-export and allocator
+# gate. The implementation lives in its own crate so enabling the feature from
+# a host test cannot unify std into the no_std userland binaries that link
+# libneo.
+neo-image-decode = { path = "../neo-image-decode", optional = true }
 
 # Phase 2.5+ will add serde, ciborium, futures-core for the inference protocol.
 
@@ -50,6 +57,11 @@ atrium-permission = []
 # C1.1 test-only: enables SYS_FUTEX_QUEUE_LEN and sys_futex_queue_len.
 # Must NOT ship in production — test-only discriminator for the threads_futex barrier.
 neo-test = []
+# Lane 2b: host-only image decode (`png` + `zune-jpeg`, vendored under
+# third_party/). `png` 0.18 is std-only; the feature is off for every OS-target
+# build. The implementation is `userland/neo-image-decode`; libneo re-exports it
+# as `libneo::image_decode`.
+image-decode = ["dep:neo-image-decode"]
 # OT-66 K1a (transitional, S2 point 4): `sys_spawn_client` hands the child a
 # RootDirCap derived from the spawner's, appended after its other inherited
 # handles. For kernels built with `cap-rooted-open`. Default-off ⇒

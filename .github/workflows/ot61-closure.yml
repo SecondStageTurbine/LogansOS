@@ -23,6 +23,7 @@ on:
       - 'userland/neo-std-pal/**'
       - 'userland/x86_64-unknown-neoplutarch.json'
       - '.github/workflows/ot61-closure.yml'
+      - 'scripts/ci-disk-guard.sh'
       - 'tools/xtask/**'
       - 'rust-toolchain.toml'
 
@@ -48,6 +49,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # The disk bound (Janus #214): a free-space floor before the build, a
+      # budget for what it writes after, and the build dirs removed at the
+      # end whatever happened (scripts/ci-disk-guard.sh). Measured: about 3
+      # GiB (the closure smoke ~0.8, the overlaid std, xtask, the toolchain).
+      - name: Disk floor (12 GiB free)
+        run: bash scripts/ci-disk-guard.sh check 12
 
       - name: Ensure rustup is present (self-hosted runners)
         run: |
@@ -83,3 +91,16 @@ jobs:
 
       - name: xtask ot61-closure-build (overlay std + closure + A4 checks)
         run: cargo run -p xtask -- ot61-closure-build
+
+      - name: Disk budget (6 GiB written)
+        run: >-
+          bash scripts/ci-disk-guard.sh budget 6
+          target userland/servo-closure-smoke/target userland/std-real-smoke/target
+          .rustup-home .cargo-home
+
+      - name: Remove the build dirs
+        if: always()
+        run: >-
+          bash scripts/ci-disk-guard.sh clean
+          target userland/servo-closure-smoke/target userland/std-real-smoke/target
+          .rustup-home .cargo-home
