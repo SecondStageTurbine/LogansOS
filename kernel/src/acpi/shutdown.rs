@@ -235,9 +235,12 @@ fn stop_world() {
     let ioapics =
         super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
     crate::serial_println!("[ power ] K4 start");
-    x86_64::instructions::interrupts::disable();
+    // CP-64 (Janus relay 228 item 1): drain any in-flight TLB shootdown and
+    // leave the protocol for good before interrupts go off; this masks IF.
+    crate::mm::tlb_shootdown::freeze_for_shutdown();
     let report = cpu_stop::stop_others(|us, done| super::power::spin_us(timer.as_ref(), us, done));
-    crate::drivers::console::serial::enter_stopped_world(report.parked_by_nmi != 0);
+    let holdouts = report.holdouts != 0;
+    crate::drivers::console::serial::enter_stopped_world(report.parked_by_nmi != 0, holdouts);
     crate::serial_println!(
         "[ power ] K4 targets={:#x} parked_by_ipi={:#x} parked_by_nmi={:#x} holdouts={:#x}",
         report.targets,
@@ -245,17 +248,34 @@ fn stop_world() {
         report.parked_by_nmi,
         report.holdouts
     );
+    // This CPU's own timer: local, safe whether or not a CPU held out.
     #[cfg(feature = "lapic-timer")]
     crate::arch::x86_64::lapic_timer::disarm_for_shutdown();
+    if holdouts {
+        // Janus relay 228 item 2: a CPU still runs, so the I/O APIC's
+        // IOREGSEL/IOWIN pairs and PCI's CF8/CFC could interleave with it:
+        // K5's source masking is skipped, and K7 (S5 or reset, which need no
+        // other CPU) follows.
+        crate::serial_println!(
+            "[ power ] K5 skipped: holdouts={:#x} still running",
+            report.holdouts
+        );
+        return;
+    }
     let masked = ioapics.map(|plan| plan.mask_all());
+    let (msi, msix) = crate::drivers::pci::mask_msi_for_shutdown();
     crate::serial_println!(
-        "[ power ] K5 lapic_timer={} ioapic_entries_masked={}",
+        "[ power ] K5 lapic_timer={} madt={} ioapic_entries_masked={} msi_disabled={} msix_masked={}",
         if cfg!(feature = "lapic-timer") {
             "disarmed"
         } else {
             "none"
         },
-        masked.map_or(-1, |n| n as i64)
+        // No MADT: no I/O APIC could be masked, said so instead of silently.
+        u8::from(masked.is_some()),
+        masked.unwrap_or(0),
+        msi,
+        msix
     );
 }
 

@@ -961,6 +961,47 @@ fn find_capability(dev: Device, cap_id: u8) -> Option<u8> {
     None
 }
 
+/// OT-90 K5 (Janus relay 228 item 3): disable MSI and function-mask MSI-X on
+/// every PCI function, so no device interrupt bypasses the masked I/O APICs
+/// to a stopped CPU. Runs after K4 with one CPU left (CF8/CFC can't
+/// interleave), allocates nothing and takes no lock: a brute-force walk of
+/// every bus, device and function. Returns (MSI disabled, MSI-X masked).
+#[cfg(feature = "power-stop-cpus")]
+pub fn mask_msi_for_shutdown() -> (u32, u32) {
+    let (mut msi, mut msix) = (0u32, 0u32);
+    for bus in 0..=255u8 {
+        for device in 0..32u8 {
+            for function in 0..8u8 {
+                let Some(dev) = read_device(bus, device, function) else {
+                    if function == 0 {
+                        break;
+                    }
+                    continue;
+                };
+                if let Some(cap) = find_capability(dev, PCI_CAP_ID_MSI) {
+                    let control = config_read_u16(bus, device, function, cap + 2);
+                    if control & 1 != 0 {
+                        config_write_u16(bus, device, function, cap + 2, control & !1);
+                        msi += 1;
+                    }
+                }
+                if let Some(cap) = find_capability(dev, PCI_CAP_ID_MSIX) {
+                    let control = config_read_u16(bus, device, function, cap + 2);
+                    if control & (1 << 15) != 0 {
+                        // Function Mask (bit 14): every vector masked at once.
+                        config_write_u16(bus, device, function, cap + 2, control | (1 << 14));
+                        msix += 1;
+                    }
+                }
+                if function == 0 && dev.header_type & 0x80 == 0 {
+                    break;
+                }
+            }
+        }
+    }
+    (msi, msix)
+}
+
 fn read_device(bus: u8, device: u8, function: u8) -> Option<Device> {
     let vendor_id = config_read_u16(bus, device, function, 0x00);
     if vendor_id == VENDOR_ID_NONE {

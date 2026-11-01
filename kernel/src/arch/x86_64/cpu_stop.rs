@@ -17,7 +17,7 @@
 //! (`serial::enter_stopped_world`) and takes no shared lock, allocates
 //! nothing, maps nothing and sends no TLB shootdown (the parked CPUs would
 //! never acknowledge it). A CPU the NMI parks can hold anything; the UART
-//! lock is then forced (`serial::enter_stopped_world(true)`). K5-K7 are
+//! lock is then forced (`serial::enter_stopped_world(true, false)`). K5-K7 are
 //! written to need none of the rest.
 //!
 //! **Parked, not discarded** (THINK §10). A parked CPU's per-CPU state is
@@ -30,6 +30,10 @@ use crate::arch::x86_64::{apic, per_cpu};
 /// How long K4 waits for the STOP IPI's parks before the NMI, and again for
 /// the NMI's.
 pub const STOP_WAIT_US: u64 = 100_000;
+/// A bound on each wait's polls that needs no timer (Janus relay 228 item 2:
+/// a stuck-at-zero PM timer must not stall K4). Each poll reads the parked
+/// flags (and, through `spin_us`, the PM timer's port): seconds at most.
+pub const STOP_WAIT_MAX_POLLS: u64 = 5_000_000;
 
 const NOT_PARKED: u8 = 0;
 const PARKED_BY_IPI: u8 = 1;
@@ -43,7 +47,9 @@ static STOPPER: AtomicU32 = AtomicU32::new(u32::MAX);
 static PARKED: [AtomicU8; per_cpu::MAX_CPUS] =
     [const { AtomicU8::new(NOT_PARKED) }; per_cpu::MAX_CPUS];
 
-/// K4's outcome, one bit per CPU index.
+/// K4's outcome, one bit per CPU index. A non-zero `holdouts` means a CPU is
+/// still running: the shutdown then takes the degraded path (K5 skipped,
+/// UART output only when its lock is free; `acpi::shutdown::stop_world`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StopReport {
     /// The CPUs asked to stop (every started CPU but this one).
@@ -71,11 +77,21 @@ pub fn stop_others(spin_us: impl Fn(u64, &mut dyn FnMut() -> bool) -> bool) -> S
         apic::send_stop_ipi(cpu);
     }
     let all_parked = |targets: u64| bits(targets).all(|cpu| parked(cpu) != NOT_PARKED);
-    if !spin_us(STOP_WAIT_US, &mut || all_parked(report.targets)) {
+    // Each wait ends when every target parked, when `spin_us`'s timer says
+    // the time is up, or after STOP_WAIT_MAX_POLLS polls, whichever is first.
+    let wait = |targets: u64| {
+        let mut polls = 0u64;
+        spin_us(STOP_WAIT_US, &mut || {
+            polls += 1;
+            all_parked(targets) || polls >= STOP_WAIT_MAX_POLLS
+        });
+        all_parked(targets)
+    };
+    if !wait(report.targets) {
         for cpu in bits(report.targets).filter(|&cpu| parked(cpu) == NOT_PARKED) {
             apic::send_nmi_ipi(cpu);
         }
-        spin_us(STOP_WAIT_US, &mut || all_parked(report.targets));
+        wait(report.targets);
     }
     for cpu in bits(report.targets) {
         match parked(cpu) {
@@ -104,6 +120,10 @@ pub extern "x86-interrupt" fn stop_ipi(_frame: x86_64::structures::idt::Interrup
     if holdout_test_ignores_ipi() {
         return;
     }
+    #[cfg(feature = "neo-test-ot90-stop-final-holdout")]
+    if final_holdout_test_cpu() {
+        return;
+    }
     park(PARKED_BY_IPI);
 }
 
@@ -112,6 +132,10 @@ pub extern "x86-interrupt" fn stop_ipi(_frame: x86_64::structures::idt::Interrup
 /// or on the stopping CPU itself.
 pub fn park_from_nmi() {
     if !STOPPING.load(Ordering::Acquire) {
+        return;
+    }
+    #[cfg(feature = "neo-test-ot90-stop-final-holdout")]
+    if final_holdout_test_cpu() {
         return;
     }
     match apic::cpu_from_own_lapic_id() {
@@ -145,4 +169,19 @@ fn holdout_test_ignores_ipi() -> bool {
         .find(|&cpu| apic::cpu_registered(cpu))
         .unwrap_or(0);
     me == highest && !IGNORED.swap(true, Ordering::AcqRel)
+}
+
+/// `ot90_stop_final_holdout` (Janus relay 228 item 2): the highest-numbered
+/// AP ignores both the STOP IPI and the NMI, so it is still running when K4
+/// gives up; the shutdown must take the degraded path and still reach S5.
+#[cfg(feature = "neo-test-ot90-stop-final-holdout")]
+fn final_holdout_test_cpu() -> bool {
+    let Some(me) = apic::cpu_from_own_lapic_id() else {
+        return false;
+    };
+    let highest = (0..per_cpu::MAX_CPUS as u32)
+        .rev()
+        .find(|&cpu| apic::cpu_registered(cpu))
+        .unwrap_or(0);
+    me == highest && me != STOPPER.load(Ordering::Acquire)
 }

@@ -238,9 +238,52 @@ pub fn cpu_from_own_lapic_id() -> Option<u32> {
 }
 
 fn send_fixed_ipi(target_cpu: u32, vector: u8) {
-    send_ipi_low(target_cpu, ICR_LEVEL_ASSERT | vector as u32);
+    let target = lapic_id_for_cpu(target_cpu);
+    debug_assert_ne!(
+        target, INVALID_LAPIC_ID,
+        "apic: target CPU has no registered LAPIC id"
+    );
+    if target == INVALID_LAPIC_ID {
+        return;
+    }
+
+    let icr_low = ICR_LEVEL_ASSERT | vector as u32;
+    if mode() == ApicMode::X2Apic {
+        // A WRMSR to the x2APIC ICR is not serializing, unlike the xAPIC
+        // ICR's uncached MMIO store: without a fence the target can take the
+        // IPI before it can see the stores the sender made first (the queued
+        // work, the shootdown request). `mfence; lfence` is the SDM-documented
+        // ordering for x2APIC MSR writes.
+        // SAFETY: fences only; no memory or register state is changed.
+        unsafe {
+            core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
+        }
+        // SAFETY: the x2APIC ICR, written in x2APIC mode (fixed at init).
+        unsafe {
+            Msr::new(apic_logic::x2apic_msr(APIC_ICR_LOW))
+                .write(apic_logic::x2apic_icr(target, icr_low));
+        }
+        return;
+    }
+    // An ID above 255 cannot be named in xAPIC mode (such a CPU is never
+    // started: `smp::bring_up_aps`); masking it would hit another CPU.
+    let Some((icr_high, icr_low)) = apic_logic::xapic_icr(target, icr_low) else {
+        if XAPIC_IPI_REFUSED.fetch_add(1, Ordering::AcqRel) == 0 {
+            serial_println!(
+                "[ kernel ] apic: IPI REFUSED to lapic_id={} - above 255 in xAPIC mode",
+                target
+            );
+        }
+        return;
+    };
+    write_reg(APIC_ICR_HIGH, icr_high);
+    write_reg(APIC_ICR_LOW, icr_low);
 }
 
+/// OT-90 P3b: `send_fixed_ipi`'s body for any ICR low word (the NMI).
+/// A copy, so a kernel without `power-stop-cpus` compiles `send_fixed_ipi`
+/// exactly as before (Janus relay 228 item 4: feature-off identity).
+#[cfg(feature = "power-stop-cpus")]
 fn send_ipi_low(target_cpu: u32, icr_low: u32) {
     let target = lapic_id_for_cpu(target_cpu);
     debug_assert_ne!(

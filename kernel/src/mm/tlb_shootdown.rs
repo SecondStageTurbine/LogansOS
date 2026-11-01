@@ -78,6 +78,23 @@ pub fn quiesce_local_cpu() -> LocalShootdownQuiesce {
     }
 }
 
+/// OT-90 K4 (CP-64, Janus relay 228 item 1): the shutdown CPU leaves the
+/// shootdown protocol for good before it stops servicing IPIs. As
+/// [`quiesce_local_cpu`]: the sender lock is taken first (its wait keeps
+/// interrupts on, so an in-flight sender targeting this CPU still gets its
+/// ACK and finishes), then IF is masked and this CPU's readiness withdrawn.
+/// Unlike quiesce, the lock is never released: no shootdown can start on any
+/// CPU from here on (a would-be sender spins on the lock with interrupts on,
+/// so it still takes the STOP IPI and parks), and the shutdown never returns
+/// (K7 is S5 or a reset). Nothing after K4 maps or unmaps memory.
+#[cfg(feature = "power-stop-cpus")]
+pub fn freeze_for_shutdown() {
+    let barrier = acquire_shootdown_lock();
+    arch_x86_64::disable_interrupts();
+    let _ = per_cpu::set_current_tlb_shootdown_ready(false);
+    core::mem::forget(barrier);
+}
+
 #[cfg(feature = "neo-test-swapgs-irq-ring3")]
 static LOCK_PROBE_HELD: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "neo-test-swapgs-irq-ring3")]

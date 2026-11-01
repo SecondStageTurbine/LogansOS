@@ -30,12 +30,22 @@ static SERIAL: Mutex<Option<SerialPort>> = Mutex::new(None);
 #[cfg(feature = "power-stop-cpus")]
 static STOPPED_WORLD: AtomicBool = AtomicBool::new(false);
 
+/// OT-90 P3b (Janus relay 228 item 2): K4 left a CPU running, so the UART
+/// lock may be held by a CPU that is not halted: never wait for it, never
+/// force it. A line that can't get the lock in a bounded try is dropped.
+#[cfg(feature = "power-stop-cpus")]
+static HOLDOUT_WORLD: AtomicBool = AtomicBool::new(false);
+
 /// OT-90 P3b: after K4. `nmi_parked`: a CPU was parked by NMI, so it may
 /// hold the UART lock too; the lock is then forced (its holder never runs
-/// again).
+/// again). `holdouts`: a CPU is still running; the lock is only ever tried.
 #[cfg(feature = "power-stop-cpus")]
-pub fn enter_stopped_world(nmi_parked: bool) {
+pub fn enter_stopped_world(nmi_parked: bool, holdouts: bool) {
     STOPPED_WORLD.store(true, Ordering::Release);
+    if holdouts {
+        HOLDOUT_WORLD.store(true, Ordering::Release);
+        return;
+    }
     if nmi_parked && SERIAL.is_locked() {
         // SAFETY: the holder is a CPU halted for good (K4's NMI park); no
         // other CPU runs.
@@ -135,6 +145,21 @@ pub fn _print(args: fmt::Arguments) {
     #[cfg(feature = "fb-progress-console")]
     if PANICKING.load(Ordering::Acquire) {
         print_panicking(args);
+        return;
+    }
+    #[cfg(feature = "power-stop-cpus")]
+    if HOLDOUT_WORLD.load(Ordering::Acquire) {
+        crate::arch::x86_64::without_interrupts(|| {
+            for _ in 0..1_000_000 {
+                if let Some(mut guard) = SERIAL.try_lock() {
+                    if let Some(port) = guard.as_mut() {
+                        let _ = port.write_fmt(args);
+                    }
+                    return;
+                }
+                core::hint::spin_loop();
+            }
+        });
         return;
     }
     #[cfg(feature = "power-stop-cpus")]

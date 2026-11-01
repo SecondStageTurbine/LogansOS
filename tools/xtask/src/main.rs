@@ -5841,6 +5841,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // Janus relay 228 item 2: the highest AP never parks; K4 gives up, the
+    // degraded path skips K5, and S5 still follows.
+    TestScenario {
+        name: "ot90_stop_final_holdout",
+        feature: "neo-test-ot90-stop-final-holdout",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -9705,7 +9714,8 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stuck_disk"
         | "ot90_stuck_sink_off"
         | "ot90_stop_cpus"
-        | "ot90_stop_holdout" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stop_holdout"
+        | "ot90_stop_final_holdout" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -9829,6 +9839,43 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             )
         })?;
+        // Janus relay 228 item 3: K5 actually masked the I/O APIC (QEMU's
+        // q35 has one, 24 entries) and reported MSI/MSI-X.
+        ot90_check_k5(&serial).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
+    // Janus relay 228 item 2: the highest AP held out; K5 was skipped and S5
+    // still followed.
+    if scenario.name == "ot90_stop_final_holdout" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 start",
+                "[ power ] K4 targets=",
+                "[ power ] K5 skipped: holdouts=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let [targets, _, _, holdouts] = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        let highest = if targets == 0 {
+            0
+        } else {
+            1u64 << (63 - targets.leading_zeros())
+        };
+        if targets == 0 || holdouts != highest {
+            return Err(format!(
+                "`{}`: K4 holdouts {holdouts:#x}, expected the highest AP {highest:#x} of {targets:#x}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
     }
     eprintln!(
         "[xtask] neo-test: `{}` PASS on QMP {:?}",
@@ -9876,6 +9923,29 @@ fn ot90_check_k4(holdout: bool, [targets, ipi, nmi, holdouts]: [u64; 4]) -> Resu
         return Err(format!(
             "K4 parked by IPI {ipi:#x} and by NMI {nmi:#x}; expected {want_ipi:#x} and {want_nmi:#x} of {targets:#x}"
         ));
+    }
+    Ok(())
+}
+
+/// OT-90 K5's line: a MADT was found, at least one I/O APIC entry was
+/// masked, and the MSI/MSI-X counts are present.
+fn ot90_check_k5(serial: &str) -> Result<(), String> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K5 lapic_timer="))
+        .ok_or("no K5 line")?;
+    let field = |key: &str| -> Option<u64> {
+        let at = line.find(key)? + key.len();
+        line[at..].split_whitespace().next()?.parse().ok()
+    };
+    if field("madt=") != Some(1) {
+        return Err(format!("K5 found no MADT: {line}"));
+    }
+    if field("ioapic_entries_masked=").unwrap_or(0) == 0 {
+        return Err(format!("K5 masked no I/O APIC entry: {line}"));
+    }
+    if field("msi_disabled=").is_none() || field("msix_masked=").is_none() {
+        return Err(format!("K5 did not report MSI/MSI-X: {line}"));
     }
     Ok(())
 }

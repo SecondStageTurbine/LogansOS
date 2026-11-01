@@ -1029,6 +1029,8 @@ const SCENARIO: &str = "ot90_stuck_sink_restart";
 const SCENARIO: &str = "ot90_stop_cpus";
 #[cfg(feature = "neo-test-ot90-stop-holdout")]
 const SCENARIO: &str = "ot90_stop_holdout";
+#[cfg(feature = "neo-test-ot90-stop-final-holdout")]
+const SCENARIO: &str = "ot90_stop_final_holdout";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1584,6 +1586,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-straggler-forced",
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-final-holdout",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -4819,7 +4822,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     run_ot90_stuck_disk();
     #[cfg(any(
         feature = "neo-test-ot90-stop-cpus",
-        feature = "neo-test-ot90-stop-holdout"
+        feature = "neo-test-ot90-stop-holdout",
+        feature = "neo-test-ot90-stop-final-holdout"
     ))]
     run_ot90_stop_cpus();
 
@@ -39610,7 +39614,8 @@ fn run_ot90_straggler_forced() -> ! {
 /// judges it by QMP and the K4/K5 lines.
 #[cfg(any(
     feature = "neo-test-ot90-stop-cpus",
-    feature = "neo-test-ot90-stop-holdout"
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-final-holdout"
 ))]
 fn run_ot90_stop_cpus() -> ! {
     frame("INFO", "stage=power_off_requested");

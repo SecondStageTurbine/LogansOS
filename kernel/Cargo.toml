@@ -2013,6 +2013,9 @@ neo-test-ot90-stuck-sink-no-close = ["power-clean"]
 # STOP IPI, so the NMI parks it.
 neo-test-ot90-stop-cpus = ["neo-test", "power-stop-cpus"]
 neo-test-ot90-stop-holdout = ["neo-test", "power-stop-cpus"]
+# OT-90 P3b (Janus relay 228 item 2): the highest AP ignores the STOP IPI and
+# the NMI; K4 must give up, take the degraded path (K5 skipped) and reach S5.
+neo-test-ot90-stop-final-holdout = ["neo-test", "power-stop-cpus"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]
