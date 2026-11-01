@@ -17,6 +17,12 @@ on:
         description: "Publish to the `preview` release after the boot check passes"
         type: boolean
         default: true
+  # TEMPORARY (removed before the PR is ready): GitHub refuses
+  # workflow_dispatch for a workflow not yet on the default branch, so the
+  # branch iterates on push.
+  push:
+    branches: [claude/preview-vm-image]
+    paths: ['.github/workflows/preview-image.yml', 'scripts/preview/**']
   schedule:
     # Daily; skipped when main has not moved since the published preview.
     - cron: "17 9 * * *"
@@ -230,7 +236,7 @@ jobs:
   publish:
     name: Publish the preview release
     needs: build
-    if: github.event_name == 'schedule' || inputs.publish
+    if: github.event_name != 'workflow_dispatch' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
