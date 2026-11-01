@@ -104,7 +104,10 @@ jobs:
       skip: ${{ steps.check.outputs.skip }}
       # OT-58: the QEMU matrix. `["quick"]` (one smoke job) for a PR or a
       # `tier: quick` dispatch; the four shards otherwise.
-      shards: ${{ steps.check.outputs.shards }}
+      shards: ${{ steps.tier.outputs.shards }}
+      # "true" when this run is the full tier (4 shards): a dispatch with
+      # tier: full, the schedule, or a PR that gate-plan puts in full-alone.
+      full: ${{ steps.tier.outputs.full }}
     steps:
       - id: check
         env:
@@ -118,10 +121,42 @@ jobs:
             [ "$last" = "${{ github.sha }}" ] && skip=true
           fi
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" = pull_request ] || [ "${{ inputs.tier }}" = quick ]; then
-            echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
-          else
+
+      # OT-58 (THINK 2.3; Dexter #45 item 2): a PR or a `tier: quick` dispatch
+      # takes the quick tier only if gate-plan says so. A diff in the
+      # concurrency core, the test machinery, the workflow or the build
+      # configuration (or one gate-plan can't classify) gets the 4 shards on
+      # this same run: the full tier on its own.
+      - name: Checkout (tier plan)
+        if: github.event_name == 'pull_request' || inputs.tier == 'quick'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain (tier plan)
+        if: github.event_name == 'pull_request' || inputs.tier == 'quick'
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+      - id: tier
+        env:
+          BASE: origin/${{ github.base_ref || 'main' }}
+          WANT_QUICK: ${{ github.event_name == 'pull_request' || inputs.tier == 'quick' }}
+        run: |
+          full=true
+          if [ "$WANT_QUICK" = true ]; then
+            plan="$(cargo run -q -p xtask -- gate-plan --base "$BASE" || echo 'tier=full-alone')"
+            echo "$plan"
+            if grep -qx 'tier=quick' <<<"$plan"; then
+              full=false
+            else
+              echo "::notice::gate-plan: full-alone, so this run is the full tier (4 QEMU shards). $(sed -n 's/^reasons=//p' <<<"$plan")"
+            fi
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          if [ "$full" = true ]; then
             echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
           fi
 
   neo-test:
@@ -536,7 +571,8 @@ jobs:
   rng-seed-boot:
     name: Production RNG seed boot (no neo-test)
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    # OT-58: the full tier only (a dispatch, the schedule, or a full-alone PR).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
     timeout-minutes: 90
     env:
@@ -873,7 +909,9 @@ jobs:
   decoder-fuzz:
     name: Decoder Fuzz (${{ matrix.target }})
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # OT-58 (Dexter #45 item 4): four 60-second fuzz jobs are a full-tier
+    # check, not a per-push one.
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
@@ -1103,75 +1141,18 @@ jobs:
   # Those findings are a cfg-granularity artifact, not rot (same rationale as the
   # neo-test-gated step above).
   feature-gated-coverage:
-    name: Feature-Gated Coverage (blocking, matrix ${{ matrix.name }})
+    # OT-58 (THINK 2.1; Dexter #45 item 4): the 13 feature-gated clippy
+    # configurations in ONE job, one after another on one target dir, instead
+    # of a 13-cell matrix: the same invocations, one checkout and toolchain
+    # setup instead of thirteen, and one free-tier slot instead of up to two
+    # at a time for ~10 minutes. Every configuration runs; the job fails with
+    # the list of those that failed.
+    name: Feature-Gated Coverage (blocking, 13 configurations)
     needs: nightly-skip
     if: needs.nightly-skip.outputs.skip != 'true'
-    # self-hosted (2026-08-10): free minutes. See the runner-history note on
-    # host-checks. This job was the single largest GH-hosted consumer — 5 matrix
-    # arms per run, all billable (it was NON-BLOCKING at the time).
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      # max-parallel bounds this job's claim on the self-hosted fleet. Without
-      # it, 5 arms can occupy 5 of ~6 runners and starve the host-checks/
-      # product-build jobs that a workflow_dispatch QEMU gate `needs:`. Kept at
-      # 2 after the OT-69 blocking flip: the QEMU gate does not `need` this job,
-      # so it must still never delay the gate.
-      max-parallel: 2
-      matrix:
-        include:
-          - name: wifi-usb
-            features: mt7601u,wpa3-sae
-          - name: gpu-iommu
-            features: accel-intel,vtd
-          - name: atrium-ai
-            features: atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
-          - name: misc
-            features: browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
-          - name: boot-eth0
-            features: boot-eth0
-          - name: desktop
-            features: desktop
-          # B1c: the product image's kernel (real generation from the boot
-          # module) — the cfg-ownership matrix is only enforced if it builds.
-          # Exactly image A's set (`xtask iso --with-model`), including the
-          # Zenbook boot console + LAPIC tick, the freeze watchdog overlay, the
-          # I2C-HID touchpad, key auto-repeat, the RTL8125 driver with its
-          # no-IOMMU opt-in (PL, 2026-10-24), the HWP performance request (in
-          # image A since the Zenbook A/B, 2026-10-25; this arm absorbed the
-          # old `product-real-lm-hwp`) and, through `desktop`, the xHCI
-          # silicon bring-up and USB port service.
-          - name: product-real-lm
-            features: desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick
-          # Force-kill scenarios (one scenario per arm; see the header note).
-          - name: kill-inference
-            features: neo-test-inference-kill
-          - name: kill-inference-control
-            features: neo-test-inference-kill-control
-          - name: kill-admission-park-control
-            features: neo-test-admission-park-kill-control
-          # B1c's real generation probe (the same real-lm feature set, and
-          # the same unseen clippy rot).
-          - name: real-lm-generate
-            features: neo-test-real-lm-generate
-          # CP-67's IPC kill scenario (its control is a superset).
-          - name: kill-ipc-park-control
-            features: neo-test-ipc-park-kill-control
-          # The preemptible-liveness probe (the one consumer of the
-          # instrumentation re-export; it was clippy-red unseen too).
-          - name: preemptible-liveness
-            features: neo-test-inference-preemptible-liveness
+    timeout-minutes: 60
 
-    # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
-    # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
-    # (/home/neo), so a shared ~/.rustup made concurrent jobs fight: rustup has
-    # no cross-process lock, and jobs requesting different --component sets
-    # actively REMOVE each other's components. product-build's `--profile
-    # minimal` stripped rustfmt/clippy out from under host-checks and died on
-    # "detected conflict: lib/rustlib/.../bin/llc". github.workspace is
-    # per-runner, so this restores the isolation ubuntu-latest gave for free
-    # (and matches the pre-2026-07-22 Docker layout's .rustup-home/.cargo-home).
     env:
       RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
       CARGO_HOME: ${{ github.workspace }}/.cargo-home
@@ -1204,12 +1185,36 @@ jobs:
       # regardless. That cost is wall-clock on a lint-only job, which is
       # exactly the cost we are willing to pay.
 
-      - name: "cargo clippy kernel (feature-gated: ${{ matrix.name }}, blocking)"
+      - name: "cargo clippy kernel, every feature-gated configuration (blocking)"
         run: |
-          echo "::group::Feature-gated clippy — ${{ matrix.name }} [features=${{ matrix.features }}] (blocking)"
-          status=0
-          cd kernel && cargo clippy -Zjson-target-spec \
-            --features "${{ matrix.features }}" \
-            -- -D warnings -A dead_code 2>&1 || status=$?
-          echo "::endgroup::"
-          exit $status
+          configs=(
+            "wifi-usb|mt7601u,wpa3-sae"
+            "gpu-iommu|accel-intel,vtd"
+            "atrium-ai|atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config"
+            "misc|browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module"
+            "boot-eth0|boot-eth0"
+            "desktop|desktop"
+            "product-real-lm|desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick"
+            "kill-inference|neo-test-inference-kill"
+            "kill-inference-control|neo-test-inference-kill-control"
+            "kill-admission-park-control|neo-test-admission-park-kill-control"
+            "real-lm-generate|neo-test-real-lm-generate"
+            "kill-ipc-park-control|neo-test-ipc-park-kill-control"
+            "preemptible-liveness|neo-test-inference-preemptible-liveness"
+          )
+          failed=()
+          for entry in "${configs[@]}"; do
+            name="${entry%%|*}"
+            features="${entry#*|}"
+            echo "::group::Feature-gated clippy — ${name} [features=${features}] (blocking)"
+            if ! (cd kernel && cargo clippy -Zjson-target-spec --features "${features}" -- -D warnings -A dead_code 2>&1); then
+              failed+=("$name")
+            fi
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::feature-gated clippy failed: ${failed[*]}"
+            exit 1
+          fi
+          echo "all ${#configs[@]} feature-gated configurations clean"
+
