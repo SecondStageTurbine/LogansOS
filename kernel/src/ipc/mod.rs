@@ -840,8 +840,15 @@ pub(crate) mod copy_race_test {
         HOLDING.store(true, Ordering::Release);
         // The go for the unmapping sibling: which page to unmap.
         let _ = crate::arch::x86_64::syscall::write_user(live_va as *mut u64, peer_va & !0xFFF);
+        // Both waits are bounded in TSC cycles, far inside the TLB
+        // shootdown timeout (500M cycles): this CPU, and the sibling spinning
+        // on `inner`, have interrupts off meanwhile, so a shootdown from a
+        // third CPU waits for them.
+        // SAFETY: RDTSC has no preconditions.
+        let tsc = || unsafe { core::arch::x86_64::_rdtsc() };
+        let start = tsc();
         let mut seen = false;
-        for _ in 0..500_000_000u64 {
+        while tsc().wrapping_sub(start) < 150_000_000 {
             if UNMAP_WAITING.load(Ordering::Acquire) {
                 seen = true;
                 break;
@@ -851,12 +858,12 @@ pub(crate) mod copy_race_test {
         // Keep holding a while longer: an unmap that is NOT blocked by the
         // held lock clears the PTE inside this window (it flagged itself
         // just before taking the lock), so a frame that goes away here is
-        // the defect. The window stays far below the deadlock reporter's
-        // spin limit in `Pmap::lock_inner` (200M).
+        // the defect.
         let peer = x86_64::VirtAddr::new(peer_va);
         let mut mapped = peer_pmap.translate_user(peer, false).is_some();
         if seen {
-            for _ in 0..2_000_000u64 {
+            let held = tsc();
+            while tsc().wrapping_sub(held) < 30_000_000 {
                 if peer_pmap.translate_user(peer, false).is_none() {
                     mapped = false;
                     break;
