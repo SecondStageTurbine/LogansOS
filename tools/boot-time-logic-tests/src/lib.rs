@@ -54,6 +54,50 @@ mod tests {
         );
     }
 
+    /// Janus relay 232 item 1: the FBPT header's whole extent must fit
+    /// below the physical limit, not just its first byte.
+    #[test]
+    fn an_fbpt_header_crossing_the_physical_limit_is_refused() {
+        let mut fpdt = FPDT_ORACLE.to_vec();
+        // address = 0xf_ffff_fffc: its 8-byte header ends at 0x10_0000_0004,
+        // past the 36-bit limit 0x10_0000_0000 (Janus's input).
+        fpdt[0x2c..0x34].copy_from_slice(&0x0000_000f_ffff_fffcu64.to_le_bytes());
+        assert_eq!(fbpt_address(&fpdt, 36), Err(FpdtError::AddressOutOfRange));
+        // Eight bytes lower, the header ends exactly at the limit: allowed.
+        fpdt[0x2c..0x34].copy_from_slice(&0x0000_000f_ffff_fff8u64.to_le_bytes());
+        assert_eq!(fbpt_address(&fpdt, 36), Ok(0xf_ffff_fff8));
+    }
+
+    #[test]
+    fn extents_and_regions() {
+        assert!(extent_ok(0x1000, 8, 36));
+        assert!(extent_ok(0xf_ffff_fff8, 8, 36));
+        assert!(!extent_ok(0xf_ffff_fff9, 8, 36));
+        assert!(!extent_ok(u64::MAX - 3, 8, 64));
+        assert!(!extent_ok(0x1000, 0, 36));
+        assert!(extent_ok(u64::MAX - 8, 8, 64));
+        let regions = [(0x1000u64, 0x1000u64), (0x8000, 0x4000)];
+        assert!(inside_one(0x1000, 0x1000, regions));
+        assert!(inside_one(0x9000, 0x100, regions));
+        // Spanning two regions, a gap, or past the end: refused.
+        assert!(!inside_one(0x1f00, 0x200, regions));
+        assert!(!inside_one(0x3000, 8, regions));
+        assert!(!inside_one(0xbff9, 8, regions));
+        assert!(!inside_one(u64::MAX - 3, 8, regions));
+        assert!(!inside_one(0x1000, 8, []));
+    }
+
+    /// Janus relay 232 item 4: a quotient past u64 is unavailable, not
+    /// truncated (`tsc_ms(1 << 63, 500)` used to return `Some(0)`).
+    #[test]
+    fn an_unrepresentable_duration_is_unavailable() {
+        assert_eq!(tsc_ms(1u64 << 63, 500), None);
+        assert_eq!(tsc_ms(u64::MAX, 1), None);
+        assert_eq!(tsc_ms(3_000_000_000, 1_000_000_000), Some(3000));
+        assert_eq!(tsc_ms(u64::MAX, 1_000_000_000), Some(18_446_744_073_709));
+        assert_eq!(tsc_ms(5, 0), None);
+    }
+
     #[test]
     fn a_damaged_fpdt_is_refused() {
         let mut bad = FPDT_ORACLE.to_vec();

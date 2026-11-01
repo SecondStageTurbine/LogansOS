@@ -84,6 +84,9 @@ pub enum FpdtError {
     BadRecord,
     NoFbptPointer,
     AddressOutOfRange,
+    /// The FBPT's extent is not inside one firmware-owned region of the
+    /// bootloader's memory map (Janus, relay 232 item 1).
+    NotFirmwareMemory,
     NoBootRecord,
 }
 
@@ -96,6 +99,7 @@ impl FpdtError {
             Self::BadRecord => "bad-record",
             Self::NoFbptPointer => "no-fbpt-pointer",
             Self::AddressOutOfRange => "address-out-of-range",
+            Self::NotFirmwareMemory => "not-firmware-memory",
             Self::NoBootRecord => "no-boot-record",
         }
     }
@@ -171,7 +175,9 @@ pub fn fbpt_address(fpdt: &[u8], phys_bits: u32) -> Result<u64, FpdtError> {
         }
     })?
     .ok_or(FpdtError::NoFbptPointer)?;
-    if address == 0 || (phys_bits < 64 && address >> phys_bits != 0) {
+    // The whole FBPT header must fit below the physical-address limit, not
+    // just its first byte (Janus, relay 232 item 1).
+    if address == 0 || !extent_ok(address, FBPT_HEADER_LEN as u64, phys_bits) {
         return Err(FpdtError::AddressOutOfRange);
     }
     Ok(address)
@@ -286,7 +292,29 @@ pub fn tsc_ms(tsc: u64, tsc_hz: u64) -> Option<u64> {
     if tsc_hz == 0 {
         return None;
     }
-    Some((u128::from(tsc) * 1000 / u128::from(tsc_hz)) as u64)
+    // A quotient past u64 (an absurdly low rate) is unavailable, never
+    // truncated (Janus, relay 232 item 4).
+    u64::try_from(u128::from(tsc) * 1000 / u128::from(tsc_hz)).ok()
+}
+
+/// True when `[addr, addr + len)` is non-empty, does not wrap, and ends at
+/// or below the CPU's physical-address limit `1 << phys_bits`.
+pub fn extent_ok(addr: u64, len: u64, phys_bits: u32) -> bool {
+    let Some(end) = addr.checked_add(len) else {
+        return false;
+    };
+    len != 0 && (phys_bits >= 64 || end <= 1u64 << phys_bits)
+}
+
+/// True when `[addr, addr + len)` lies wholly inside one of `regions`
+/// (`(base, length)` pairs).
+pub fn inside_one(addr: u64, len: u64, regions: impl IntoIterator<Item = (u64, u64)>) -> bool {
+    let Some(end) = addr.checked_add(len) else {
+        return false;
+    };
+    regions
+        .into_iter()
+        .any(|(base, length)| base <= addr && base.checked_add(length).is_some_and(|e| end <= e))
 }
 
 /// `ms` as seconds with two decimals (truncated), e.g. `12.34 s`.

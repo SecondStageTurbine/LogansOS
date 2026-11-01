@@ -138,7 +138,10 @@ fn find_table(root_phys: u64, is_xsdt: bool, sig: &[u8; 4]) -> Option<u64> {
     // SDT header is 36 bytes; the length field is at offset 4.
     let header = unsafe { phys_slice(root_phys, 36) };
     let length = rd_u32(header, 4)? as usize;
-    if length < 36 {
+    // Bounded before the whole table is read (Janus, relay 232 item 1): a
+    // root table is a header plus 4- or 8-byte entries; 64 KiB is thousands
+    // of tables, and a corrupt length can no longer ask for a 4 GiB read.
+    if !(36..=1 << 16).contains(&length) {
         return None;
     }
     // Validate the root table's own signature matches the kind the RSDP claimed.
@@ -441,7 +444,9 @@ pub fn definition_blocks(rsdp_phys: u64) -> Option<alloc::vec::Vec<&'static [u8]
 pub fn firmware_boot_times(
     rsdp_phys: u64,
 ) -> Result<crate::boot_time_logic::FirmwareBoot, crate::boot_time_logic::FpdtError> {
-    use crate::boot_time_logic::{FBPT_HEADER_LEN, FpdtError, fbpt_address, fbpt_len, parse_fbpt};
+    use crate::boot_time_logic::{
+        FBPT_HEADER_LEN, FpdtError, extent_ok, fbpt_address, fbpt_len, inside_one, parse_fbpt,
+    };
     if rsdp_phys == 0 {
         return Err(FpdtError::NoFpdt);
     }
@@ -450,9 +455,36 @@ pub fn firmware_boot_times(
     // CPUID 0x8000_0008 EAX[7:0]: the physical address width.
     let phys_bits = core::arch::x86_64::__cpuid(0x8000_0008).eax & 0xff;
     let fbpt = fbpt_address(fpdt, phys_bits)?;
-    // SAFETY: an address the firmware named, inside the CPU's physical
-    // width; only read.
+    // Janus relay 232 item 1: before any byte is read, the extent must lie in
+    // firmware-owned memory the bootloader's map names (reserved, ACPI
+    // reclaimable or ACPI NVS), never usable RAM, a hole or MMIO; first for
+    // the header, then for the length the header declares.
+    let firmware_regions = || {
+        crate::MEMMAP_REQUEST.response().into_iter().flat_map(|r| {
+            r.entries().iter().filter_map(|e| {
+                matches!(
+                    e.type_,
+                    limine::memmap::MEMMAP_RESERVED
+                        | limine::memmap::MEMMAP_ACPI_RECLAIMABLE
+                        | limine::memmap::MEMMAP_ACPI_NVS
+                )
+                .then_some((e.base, e.length))
+            })
+        })
+    };
+    if !inside_one(fbpt, FBPT_HEADER_LEN as u64, firmware_regions()) {
+        return Err(FpdtError::NotFirmwareMemory);
+    }
+    // SAFETY: the header's extent is checked above: inside the CPU's physical
+    // width and inside one firmware region; only read.
     let len = fbpt_len(unsafe { phys_slice(fbpt, FBPT_HEADER_LEN) })?;
+    if !extent_ok(fbpt, len as u64, phys_bits) {
+        return Err(FpdtError::AddressOutOfRange);
+    }
+    if !inside_one(fbpt, len as u64, firmware_regions()) {
+        return Err(FpdtError::NotFirmwareMemory);
+    }
+    // SAFETY: as above, for the whole declared length (at most FBPT_MAX_LEN).
     parse_fbpt(unsafe { phys_slice(fbpt, len) })
 }
 

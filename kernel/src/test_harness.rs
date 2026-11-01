@@ -33267,16 +33267,72 @@ fn run_boot_time() -> ! {
         );
         debug_exit(EXIT_FAILURE);
     }
+    let user_buffers = boot_time_user_buffer_checks();
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={}",
+        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={} user_buffers={}",
         SCENARIO,
         times.tsc_hz,
         times.tsc_kernel_entry,
         times.tsc_desktop_start,
         wrong_len,
-        kernel_addr
+        kernel_addr,
+        user_buffers
     );
     debug_exit(EXIT_SUCCESS);
+}
+
+/// Janus relay 232 item 2: `SYS_BOOT_TIMES`'s copy-out runs only through
+/// `Pmap::with_user_writable`. On a Pmap with one writable page at W, one
+/// read-only page at W + 4 KiB and nothing at W + 8 KiB: unmapped, read-only,
+/// a range from the writable page into the read-only one, and one from the
+/// read-only page into the hole are all refused without running the copy;
+/// an 80-byte range inside W, and one ending exactly at its last byte, run
+/// it. Returns `ok` (any failure ends the scenario).
+#[cfg(feature = "neo-test-boot-time")]
+fn boot_time_user_buffer_checks() -> &'static str {
+    use crate::boot_time_logic::BOOT_TIMES_V1_LEN as N;
+    use crate::mm::pmap::{Pmap, flags};
+    use x86_64::VirtAddr;
+    use x86_64::structures::paging::FrameAllocator;
+    const W: u64 = 0x0000_4000_0000_0000;
+    let frame = || {
+        crate::mm::with_frame_alloc(|fa| fa.allocate_frame())
+            .unwrap_or_else(|| fail("reason=boot_time_out_of_frames"))
+    };
+    let pmap = Pmap::new().unwrap_or_else(|_| fail("reason=boot_time_pmap_new"));
+    pmap.map_user(VirtAddr::new(W), frame(), flags::USER_DATA_RW)
+        .unwrap_or_else(|_| fail("reason=boot_time_map_rw"));
+    pmap.map_user(VirtAddr::new(W + 0x1000), frame(), flags::USER_DATA_RO)
+        .unwrap_or_else(|_| fail("reason=boot_time_map_ro"));
+    let ran = |va: u64| pmap.with_user_writable(va, N, || ()).is_some();
+    let cases: [(&str, u64, bool); 6] = [
+        ("unmapped", W + 0x2000, false),
+        ("read-only", W + 0x1000, false),
+        ("rw-into-ro", W + 0x1000 - 40, false),
+        ("ro-into-hole", W + 0x2000 - 40, false),
+        ("inside-rw", W + 16, true),
+        ("ends-at-rw-end", W + 0x1000 - N as u64, true),
+    ];
+    for (name, va, want) in cases {
+        if ran(va) != want {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=boot_time_user_buffer case={} va={:#x} want_copy={}",
+                SCENARIO,
+                name,
+                va,
+                want
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
+    if pmap.with_user_writable(W, 0, || ()).is_some()
+        || pmap
+            .with_user_writable(0x0000_7fff_ffff_fff0, N, || ())
+            .is_some()
+    {
+        fail("reason=boot_time_user_buffer_empty_or_kernel_half");
+    }
+    "ok"
 }
 
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]

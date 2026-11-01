@@ -7539,11 +7539,25 @@ fn sys_boot_times_impl(out: u64, len: usize) -> i64 {
         return e;
     }
     let record = encode(&crate::boot_time::snapshot());
-    // SAFETY: validated user range of exactly BOOT_TIMES_V1_LEN bytes; SMAP
-    // opened for the copy.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, BOOT_TIMES_V1_LEN)
+    let pmap = match pmap_for_caller() {
+        Ok(pmap) => pmap,
+        Err(e) => return e,
+    };
+    // Janus relay 232 item 2: every page of the range is checked present,
+    // user and writable under the Pmap's lock, which is held across the copy
+    // (no unmap can race it), so the kernel-mode write cannot fault; an
+    // unmapped, read-only or half-mapped buffer is EFAULT with nothing
+    // written.
+    let copied = pmap.with_user_writable(out, BOOT_TIMES_V1_LEN, || {
+        // SAFETY: the whole range was just checked mapped, user and writable,
+        // and stays so while the Pmap lock is held; SMAP opened for the copy.
+        crate::arch::x86_64::with_user_access(|| unsafe {
+            core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, BOOT_TIMES_V1_LEN)
+        })
     });
+    if copied.is_none() {
+        return EFAULT;
+    }
     0
 }
 
