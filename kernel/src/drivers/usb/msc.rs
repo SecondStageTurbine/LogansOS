@@ -272,7 +272,12 @@ impl BlockDevice for MscDisk {
         let mut out = alloc::vec::Vec::with_capacity(bytes as usize);
         let mut done = 0;
         let mut chunk = alloc::vec![0u8; BOUNCE_LEN];
-        while let Some((at, blocks)) = msc_logic::next_read(lba, count, done) {
+        // `next_read` caps a command at MAX_READ_BLOCKS; with blocks larger
+        // than 512 bytes the bounce buffer caps it lower (U13, U14).
+        let per_command = (BOUNCE_LEN as u64 / block).max(1);
+        while let Some((at, blocks)) =
+            msc_logic::next_read(lba, count.min(done + per_command), done)
+        {
             let len = blocks as usize * block as usize;
             match t.run(&msc_logic::cdb_read_10(at, blocks), &mut chunk[..len]) {
                 Outcome::Passed { len: got } if got == len => out.extend_from_slice(&chunk[..len]),
@@ -458,6 +463,15 @@ fn bind_inner(
     let Some(capacity) = capacity else {
         return Err((t.claimed, "read capacity"));
     };
+    // A block must fit the bounce buffer whole, and be a sane power of two
+    // (U13): anything else would make every read fail or misindex.
+    if !capacity.block_len.is_power_of_two()
+        || capacity.block_len < 512
+        || capacity.block_len as usize > BOUNCE_LEN
+    {
+        crate::serial_println!("msc: block_len={} refused", capacity.block_len);
+        return Err((t.claimed, "unsupported block size"));
+    }
     crate::serial_println!(
         "msc: capacity blocks={} block_len={}",
         capacity.blocks,
