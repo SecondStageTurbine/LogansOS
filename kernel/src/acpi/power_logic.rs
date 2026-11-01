@@ -517,7 +517,8 @@ pub enum ResetStep {
 /// to its own function. With a K4 holdout such a step is skipped and the
 /// chain goes on (the keyboard pulse, 0xCF9 and the triple fault are single
 /// port writes, or no port at all).
-#[cfg_attr(not(feature = "power-stop-cpus"), allow(dead_code))]
+// Used by the kernel only with `power-stop-cpus`.
+#[allow(dead_code)]
 pub fn step_uses_shared_ports(step: &ResetStep) -> bool {
     matches!(step, ResetStep::FadtRegister { reg, .. } if reg.space == SPACE_PCI_CONFIG)
 }
