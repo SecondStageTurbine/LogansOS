@@ -125,6 +125,19 @@ pub fn check_csw(csw: &[u8], tag: u32, data_len: u32) -> CswVerdict {
     }
 }
 
+/// The only SCSI opcodes this driver sends (U17, Chad's #20 review): INQUIRY,
+/// TEST UNIT READY, REQUEST SENSE, READ CAPACITY(10), SERVICE ACTION IN(16)
+/// (READ CAPACITY(16)) and READ(10). MODE SENSE, SYNCHRONIZE CACHE, PREVENT
+/// ALLOW MEDIUM REMOVAL and START STOP UNIT hang or stall some devices
+/// (Linux's `US_FL_NO_*` quirks), and every write command is out of scope:
+/// [`command`] refuses any other opcode before a byte reaches the device.
+pub const ALLOWED_OPCODES: [u8; 6] = [0x12, 0x00, 0x03, 0x25, 0x9e, 0x28];
+
+/// Whether `cdb` starts with an [`ALLOWED_OPCODES`] opcode.
+pub fn cdb_allowed(cdb: &[u8]) -> bool {
+    cdb.first().is_some_and(|op| ALLOWED_OPCODES.contains(op))
+}
+
 /// INQUIRY (`0x12`), 36 bytes of standard data.
 pub fn cdb_inquiry() -> [u8; 6] {
     [0x12, 0, 0, 0, INQUIRY_LEN, 0]
@@ -253,9 +266,18 @@ pub fn decode_sense(data: &[u8]) -> Option<Sense> {
 /// What to do after TEST UNIT READY failed with `sense` (U9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReadyAction {
-    /// UNIT ATTENTION (power-on, medium changed): ask again.
+    /// UNIT ATTENTION (power-on, medium changed): ask again at once.
     Retry,
-    /// NOT READY, medium not present: bind no block device.
+    /// NOT READY, becoming ready (ASC 04/01: spinning up): ask again after a
+    /// pause, within the bind's spin-up budget (Chad's #20 review; Linux's
+    /// `sd_spinup_disk` waits the same way).
+    Wait,
+    /// NOT READY, an initializing command required (ASC 04/02): the device
+    /// wants START STOP UNIT, which this read-only driver doesn't send (it is
+    /// not in [`ALLOWED_OPCODES`]). Bind no block device, and say why.
+    NeedsStart,
+    /// NOT READY, medium not present (ASC 3A): bind no block device. Final,
+    /// not retried (a card reader with no card; Linux stops here too).
     NoMedium,
     /// Anything else: give up on the device.
     Fail,
@@ -266,7 +288,9 @@ pub fn ready_action(sense: Sense) -> ReadyAction {
         (SENSE_KEY_UNIT_ATTENTION, _) => ReadyAction::Retry,
         (SENSE_KEY_NOT_READY, ASC_MEDIUM_NOT_PRESENT) => ReadyAction::NoMedium,
         // NOT READY, becoming ready (ASC 04, ASCQ 01).
-        (SENSE_KEY_NOT_READY, 0x04) if sense.ascq == 0x01 => ReadyAction::Retry,
+        (SENSE_KEY_NOT_READY, 0x04) if sense.ascq == 0x01 => ReadyAction::Wait,
+        // NOT READY, initializing command required (ASC 04, ASCQ 02).
+        (SENSE_KEY_NOT_READY, 0x04) if sense.ascq == 0x02 => ReadyAction::NeedsStart,
         _ => ReadyAction::Fail,
     }
 }
@@ -346,6 +370,8 @@ pub enum ResetReason {
     Phase(PhaseReason),
     /// The CSW's residue disagrees with the bytes that arrived.
     ResidueMismatch,
+    /// The CDB's opcode is not in [`ALLOWED_OPCODES`]: nothing was sent.
+    NotAllowed,
 }
 
 /// Run one command with an optional data-in stage into `data` (U3–U6; BOT
@@ -356,6 +382,12 @@ pub fn command(pipe: &mut impl Pipe, tag: u32, lun: u8, cdb: &[u8], data: &mut [
         reason,
         recovered: reset_recovery(pipe),
     };
+    if !cdb_allowed(cdb) {
+        return Outcome::Reset {
+            reason: ResetReason::NotAllowed,
+            recovered: true,
+        };
+    }
     let Some(cbw) = encode_cbw(tag, data_len, true, lun, cdb) else {
         return Outcome::Reset {
             reason: ResetReason::Cbw,

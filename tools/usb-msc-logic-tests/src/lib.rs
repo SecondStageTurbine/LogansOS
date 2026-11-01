@@ -227,7 +227,26 @@ mod tests {
                 asc: 4,
                 ascq: 1
             }),
-            ReadyAction::Retry
+            ReadyAction::Wait
+        );
+        // NOT READY, initializing command required: START UNIT is not sent.
+        assert_eq!(
+            ready_action(Sense {
+                key: 2,
+                asc: 4,
+                ascq: 2
+            }),
+            ReadyAction::NeedsStart
+        );
+        // NOT READY, other ASC 04 qualifiers (manual intervention, format in
+        // progress): give up.
+        assert_eq!(
+            ready_action(Sense {
+                key: 2,
+                asc: 4,
+                ascq: 3
+            }),
+            ReadyAction::Fail
         );
         assert_eq!(
             ready_action(Sense {
@@ -535,5 +554,98 @@ mod tests {
         );
         // Every step still ran.
         assert_eq!(pipe.calls, [Out, Reset, ClearIn, ClearOut]);
+    }
+
+    /// Chad's #20 review (U17): a device that stalls every CBW whose opcode
+    /// it doesn't support. Every command the driver can build passes on it;
+    /// MODE SENSE, SYNCHRONIZE CACHE, PREVENT ALLOW MEDIUM REMOVAL, START
+    /// STOP UNIT and WRITE(10) are refused before the pipe is touched.
+    struct Picky {
+        calls: usize,
+        pending: Option<Vec<u8>>,
+        tag: [u8; 4],
+    }
+
+    impl Pipe for Picky {
+        fn bulk_out(&mut self, cbw: &[u8]) -> Xfer {
+            self.calls += 1;
+            let opcode = cbw[15];
+            if !matches!(opcode, 0x12 | 0x00 | 0x03 | 0x25 | 0x9e | 0x28) {
+                return Xfer::Stall;
+            }
+            self.tag.copy_from_slice(&cbw[4..8]);
+            let len = u32::from_le_bytes([cbw[8], cbw[9], cbw[10], cbw[11]]) as usize;
+            self.pending = (len > 0).then(|| vec![0u8; len]);
+            Xfer::Done(cbw.len())
+        }
+        fn bulk_in(&mut self, buf: &mut [u8]) -> Xfer {
+            self.calls += 1;
+            if let Some(data) = self.pending.take() {
+                buf[..data.len()].copy_from_slice(&data);
+                return Xfer::Done(data.len());
+            }
+            let mut c = CSW_OK.to_vec();
+            c[4..8].copy_from_slice(&self.tag);
+            buf[..13].copy_from_slice(&c);
+            Xfer::Done(13)
+        }
+        fn clear_halt_in(&mut self) -> bool {
+            true
+        }
+        fn clear_halt_out(&mut self) -> bool {
+            true
+        }
+        fn mass_storage_reset(&mut self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn only_allowlisted_commands_reach_the_device() {
+        // Every builder's opcode is on the list.
+        for cdb in [
+            cdb_inquiry().to_vec(),
+            cdb_test_unit_ready().to_vec(),
+            cdb_request_sense().to_vec(),
+            cdb_read_capacity_10().to_vec(),
+            cdb_read_capacity_16().to_vec(),
+            cdb_read_10(0, 1).to_vec(),
+        ] {
+            assert!(cdb_allowed(&cdb), "{cdb:02x?}");
+            let mut pipe = Picky {
+                calls: 0,
+                pending: None,
+                tag: [0; 4],
+            };
+            let mut data = vec![0u8; 36];
+            let len = if cdb[0] == 0x00 { 0 } else { 36 };
+            let got = command(&mut pipe, TAG, 0, &cdb, &mut data[..len]);
+            assert!(matches!(got, Outcome::Passed { .. }), "{cdb:02x?}: {got:?}");
+        }
+        // The commands that hang or stall devices, and a write, never go out.
+        for cdb in [
+            vec![0x1a, 0, 0x3f, 0, 192, 0],        // MODE SENSE(6)
+            vec![0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0], // SYNCHRONIZE CACHE(10)
+            vec![0x1e, 0, 0, 0, 1, 0],             // PREVENT ALLOW MEDIUM REMOVAL
+            vec![0x1b, 0, 0, 0, 1, 0],             // START STOP UNIT
+            vec![0x2a, 0, 0, 0, 0, 0, 0, 0, 1, 0], // WRITE(10)
+        ] {
+            assert!(!cdb_allowed(&cdb));
+            let mut pipe = Picky {
+                calls: 0,
+                pending: None,
+                tag: [0; 4],
+            };
+            let got = command(&mut pipe, TAG, 0, &cdb, &mut []);
+            assert_eq!(
+                got,
+                Outcome::Reset {
+                    reason: ResetReason::NotAllowed,
+                    recovered: true
+                }
+            );
+            assert_eq!(pipe.calls, 0, "{cdb:02x?} reached the device");
+        }
+        assert!(!cdb_allowed(&[]));
     }
 }
