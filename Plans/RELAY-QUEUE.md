@@ -76,3 +76,5 @@ RELAY 255 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-browser-revie
 RELAY 256 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-browser-reviews-255-256.md | Section 256 (#4 Stylo review; RETURN `Plans/RETURN-2026-11-01-pr4-stylo-review-chad.md`)
 RELAY 257 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-01-recheck-257-pr6.md | Section "Relay 257" (#6 items 2/4/5; RETURN `Plans/RETURN-2026-11-01-pr6-recheck2-janus.md`)
 RELAY 258 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-review-258-pr43.md | Section "Relay 258" (#43 RDRAND review, priority; RETURN `Plans/RETURN-2026-11-01-pr43-rdrand-review-chad.md`)
+RELAY 259 | chad | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-01-relays-259-260.md | Section 259 (#41 re-check; RETURN `Plans/RETURN-2026-11-01-pr41-recheck-chad.md`)
+RELAY 260 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-relays-259-260.md | Section 260 (#45 quick-tier review; RETURN `Plans/RETURN-2026-11-01-pr45-quick-tier-review-dexter.md`)

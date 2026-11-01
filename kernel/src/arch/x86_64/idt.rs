@@ -159,6 +159,78 @@ macro_rules! set_error_code_entry {
     }};
 }
 
+/// The page fault's entry: `set_error_code_entry!`'s shim, with the user-copy
+/// fixup in front of the call (`user_copy`).
+///
+/// A ring-0 fault whose saved RIP is one of the two registered instructions,
+/// `neo_user_copy_insn` (the copy's one `rep movsb`) or
+/// `neo_user_load_u32_insn` (the futex word's one aligned load), on a
+/// user-half address (CR2 below 2^47) resumes at
+/// `neo_user_copy_fixup` instead: the saved RIP is rewritten, the error code
+/// dropped and `iretq` returns to it. RCX still counts the bytes left (4 for
+/// the load), which the fixup returns. Nothing else is touched: RAX is saved and restored, the
+/// CPU frame's RFLAGS (the copy's AC=1, its IF) comes back with `iretq`, and
+/// at CPL 0 there is no GS to swap (CP-44). Every other fault, at any RIP or
+/// address, takes the unchanged path into `page_fault` (CP-40's flags mask,
+/// CP-46's alignment), so a kernel bug still halts.
+///
+/// Off (`user-copy-fixup` not built, or the `neo-test-user-copy-fault-control`
+/// revert-check): the comparison is skipped, and every fault takes that path.
+#[unsafe(naked)]
+pub(crate) extern "C" fn page_fault_shim() {
+    core::arch::naked_asm!(
+        "pushfq",
+        "and qword ptr [rsp], -263169", // ~(AC (1<<18) | DF (1<<10))
+        "popfq",
+        // [rsp]: error code, [rsp+8]: RIP, [rsp+16]: CS.
+        "test qword ptr [rsp + 16], 3",
+        "jnz 2f",
+        "push rax",
+        // [rsp+16]: RIP now.
+        "lea rax, [rip + {insn}]",
+        "cmp rax, qword ptr [rsp + 16]",
+        "je 3f",
+        "lea rax, [rip + {insn32}]",
+        "cmp rax, qword ptr [rsp + 16]",
+        "jne 1f",
+        "3:",
+        "cmp byte ptr [rip + {enabled}], 0",
+        "je 1f",
+        "mov rax, cr2",
+        "shr rax, 47",
+        "jnz 1f",
+        "lea rax, [rip + {fixup}]",
+        "mov qword ptr [rsp + 16], rax",
+        "pop rax",
+        "add rsp, 8", // the error code
+        "iretq",
+        "1:",
+        "pop rax",
+        "2:",
+        "mov rdi, rsp", // &ErrorCodeFrame
+        "and rsp, -16",
+        "call {body}",
+        "ud2",
+        insn = sym neo_user_copy_insn,
+        insn32 = sym neo_user_load_u32_insn,
+        fixup = sym neo_user_copy_fixup,
+        enabled = sym USER_COPY_FIXUP_ENABLED,
+        body = sym page_fault,
+    )
+}
+
+unsafe extern "C" {
+    static neo_user_copy_insn: u8;
+    static neo_user_load_u32_insn: u8;
+    static neo_user_copy_fixup: u8;
+}
+
+/// Whether the page-fault shim recovers a user-copy fault (the kill-switch,
+/// fixed at build time; a byte the shim can test without a register).
+static USER_COPY_FIXUP_ENABLED: u8 = (cfg!(feature = "user-copy-fixup")
+    && !cfg!(feature = "neo-test-user-copy-fault-control"))
+    as u8;
+
 /// # Safety
 ///
 /// `shim` must be a `set_error_code_entry!` shim.
@@ -209,7 +281,10 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     set_error_code_entry!(idt.segment_not_present, segment_not_present);
     set_error_code_entry!(idt.stack_segment_fault, stack_segment_fault);
     set_error_code_entry!(idt.general_protection_fault, general_protection_fault);
-    set_error_code_entry!(idt.page_fault, page_fault);
+    // The page fault's shim also recovers a user-copy fault (`user_copy`).
+    // SAFETY: `page_fault_shim` is `set_error_code_entry!`'s shim for
+    // `page_fault` with the user-copy fixup in front of the call.
+    unsafe { install_error_code_shim(&mut idt.page_fault, page_fault_shim) };
     set_exception_entry!(idt.x87_floating_point, x87_floating_point);
     set_error_code_entry!(idt.alignment_check, alignment_check);
     set_exception_entry!(idt.simd_floating_point, simd_floating_point);

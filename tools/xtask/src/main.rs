@@ -4333,6 +4333,19 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // user-copy-fixup: syscalls whose user buffer is unmapped, crosses
+        // into an unmapped page, or is read-only return EFAULT, commit
+        // nothing (SYS_READ's offset, a join), and the kernel keeps running;
+        // futex, IPC and TLS legs too (CP-99). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-user-copy-fault-control (the
+        // page-fault shim's recovery off: the first fault halts).
+        name: "user_copy_fault",
+        feature: "neo-test-user-copy-fault",
+        user_feature: Some("user-copy-fault-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "model_load_cascade",
         feature: "neo-test-model-load-cascade",
         user_feature: Some("model-load-cascade"),
@@ -4497,6 +4510,33 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "usb_enumerate",
         feature: "neo-test-usb-enumerate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L3u-2: a usb-storage stick with the FAT32 fixture binds, mounts and
+    // reads back; `usb_storage_off` is the kill-switch (it enumerates and
+    // stays unclaimed).
+    TestScenario {
+        name: "usb_storage_read",
+        feature: "neo-test-usb-storage-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_storage_off",
+        feature: "neo-test-usb-storage-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // #30: the stick hot-plugged, bound, read, then pulled with a reader
+    // running: every read after (and the one in flight) is NoDevice and the
+    // block device leaves the registry.
+    TestScenario {
+        name: "usb_storage_unplug",
+        feature: "neo-test-usb-storage-unplug",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -6360,7 +6400,7 @@ const FXSAVE_KERNEL_SCENARIOS: &[&str] = &["servo_closure_smoke"];
 
 /// The kernel's default features less `inference-preemptible` (see
 /// `kernel/Cargo.toml`'s `default`).
-const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim"];
+const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim", "user-copy-fixup"];
 
 fn build_test_kernel(scenario: TestScenario, mode: ScenarioBundleMode) -> Result<(), String> {
     let mut features = vec!["neo-test", scenario.feature];
@@ -12846,6 +12886,38 @@ fn run_qemu_test_invocation(
             .arg("usb-storage,drive=usbstick,bus=xhci0.0");
     }
 
+    if scenario.name == "usb_storage_unplug" {
+        // #30: no stick at boot; the script plugs it into root port 2 and
+        // pulls it (`HMP_HOTPLUG_ADD_STICK` / `_DEL_STICK`). The drive is
+        // defined up front so `device_add` can name it.
+        let stick = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join(format!("{}-usbstick.raw", scenario.name));
+        let stick = prepare_fat32_storage_disk(&stick)?;
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-drive").arg(format!(
+            "if=none,id=usbstick,format=raw,file={}",
+            stick.display()
+        ));
+    }
+
+    if scenario.name == "usb_storage_read" || scenario.name == "usb_storage_off" {
+        // L3u-2: QEMU's Bulk-Only usb-storage (46f4:0001) on qemu-xhci,
+        // holding the FAT32 fixture volume (the same image the phase3_fat32_*
+        // scenarios mount from virtio).
+        let stick = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join(format!("{}-usbstick.raw", scenario.name));
+        let stick = prepare_fat32_storage_disk(&stick)?;
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-drive").arg(format!(
+            "if=none,id=usbstick,format=raw,file={}",
+            stick.display()
+        ));
+        qemu.arg("-device")
+            .arg("usb-storage,drive=usbstick,bus=xhci0.0");
+    }
+
     let virtio_accel_host = if virtio_accel_scenario {
         let host = start_virtio_accel_host(scenario.name)?;
         qemu.arg("-chardev").arg(format!(
@@ -13118,6 +13190,12 @@ fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
         }),
         "usb_hotplug" => Some(ScenarioScript {
             steps: USB_HOTPLUG_HMP_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "usb_storage_unplug" => Some(ScenarioScript {
+            steps: USB_STORAGE_UNPLUG_HMP_STEPS,
             transport: ScriptTransport::HmpKeyboard,
             screenshot_rel: None,
             screenshot_after_command: None,
@@ -13551,6 +13629,22 @@ const HMP_HOTPLUG_ADD_KBD: u8 = 0x86;
 const HMP_HOTPLUG_DEL_KBD: u8 = 0x87;
 const HMP_HOTPLUG_ADD_KBD_HUB: u8 = 0x88;
 
+/// usb_storage_unplug (#30): plug and pull the stick.
+const HMP_HOTPLUG_ADD_STICK: u8 = 0xA0;
+const HMP_HOTPLUG_DEL_STICK: u8 = 0xA1;
+
+/// usb_storage_unplug (#30): plug the stick, then pull it once a reader runs.
+const USB_STORAGE_UNPLUG_HMP_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: b"msc-unplug=ready-for-plug",
+        command: &[HMP_HOTPLUG_ADD_STICK],
+    },
+    SerialScriptStep {
+        prompt: b"msc-unplug=unplug-now",
+        command: &[HMP_HOTPLUG_DEL_STICK],
+    },
+];
+
 /// ps2_key_repeat: hold a key 1.5 s (QEMU sends the make, then the break
 /// when the hold time ends).
 const HMP_HOLD_BACKSPACE: u8 = 0x89;
@@ -13676,6 +13770,10 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         HMP_HOTPLUG_ADD_KBD => Some("device_add usb-kbd,bus=xhci0.0,port=2,id=hotkbd\n"),
         HMP_HOTPLUG_DEL_KBD => Some("device_del hotkbd\n"),
         HMP_HOTPLUG_ADD_KBD_HUB => Some("device_add usb-kbd,bus=xhci0.0,port=1.1,id=hotkbd\n"),
+        HMP_HOTPLUG_ADD_STICK => {
+            Some("device_add usb-storage,drive=usbstick,bus=xhci0.0,port=2,id=hotstick\n")
+        }
+        HMP_HOTPLUG_DEL_STICK => Some("device_del hotstick\n"),
         // i8042 lane (`ps2_keyboard`): a shifted letter, an `E0` key, a
         // right-hand modifier, and the `E1` Pause sequence.
         0x82 => Some("sendkey shift-b\n"),

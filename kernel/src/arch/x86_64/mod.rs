@@ -59,6 +59,7 @@ pub mod smp;
 // syscall.rs: uninit_vec is intentional user-memory fill; collapsible_if/useless_conversion deferred
 pub mod syscall;
 pub mod timer;
+pub mod user_copy;
 // OT-85: the boot-time RTC epoch seed (CLOCK_REALTIME's base).
 #[cfg(feature = "rtc-epoch")]
 pub mod rtc;
