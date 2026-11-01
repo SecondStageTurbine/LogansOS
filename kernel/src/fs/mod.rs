@@ -424,6 +424,21 @@ impl OpenFile {
     /// be narrower than this OpenFile (a derive narrows only the handle), so
     /// both must hold READ. Type first, rights second, as before.
     pub fn read_as(&self, out: &mut [u8], handle: FileRights) -> Result<usize, VfsError> {
+        let read = self.read_as_then(out, handle, |_| Ok::<(), core::convert::Infallible>(()))?;
+        Ok(read.unwrap_or_else(|never| match never {}))
+    }
+
+    /// `read_as`, handing the bytes read to `deliver` before the offset
+    /// moves (under the offset lock). The offset advances only when `deliver`
+    /// succeeds; its error comes back as the inner `Err`, with the offset
+    /// where it was. `SYS_READ` delivers to the user buffer here, so a read
+    /// whose copy faults (EFAULT) leaves the file as it found it (CP-99).
+    pub fn read_as_then<E>(
+        &self,
+        out: &mut [u8],
+        handle: FileRights,
+        deliver: impl FnOnce(&[u8]) -> Result<(), E>,
+    ) -> Result<Result<usize, E>, VfsError> {
         let snapshot = self.validate_snapshot()?;
         if !matches!(self.inode.kind(), InodeKind::Regular | InodeKind::Model) {
             return Err(VfsError::TypeForbidden);
@@ -434,8 +449,11 @@ impl OpenFile {
         let mut offset = self.offset.lock();
         let n = self.inode.read_at(*offset, out)?;
         self.validate_after_read(snapshot)?;
+        if let Err(e) = deliver(&out[..n]) {
+            return Ok(Err(e));
+        }
         *offset = offset.saturating_add(n);
-        Ok(n)
+        Ok(Ok(n))
     }
 
     pub fn read_at_offset(&self, offset: usize, out: &mut [u8]) -> Result<usize, VfsError> {

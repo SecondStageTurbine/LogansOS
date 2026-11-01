@@ -74,7 +74,13 @@ p256 = { version = "0.13", default-features = false, optional = true, features =
 hkdf = { version = "0.12", default-features = false, optional = true }
 
 [features]
-default = ["kernel-diagnostic", "accel-sim", "inference-preemptible"]
+default = ["kernel-diagnostic", "accel-sim", "inference-preemptible", "user-copy-fixup"]
+# A syscall's copy to or from user memory survives a fault on the user page
+# (unmapped, read-only, or unmapped by another thread mid-copy) and returns
+# EFAULT: the page-fault shim recognises the copy's one faulting instruction
+# by RIP (`arch::x86_64::user_copy`). Off: the shim doesn't look, and the
+# fault halts the kernel, as before.
+user-copy-fixup = []
 kernel-diagnostic = []
 accel-sim = []
 virtio-accel = []
@@ -686,6 +692,13 @@ neo-test-net-tick-retransmit = ["neo-test", "net-tick"]
 neo-test-tcp-listen-bounds = ["neo-test"]
 # OT-91: an exit code is kept only while someone can claim it.
 neo-test-exit-codes-bounded = ["neo-test"]
+# user-copy-fixup: a syscall whose user buffer is unmapped, read-only or
+# crosses into an unmapped page returns EFAULT, and the kernel keeps running
+# (neo-init's legs). `browser-runtime` for SYS_VM_MAP/UNMAP/PROTECT and
+# SYS_HANDLE_INFO. Control: the shim's recovery disabled, so the first leg's
+# fault halts the kernel (an unexpected trap).
+neo-test-user-copy-fault = ["neo-test", "browser-runtime"]
+neo-test-user-copy-fault-control = ["neo-test-user-copy-fault"]
 # Revert-checks for #171: a sys_wait takes no claim (step 5 gets ESRCH), and a
 # table dropped undrained releases no exit-code claim (the kernel leg fails).
 neo-test-wait-claim-pin-control = ["neo-test-exit-codes-bounded"]

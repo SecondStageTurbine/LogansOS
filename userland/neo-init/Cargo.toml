@@ -288,6 +288,8 @@ socket-teardown-test = []
 exit-codes-test = []
 # Dexter #187 item 3a: the mount_authority scenario.
 mount-authority-test = []
+# The user_copy_fault scenario (user-copy-fixup).
+user-copy-fault-test = ["libneo/neo-test"]
 # OT-66 K1a: hand Arthur and the shell a derived RootDirCap at spawn (for a
 # `cap-rooted-open` kernel).
 cap-rooted-open = ["libneo/cap-rooted-open"]
