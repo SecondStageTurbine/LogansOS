@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: MPL-2.0
 [margin]
 flags = "SCROLL_LINKED_EFFECTIVE"
 sub_properties = ["margin-top", "margin-right", "margin-bottom", "margin-left"]

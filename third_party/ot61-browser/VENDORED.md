@@ -51,10 +51,12 @@ out of the tree. That trim is local, not part of what would go upstream.
 Stylo's `global_style_data.rs` names a platform thread handle for its style pool: `RawPthread` on `unix`,
 `RawHandle` on `windows`, and a no-op `DummyThreadHandle` on `wasm32`. `x86_64-unknown-neoplutarch` is none of
 those (no `target_family`), so `PlatformThreadHandle` was undefined and the crate didn't build (CI run
-41254489164). The patch extends the `wasm32` no-op branch to `target_os = "neoplutarch"`: four `cfg`s, nothing
-else. The handles are only read by Gecko's embedding (`get_thread_handles`); Servo, and our smoke, never ask for
+41254489164). The patch extends the `wasm32` no-op branch to `target_os = "neoplutarch"`: four `cfg`s. The handles are only read by Gecko's embedding (`get_thread_handles`); Servo, and our smoke, never ask for
 them. The style pool's threads themselves are ordinary `std::thread`s on this target's C1.3 threads. Upstreamable
 as is.
+
+Each source file of the copy also starts with its SPDX line (`MPL-2.0`, the crate's licence and the notice every
+file already carries), as `parking_lot_core`'s do: a patched crate is checked like first-party code.
 
 ## The crates
 
