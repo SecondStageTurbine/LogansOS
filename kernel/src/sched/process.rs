@@ -5485,11 +5485,13 @@ pub fn tail_hold_for_test() {
         return;
     }
     let flag = TAIL_HOLD_FLAG.load(Ordering::Acquire);
-    // SAFETY: `flag` was validated as a 4-byte user range when armed, and
-    // this is the arming thread, so its address space is the active one.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::write_volatile(flag as *mut u32, 1)
-    });
+    // `flag` was validated as a 4-byte user range (and probed writable) when
+    // armed, and this is the arming thread, so its address space is the
+    // active one. The write goes through the fault-tolerant copy (CP-99): if
+    // the page was unmapped since, nobody can see the go, so don't hold.
+    if crate::arch::x86_64::syscall::write_user(flag as *mut u32, 1u32).is_err() {
+        return;
+    }
     let pid = scheduler::current_pid();
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
     let start = ticks();

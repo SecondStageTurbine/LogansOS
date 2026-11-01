@@ -1328,10 +1328,14 @@ extern "C" fn syscall_dispatch(
         #[cfg(feature = "neo-test-threads-exit-group")]
         SYS_TEST_KERNEL_SPIN => sys_test_kernel_spin_impl(a0),
         #[cfg(feature = "neo-test-threads-exit-group")]
-        SYS_TEST_TAIL_HOLD => match validate_user_buf(a0, 4) {
-            Ok(()) => crate::sched::process::arm_tail_hold_for_test(a0),
-            Err(e) => e,
-        },
+        SYS_TEST_TAIL_HOLD => {
+            // CP-99: the flag must be a writable user word now (the tail's
+            // write is also fault-tolerant, for an unmap after this).
+            match validate_user_buf(a0, 4).and_then(|()| probe_user_writable(a0 as *mut u8, 4)) {
+                Ok(()) => crate::sched::process::arm_tail_hold_for_test(a0),
+                Err(e) => e,
+            }
+        }
         #[cfg(feature = "neo-test-cap-graph-revoke")]
         SYS_TEST_CAP_GRAPH_RACE => match a0 {
             0 => {
@@ -1599,7 +1603,7 @@ fn read_user<T: Copy>(src: *const T) -> Result<T, i64> {
 }
 
 /// Write `value` to user memory.
-fn write_user<T: Copy>(dst: *mut T, value: T) -> Result<(), i64> {
+pub(crate) fn write_user<T: Copy>(dst: *mut T, value: T) -> Result<(), i64> {
     user_copy(
         dst.cast(),
         (&value as *const T).cast(),
