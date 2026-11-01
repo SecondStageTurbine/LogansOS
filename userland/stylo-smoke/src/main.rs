@@ -938,7 +938,7 @@ impl<'a> TElement for N<'a> {
     }
 
     fn id(&self) -> Option<&Atom> {
-        self.element()?.id.as_deref()
+        self.element()?.id.as_ref()
     }
 
     fn each_class<F>(&self, mut callback: F)
