@@ -8913,6 +8913,7 @@ fn run_test_scenario_with_retries(
                     "[xtask] neo-test: `{}` attempt {}/{} failed: {}",
                     scenario.name, attempt, attempts, err
                 );
+                print_serial_tail(&err);
                 eprintln!(
                     "[xtask] neo-test: retrying `{}` after transient QEMU failure candidate",
                     scenario.name
@@ -8920,6 +8921,7 @@ fn run_test_scenario_with_retries(
                 previous_error = Some(err);
             }
             Err(err) => {
+                print_serial_tail(&err);
                 if let Some(previous) = previous_error {
                     return Err(format!(
                         "`{}` failed after {} attempts; last error: {}; previous error: {}",
@@ -8932,6 +8934,36 @@ fn run_test_scenario_with_retries(
     }
 
     unreachable!("attempt loop always returns")
+}
+
+/// Lines of a failed attempt's serial log to print into the job log.
+const SERIAL_TAIL_LINES: usize = 40;
+
+/// Print the end of the serial log a failure message names (`serial=<path>`)
+/// into the job log. A CI seat that can't download the run's artifacts can
+/// then still see why a scenario failed. Best-effort: no path, or an
+/// unreadable file, prints nothing.
+fn print_serial_tail(err: &str) {
+    let Some(path) = err
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("serial="))
+        .map(|p| p.trim_end_matches([';', ',']))
+    else {
+        return;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(SERIAL_TAIL_LINES);
+    eprintln!(
+        "[xtask] neo-test: last {} serial line(s) of {path}:",
+        lines.len() - start
+    );
+    for line in &lines[start..] {
+        eprintln!("[serial] {line}");
+    }
 }
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
