@@ -53,6 +53,8 @@ unsafe extern "C" {
     static stdout: *mut c_void;
     fn __lockfile(f: *mut c_void) -> i32;
     fn __unlockfile(f: *mut c_void);
+    fn __errno_location() -> *mut i32;
+    fn __neo_crt_write(fd: i32, buf: *const u8, len: usize) -> std::ffi::c_long;
 }
 
 fn check(n: i32, what: &str, ok: bool) {
@@ -102,6 +104,57 @@ fn stdout_lock_excludes() -> bool {
     let wrote = writer.join().unwrap_or(false);
     println!("{TAG} stdout lock: nested={nested} writer_waited={waited} writer_ok={wrote}");
     nested && waited && wrote && done.load(Ordering::Acquire)
+}
+
+/// A failing write returns -1 with the failure's own errno, not a blanket
+/// `EIO` (the #2 review). The expected numbers are musl's `errno.h`
+/// (= `kernel/src/errno.rs`), written out by hand: EBADF 9, EAGAIN 11,
+/// EACCES 13, EPIPE 32, EIO 5. A success leaves errno alone.
+fn write_errors_keep_their_errno() -> bool {
+    use std::io::{Error, ErrorKind};
+    let errno = || unsafe { *__errno_location() };
+    let set = |v: i32| unsafe { *__errno_location() = v };
+    let mut ok = true;
+    let mut expect = |what: &str, r: std::io::Result<usize>, ret: std::ffi::c_long, want: i32| {
+        set(0);
+        let got = neo_crt::write_result_for_c(r);
+        let e = errno();
+        if got != ret || e != want {
+            println!(
+                "{TAG} write errno: {what}: returned {got} errno {e}, want {ret} errno {want}"
+            );
+            ok = false;
+        }
+    };
+    expect("raw EPIPE", Err(Error::from_raw_os_error(32)), -1, 32);
+    expect("raw EAGAIN", Err(Error::from_raw_os_error(11)), -1, 11);
+    expect("raw EACCES", Err(Error::from_raw_os_error(13)), -1, 13);
+    expect("raw EBADF", Err(Error::from_raw_os_error(9)), -1, 9);
+    expect(
+        "std-made BrokenPipe",
+        Err(Error::from(ErrorKind::BrokenPipe)),
+        -1,
+        32,
+    );
+    expect(
+        "std-made WriteZero",
+        Err(Error::from(ErrorKind::WriteZero)),
+        -1,
+        5,
+    );
+    expect("success", Ok(5), 5, 0);
+    // The C entry point itself: an fd that isn't 1 or 2.
+    set(0);
+    let r = unsafe { __neo_crt_write(5, b"x".as_ptr(), 1) };
+    if r != -1 || errno() != 9 {
+        println!(
+            "{TAG} write errno: fd 5 returned {r} errno {}, want -1 errno 9",
+            errno()
+        );
+        ok = false;
+    }
+    set(0);
+    ok
 }
 
 #[unsafe(no_mangle)]
@@ -176,6 +229,11 @@ pub extern "C" fn _start() -> ! {
     let ran = on_threads(crt_stdio_hammer);
     unsafe { crt_stdio_end_runs() };
     check(17, "6 threads print 600-byte runs to stdout at once", ran);
+    check(
+        18,
+        "a failing write returns -1 with its own errno",
+        write_errors_keep_their_errno(),
+    );
     println!("{TAG} PASS");
     std::process::exit(0)
 }

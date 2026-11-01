@@ -16593,6 +16593,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(15) C++: one function-local static, 6 threads, built once",
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
+            "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {

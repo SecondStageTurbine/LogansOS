@@ -303,12 +303,43 @@ pub unsafe extern "C" fn __neo_crt_write(fd: c_int, buf: *const u8, len: usize) 
             return -1;
         }
     };
+    write_result_for_c(r)
+}
+
+/// A std write's result in C's terms: the byte count, or -1 with `errno` set
+/// by [`errno_for_io_error`]. `pub` so the C3a smoke can check the mapping.
+pub fn write_result_for_c(r: std::io::Result<usize>) -> c_long {
     match r {
         Ok(n) => n as c_long,
-        Err(_) => {
-            set_errno(5); // EIO
+        Err(e) => {
+            set_errno(errno_for_io_error(&e));
             -1
         }
+    }
+}
+
+/// The C `errno` for a failed std write. A syscall failure reaches std as
+/// `io::Error::from_raw_os_error(errno)` with LogansOS's positive errno
+/// (`kernel/src/errno.rs`, the same numbers as musl's `errno.h`), so that code
+/// is passed through as is: `EPIPE` stays `EPIPE`, not `EIO`. An error std made
+/// itself carries no code; its kind picks the nearest errno, and anything else
+/// is `EIO`.
+pub fn errno_for_io_error(e: &std::io::Error) -> c_int {
+    use std::io::ErrorKind as K;
+    if let Some(code) = e.raw_os_error()
+        && code > 0
+    {
+        return code;
+    }
+    match e.kind() {
+        K::PermissionDenied => 13, // EACCES
+        K::WouldBlock => 11,       // EAGAIN
+        K::InvalidInput => 22,     // EINVAL
+        K::BrokenPipe => 32,       // EPIPE
+        K::OutOfMemory => 12,      // ENOMEM
+        K::Unsupported => 38,      // ENOSYS
+        K::TimedOut => 110,        // ETIMEDOUT
+        _ => 5,                    // EIO (WriteZero, Other, ...)
     }
 }
 
