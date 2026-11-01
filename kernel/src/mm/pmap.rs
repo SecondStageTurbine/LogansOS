@@ -1248,6 +1248,37 @@ impl Pmap {
         (self.pml4_frame, Cr3Flags::empty())
     }
 
+    /// `translate`, for a user access: `None` unless every level of the walk
+    /// is present and user-accessible, the walk ends at a 4 KiB leaf, and,
+    /// when `write`, every level is writable, i.e. exactly when ring 3 could
+    /// make that access. The IPC copy resolves its peer's buffer through
+    /// this (CP-99): a peer's read-only page is `EFAULT`, not written through
+    /// the HHDM. Lock-free, like `translate` (ADR-006 §Q4).
+    pub fn translate_user(&self, va: VirtAddr, write: bool) -> Option<PhysAddr> {
+        let mut need = PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE;
+        if write {
+            need |= PageTableFlags::WRITABLE;
+        }
+        let indices = page_indices(va);
+        // SAFETY: read-only walk through HHDM-mapped tables.
+        let mut current =
+            unsafe { &*(phys_to_virt(self.pml4_frame.start_address()).as_ptr::<PageTable>()) };
+        for level in 0..3 {
+            let entry = &current[indices[level] as usize];
+            let flags = entry.flags();
+            if !flags.contains(need) || flags.contains(PageTableFlags::HUGE_PAGE) {
+                return None;
+            }
+            current = unsafe { &*(phys_to_virt(entry.addr()).as_ptr::<PageTable>()) };
+        }
+        let leaf = &current[indices[3] as usize];
+        if leaf.flags().contains(need) {
+            Some(leaf.addr() + (va.as_u64() & 0xFFF))
+        } else {
+            None
+        }
+    }
+
     /// Walk the page tables and return the physical address that backs `va`,
     /// or `None` if any level along the way is unmapped. Phase 1.5b's IPC
     /// path uses this to resolve a peer process's user buffer (without

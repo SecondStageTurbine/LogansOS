@@ -709,12 +709,22 @@ fn continue_current_after_receive(thread: Box<Thread>, return_value: i64) {
 
 // === User→user copy via two Pmap translates =============================
 
-/// Copy `n` bytes from `src_va` in `src_pmap` to `dst_va` in `dst_pmap` via
-/// HHDM, using `Pmap::translate` to walk each side's page tables.
+/// Copy `n` bytes from `src_va` in `src_pmap` to `dst_va` in `dst_pmap`.
 ///
-/// Page-by-page: each iteration translates the next 4 KiB-aligned chunk on
-/// both sides and copies the smaller of (remaining, src-page-tail,
-/// dst-page-tail). Returns Err(()) if any translate fails.
+/// Page-by-page: each iteration copies the smaller of (remaining,
+/// src-page-tail, dst-page-tail). Returns Err(()) (EFAULT to both sides) if
+/// a page can't be accessed the way ring 3 would need to: unmapped, not
+/// user-accessible, or (destination) read-only. Some prefix may have been
+/// copied by then.
+///
+/// CP-99: the side whose address space is live on this CPU (the caller's,
+/// for a syscall) is read or written at its user VA through the registered
+/// fault-tolerant copy (`user_copy::try_copy`): a fault there, including a
+/// sibling thread's unmap mid-copy, is recovered, and a read-only page
+/// faults under CR0.WP. The other side is resolved with
+/// `Pmap::translate_user` (present, user, and writable for the destination)
+/// and accessed through the HHDM. When neither is live (a kernel-thread
+/// caller in the test harness), both are resolved that way.
 fn cross_pmap_copy(
     src_pmap: &Pmap,
     src_va: u64,
@@ -722,26 +732,53 @@ fn cross_pmap_copy(
     dst_va: u64,
     n: usize,
 ) -> Result<(), ()> {
+    use crate::arch::x86_64::user_copy::try_copy;
+
     if n == 0 {
         return Ok(());
     }
+    let live = x86_64::registers::control::Cr3::read().0;
+    let src_live = src_pmap.cr3().0 == live;
+    let dst_live = !src_live && dst_pmap.cr3().0 == live;
     let mut copied: usize = 0;
     while copied < n {
         let s = src_va + copied as u64;
         let d = dst_va + copied as u64;
-        let src_phys = src_pmap.translate(VirtAddr::new(s)).ok_or(())?;
-        let dst_phys = dst_pmap.translate(VirtAddr::new(d)).ok_or(())?;
         // How much of THIS iteration stays inside both pages?
         let src_page_tail = 0x1000 - (s & 0xFFF) as usize;
         let dst_page_tail = 0x1000 - (d & 0xFFF) as usize;
         let chunk = (n - copied).min(src_page_tail).min(dst_page_tail);
-        // SAFETY: HHDM gives a kernel-virt mapping for any phys we hold.
-        // src and dst are in distinct user-half ranges of distinct
-        // processes, so non-overlapping.
-        unsafe {
-            let src_kern = phys_to_virt(src_phys).as_ptr::<u8>();
-            let dst_kern = phys_to_virt(dst_phys).as_mut_ptr::<u8>();
-            core::ptr::copy_nonoverlapping(src_kern, dst_kern, chunk);
+        let ok = if src_live {
+            let dst_phys = dst_pmap.translate_user(VirtAddr::new(d), true).ok_or(())?;
+            // SAFETY: the destination is `chunk` bytes of one HHDM-mapped
+            // user frame; the source is the live user VA, in the user half
+            // (the syscall validated it), and a fault on it is recovered.
+            unsafe {
+                try_copy(
+                    phys_to_virt(dst_phys).as_mut_ptr::<u8>(),
+                    s as *const u8,
+                    chunk,
+                )
+            }
+        } else if dst_live {
+            let src_phys = src_pmap.translate_user(VirtAddr::new(s), false).ok_or(())?;
+            // SAFETY: as above, with the roles swapped.
+            unsafe { try_copy(d as *mut u8, phys_to_virt(src_phys).as_ptr::<u8>(), chunk) }
+        } else {
+            let src_phys = src_pmap.translate_user(VirtAddr::new(s), false).ok_or(())?;
+            let dst_phys = dst_pmap.translate_user(VirtAddr::new(d), true).ok_or(())?;
+            // SAFETY: HHDM gives a kernel-virt mapping for any phys we hold.
+            // src and dst are in distinct user-half ranges of distinct
+            // processes, so non-overlapping.
+            unsafe {
+                let src_kern = phys_to_virt(src_phys).as_ptr::<u8>();
+                let dst_kern = phys_to_virt(dst_phys).as_mut_ptr::<u8>();
+                core::ptr::copy_nonoverlapping(src_kern, dst_kern, chunk);
+            }
+            true
+        };
+        if !ok {
+            return Err(());
         }
         copied += chunk;
     }
