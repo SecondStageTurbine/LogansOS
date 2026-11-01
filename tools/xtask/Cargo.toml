@@ -22,6 +22,10 @@ key-autorepeat = []
 # `default-features = false` is load-bearing: with `std` on, workspace feature
 # unification would enable it for the no_std kernel's blake3 too.
 blake3 = { version = "1.8.2", default-features = false }
+# OT-61: `vendor-verify` recomputes every vendored crate file's SHA-256
+# against its `.cargo-checksum.json`. Already in the workspace lock (kernel,
+# ai-ops-tests); `default-features = false` for the same reason as blake3.
+sha2 = { version = "0.10", default-features = false }
 # OT-87 R4.2: the ESP templates (THINK §4.3), formatted on the host. Vendored
 # (third_party/fatfs/VENDORED.md); no `chrono`: the builder stamps a fixed
 # time, so a template build is reproducible.

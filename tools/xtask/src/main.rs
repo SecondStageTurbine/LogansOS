@@ -68,6 +68,8 @@ mod install_bundle;
 #[path = "../../../kernel/src/install_bundle_logic.rs"]
 #[allow(dead_code)]
 mod install_bundle_logic;
+/// OT-61: vendored crates still match what crates.io published.
+mod vendor_verify;
 
 #[cfg(test)]
 mod build_id_tests;
@@ -5851,6 +5853,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         "build" => cmd_build(&args[1..]),
         "iso" => cmd_iso(&args[1..]),
+        "vendor-verify" => cmd_vendor_verify(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "run-headless" => cmd_run_headless(&args[1..]),
         "run-vnc" => cmd_run_vnc(&args[1..]),
@@ -6017,6 +6020,9 @@ fn print_help() {
     println!("COMMANDS:");
     println!("    build         compile the kernel for {KERNEL_TARGET}");
     println!("    iso           build the kernel and produce {ISO_OUTPUT_REL}");
+    println!(
+        "    vendor-verify      check every third_party/*/vendor crate against its .cargo-checksum.json"
+    );
     println!(
         "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
     );
@@ -8034,6 +8040,37 @@ fn build_id_from(hash: &str, dirty: bool) -> String {
 }
 
 // === iso ===
+
+/// `cargo xtask vendor-verify`: every `third_party/*/vendor/<crate>/` still
+/// matches its `.cargo-checksum.json` (see `vendor_verify`).
+fn cmd_vendor_verify(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask vendor-verify".to_string());
+    }
+    let crates = vendor_verify::vendored_crates(&workspace_root());
+    let mut files = 0;
+    let mut bad = Vec::new();
+    for dir in &crates {
+        match vendor_verify::verify_crate(dir) {
+            Ok(n) => files += n,
+            Err(errs) => bad.extend(errs),
+        }
+    }
+    if !bad.is_empty() {
+        for b in &bad {
+            eprintln!("vendor-verify: {b}");
+        }
+        return Err(format!(
+            "{} vendored file(s) differ from what crates.io published (patch a crate under patched/, not vendor/)",
+            bad.len()
+        ));
+    }
+    println!(
+        "vendor-verify: {} crates, {files} files, all match their .cargo-checksum.json",
+        crates.len()
+    );
+    Ok(())
+}
 
 fn cmd_iso(args: &[String]) -> Result<(), String> {
     let (with_model, rest) = split_with_model(args)?;
