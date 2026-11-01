@@ -20,7 +20,9 @@ Read this file with `git fetch origin && git show origin/main:Plans/DISPATCH-202
    the commit), not a code fault; `desktop_home_cycle` was the first (main `76a1f03`).
 3. **Don't attach the private archive** (it stops you on a prompt only J.c. can answer). Everything you need from it
    is already here: carried-over PRs #1-#8 and the `import/pr<N>` branches below.
-4. Everything else in `CLAUDE.md` holds: the close-gate ritual, verify-before-merge, the AAG, cross-family reviews,
+4. **Every time you wake, read the newest `PM:` comments on each of your PRs before anything else.** A
+   cross-family review that bounces your PR is posted there; "ready" on a bounced head wastes a gate.
+5. Everything else in `CLAUDE.md` holds: the close-gate ritual, verify-before-merge, the AAG, cross-family reviews,
    no model names in commits or PR text, and a `PM:` comment on the PR with the gated head SHA when it's ready.
 
 ## Already carried over (by the PM, squashed, scanned)

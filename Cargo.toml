@@ -18,6 +18,7 @@ members = [
     "userland/template-app",
     "userland/fault-probe",
     "userland/neo-std-pal",
+    "userland/neo-image-decode",
     "userland/std-pal-smoke",
     "tools/neofs-mkfs",
     "tools/neo-extract-log",
@@ -55,6 +56,9 @@ members = [
     "tools/handle-info-logic-tests",
     "tools/install-ui-abi-tests",
     "tools/limine-file-logic-tests",
+    "tools/miniz-oxide-logic-tests",
+    "tools/image-decode-logic-tests",
+    "tools/image-decode-fuzz",
     "tools/cap-graph-logic-tests",
     "tools/mem-account-logic-tests",
     "tools/net-rx-logic-tests",
@@ -83,6 +87,19 @@ exclude = [
     # dependency of tools/xtask only (the host ESP-template builder); the
     # kernel never links it.
     "third_party/fatfs",
+    # Lane 2a: vendored Frommi/miniz_oxide (MIT OR Zlib OR Apache-2.0; used
+    # under MIT) at 7fc2dd45. A path dependency of tools/miniz-oxide-logic-tests
+    # only (the host KATs); the kernel does not link it yet.
+    "third_party/miniz_oxide",
+    # Lane 2b: vendored image-rs/image-png (MIT OR Apache-2.0; used under MIT)
+    # at b2f10c6a, and etemesi254/zune-image's zune-jpeg (MIT OR Apache-2.0 OR
+    # Zlib; used under MIT) plus its zune-core dependency at 2f9086b0. Path
+    # dependencies of libneo's host-only `image-decode` feature,
+    # tools/image-decode-logic-tests and tools/image-decode-fuzz; the kernel and
+    # OS userland never link them.
+    "third_party/png",
+    "third_party/zune-core",
+    "third_party/zune-jpeg",
     # Reserved for future phases:
     # "services/neo-inference",
     # "services/neo-models",

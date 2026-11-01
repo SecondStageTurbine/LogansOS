@@ -68,6 +68,8 @@ mod install_bundle;
 #[path = "../../../kernel/src/install_bundle_logic.rs"]
 #[allow(dead_code)]
 mod install_bundle_logic;
+/// OT-61: vendored crates still match what crates.io published.
+mod vendor_verify;
 
 #[cfg(test)]
 mod build_id_tests;
@@ -5868,6 +5870,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         "build" => cmd_build(&args[1..]),
         "iso" => cmd_iso(&args[1..]),
+        "vendor-verify" => cmd_vendor_verify(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "run-headless" => cmd_run_headless(&args[1..]),
         "run-vnc" => cmd_run_vnc(&args[1..]),
@@ -6034,6 +6037,9 @@ fn print_help() {
     println!("COMMANDS:");
     println!("    build         compile the kernel for {KERNEL_TARGET}");
     println!("    iso           build the kernel and produce {ISO_OUTPUT_REL}");
+    println!(
+        "    vendor-verify      check every third_party/*/vendor crate against its .cargo-checksum.json"
+    );
     println!(
         "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
     );
@@ -8052,6 +8058,37 @@ fn build_id_from(hash: &str, dirty: bool) -> String {
 
 // === iso ===
 
+/// `cargo xtask vendor-verify`: every `third_party/*/vendor/<crate>/` still
+/// matches its `.cargo-checksum.json` (see `vendor_verify`).
+fn cmd_vendor_verify(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask vendor-verify".to_string());
+    }
+    let crates = vendor_verify::vendored_crates(&workspace_root());
+    let mut files = 0;
+    let mut bad = Vec::new();
+    for dir in &crates {
+        match vendor_verify::verify_crate(dir) {
+            Ok(n) => files += n,
+            Err(errs) => bad.extend(errs),
+        }
+    }
+    if !bad.is_empty() {
+        for b in &bad {
+            eprintln!("vendor-verify: {b}");
+        }
+        return Err(format!(
+            "{} vendored file(s) differ from what crates.io published (patch a crate under patched/, not vendor/)",
+            bad.len()
+        ));
+    }
+    println!(
+        "vendor-verify: {} crates, {files} files, all match their .cargo-checksum.json",
+        crates.len()
+    );
+    Ok(())
+}
+
 fn cmd_iso(args: &[String]) -> Result<(), String> {
     let (with_model, rest) = split_with_model(args)?;
     match with_model {
@@ -8893,6 +8930,7 @@ fn run_test_scenario_with_retries(
                     "[xtask] neo-test: `{}` attempt {}/{} failed: {}",
                     scenario.name, attempt, attempts, err
                 );
+                print_serial_tail(&err);
                 eprintln!(
                     "[xtask] neo-test: retrying `{}` after transient QEMU failure candidate",
                     scenario.name
@@ -8900,6 +8938,7 @@ fn run_test_scenario_with_retries(
                 previous_error = Some(err);
             }
             Err(err) => {
+                print_serial_tail(&err);
                 if let Some(previous) = previous_error {
                     return Err(format!(
                         "`{}` failed after {} attempts; last error: {}; previous error: {}",
@@ -8912,6 +8951,36 @@ fn run_test_scenario_with_retries(
     }
 
     unreachable!("attempt loop always returns")
+}
+
+/// Lines of a failed attempt's serial log to print into the job log.
+const SERIAL_TAIL_LINES: usize = 40;
+
+/// Print the end of the serial log a failure message names (`serial=<path>`)
+/// into the job log. A CI seat that can't download the run's artifacts can
+/// then still see why a scenario failed. Best-effort: no path, or an
+/// unreadable file, prints nothing.
+fn print_serial_tail(err: &str) {
+    let Some(path) = err
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("serial="))
+        .map(|p| p.trim_end_matches([';', ',']))
+    else {
+        return;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(SERIAL_TAIL_LINES);
+    eprintln!(
+        "[xtask] neo-test: last {} serial line(s) of {path}:",
+        lines.len() - start
+    );
+    for line in &lines[start..] {
+        eprintln!("[serial] {line}");
+    }
 }
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {

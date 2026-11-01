@@ -602,6 +602,12 @@ jobs:
       - name: neo-test shard coverage (4-way partition is complete + disjoint)
         run: cargo run -p xtask -- shard-coverage 4
 
+      # OT-61: crates vendored by `cargo vendor` (third_party/*/vendor) are
+      # reached through [patch] paths, which Cargo never checksums. Every file
+      # must still match its .cargo-checksum.json; patches go in patched/.
+      - name: vendored crates match crates.io (xtask vendor-verify)
+        run: cargo run -p xtask -- vendor-verify
+
       - name: cargo clippy --workspace --all-targets (blocking)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -656,6 +662,61 @@ jobs:
             --features neo-test,neo-test-arthur-agentic-actions \
             -- -D warnings -A dead_code 2>&1
           echo "::endgroup::"
+
+  # Lane 2c: the decoder fuzz guardrail (docs/THINK-2026-10-31-lived-in-os-lanes.md
+  # §4 item 3). Four arms, one per target, each with a fixed 60 s budget.
+  # GitHub-hosted on purpose: the dispatch asks for hosted runners and the arms
+  # are short; this job must not compete for the QEMU shard pool.
+  #
+  # `timeout(1)` is the backstop for a decoder that never returns. The harness
+  # stops itself at --seconds; a SIGKILL from timeout means a hang and fails the
+  # job. A panic aborts (the workspace builds panic = "abort"), and the harness's
+  # panic hook writes the exact input to target/image-decode-fuzz/crashes, which
+  # the failure artifact step uploads.
+  decoder-fuzz:
+    name: Decoder Fuzz (${{ matrix.target }})
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [inflate-zlib, inflate-raw, png, jpeg]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none,aarch64-unknown-none
+
+      - name: Build the fuzz harness
+        run: cargo build -p image-decode-fuzz
+
+      - name: Fuzz ${{ matrix.target }} (60 s)
+        run: |
+          budget=60
+          # +60 s of slack over the harness's own budget; if timeout(1) fires,
+          # the decoder hung and the arm fails with SIGKILL.
+          timeout --signal=KILL $((budget + 60)) \
+            ./target/debug/image-decode-fuzz \
+              --target '${{ matrix.target }}' \
+              --seconds "$budget" \
+              --seed 234
+
+      - name: Upload crash inputs on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoder-fuzz-crash-${{ matrix.target }}
+          path: target/image-decode-fuzz/crashes/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # OT-78: the feature set that ships must be a blocking build, not an
   # operator-only command. Keep this separate from the deliberately
