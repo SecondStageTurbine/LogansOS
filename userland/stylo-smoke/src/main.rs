@@ -52,9 +52,7 @@ use style::context::{
 use style::data::{ElementDataMut, ElementDataRef, ElementDataWrapper};
 use style::device::Device;
 use style::device::servo::FontMetricsProvider;
-use style::dom::{
-    ElementContext, LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot,
-};
+use style::dom::{LayoutIterator, NodeInfo, OpaqueNode, TDocument, TElement, TNode, TShadowRoot};
 use style::font_metrics::FontMetrics;
 use style::global_style_data::{GLOBAL_STYLE_DATA, STYLE_THREAD_POOL};
 use style::media_queries::{MediaList, MediaType};
@@ -78,7 +76,7 @@ use style::values::computed::font::{GenericFontFamily, QueryFontMetricsFlags};
 use style::values::computed::{CSSPixelLength, Display, Length};
 use style::values::generics::length::GenericMargin;
 use style::values::{AtomIdent, GenericAtomIdent};
-use style::{Atom, CaseSensitivityExt, WeakAtom};
+use style::{Atom, CaseSensitivityExt};
 use style_dom::ElementState;
 
 #[global_allocator]
@@ -863,24 +861,6 @@ impl SelectorsElement for N<'_> {
     }
 }
 
-impl ElementContext for N<'_> {
-    fn opaque_element(&self) -> Option<OpaqueElement> {
-        Some(SelectorsElement::opaque(self))
-    }
-
-    fn opaque_parent(&self) -> Option<OpaqueNode> {
-        TNode::parent_node(self).map(|p| TNode::opaque(&p))
-    }
-
-    fn get_attr(&self, attr: &style::LocalName, namespace: &style::Namespace) -> Option<String> {
-        self.element()?
-            .attrs
-            .iter()
-            .find(|a| a.name.local == attr.0 && a.name.ns == namespace.0)
-            .map(|a| a.value.to_string())
-    }
-}
-
 /// The children Stylo walks: every child, in order.
 struct Children<'a> {
     parent: N<'a>,
@@ -957,7 +937,7 @@ impl<'a> TElement for N<'a> {
         false
     }
 
-    fn id(&self) -> Option<&WeakAtom> {
+    fn id(&self) -> Option<&Atom> {
         self.element()?.id.as_deref()
     }
 
@@ -1052,13 +1032,6 @@ impl<'a> TElement for N<'a> {
         false
     }
 
-    fn update_animations(
-        &self,
-        _before_change_style: Option<Arc<ComputedValues>>,
-        _tasks: style::context::UpdateAnimationsTasks,
-    ) {
-    }
-
     fn has_animations(&self, _context: &SharedStyleContext) -> bool {
         false
     }
@@ -1087,10 +1060,6 @@ impl<'a> TElement for N<'a> {
         None
     }
 
-    fn needs_transitions_update(&self, _before: &ComputedValues, _after: &ComputedValues) -> bool {
-        false
-    }
-
     fn lang_attr(&self) -> Option<AttrValue> {
         None
     }
@@ -1114,12 +1083,12 @@ impl<'a> TElement for N<'a> {
         // The page uses no legacy presentational attributes.
     }
 
-    fn local_name(&self) -> &GenericAtomIdent<html5ever::LocalNameStaticSet> {
-        GenericAtomIdent::cast(&self.element().expect("an element").name.local)
+    fn local_name(&self) -> &html5ever::LocalName {
+        &self.element().expect("an element").name.local
     }
 
-    fn namespace(&self) -> &GenericAtomIdent<html5ever::NamespaceStaticSet> {
-        GenericAtomIdent::cast(&self.element().expect("an element").name.ns)
+    fn namespace(&self) -> &html5ever::Namespace {
+        &self.element().expect("an element").name.ns
     }
 
     fn query_container_size(
@@ -1140,7 +1109,11 @@ impl<'a> TElement for N<'a> {
     }
 
     fn get_attr(&self, attr: &style::LocalName, namespace: &style::Namespace) -> Option<String> {
-        ElementContext::get_attr(self, attr, namespace)
+        self.element()?
+            .attrs
+            .iter()
+            .find(|a| a.name.local == attr.0 && a.name.ns == namespace.0)
+            .map(|a| a.value.to_string())
     }
 
     fn compute_layout_damage(_old: &ComputedValues, _new: &ComputedValues) -> RestyleDamage {
@@ -1213,18 +1186,17 @@ impl<'dom> DomTraversal<N<'dom>> for Recalc<'_> {
 }
 
 fn sheet(css: &str, origin: Origin, url: &UrlExtraData, lock: &SharedRwLock) -> DocumentStyleSheet {
-    let _ = MediaList::empty;
-    DocumentStyleSheet(Stylesheet::from_str(
+    DocumentStyleSheet(Arc::new(Stylesheet::from_str(
         css,
         url.clone(),
         origin,
-        lock,
+        Arc::new(lock.wrap(MediaList::empty())),
+        lock.clone(),
         None,
         None,
         QuirksMode::NoQuirks,
         AllowImportRules::No,
-        None,
-    ))
+    )))
 }
 
 /// Parse, style, and return the tree (with every element's styles stored).
