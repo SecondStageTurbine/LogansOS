@@ -44,3 +44,7 @@ RELAY 222 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-10-31-rechecks-2
 RELAY 223 | dexter | DeepSeek | high | Plans/DISPATCH-2026-10-31-rechecks-215-218.md | Section 218 (re-queued: 218 never returned; #247 is now 272bc85a and #253 23a8d98a; RETURN `Plans/RETURN-2026-10-31-k1b-l21-recheck-dexter.md`)
 RELAY 224 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-10-31-m910q-setup-chad.md | Section 224
 RELAY 226 | dexter | DeepSeek | high | Plans/DISPATCH-2026-10-31-seats-resume-on-public.md | Section "Relay 226" (Lane 2a, miniz_oxide; RETURN `Plans/RETURN-2026-10-31-l2a-miniz-oxide-dexter.md`)
+RELAY 227 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 227 (#13 review; RETURN `Plans/RETURN-2026-11-01-pr13-user-copy-review-chad.md`)
+RELAY 228 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 228 (#6 review; RETURN `Plans/RETURN-2026-11-01-pr6-stop-cpus-review-janus.md`)
+RELAY 229 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 229 (#23 review; RETURN `Plans/RETURN-2026-11-01-pr23-msc-review-jarvis.md`)
+RELAY 230 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-01-m910q-reviews-and-l2b.md | Section 230 (Lane 2b; RETURN `Plans/RETURN-2026-11-01-l2b-image-decode-dexter.md`)
