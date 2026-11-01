@@ -5,9 +5,10 @@
 # section 2.4), run by CI's plan job for a `batch` dispatch. For each member PR,
 # in order:
 #   1. resolve its head SHA, once;
-#   2. require it quick-green ON THAT SHA: a completed, successful `CI` run whose
-#      `QEMU smoke (quick tier)` job succeeded (skipped, neutral, cancelled or
-#      missing are not green);
+#   2. require it green ON THAT SHA: a completed, successful `CI` run whose
+#      `QEMU smoke (quick tier)` job succeeded, or, for a PR gate-plan puts in
+#      full-alone (its own run is the 4 shards), all four shard jobs
+#      succeeded. Skipped, neutral, cancelled or missing are not green;
 #   3. require `gate-plan` to say `tier=quick` (a `full-alone` PR may only be a
 #      batch of one);
 # then assemble the batch tree and print the plan.
@@ -48,15 +49,19 @@ for pr in "${prs[@]}"; do
   green_run=""
   for run in $(gh api "repos/${REPO}/actions/runs?head_sha=${sha}&per_page=50" \
       --jq '.workflow_runs[] | select(.name == "CI" and .status == "completed" and .conclusion == "success") | .id'); do
-    smoke="$(gh api "repos/${REPO}/actions/runs/${run}/jobs?per_page=100" \
-      --jq '[.jobs[] | select(.name == "QEMU smoke (quick tier)" and .conclusion == "success")] | length')"
-    if [[ "$smoke" -ge 1 ]]; then
+    # The PR's own run is green on this SHA in either tier: its smoke job
+    # passed, or (a full-alone PR) all four shards did.
+    qemu="$(gh api "repos/${REPO}/actions/runs/${run}/jobs?per_page=100" \
+      --jq '[.jobs[] | select(.conclusion == "success") | .name]
+            | ((map(select(. == "QEMU smoke (quick tier)")) | length) > 0)
+              or ((map(select(startswith("QEMU Integration Tests (shard "))) | length) == 4)')"
+    if [[ "$qemu" == true ]]; then
       green_run="$run"
       break
     fi
   done
   if [[ -z "$green_run" ]]; then
-    echo "::error::PR #${pr} is not quick-green on its head ${sha}: no successful CI run with a passing 'QEMU smoke (quick tier)' job"
+    echo "::error::PR #${pr} is not green on its head ${sha}: no successful CI run with a passing 'QEMU smoke (quick tier)' job or 4 passing shards"
     exit 1
   fi
   echo "batch-plan: PR #${pr} @ ${sha}: quick-green in run ${green_run}" >&2

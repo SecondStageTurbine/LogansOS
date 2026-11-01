@@ -592,9 +592,11 @@ close-gate evidence and the AAG to match.
 - The PM dispatches `CI` with `batch: "<PR numbers in landing order>"`:
   - `base_sha` defaults to main's tip;
   - `prefix=N` is a bisect leg; `prefix=0` is the base alone.
-- **A member must be quick-green on its exact head**, and `tier=quick` by `gate-plan`.
-- **A PR `gate-plan` puts in `full-alone` is gated as a batch of one.** That covers the SMP/concurrency core, the
-  harness and xtask (except a scenario-only addition), `scripts/`, the workflows and the build configuration.
+- **A member must be green on its exact head** (its PR run's smoke job passed), and `tier=quick` by `gate-plan`.
+- **A PR `gate-plan` puts in `full-alone` gets the full tier on its own PR run:** the plan job sees `full-alone` and
+  runs the 4 shards instead of the smoke job. That covers the SMP/concurrency core, the harness and xtask (except a
+  scenario-only addition), `scripts/`, the workflows and the build configuration. Its landing is a batch of one,
+  whose plan accepts the 4 green shards as its green run.
 - Every job rebuilds the same tree with `scripts/batch-assemble.sh` and fails unless its hash is the plan's.
 - `batch-report` lists every failing scenario and flags infra.
 
