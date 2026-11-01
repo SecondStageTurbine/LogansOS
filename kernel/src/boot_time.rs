@@ -18,6 +18,51 @@ static TSC_DESKTOP_START: AtomicU64 = AtomicU64::new(0);
 static TSC_MODEL_READY: AtomicU64 = AtomicU64::new(0);
 static FIRMWARE: Once<Result<FirmwareBoot, FpdtError>> = Once::new();
 
+/// The firmware-RAM regions of the UEFI memory map, captured once right
+/// after `mm::init` (the map lives in bootloader-reclaimable memory, which
+/// may be reused later). Empty on a BIOS boot (no UEFI map): every firmware
+/// pointer is then unavailable, never read.
+const FIRMWARE_REGIONS_MAX: usize = 128;
+static FIRMWARE_REGIONS: Once<([(u64, u64); FIRMWARE_REGIONS_MAX], usize)> = Once::new();
+
+/// Capture [`FIRMWARE_REGIONS`] from Limine's EFI memory map response.
+/// Base revision 3: the response's map pointer is a physical address (the
+/// crate's `memmap()` would treat it as virtual), so it is read raw and
+/// reached through the HHDM, only if that page is mapped.
+pub fn capture_firmware_regions() {
+    FIRMWARE_REGIONS.call_once(|| {
+        let mut out = [(0u64, 0u64); FIRMWARE_REGIONS_MAX];
+        let Some(resp) = crate::EFI_MEMMAP_REQUEST.response() else {
+            return (out, 0);
+        };
+        // SAFETY: `EfiMemmapRespData` is `repr(C)`: map pointer, map size,
+        // descriptor size, descriptor version, each 8 bytes.
+        let raw = resp as *const _ as *const u64;
+        let (phys, size, desc_size) = unsafe { (*raw, *raw.add(1), *raw.add(2)) };
+        if phys == 0 || size == 0 || size > 1 << 20 {
+            return (out, 0);
+        }
+        let start = crate::mm::phys_to_virt(x86_64::PhysAddr::new(phys));
+        let end = crate::mm::phys_to_virt(x86_64::PhysAddr::new(phys + size - 1));
+        if !crate::mm::kernel_virt_mapped(start) || !crate::mm::kernel_virt_mapped(end) {
+            return (out, 0);
+        }
+        // SAFETY: the bootloader's map, mapped through the HHDM (checked
+        // above), read once before anything can reuse its memory.
+        let map = unsafe { core::slice::from_raw_parts(start.as_ptr::<u8>(), size as usize) };
+        let n = boot_time_logic::efi_firmware_regions(map, desc_size as usize, &mut out);
+        (out, n)
+    });
+}
+
+/// The captured firmware-RAM regions (empty before the capture or on BIOS).
+pub fn firmware_regions() -> &'static [(u64, u64)] {
+    match FIRMWARE_REGIONS.get() {
+        Some((regions, n)) => &regions[..*n],
+        None => &[],
+    }
+}
+
 fn rdtsc() -> u64 {
     // SAFETY: RDTSC has no side effects.
     unsafe { core::arch::x86_64::_rdtsc() }

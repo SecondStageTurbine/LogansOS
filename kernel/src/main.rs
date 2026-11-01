@@ -157,6 +157,14 @@ static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
 #[unsafe(link_section = ".requests")]
 static MEMMAP_REQUEST: MemmapRequest = MemmapRequest::new();
 
+/// L7.1: the raw UEFI memory map, whose types tell firmware RAM from MMIO
+/// (Limine's own map folds both into RESERVED).
+#[cfg(feature = "boot-time")]
+#[used]
+#[unsafe(link_section = ".requests")]
+static EFI_MEMMAP_REQUEST: limine::request::EfiMemmapRequest =
+    limine::request::EfiMemmapRequest::new();
+
 #[used]
 #[unsafe(link_section = ".requests")]
 static MODULE_REQUEST: ModulesRequest = ModulesRequest::new();
@@ -773,6 +781,10 @@ extern "C" fn _kernel_start() -> ! {
         .expect("limine: no memory map response")
         .entries();
     mm::init(hhdm_offset, memmap, &boot_hhdm_requirements);
+    // L7.1: copy the UEFI map's firmware-RAM regions before anything can
+    // reuse the bootloader's memory (the FPDT reader checks against them).
+    #[cfg(feature = "boot-time")]
+    boot_time::capture_firmware_regions();
 
     // Zenbook lane: from here every kernel log line is also on screen, so a
     // hang anywhere later in boot (APs, timer, storage) is photographable.

@@ -481,28 +481,13 @@ pub fn firmware_boot_times(
         return Err(FpdtError::NoFpdt);
     }
     // Every range below is read only when it lies wholly inside one
-    // firmware-owned entry of the boot memory map (reserved, ACPI reclaimable
-    // or ACPI NVS): a damaged pointer into a hole, MMIO or the kernel's RAM is
-    // refused before any byte of it is touched.
-    let mut regions = [(0u64, 0u64); FIRMWARE_REGIONS_MAX];
-    let mut count = 0;
-    if let Some(memmap) = crate::MEMMAP_REQUEST.response() {
-        for e in memmap.entries().iter().filter(|e| {
-            matches!(
-                e.type_,
-                limine::memmap::MEMMAP_RESERVED
-                    | limine::memmap::MEMMAP_ACPI_RECLAIMABLE
-                    | limine::memmap::MEMMAP_ACPI_NVS
-            )
-        }) {
-            if count == regions.len() {
-                break;
-            }
-            regions[count] = (e.base, e.length);
-            count += 1;
-        }
-    }
-    let regions = &regions[..count];
+    // firmware-RAM region of the raw UEFI memory map (reserved, runtime data,
+    // ACPI reclaim, ACPI NVS: not MMIO or unusable memory, which Limine's own
+    // map would call RESERVED too): a damaged pointer into a hole, MMIO or
+    // the kernel's RAM is refused before any byte of it is touched. No UEFI
+    // map (a BIOS boot): nothing is readable, and the firmware time is
+    // unavailable.
+    let regions = crate::boot_time::firmware_regions();
     let readable = |phys: u64, len: usize| {
         crate::boot_time_logic::in_firmware_memory(phys, len as u64, regions)
     };
@@ -525,11 +510,6 @@ pub fn firmware_boot_times(
     // `FBPT_MAX_LEN`), checked against the same region.
     parse_fbpt(unsafe { phys_slice(fbpt, len) })
 }
-
-/// The firmware-owned memory-map entries [`firmware_boot_times`] keeps; a
-/// map with more refuses an FBPT past them (unknown, never a wild read).
-#[cfg(feature = "boot-time")]
-const FIRMWARE_REGIONS_MAX: usize = 128;
 
 /// OT-90: the FADT, whole and checksum-valid.
 #[cfg(feature = "power-control")]

@@ -418,4 +418,66 @@ mod tests {
         assert!(line.starts_with("Since TSC reset: "), "{line}");
         assert!(!line.contains("firmware"), "{line}");
     }
+
+    /// Janus's #16 re-check: Limine's own map calls MMIO "reserved", so the
+    /// firmware-RAM regions come from the raw UEFI map. Three hand-laid
+    /// 48-byte `EFI_MEMORY_DESCRIPTOR`s (UEFI 2.10 §7.2; type u32 at 0,
+    /// physical start u64 at 8, virtual start at 16, page count at 24,
+    /// attribute at 32, then 8 bytes of a newer descriptor's tail):
+    /// - EfiReservedMemoryType (0) at 0x6b92_0000, 16 pages: the FBPT's home;
+    /// - EfiMemoryMappedIO (11) at 0xfee0_0000, 1 page: Janus's input;
+    /// - EfiACPIMemoryNVS (10) at 0x7f00_0000, 2 pages.
+    #[rustfmt::skip]
+    const EFI_MAP: [u8; 144] = [
+        // reserved, 0x6b920000, 16 pages
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x92, 0x6b,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x10, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        // MMIO, 0xfee00000, 1 page
+        0x0b, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xe0, 0xfe,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x80,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        // ACPI NVS, 0x7f000000, 2 pages
+        0x0a, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x7f,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,  0x00, 0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn mmio_is_never_firmware_ram() {
+        let mut out = [(0u64, 0u64); 8];
+        let n = efi_firmware_regions(&EFI_MAP, 48, &mut out);
+        assert_eq!(&out[..n], &[(0x6b92_0000, 0x1_0000), (0x7f00_0000, 0x2000)]);
+        // Janus's input: an FBPT pointer into the LAPIC's MMIO page.
+        assert!(!in_firmware_memory(0xfee0_0000, 8, &out[..n]));
+        // The real FBPT home and an NVS table are readable.
+        assert!(in_firmware_memory(0x6b92_8000, 8, &out[..n]));
+        assert!(in_firmware_memory(0x7f00_1000, 0x1000, &out[..n]));
+        // A descriptor size too small for the layout yields nothing; so does
+        // a BIOS boot (no map).
+        assert_eq!(efi_firmware_regions(&EFI_MAP, 32, &mut out), 0);
+        assert_eq!(efi_firmware_regions(&[], 48, &mut out), 0);
+        // Unusable memory (8) and boot-services data (4) are not firmware RAM.
+        let mut map = EFI_MAP;
+        map[0] = 8;
+        map[96] = 4;
+        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 0);
+        // A full `out` stops the walk (later ranges then refused).
+        let mut one = [(0u64, 0u64); 1];
+        assert_eq!(efi_firmware_regions(&EFI_MAP, 48, &mut one), 1);
+        // A page count whose length overflows is skipped.
+        let mut map = EFI_MAP;
+        map[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+        let n = efi_firmware_regions(&map, 48, &mut out);
+        assert_eq!(&out[..n], &[(0x7f00_0000, 0x2000)]);
+    }
 }

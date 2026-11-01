@@ -187,6 +187,51 @@ pub fn fbpt_address(fpdt: &[u8], phys_bits: u32) -> Result<u64, FpdtError> {
     Ok(address)
 }
 
+/// UEFI memory types (UEFI 2.10 §7.2, `EFI_MEMORY_TYPE`) that hold firmware
+/// tables in RAM: reserved (0, where EDK2 puts the FBPT), runtime-services
+/// data (6), ACPI reclaim (9) and ACPI NVS (10). Not MMIO (11), MMIO port
+/// space (12) or unusable memory (8): Limine's own map folds those into its
+/// one RESERVED type (Janus's #16 re-check), which is why the raw UEFI map is
+/// read instead.
+pub const EFI_FIRMWARE_RAM_TYPES: [u32; 4] = [0, 6, 9, 10];
+/// The smallest UEFI memory descriptor: type, pad, physical start, virtual
+/// start, page count, attribute.
+pub const EFI_DESCRIPTOR_MIN: usize = 40;
+
+/// The firmware-RAM regions of a raw UEFI memory map (`map`, descriptors
+/// `desc_size` bytes apart, each `EFI_MEMORY_DESCRIPTOR`: `u32` type at 0,
+/// `u64` physical start at 8, `u64` page count at 24), written to `out` as
+/// `(base, length)`. Returns how many; a map with more than `out` holds
+/// stops there (a later range is then refused, never read). A descriptor
+/// size below [`EFI_DESCRIPTOR_MIN`], or a page count whose byte length
+/// overflows, yields nothing for it.
+pub fn efi_firmware_regions(map: &[u8], desc_size: usize, out: &mut [(u64, u64)]) -> usize {
+    if desc_size < EFI_DESCRIPTOR_MIN {
+        return 0;
+    }
+    let mut n = 0;
+    for desc in map.chunks_exact(desc_size) {
+        if n == out.len() {
+            break;
+        }
+        let kind = u32::from_le_bytes([desc[0], desc[1], desc[2], desc[3]]);
+        if !EFI_FIRMWARE_RAM_TYPES.contains(&kind) {
+            continue;
+        }
+        let base = u64::from_le_bytes(desc[8..16].try_into().unwrap_or([0; 8]));
+        let pages = u64::from_le_bytes(desc[24..32].try_into().unwrap_or([0; 8]));
+        let Some(len) = pages.checked_mul(4096) else {
+            continue;
+        };
+        if len == 0 || base.checked_add(len).is_none() {
+            continue;
+        }
+        out[n] = (base, len);
+        n += 1;
+    }
+    n
+}
+
 /// Whether `[start, start + len)` lies wholly inside one of `regions`
 /// (`(base, length)` pairs: the boot memory map's firmware-owned entries,
 /// reserved or ACPI). A firmware pointer is read only after this holds, so a
