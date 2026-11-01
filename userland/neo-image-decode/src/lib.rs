@@ -146,24 +146,35 @@ pub fn decode_with_limit(
 
 /// `width * height * 4`, or `TooLarge` when it exceeds `limit`. Rejects zero
 /// dimensions before any multiplication can be mistaken for a valid empty image.
+///
+/// The multiply is checked: two maximal `u32` dimensions give a `u64` product
+/// that still overflows once multiplied by 4 (`(2^32 - 1)^2 * 4` > `u64::MAX`),
+/// and a wrapping result would turn a hostile header into a small "valid" size.
+/// Lane 2c's fuzzer found exactly that input; see
+/// `tools/image-decode-logic-tests/tests/data/png/hostile_ihdr_overflow.png`.
 fn checked_rgba_len(width: u32, height: u32, limit: usize) -> Result<usize, ImageDecodeError> {
     if width == 0 || height == 0 {
         return Err(ImageDecodeError::InvalidDimensions);
     }
-    let bytes = u64::from(width) * u64::from(height) * 4;
     let limit = u64::try_from(limit).unwrap_or(u64::MAX);
-    if bytes > limit {
-        return Err(ImageDecodeError::TooLarge {
+    let limit_bytes = usize::try_from(limit).unwrap_or(usize::MAX);
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4));
+    match bytes {
+        Some(bytes) if bytes <= limit => {
+            usize::try_from(bytes).map_err(|_| ImageDecodeError::TooLarge {
+                width,
+                height,
+                limit_bytes,
+            })
+        }
+        _ => Err(ImageDecodeError::TooLarge {
             width,
             height,
-            limit_bytes: usize::try_from(limit).unwrap_or(usize::MAX),
-        });
+            limit_bytes,
+        }),
     }
-    usize::try_from(bytes).map_err(|_| ImageDecodeError::TooLarge {
-        width,
-        height,
-        limit_bytes: usize::try_from(limit).unwrap_or(usize::MAX),
-    })
 }
 
 /// The width and height from a well-formed PNG `IHDR`, without asking the

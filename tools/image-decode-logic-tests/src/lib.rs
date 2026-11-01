@@ -247,4 +247,26 @@ mod tests {
             other => panic!("expected TooLarge, got {other:?}"),
         }
     }
+
+    /// Lane 2c regression KAT: the fuzzer minimised this 24-byte input to a PNG
+    /// signature plus an `IHDR` whose width and height are both `u32::MAX`.
+    /// `(2^32 - 1)^2 * 4` is larger than `u64::MAX`; the size arithmetic must
+    /// answer `TooLarge`, not overflow (which panicked in the fuzz build) and not
+    /// wrap to a small "valid" length (which would be a cap bypass).
+    #[test]
+    fn png_ihdr_at_u32_max_is_too_large_not_an_overflow() {
+        let hostile = include_bytes!("../tests/data/png/hostile_ihdr_overflow.png");
+        assert_eq!(hostile.len(), 24);
+        match decode(hostile) {
+            Err(ImageDecodeError::TooLarge {
+                width,
+                height,
+                limit_bytes,
+            }) => {
+                assert_eq!((width, height), (u32::MAX, u32::MAX));
+                assert_eq!(limit_bytes, neo_image_decode::DEFAULT_MAX_DECODE_BYTES);
+            }
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
 }

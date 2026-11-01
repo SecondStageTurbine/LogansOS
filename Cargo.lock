@@ -895,6 +895,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
+name = "image-decode-fuzz"
+version = "0.0.1"
+dependencies = [
+ "miniz_oxide 0.9.1",
+ "neo-image-decode",
+]
+
+[[package]]
 name = "image-decode-logic-tests"
 version = "0.0.1"
 dependencies = [

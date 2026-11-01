@@ -26,8 +26,22 @@ vendored decoder byte for byte on all six fixtures (the 16-bit fixture is compar
 
 ```
 python3 tools/image-decode-logic-tests/tests/data/reference_png_rgba.py \
-  tools/image-decode-logic-tests/tests/data/png/*.png
+  tools/image-decode-logic-tests/tests/data/png/basn*.png
 ```
+
+## Fuzz regression fixtures (Lane 2c)
+
+`png/hostile_ihdr_overflow.png` (24 bytes, SHA-256
+`d6aabc50a389205489fbc975fd3fea236dc90463cc12ffe636bcd38e36016545`) is not an upstream file: it is the minimised
+reproducer from Lane 2c's PNG fuzz target. The `IHDR` declares width = height = `u32::MAX`, so
+`width * height * 4` exceeds `u64::MAX`. Lane 2c found the input (seed 234, iteration 3235), minimised it with
+`cargo run -p image-decode-fuzz -- --minimize ...`, and it now pins the checked size arithmetic in
+`neo_image_decode::checked_rgba_len`: `decode` must return `TooLarge`, never panic and never wrap to a small
+length.
+
+| Fixture | Origin | File SHA-256 | Size | Claim |
+|---|---|---|---|---|
+| `png/hostile_ihdr_overflow.png` | minimised fuzz input, Lane 2c | `d6aabc50a389205489fbc975fd3fea236dc90463cc12ffe636bcd38e36016545` | 24 bytes | PNG signature + `IHDR` length/type + width=height=`u32::MAX` |
 
 ## JPEG fixtures
 
