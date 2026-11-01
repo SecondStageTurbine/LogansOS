@@ -44,6 +44,28 @@ use crate::sync::SwitchMutex;
 
 pub use dma::DmaBuffer;
 
+/// L3a (THINK §5, "Read-only, decided"): a block device that can only be
+/// read. The field is private and the type has no write method, so code
+/// holding one (the FAT mount's `BlockIo`) cannot reach `write_block`: the
+/// compiler refuses it.
+#[cfg(feature = "fat-fs")]
+pub struct ReadOnlyDevice(Arc<dyn BlockDevice>);
+
+#[cfg(feature = "fat-fs")]
+impl ReadOnlyDevice {
+    pub fn new(device: Arc<dyn BlockDevice>) -> Self {
+        Self(device)
+    }
+
+    pub fn geometry(&self) -> BlockGeometry {
+        self.0.geometry()
+    }
+
+    pub fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        self.0.read_block(lba, buffers)
+    }
+}
+
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum BlockOp {
     Read,

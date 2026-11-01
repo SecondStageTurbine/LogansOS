@@ -16,6 +16,8 @@ pub mod ext4;
 pub mod fat;
 #[cfg(not(feature = "fat-fs"))]
 pub mod fat32;
+#[cfg(feature = "fat-fs")]
+pub mod fat_logic;
 pub mod neofs;
 
 use alloc::string::{String, ToString};

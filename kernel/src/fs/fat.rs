@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 
 use fatfs::{IoBase, Read, Seek, SeekFrom, Write};
 
-use crate::drivers::block::{BlockDevice, DmaBuffer};
+use crate::drivers::block::{BlockDevice, DmaBuffer, ReadOnlyDevice};
 use crate::fs::{FileRights, Inode, InodeKind, MountedFs, VfsDirEntry, VfsError};
 use crate::sync::SwitchMutex;
 
@@ -69,7 +69,8 @@ impl fatfs::IoError for BlockIoError {
 
 /// The byte stream rust-fatfs reads: the device's bytes, from 0 to its end.
 pub struct BlockIo {
-    device: Arc<dyn BlockDevice>,
+    /// Read-only by construction: no write method exists on this type.
+    device: ReadOnlyDevice,
     len: u64,
     pos: u64,
     /// The cached chunk's first byte, and its bytes (empty: nothing cached).
@@ -78,7 +79,7 @@ pub struct BlockIo {
 }
 
 impl BlockIo {
-    fn new(device: Arc<dyn BlockDevice>) -> Result<Self, BlockIoError> {
+    fn new(device: ReadOnlyDevice) -> Result<Self, BlockIoError> {
         let geometry = device.geometry();
         if u64::from(geometry.logical_block_size) != SECTOR_SIZE {
             return Err(BlockIoError::Device);
@@ -185,8 +186,35 @@ struct FatState {
     fs: SwitchMutex<FatFs>,
 }
 
+/// Test-only: the last mount's dirty indicators (bit 0 BPB, bit 1 FAT[1]).
+#[cfg(feature = "neo-test")]
+pub static LAST_DIRTY: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// One 512-byte sector, read through the read-only device.
+fn read_sector(device: &ReadOnlyDevice, lba: u64) -> Result<Vec<u8>, FatError> {
+    let dma = DmaBuffer::alloc_zeroed(SECTOR_SIZE as usize).map_err(|_| FatError::BlockDevice)?;
+    device
+        .read_block(lba, core::slice::from_ref(&dma))
+        .map_err(|_| FatError::BlockDevice)?;
+    // SAFETY: the synchronous read has completed; the buffer is in no other
+    // request while it is copied.
+    Ok(unsafe { dma.as_slice()[..SECTOR_SIZE as usize].to_vec() })
+}
+
 impl Fat {
     pub fn mount_readonly(device: Arc<dyn BlockDevice>) -> Result<Self, FatError> {
+        let device = ReadOnlyDevice::new(device);
+        // T13: the boot sector's geometry is checked before the library
+        // divides by it; then T4: the two dirty indicators are read apart
+        // (rust-fatfs's `read_status_flags` merges them) and logged.
+        let sector0 = read_sector(&device, 0)?;
+        let bpb = super::fat_logic::check_bpb(&sector0).map_err(|why| {
+            crate::serial_println!("fat: boot sector refused: {:?}", why);
+            FatError::Invalid
+        })?;
+        let fat_lba =
+            u64::from(bpb.reserved_sectors) * u64::from(bpb.bytes_per_sector) / SECTOR_SIZE;
+        let fat_sector = read_sector(&device, fat_lba)?;
         let io = BlockIo::new(device).map_err(|_| FatError::BlockDevice)?;
         // `update_accessed_date(false)` is the default; stated, since a read
         // must never write. `strict` stays on (the BPB is validated).
@@ -195,6 +223,23 @@ impl Fat {
             .time_provider(fatfs::NullTimeProvider::new())
             .oem_cp_converter(fatfs::LossyOemCpConverter::new());
         let fs = fatfs::FileSystem::new(io, options).map_err(|_| FatError::Invalid)?;
+        let dirty = super::fat_logic::dirty_flags(
+            &bpb,
+            &sector0,
+            &fat_sector,
+            fs.fat_type() == fatfs::FatType::Fat16,
+        );
+        crate::serial_println!(
+            "fat: mounted read-only type={:?} dirty bpb={} fat1={}",
+            fs.fat_type(),
+            u8::from(dirty.bpb),
+            u8::from(dirty.fat1)
+        );
+        #[cfg(feature = "neo-test")]
+        LAST_DIRTY.store(
+            u8::from(dirty.bpb) | (u8::from(dirty.fat1) << 1),
+            core::sync::atomic::Ordering::Relaxed,
+        );
         Ok(Self {
             state: Arc::new(FatState {
                 fs: SwitchMutex::new(fs),

@@ -37212,7 +37212,31 @@ fn run_phase3_fat32_readonly_no_write() -> ! {
     if rc != 0 {
         fail_with_hex("reason=fat_no_write_mount_rc", rc as u64);
     }
-    let entries = fat32_collect_dirents("/fat32");
+    // T4: the fixture's BPB status byte is dirty and FAT[1] is clean; the
+    // mount reads the two apart (bit 0 BPB, bit 1 FAT[1]).
+    let dirty = crate::fs::fat::LAST_DIRTY.load(core::sync::atomic::Ordering::Relaxed);
+    if dirty != 0b01 {
+        fail_with_hex("reason=fat_no_write_dirty_pair", u64::from(dirty));
+    }
+    // The directory is read through a handle dropped before the unmount
+    // (`fat32_collect_dirents` installs an fd it never closes, which keeps
+    // the mount busy: umount would be EBUSY).
+    let entries = {
+        let dir = fat32_open_or_fail("/fat32", fat32_dir_rights());
+        let mut names = alloc::vec::Vec::new();
+        let mut cursor = 0u64;
+        while let Some(entry) = dir
+            .readdir_one(cursor, crate::fs::FileRights::READDIR)
+            .unwrap_or_else(|err| neofs_2c_fail_vfs("fat_no_write_readdir", err))
+        {
+            cursor = entry.next_cursor;
+            names.push(entry.name);
+            if names.len() > 64 {
+                fail("reason=fat_no_write_readdir_runaway");
+            }
+        }
+        names
+    };
     fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
     fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
     match crate::fs::open_root_temporary(
@@ -37243,7 +37267,7 @@ fn run_phase3_fat32_readonly_no_write() -> ! {
         debug_exit(EXIT_FAILURE);
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} dirty_volume=1 entries={} umount=0 write_attempts=0 sectors={} hash={:#018x} unchanged=true",
+        "NEO_TEST/1 event=PASS name={} dirty_volume=1 dirty_bpb=1 dirty_fat1=0 entries={} umount=0 write_attempts=0 sectors={} hash={:#018x} unchanged=true",
         SCENARIO,
         entries.len(),
         FAT_NO_WRITE_SECTORS,

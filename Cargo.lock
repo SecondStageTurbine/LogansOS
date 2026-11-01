@@ -631,6 +631,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fat-logic-tests"
+version = "0.0.1"
+dependencies = [
+ "fatfs",
+]
+
+[[package]]
 name = "fatfs"
 version = "0.4.0"
 dependencies = [

@@ -25,6 +25,7 @@ members = [
     "tools/tensor-logic-tests",
     "tools/ai-ops-tests",
     "tools/neo-shell-logic-tests",
+    "tools/fat-logic-tests",
     "tools/action-logic-tests",
     "tools/arthur-logic-tests",
     "tools/arthur-grant-logic-tests",
