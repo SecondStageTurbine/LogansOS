@@ -34,6 +34,10 @@ uart_16550 = "0.3"
 
 # Logging facade
 log = "0.4"
+# L3a-2: rafalh/rust-fatfs, vendored (MIT; third_party/fatfs/VENDORED.md), for
+# FAT12/16/32 read-only mounts behind `fat-fs`. no_std: alloc + LFN + Unicode
+# case folding; no `std`, no `chrono` (a read-only mount stamps nothing).
+fatfs = { path = "../third_party/fatfs", default-features = false, features = ["alloc", "lfn", "unicode"], optional = true }
 
 # Heap allocator backing the kernel's `#[global_allocator]`. Phase 1.1 wires
 # it up against a 4 MiB virtual range we map ourselves.
@@ -1321,6 +1325,11 @@ neofs-partition = []
 # name an MBR partition, `deviceN:pM` (primary entries, FAT types, checked
 # against the device). Off: such a source is Invalid, as before.
 mbr-partitions = []
+# L3a-2 (THINK-2026-10-31-l3a-fat-readonly §5): FAT mounts (fs_type 3) go
+# through the vendored rust-fatfs: FAT12/16/32, files streamed, read-only (its
+# I/O adapter refuses every write). Off: the native FAT32 driver, as before,
+# and no rust-fatfs code is linked (the kill-switch).
+fat-fs = ["dep:fatfs"]
 # NFS-W1: kernel NeoFS writes a file of any size (to the 2 GiB format limit)
 # in one piece: data and pointer blocks in contiguous runs straight to the
 # device (through the guard, or the installer's claim), the single, double and
@@ -1808,18 +1817,30 @@ neo-test-mounts-drop-under-lock-control = ["neo-test-phase3-umount-drop-outside-
 neo-test-phase3-mount-request-validation = ["neo-test-phase3-mount-table"]
 # Phase 3 BUILD-4C: FAT32 read-only foreign filesystem scenarios.
 neo-test-phase3-fat32 = ["neo-test-phase3-mount-table"]
-neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32", "fat-fs"]
 # L3a (G7): `device1:p1` on an MBR disk reads back; `-off` is the kill-switch.
-neo-test-phase3-fat32-mbr-mount-read = ["neo-test-phase3-fat32", "mbr-partitions"]
+neo-test-phase3-fat32-mbr-mount-read = ["neo-test-phase3-fat32", "mbr-partitions", "fat-fs"]
 neo-test-phase3-fat32-mbr-off = ["neo-test-phase3-fat32"]
+# L3a-2: the nine scenarios above run on rust-fatfs (`fat-fs`); these run
+# what it adds: a FAT16 volume (the native driver refuses FAT16), the
+# no-write proof on a dirty-marked FAT32 volume, and the kill-switch control
+# (the native driver, no `fat-fs`, reads the fixture as before).
+neo-test-phase3-fat32-fat16-read = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-readonly-no-write = ["neo-test-phase3-fat32", "fat-fs"]
+# Chad's #18 review: a volume whose file chain (A -> B -> A) and directory
+# chain (a cluster pointing at itself) loop. Reading the file and listing
+# the directory each fail with an error; neither returns revisited data or
+# walks forever.
+neo-test-phase3-fat32-loop-chain = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-native-control = ["neo-test-phase3-fat32"]
 # Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
 neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
 neo-test-phase3-ext4-mount-readonly = ["neo-test-phase3-ext4"]
