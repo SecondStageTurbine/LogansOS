@@ -102,6 +102,13 @@ impl KeyRepeat {
         if self.key == 0 { None } else { Some(self.key) }
     }
 
+    /// The activation epoch the repeating key was pressed under. A repeat
+    /// [`Self::poll`] returns was checked against exactly this epoch, so the
+    /// pump stages it with this one ([`stage_action`]), never a fresh read.
+    pub const fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
     /// A non-modifier key event the focus was given. Call it only for events
     /// the SAK filter passed.
     pub fn on_key(&mut self, usage: u8, modifiers: u8, pressed: bool, now_ns: u64, epoch: u64) {
@@ -152,5 +159,36 @@ impl KeyRepeat {
             x: self.modifiers as i16,
             y: self.locks,
         })
+    }
+}
+
+/// What staging an event checked under an activation epoch does to a pump's
+/// stage (Jarvis, #61): the pump checks the repeat's epoch, then stages it,
+/// and the focus can move between the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StageAction {
+    /// The focus moved since the check: the event is not the current
+    /// owner's, so it is dropped (and the stage is left alone, since it may
+    /// already hold the new owner's events).
+    Drop,
+    /// The stage holds an earlier epoch's batch: discard it, take this
+    /// epoch, then append.
+    Restart,
+    /// Same epoch: append.
+    Append,
+}
+
+/// The [`StageAction`] for an event checked under `event_epoch`, given the
+/// stage's epoch and the current one. Staging never re-reads the epoch for
+/// the event: if it moves after this, the flush (which compares the stage's
+/// epoch under `DELIVERY`, where every route change bumps it) discards the
+/// batch, so the check and the delivery are one atomic decision.
+pub const fn stage_action(stage_epoch: u64, event_epoch: u64, current_epoch: u64) -> StageAction {
+    if event_epoch != current_epoch {
+        StageAction::Drop
+    } else if stage_epoch != event_epoch {
+        StageAction::Restart
+    } else {
+        StageAction::Append
     }
 }

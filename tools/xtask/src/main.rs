@@ -4237,6 +4237,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // Jarvis (#61): a key repeat is staged under the epoch it was checked
+    // against; a focus change or Super+L in between drops it.
+    TestScenario {
+        name: "key_repeat_epoch",
+        feature: "neo-test-key-repeat-epoch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     TestScenario {
         name: "hid_contention",
         feature: "neo-test-hid-contention",
