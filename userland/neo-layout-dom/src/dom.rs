@@ -5,10 +5,10 @@
 //! style and layout data, written by Stylo and layout, do.
 
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{RefCell, UnsafeCell};
 use std::ffi::c_void;
 use std::rc::{Rc, Weak};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use atomic_refcell::AtomicRefCell;
 use html5ever::tendril::{StrTendril, TendrilSink};
@@ -64,16 +64,32 @@ pub struct Node {
     pub(crate) style_data: UnsafeCell<Option<Box<StyleData>>>,
     /// Layout's box-tree data. Written once, by layout, before it reads it.
     pub(crate) layout_data: UnsafeCell<Option<Box<GenericLayoutData>>>,
-    pub(crate) selector_flags: Cell<ElementSelectorFlags>,
+    /// Selector flags, as `ElementSelectorFlags` bits. Atomic, as in
+    /// `script`'s `Element`: an element sets flags on its *parent*, so two
+    /// siblings styled on different threads can write the same node's flags.
+    pub(crate) selector_flags: AtomicUsize,
     pub(crate) dirty_descendants: AtomicBool,
     pub(crate) has_snapshot: AtomicBool,
     pub(crate) handled_snapshot: AtomicBool,
 }
 
-// SAFETY: Stylo and layout require their node handles to be Send + Sync. The
-// tree's shape is immutable after parsing; the interior-mutable fields are
-// written under the per-node exclusivity Stylo's and layout's traversals give
-// (the same contract `script`'s `LayoutDom` wrappers rely on).
+// SAFETY: Stylo and layout require their node handles to be Send + Sync.
+// Field by field, for a node shared between threads:
+// - `id`, `parent`, `children`, `data` (bar a text node's `AtomicRefCell`) and
+//   `doc` are never written after `Document::parse`, which builds the whole
+//   tree before any handle exists; `doc` points at the boxed `Document`, which
+//   outlives every handle (see `Node::doc`).
+// - `selector_flags` and the three `AtomicBool`s are atomics.
+// - A text node's `AtomicRefCell<String>` checks its borrows at run time.
+// - `style_data` and `layout_data` are `UnsafeCell`s. Each is written only by
+//   the traversal step that owns that node at the time: Stylo's for
+//   `style_data` (`ensure_data`/`clear_data` are `unsafe` and documented as
+//   such by Stylo's `TElement`), layout's for `layout_data` (initialised
+//   before the node's boxes are built, then only read). Concurrent steps work
+//   on different nodes, and a node reads its parent's style only after the
+//   parent's step finished (Stylo's top-down traversal). This is the same
+//   contract `script`'s `LayoutDom` wrappers rely on (`unsafe impl Send/Sync
+//   for ServoLayoutNode`).
 unsafe impl Send for Node {}
 unsafe impl Sync for Node {}
 
@@ -85,6 +101,15 @@ pub struct Document {
 }
 
 impl Node {
+    pub(crate) fn selector_flags(&self) -> ElementSelectorFlags {
+        ElementSelectorFlags::from_bits_retain(self.selector_flags.load(Ordering::Relaxed))
+    }
+
+    pub(crate) fn insert_selector_flags(&self, flags: ElementSelectorFlags) {
+        self.selector_flags
+            .fetch_or(flags.bits(), Ordering::Relaxed);
+    }
+
     pub(crate) fn doc(&self) -> &Document {
         // SAFETY: `doc` points at the boxed `Document` that owns this node,
         // which outlives every handle given out.
@@ -482,7 +507,7 @@ fn build(doc: &RcHandle, url: &UrlExtraData) -> Box<Document> {
             data,
             style_data: UnsafeCell::new(None),
             layout_data: UnsafeCell::new(None),
-            selector_flags: Cell::new(ElementSelectorFlags::empty()),
+            selector_flags: AtomicUsize::new(0),
             dirty_descendants: AtomicBool::new(true),
             has_snapshot: AtomicBool::new(false),
             handled_snapshot: AtomicBool::new(false),

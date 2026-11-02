@@ -357,14 +357,14 @@ impl SelectorsElement for ServoDangerousStyleElement<'_> {
     fn apply_selector_flags(&self, flags: ElementSelectorFlags) {
         let own = flags.for_self();
         if !own.is_empty() {
-            self.0.selector_flags.set(self.0.selector_flags.get() | own);
+            self.0.insert_selector_flags(own);
         }
         let parent = flags.for_parent();
         if !parent.is_empty()
             && let Some(p) = self.0.parent
         {
             let p = self.0.with(p);
-            p.selector_flags.set(p.selector_flags.get() | parent);
+            p.insert_selector_flags(parent);
         }
     }
 
@@ -666,13 +666,12 @@ impl<'dom> TElement for ServoDangerousStyleElement<'dom> {
     }
 
     fn has_selector_flags(&self, flags: ElementSelectorFlags) -> bool {
-        self.0.selector_flags.get().contains(flags)
+        self.0.selector_flags().contains(flags)
     }
 
     fn relative_selector_search_direction(&self) -> ElementSelectorFlags {
         self.0
-            .selector_flags
-            .get()
+            .selector_flags()
             .intersection(ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR_SIBLING)
     }
 
