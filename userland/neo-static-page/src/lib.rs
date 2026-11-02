@@ -38,7 +38,9 @@ use servo_base::Epoch;
 use servo_base::generic_channel::{self, GenericCallback};
 use servo_base::id::{PipelineNamespace, PipelineNamespaceId, TEST_PIPELINE_ID, TEST_WEBVIEW_ID};
 use servo_url::ServoUrl;
-use style::stylesheets::UrlExtraData;
+use style::context::QuirksMode;
+use style::media_queries::MediaList;
+use style::stylesheets::{AllowImportRules, Origin, Stylesheet, UrlExtraData};
 use webrender_api::{FontInstanceKey, FontKey, IdNamespace, ImageKey};
 
 mod no_images;
@@ -167,7 +169,25 @@ impl StaticPage {
                 Box::new(NoWaker),
             ),
         };
-        let layout = LayoutFactoryImpl().create(config);
+        let mut layout = LayoutFactoryImpl().create(config);
+        // The page's own `<style>` sheets, in document order, as one author
+        // sheet on the document's author lock.
+        let css = document.style_texts();
+        if !css.is_empty() {
+            let lock = &document.shared_style_locks().author;
+            let sheet = servo_arc::Arc::new(Stylesheet::from_str(
+                &css,
+                extra.clone(),
+                Origin::Author,
+                servo_arc::Arc::new(lock.wrap(MediaList::empty())),
+                lock.clone(),
+                None,
+                None,
+                QuirksMode::NoQuirks,
+                AllowImportRules::No,
+            ));
+            layout.add_stylesheet(sheet, None);
+        }
         StaticPage {
             document,
             layout,
