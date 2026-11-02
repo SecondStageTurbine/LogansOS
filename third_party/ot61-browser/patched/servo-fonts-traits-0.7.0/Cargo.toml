@@ -106,3 +106,7 @@ check-cfg = [
     "cfg(llvm_pgo)",
     "cfg(ohos_mock)",
 ]
+
+# LogansOS (OT-61 L1): the bundled fonts LocalFontIdentifier names there.
+[target.'cfg(target_os = "neoplutarch")'.dependencies.neo-font-store]
+path = "../../../../userland/neo-font-store"

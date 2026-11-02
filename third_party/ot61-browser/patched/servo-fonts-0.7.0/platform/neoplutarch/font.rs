@@ -1,0 +1,329 @@
+// SPDX-License-Identifier: MPL-2.0
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+//! `PlatformFont` on `skrifa`/`read-fonts`, for `target_os = "neoplutarch"`.
+//!
+//! This follows `platform/freetype/font.rs` quantity for quantity, for a
+//! scalable face: FreeType's face metrics are the font's `hhea` and `post`
+//! values scaled by `y_scale = size / units_per_em`, and so are these. Glyph
+//! advances and bounds are the font's own (unhinted) values, read in font units
+//! and scaled the same way, so a font with no size gives zeros, as FreeType's
+//! does. Not ported: FreeType's legacy `kern` table lookup (HarfBuzz applies
+//! GPOS kerning when shaping) and the synthetic-bold widening of advances (the
+//! flag still reaches WebRender).
+
+use app_units::Au;
+use euclid::default::{Point2D, Rect, Size2D};
+use fonts_traits::{FontIdentifier, FontTemplateDescriptor, LocalFontIdentifier};
+use read_fonts::types::Tag;
+use read_fonts::{FontRef, ReadError, TableProvider};
+use skrifa::MetadataProvider;
+use skrifa::attribute::Weight;
+use skrifa::instance::{Location, Size};
+use style::Zero;
+use webrender_api::{FontInstanceFlags, FontVariation};
+
+use crate::FontData;
+use crate::font::{FontMetrics, FontTableMethods, FractionalPixel, PlatformFontMethods};
+use crate::glyph::GlyphId;
+
+const SEMI_BOLD_U16: u16 = Weight::SEMI_BOLD.value() as u16;
+
+/// One table of a font, kept as the font's data plus the table's tag.
+#[derive(Debug)]
+pub struct FontTable {
+    data: FontBytes,
+    tag: Tag,
+}
+
+impl FontTableMethods for FontTable {
+    fn buffer(&self) -> &[u8] {
+        let font_ref = self.data.font_ref().expect("Font checked before creating");
+        let table_data = font_ref
+            .table_data(self.tag)
+            .expect("Table existence checked before creating");
+        table_data.as_bytes()
+    }
+}
+
+/// A font's bytes and its face index within them.
+#[derive(Clone)]
+struct FontBytes {
+    data: FontData,
+    index: u32,
+}
+
+impl std::fmt::Debug for FontBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FontBytes({} bytes, face {})", self.data.as_ref().len(), self.index)
+    }
+}
+
+impl FontBytes {
+    fn font_ref(&self) -> Result<FontRef<'_>, ReadError> {
+        FontRef::from_index(self.data.as_ref(), self.index)
+    }
+
+    fn skrifa_ref(&self) -> Option<skrifa::FontRef<'_>> {
+        skrifa::FontRef::from_index(self.data.as_ref(), self.index).ok()
+    }
+
+    /// As `platform/freetype/font.rs`'s `should_apply_synthetic_bold`.
+    fn should_apply_synthetic_bold(&self, synthetic_bold: bool) -> bool {
+        let face_is_bold = self
+            .font_ref()
+            .and_then(|font_ref| font_ref.os2())
+            .is_ok_and(|table| table.us_weight_class() >= SEMI_BOLD_U16);
+        let is_variable_font = self
+            .font_ref()
+            .and_then(|font_ref| font_ref.fvar())
+            .is_ok_and(|table| table.axis_count() > 0);
+        !face_is_bold && !is_variable_font && synthetic_bold
+    }
+}
+
+#[derive(Debug)]
+pub struct PlatformFont {
+    data: FontBytes,
+    /// The requested size, in CSS px (zero when none was requested).
+    size: Au,
+    variations: Vec<FontVariation>,
+    location: Location,
+    synthetic_bold: bool,
+}
+
+impl PlatformFont {
+    fn new(
+        data: FontBytes,
+        requested_size: Option<Au>,
+        synthetic_bold: bool,
+    ) -> Result<PlatformFont, &'static str> {
+        if data.skrifa_ref().is_none() {
+            return Err("Could not parse the font");
+        }
+        let synthetic_bold = data.should_apply_synthetic_bold(synthetic_bold);
+        Ok(PlatformFont {
+            data,
+            size: requested_size.unwrap_or_else(Au::zero),
+            variations: vec![],
+            location: Location::default(),
+            synthetic_bold,
+        })
+    }
+
+    fn units_per_em(&self) -> f64 {
+        self.data
+            .font_ref()
+            .and_then(|font| font.head())
+            .map(|head| head.units_per_em() as f64)
+            .unwrap_or(1000.0)
+    }
+
+    /// FreeType's `y_scale` for a scalable face: px per font unit.
+    fn scale(&self) -> f64 {
+        self.size.to_f64_px() / self.units_per_em()
+    }
+}
+
+impl PlatformFontMethods for PlatformFont {
+    fn new_from_data(
+        _font_identifier: FontIdentifier,
+        font_data: &FontData,
+        requested_size: Option<Au>,
+        synthetic_bold: bool,
+    ) -> Result<PlatformFont, &'static str> {
+        let data = FontBytes {
+            data: font_data.clone(),
+            index: 0,
+        };
+        Self::new(data, requested_size, synthetic_bold)
+    }
+
+    fn new_from_local_font_identifier(
+        font_identifier: LocalFontIdentifier,
+        requested_size: Option<Au>,
+        synthetic_bold: bool,
+    ) -> Result<PlatformFont, &'static str> {
+        let Some(found) = font_identifier.font_data_and_index() else {
+            return Err("Not a bundled font");
+        };
+        let data = FontBytes {
+            data: found.data,
+            index: found.index,
+        };
+        Self::new(data, requested_size, synthetic_bold)
+    }
+
+    fn copy_with_variations(
+        mut self,
+        _: &FontIdentifier,
+        variations: &[FontVariation],
+    ) -> Result<Self, &'static str> {
+        let font = self.data.skrifa_ref().ok_or("Could not parse the font")?;
+        self.location = font.axes().location(variations.iter().map(|v| {
+            (
+                skrifa::Tag::from_be_bytes(v.tag.to_be_bytes()),
+                v.value,
+            )
+        }));
+        self.variations = variations.to_vec();
+        Ok(self)
+    }
+
+    fn descriptor(&self) -> FontTemplateDescriptor {
+        let Ok(font_ref) = self.data.font_ref() else {
+            return FontTemplateDescriptor::default();
+        };
+        let Ok(os2) = font_ref.os2() else {
+            return FontTemplateDescriptor::default();
+        };
+        Self::descriptor_from_os2_table(&os2)
+    }
+
+    fn glyph_index(&self, codepoint: char) -> Option<GlyphId> {
+        let font = self.data.skrifa_ref()?;
+        let glyph = font.charmap().map(codepoint)?;
+        // Glyph 0 is `.notdef`: FreeType's `FT_Get_Char_Index` reports it as
+        // "no glyph", and so does this.
+        (glyph.to_u32() != 0).then(|| glyph.to_u32() as GlyphId)
+    }
+
+    fn glyph_h_kerning(&self, _first_glyph: GlyphId, _second_glyph: GlyphId) -> FractionalPixel {
+        // FreeType reads only the legacy `kern` table here; HarfBuzz applies
+        // the font's GPOS kerning when it shapes.
+        0.0
+    }
+
+    fn glyph_h_advance(&self, glyph: GlyphId) -> Option<FractionalPixel> {
+        let font = self.data.skrifa_ref()?;
+        let metrics = font.glyph_metrics(Size::unscaled(), &self.location);
+        let advance = metrics.advance_width(skrifa::GlyphId::new(glyph))?;
+        Some(advance as f64 * self.scale())
+    }
+
+    fn metrics(&self) -> FontMetrics {
+        let y_scale = self.scale();
+        let font_ref = self.data.font_ref();
+
+        let (mut max_advance, mut max_ascent, mut max_descent, mut line_height) =
+            (0.0, 0.0, 0.0, 0.0);
+        if let Ok(hhea) = font_ref.clone().and_then(|f| f.hhea()) {
+            max_advance = hhea.advance_width_max().to_u16() as f64 * y_scale;
+            max_ascent = hhea.ascender().to_i16() as f64 * y_scale;
+            max_descent = -(hhea.descender().to_i16() as f64) * y_scale;
+            // FreeType's `face->height`: ascender - descender + line gap.
+            line_height = (hhea.ascender().to_i16() as f64 - hhea.descender().to_i16() as f64
+                + hhea.line_gap().to_i16() as f64)
+                * y_scale;
+        }
+        let em_height = self.units_per_em() * y_scale;
+
+        let leading = line_height - (max_ascent + max_descent);
+
+        let (mut underline_size, mut underline_offset) = (0.0, 0.5);
+        if let Ok(post) = font_ref.clone().and_then(|f| f.post()) {
+            underline_size = post.underline_thickness().to_i16() as f64 * y_scale;
+            underline_offset = post.underline_position().to_i16() as f64 * y_scale + 0.5;
+        }
+
+        let mut strikeout_size = underline_size;
+        let mut strikeout_offset = em_height * 409.0 / 2048.0 + 0.5 * strikeout_size;
+        let mut x_height = 0.5 * em_height;
+        let mut average_advance = 0.0;
+
+        if let Ok(os2) = font_ref.and_then(|font_ref| font_ref.os2()) {
+            let y_strikeout_size = os2.y_strikeout_size();
+            let y_strikeout_position = os2.y_strikeout_position();
+            if !y_strikeout_size.is_zero() && !y_strikeout_position.is_zero() {
+                strikeout_size = y_strikeout_size as f64 * y_scale;
+                strikeout_offset = y_strikeout_position as f64 * y_scale;
+            }
+
+            let sx_height = os2.sx_height().unwrap_or(0);
+            if !sx_height.is_zero() {
+                x_height = sx_height as f64 * y_scale;
+            }
+
+            let x_average_char_width = os2.x_avg_char_width();
+            if !x_average_char_width.is_zero() {
+                average_advance = x_average_char_width as f64 * y_scale;
+            }
+        }
+
+        if average_advance.is_zero() {
+            average_advance = self
+                .glyph_index('0')
+                .and_then(|idx| self.glyph_h_advance(idx))
+                .unwrap_or(max_advance);
+        }
+
+        let zero_horizontal_advance = self
+            .glyph_index('0')
+            .and_then(|idx| self.glyph_h_advance(idx))
+            .map(Au::from_f64_px);
+        let ic_horizontal_advance = self
+            .glyph_index('\u{6C34}')
+            .and_then(|idx| self.glyph_h_advance(idx))
+            .map(Au::from_f64_px);
+        let space_advance = self
+            .glyph_index(' ')
+            .and_then(|idx| self.glyph_h_advance(idx))
+            .unwrap_or(average_advance);
+
+        FontMetrics {
+            underline_size: Au::from_f64_px(underline_size),
+            underline_offset: Au::from_f64_px(underline_offset),
+            strikeout_size: Au::from_f64_px(strikeout_size),
+            strikeout_offset: Au::from_f64_px(strikeout_offset),
+            leading: Au::from_f64_px(leading),
+            x_height: Au::from_f64_px(x_height),
+            em_size: Au::from_f64_px(em_height),
+            ascent: Au::from_f64_px(max_ascent),
+            descent: Au::from_f64_px(max_descent),
+            max_advance: Au::from_f64_px(max_advance),
+            average_advance: Au::from_f64_px(average_advance),
+            line_gap: Au::from_f64_px(line_height),
+            zero_horizontal_advance,
+            ic_horizontal_advance,
+            space_advance: Au::from_f64_px(space_advance),
+        }
+    }
+
+    fn table_for_tag(&self, tag: Tag) -> Option<FontTable> {
+        let font_ref = self.data.font_ref().ok()?;
+        let _table_data = font_ref.table_data(tag)?;
+        Some(FontTable {
+            data: self.data.clone(),
+            tag,
+        })
+    }
+
+    fn typographic_bounds(&self, glyph_id: GlyphId) -> Rect<f32> {
+        let Some(font) = self.data.skrifa_ref() else {
+            return Rect::default();
+        };
+        let metrics = font.glyph_metrics(Size::unscaled(), &self.location);
+        let Some(b) = metrics.bounds(skrifa::GlyphId::new(glyph_id)) else {
+            return Rect::default();
+        };
+        let s = self.scale() as f32;
+        Rect::new(
+            Point2D::new(b.x_min * s, b.y_min * s),
+            Size2D::new((b.x_max - b.x_min) * s, (b.y_max - b.y_min) * s),
+        )
+    }
+
+    fn webrender_font_instance_flags(&self) -> FontInstanceFlags {
+        let mut flags = FontInstanceFlags::EMBEDDED_BITMAPS;
+        if self.synthetic_bold {
+            flags |= FontInstanceFlags::SYNTHETIC_BOLD;
+        }
+        flags
+    }
+
+    fn variations(&self) -> &[FontVariation] {
+        &self.variations
+    }
+}
