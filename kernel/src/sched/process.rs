@@ -233,7 +233,8 @@ pub mod pipe_rights {
     pub const WRITE: u8 = 1 << 1;
 }
 
-/// Full rights for a new pipe end: `USE`, `GRANT`, `DERIVE`, and the end's
+/// Full rights for a new pipe end: every meta right (`REVOKE` too, so a
+/// process can take back an end it granted: Dexter #56 F5), and the end's
 /// own semantic right.
 #[cfg(feature = "pipe")]
 pub fn full_pipe_rights(end: crate::ipc::pipe_logic::End) -> CapRights {
@@ -241,10 +242,7 @@ pub fn full_pipe_rights(end: crate::ipc::pipe_logic::End) -> CapRights {
         crate::ipc::pipe_logic::End::Read => pipe_rights::READ,
         crate::ipc::pipe_logic::End::Write => pipe_rights::WRITE,
     };
-    CapRights::new(
-        meta_rights::USE | meta_rights::GRANT | meta_rights::DERIVE,
-        semantic,
-    )
+    CapRights::new(full_meta_rights(), semantic)
 }
 
 /// OT-63 Rung 1 Slice 2 — semantic rights for the scarce `GpuSubmit` cap.

@@ -333,9 +333,6 @@ by the Atrium runtime switch: with the switch off they return `ENOSYS`.
 | 436 | 0x1B4 | `SYS_TRY_RECV` | `h: u32, buf: ptr, max_len` | bytes received, or `EAGAIN` | `EAGAIN` (no sender), `EINVAL`, `EFAULT`, `EBADF`, `EPERM` | `atrium-pointer-forward` | yes | `sys_try_recv` |
 | 437 | 0x1B5 | `SYS_WAIT_ANY` | `items: ptr, n, deadline_ns: u64` | ready mask (bit `i`), or `ETIMEDOUT` | `EPIPE`, `EAGAIN`, `EINVAL`, `EFAULT`, `EBADF`, `EPERM`, `ETIMEDOUT` | `wait-multiplex` | **no** | `sys_wait_any` |
 | 438 | 0x1B6 | `SYS_BUFFER_UNMAP` | `va: u64` (a `SYS_BUFFER_MAP` base) | 0 | `EINVAL` (no mapping at `va`) | `atrium-compositor-g1` | rt | `sys_buffer_unmap` |
-| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (1..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
-| 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty), `EFAULT`, `EBADF`, `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
-| 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room), `EFAULT`, `EBADF`, `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
 
 Notes:
 - `BufferDescV1` = `{ width, height, stride, format: u32, bytes: u64 }` (24 bytes);
@@ -350,6 +347,29 @@ Notes:
   route transfer itself is authority-gated.
 - `SYS_WAIT_ANY` items are 8 bytes each (`u32 handle, u32 kind`); `deadline_ns` is absolute monotonic,
   and `n == 0` with `u64::MAX` (wait forever on nothing) is `EINVAL`.
+
+### Pipes (0x1BA–0x1BC)
+
+A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wiring.md`). Compiled under
+`pipe` (which needs `wait-multiplex`); without it the numbers return `ENOSYS`.
+
+| # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
+|---|-----|------|------|---------|--------|------|---|--------|
+| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (1..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
+| 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
+| 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
+
+Notes:
+- `SYS_PIPE_CREATE`'s return packs the read end's handle in bits 0–31 and the write end's in bits 32–63:
+  handles `(0x11223344, 0x55667788)` return `0x5566778811223344`, little-endian bytes
+  `44 33 22 11 88 77 66 55` (the byte oracle: `tools/pipe-logic-tests` `abi_byte_oracle`, and libneo's
+  `pipe_abi_tests`). `PIPE_NONBLOCK` is bit 0 of `flags`; other bits are ignored.
+- A handle carries every meta right (`USE`, `GRANT`, `DERIVE`, `REVOKE`) and only its end's semantic right
+  (`READ` = bit 0 on a read end, `WRITE` = bit 1 on a write end); the wrong end is `EPERM`.
+- A write of at most 512 bytes (`PIPE_ATOMIC`) that fits the capacity is atomic. A `SYS_WAIT_ANY` item of
+  kind 4 (`WAIT_KIND_PIPE`) on a write end is ready when a write of `min(512, capacity)` bytes would fit,
+  or no reader is left; on a read end, when bytes are buffered or no writer is left.
+- A timed read is `SYS_WAIT_ANY` with a deadline, then a `PIPE_NONBLOCK` read.
 
 ### Installer (0x1C0–0x1C1)
 
@@ -473,6 +493,8 @@ Nested structs (no independent version, inherit the parent's versioning):
 | 0x100–0x17F | AI: tensors, models, inference (Bible Article 6.1) | **Formally reserved**; 0x100–0x123 populated |
 | 0x180–0x190 | Network: sockets, TCP, DNS, TLS, CSPRNG | Populated |
 | 0x1A0–0x1B6 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
+| 0x1B7–0x1B9 | Non-blocking IPC (`SYS_TRY_SEND`, `SYS_TRY_GRANT`, `SYS_TRY_RECV_GRANT`) | Taken by #15 (A1a), not yet on `main` |
+| 0x1BA–0x1BF | Pipes; 0x1BA–0x1BC populated under `pipe` | 0x1BD–0x1BF empty |
 | 0x1C0–0x1C1 | Installer | Populated under `installer` |
 | 0xF00–0xF0A | Test-only probes | **Never ships** |
 | 0x4E, 0x1AC | Test-only probes in production ranges | **Never ships** |

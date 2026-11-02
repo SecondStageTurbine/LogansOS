@@ -3143,7 +3143,31 @@ pub fn sys_pipe_create(capacity: u64) -> Result<(Handle, Handle), i64> {
     if r < 0 {
         Err(r)
     } else {
-        Ok((Handle(r as u32), Handle((r as u64 >> 32) as u32)))
+        let (rd, wr) = pipe_split_ends(r as u64);
+        Ok((Handle(rd), Handle(wr)))
+    }
+}
+
+/// `SYS_PIPE_CREATE`'s packed return: the read end's handle in the low 32
+/// bits, the write end's in the high 32.
+#[inline]
+pub const fn pipe_split_ends(packed: u64) -> (u32, u32) {
+    (packed as u32, (packed >> 32) as u32)
+}
+
+/// The pipe ABI's byte oracle on libneo's side (Dexter #56 F3), the same
+/// hand-laid values as the kernel's in `tools/pipe-logic-tests`.
+#[cfg(test)]
+mod pipe_abi_tests {
+    #[test]
+    fn pipe_create_return_and_flag() {
+        let packed = u64::from_le_bytes([0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]);
+        assert_eq!(packed, 0x5566_7788_1122_3344);
+        assert_eq!(super::pipe_split_ends(packed), (0x1122_3344, 0x5566_7788));
+        assert_eq!(super::PIPE_NONBLOCK, 1);
+        assert_eq!(super::SYS_PIPE_CREATE, 0x1BA);
+        assert_eq!(super::SYS_PIPE_READ, 0x1BB);
+        assert_eq!(super::SYS_PIPE_WRITE, 0x1BC);
     }
 }
 

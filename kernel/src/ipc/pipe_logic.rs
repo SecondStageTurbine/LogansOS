@@ -21,12 +21,30 @@
 //!   is one more endpoint; closing the original leaves the granted one live.
 //! - The last reader closing wakes every parked writer (they get EPIPE);
 //!   the last writer closing wakes every parked reader (they get EOF).
+//!   The last close of an end also wakes the threads parked on that same
+//!   end (a sibling closed the handle they were blocked on), and a read or
+//!   write on a closed end is refused (`PipeError::EndClosed`, the kernel's
+//!   `EBADF`): Dexter's #56 F1.
 
 /// The two pipe sizes the terminal uses (L1a THINK §3.3).
 pub const STDIN_PIPE_CAPACITY: usize = 4 * 1024;
 pub const STDOUT_PIPE_CAPACITY: usize = 64 * 1024;
 /// The largest pipe a caller may create.
 pub const MAX_PIPE_CAPACITY: usize = 64 * 1024;
+/// `SYS_PIPE_READ` / `SYS_PIPE_WRITE` flag: don't block (`EAGAIN`).
+pub const PIPE_NONBLOCK: u64 = 1;
+
+/// `SYS_PIPE_CREATE`'s return: the read end's handle in the low 32 bits,
+/// the write end's in the high 32 (libneo splits it the same way; the byte
+/// oracle is in `tools/pipe-logic-tests`).
+pub const fn pack_ends(read: u32, write: u32) -> u64 {
+    (read as u64) | ((write as u64) << 32)
+}
+
+/// The inverse of [`pack_ends`]: `(read, write)`.
+pub const fn unpack_ends(packed: u64) -> (u32, u32) {
+    (packed as u32, (packed >> 32) as u32)
+}
 /// A write of at most this many bytes (and no more than the capacity) is
 /// atomic: it is stored whole or waits for room, so two writers' small
 /// writes never interleave (POSIX's minimum `PIPE_BUF`; step-2 THINK §2a).
@@ -78,8 +96,9 @@ pub enum PipeError {
     TooManyEndpoints,
     /// Closing an end that has no endpoints left (a double close).
     NoSuchEndpoint,
-    /// Adding an endpoint to an end whose count reached 0: once an end is
-    /// closed it stays closed (Dexter #46 note 1b).
+    /// Adding an endpoint to, or reading or writing through, an end whose
+    /// count reached 0: once an end is closed it stays closed (Dexter #46
+    /// note 1b; #56 F1, a thread whose sibling closed its handle).
     EndClosed,
 }
 
@@ -141,9 +160,19 @@ impl Pipe {
         self.len > 0 || self.writers == 0
     }
 
-    /// A write would not block (space, or EPIPE): readiness for a write end.
+    /// A write of up to `PIPE_ATOMIC` bytes would not block (room for it
+    /// whole, or EPIPE): readiness for a write end. "Any space" is not
+    /// enough: an atomic write waits for room for all of it, so a wait on
+    /// "any space" followed by a non-blocking write could spin (Dexter #56
+    /// F2). With this much room every write makes progress: one of at most
+    /// the threshold fits whole, a larger one is not atomic and stores some.
     pub const fn writable(&self) -> bool {
-        self.len < self.capacity || self.readers == 0
+        let need = if self.capacity < PIPE_ATOMIC {
+            self.capacity
+        } else {
+            PIPE_ATOMIC
+        };
+        self.capacity - self.len >= need || self.readers == 0
     }
 
     /// A new pipe with no endpoints yet, for a caller whose handle installs
@@ -207,23 +236,22 @@ impl Pipe {
                 End::Write => self.write_closed = true,
             }
         }
-        Ok(match end {
-            // The last reader: writers get EPIPE. The buffer is now
-            // unreachable, so drop it (its bytes can never be read).
-            End::Read if last => {
-                self.head = 0;
-                self.len = 0;
-                Wake {
-                    readers: false,
-                    writers: true,
-                }
-            }
-            // The last writer: readers drain what's left, then EOF.
-            End::Write if last => Wake {
-                readers: true,
-                writers: false,
-            },
-            _ => Wake::default(),
+        if !last {
+            return Ok(Wake::default());
+        }
+        // The last reader: the buffer is now unreachable, so drop it (its
+        // bytes can never be read). The last writer: readers drain what's
+        // left, then EOF.
+        if end == End::Read {
+            self.head = 0;
+            self.len = 0;
+        }
+        // Wake both sides: the other side's waiters get EPIPE or EOF, and
+        // this side's (a sibling closed the handle they were blocked on) get
+        // `EndClosed` instead of sleeping on an end nothing can wake.
+        Ok(Wake {
+            readers: true,
+            writers: true,
         })
     }
 
@@ -240,6 +268,9 @@ impl Pipe {
     ) -> Result<(WriteOutcome, Wake), PipeError> {
         if storage.len() != self.capacity {
             return Err(PipeError::BadCapacity);
+        }
+        if self.write_closed {
+            return Err(PipeError::EndClosed);
         }
         if self.readers == 0 {
             return Ok((WriteOutcome::BrokenPipe, Wake::default()));
@@ -282,6 +313,9 @@ impl Pipe {
     ) -> Result<(ReadOutcome, Wake), PipeError> {
         if storage.len() != self.capacity {
             return Err(PipeError::BadCapacity);
+        }
+        if self.read_closed {
+            return Err(PipeError::EndClosed);
         }
         if self.len == 0 {
             let outcome = if self.writers == 0 {

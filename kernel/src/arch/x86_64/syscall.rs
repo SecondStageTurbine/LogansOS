@@ -380,7 +380,7 @@ pub const SYS_PIPE_READ: u64 = 0x1BB;
 pub const SYS_PIPE_WRITE: u64 = 0x1BC;
 /// `SYS_PIPE_READ` / `SYS_PIPE_WRITE` flag: don't park (`EAGAIN` instead).
 #[cfg(feature = "pipe")]
-pub const PIPE_NONBLOCK: u64 = 1;
+pub const PIPE_NONBLOCK: u64 = crate::ipc::pipe_logic::PIPE_NONBLOCK;
 /// OT-87 R4.4: the installer's disk list (`install_ui_logic`). Gated by the
 /// `Installer` cap; ENOSYS without `installer`.
 #[cfg(feature = "installer")]
@@ -2230,7 +2230,7 @@ fn sys_pipe_create_impl(capacity: u64) -> i64 {
             return EINVAL;
         }
     };
-    (rd as u64 | ((wr as u64) << 32)) as i64
+    crate::ipc::pipe_logic::pack_ends(rd, wr) as i64
 }
 
 /// The kernel bounce buffer for pipe I/O: a write of at most this many bytes
@@ -2240,14 +2240,12 @@ const PIPE_CHUNK: usize = crate::ipc::pipe::PIPE_ATOMIC;
 
 /// `SYS_PIPE_READ` (L1a.1 step 2a): read up to `len` bytes. The first read
 /// parks until there are bytes or EOF (or is a try with `PIPE_NONBLOCK`);
-/// later chunks of the same call never park. The destination is checked
-/// writable before any byte is taken (CP-99).
+/// later chunks of the same call never park. Each chunk's destination is
+/// checked writable before its bytes are taken (CP-99), so the check walks
+/// only what the call can move, not the whole user `len` (Dexter #56 F6).
 #[cfg(feature = "pipe")]
 fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
     if let Err(e) = validate_user_buf(buf, len) {
-        return e;
-    }
-    if let Err(e) = check_user_writable(buf as *mut u8, len) {
         return e;
     }
     let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::READ)) {
@@ -2262,6 +2260,10 @@ fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
         let mut chunk = [0u8; PIPE_CHUNK];
         loop {
             let want = (len - total).min(PIPE_CHUNK);
+            let dst = (buf + total as u64) as *mut u8;
+            if let Err(e) = check_user_writable(dst, want) {
+                return if total > 0 { total as i64 } else { e };
+            }
             let got = if total == 0 && !nonblock {
                 pipe.read_blocking(&mut chunk[..want])
             } else {
@@ -2270,9 +2272,8 @@ fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
             match got {
                 Ok(0) => break,
                 Ok(n) => {
-                    // SAFETY: `buf + total .. + n` is inside the validated,
-                    // writable user range; `chunk[..n]` is ours.
-                    let dst = (buf + total as u64) as *mut u8;
+                    // SAFETY: `dst .. + n` is inside the validated user
+                    // range, checked writable above; `chunk[..n]` is ours.
                     if let Err(e) = user_copy(dst, chunk.as_ptr(), n) {
                         return if total > 0 { total as i64 } else { e };
                     }

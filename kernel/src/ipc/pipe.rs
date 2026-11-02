@@ -28,7 +28,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::pipe_logic::{self, End, Pipe, PipeError, ReadOutcome, Wake, WriteOutcome};
-use crate::errno::{EAGAIN, EINVAL, ENOMEM, EPIPE};
+use crate::errno::{EAGAIN, EBADF, EINVAL, ENOMEM, EPIPE};
 use crate::sched::scheduler::{self, ThreadWakeToken};
 use crate::sync::IrqSafeMutex;
 
@@ -121,8 +121,8 @@ enum Parked {
 }
 
 impl PipeObject {
-    /// A new pipe of `capacity` bytes with one read end and one write end
-    /// (their handles are installed by the caller). `EINVAL` for a capacity
+    /// A new pipe of `capacity` bytes with no endpoints yet: each handle the
+    /// caller installs counts one (`HandleTable::retain_pipe`). `EINVAL` for a capacity
     /// outside `1..=MAX_PIPE_CAPACITY`; `ENOMEM` if the storage can't be had.
     pub fn new(capacity: usize) -> Result<Arc<Self>, i64> {
         let logic = Pipe::new_unattached(capacity).map_err(|_| EINVAL)?;
@@ -196,7 +196,7 @@ impl PipeObject {
                 Ok((ReadOutcome::Read(n), wake)) => (Ok(n), Wakes::take(&mut g, wake)),
                 Ok((ReadOutcome::Eof, _)) => (Ok(0), Wakes::none()),
                 Ok((ReadOutcome::WouldBlock, _)) => (Err(EAGAIN), Wakes::none()),
-                Err(_) => (Err(EINVAL), Wakes::none()),
+                Err(e) => (Err(errno_of(e)), Wakes::none()),
             }
         };
         wakes.fire(self);
@@ -214,7 +214,7 @@ impl PipeObject {
                 Ok((WriteOutcome::Written(n), wake)) => (Ok(n), Wakes::take(&mut g, wake)),
                 Ok((WriteOutcome::BrokenPipe, _)) => (Err(EPIPE), Wakes::none()),
                 Ok((WriteOutcome::WouldBlock, _)) => (Err(EAGAIN), Wakes::none()),
-                Err(_) => (Err(EINVAL), Wakes::none()),
+                Err(e) => (Err(errno_of(e)), Wakes::none()),
             }
         };
         wakes.fire(self);
@@ -236,7 +236,7 @@ impl PipeObject {
                 }
                 Ok((ReadOutcome::Eof, _)) => return Ok(0),
                 Ok((ReadOutcome::WouldBlock, _)) => {}
-                Err(_) => return Err(EINVAL),
+                Err(e) => return Err(errno_of(e)),
             }
             // `pipe_core`'s CP-14 leg: hold the check-to-park window open
             // (the guard held, so a writer on another CPU waits for it).
@@ -278,7 +278,7 @@ impl PipeObject {
                 }
                 Ok((WriteOutcome::BrokenPipe, _)) => return Err(EPIPE),
                 Ok((WriteOutcome::WouldBlock, _)) => {}
-                Err(_) => return Err(EINVAL),
+                Err(e) => return Err(errno_of(e)),
             }
             match self.park(g, End::Write) {
                 Parked::Retry => continue,
@@ -387,6 +387,16 @@ pub mod race {
         if started {
             HITS.fetch_add(1, Ordering::Relaxed);
         }
+    }
+}
+
+/// A state-machine refusal as an errno: a read or write through an end a
+/// sibling closed meanwhile is `EBADF` (Dexter #56 F1), anything else
+/// (a storage mismatch: a kernel bug) `EINVAL`.
+const fn errno_of(e: PipeError) -> i64 {
+    match e {
+        PipeError::EndClosed => EBADF,
+        _ => EINVAL,
     }
 }
 

@@ -28,6 +28,11 @@ mod tests {
         readers: false,
         writers: true,
     };
+    /// The last close of an end wakes both sides (Dexter #56 F1).
+    const BOTH: Wake = Wake {
+        readers: true,
+        writers: true,
+    };
 
     struct P {
         pipe: Pipe,
@@ -104,9 +109,13 @@ mod tests {
         assert!(!p.pipe.writable());
         assert_eq!(p.write(b"g"), (WriteOutcome::WouldBlock, NONE));
         assert_eq!(p.read(1), (ReadOutcome::Read(1), WRITERS, b"a".to_vec()));
-        assert!(p.pipe.writable());
+        // One byte of room in a 4-byte pipe: a 4-byte write is atomic and
+        // would wait, so the write end is not ready yet (#56 F2).
+        assert!(!p.pipe.writable());
         // Not full any more, and the read still wakes the writers.
         assert_eq!(p.read(1).1, WRITERS);
+        assert_eq!(p.read(2).1, WRITERS);
+        assert!(p.pipe.writable());
         // An empty pipe's read frees nothing and wakes nobody.
         let mut q = P::new(4);
         q.pipe.close_endpoint(End::Write).unwrap();
@@ -148,7 +157,7 @@ mod tests {
     fn eof_comes_after_the_buffer_drains() {
         let mut p = P::new(16);
         p.write(b"tail");
-        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(READERS));
+        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(BOTH));
         assert!(p.pipe.readable());
         assert_eq!(p.read(2), (ReadOutcome::Read(2), WRITERS, b"ta".to_vec()));
         assert_eq!(p.read(9), (ReadOutcome::Read(2), WRITERS, b"il".to_vec()));
@@ -163,7 +172,7 @@ mod tests {
         let mut p = P::new(4);
         p.write(b"full");
         assert_eq!(p.write(b"x").0, WriteOutcome::WouldBlock);
-        assert_eq!(p.pipe.close_endpoint(End::Read), Ok(WRITERS));
+        assert_eq!(p.pipe.close_endpoint(End::Read), Ok(BOTH));
         assert!(p.pipe.writable());
         assert_eq!(p.write(b"x").0, WriteOutcome::BrokenPipe);
         // The unreadable bytes are dropped.
@@ -178,7 +187,7 @@ mod tests {
         p.pipe.add_endpoint(End::Write).unwrap();
         assert_eq!(p.pipe.close_endpoint(End::Write), Ok(NONE));
         assert_eq!(p.read(1).0, ReadOutcome::WouldBlock); // a writer remains
-        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(READERS));
+        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(BOTH));
         assert_eq!(p.read(1).0, ReadOutcome::Eof);
     }
 
@@ -248,9 +257,9 @@ mod tests {
     fn reader_then_writer_close() {
         let mut p = P::new(4);
         p.write(b"ab");
-        assert_eq!(p.pipe.close_endpoint(End::Read), Ok(WRITERS));
+        assert_eq!(p.pipe.close_endpoint(End::Read), Ok(BOTH));
         assert_eq!(p.write(b"c").0, WriteOutcome::BrokenPipe);
-        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(READERS));
+        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(BOTH));
         assert!(p.pipe.is_dead());
     }
 
@@ -278,6 +287,69 @@ mod tests {
         r.write(b"ab");
         r.pipe.close_endpoint(End::Read).unwrap();
         assert!(r.pipe.writable(), "EPIPE is writable");
+    }
+
+    /// Dexter #56 F1: a thread parked on an end whose last handle a sibling
+    /// closed is woken by that close, and its retry is refused, on either
+    /// end, instead of parking again on an end nothing can wake.
+    #[test]
+    fn a_closed_end_refuses_its_own_read_and_write() {
+        let mut p = P::new(8);
+        assert_eq!(p.read(4).0, ReadOutcome::WouldBlock); // a reader parks
+        assert_eq!(p.pipe.close_endpoint(End::Read), Ok(BOTH));
+        let mut dst = [0u8; 4];
+        assert_eq!(p.pipe.read(&p.storage, &mut dst), Err(PipeError::EndClosed));
+        let mut q = P::new(4);
+        q.write(b"full");
+        assert_eq!(q.write(b"x").0, WriteOutcome::WouldBlock); // a writer parks
+        assert_eq!(q.pipe.close_endpoint(End::Write), Ok(BOTH));
+        assert_eq!(
+            q.pipe.write(&mut q.storage, b"x"),
+            Err(PipeError::EndClosed)
+        );
+        // The other end still works: the reader drains, then EOF.
+        assert_eq!(q.read(8).2, b"full".to_vec());
+        assert_eq!(q.read(8).0, ReadOutcome::Eof);
+    }
+
+    /// Dexter #56 F2: a write end is ready only when a `PIPE_ATOMIC`-sized
+    /// write (or, for a smaller pipe, a capacity-sized one) would fit, so a
+    /// `SYS_WAIT_ANY` + non-blocking write loop can't spin. The reviewer's
+    /// case: capacity 512, 400 buffered, 112 free.
+    #[test]
+    fn write_readiness_means_an_atomic_write_fits() {
+        let mut p = P::new(512);
+        p.write(&[1; 400]);
+        assert!(!p.pipe.writable());
+        assert_eq!(p.write(&[2; 300]).0, WriteOutcome::WouldBlock);
+        p.read(400);
+        assert!(p.pipe.writable());
+        assert_eq!(p.write(&[2; 300]).0, WriteOutcome::Written(300));
+        // A larger pipe: 512 free is enough, with bytes still buffered.
+        let mut q = P::new(1024);
+        q.write(&[1; 513]);
+        assert!(!q.pipe.writable()); // 511 free
+        q.read(1);
+        assert!(q.pipe.writable()); // 512 free
+        assert_eq!(q.write(&[2; 512]).0, WriteOutcome::Written(512));
+    }
+
+    /// The byte oracle for the pipe ABI (Dexter #56 F3), hand-laid: the
+    /// read end in the low 32 bits of `SYS_PIPE_CREATE`'s return, the write
+    /// end in the high 32; `PIPE_NONBLOCK` is bit 0.
+    #[test]
+    fn abi_byte_oracle() {
+        assert_eq!(pack_ends(0x1122_3344, 0x5566_7788), 0x5566_7788_1122_3344);
+        assert_eq!(
+            pack_ends(0x1122_3344, 0x5566_7788).to_le_bytes(),
+            [0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]
+        );
+        assert_eq!(
+            unpack_ends(0x5566_7788_1122_3344),
+            (0x1122_3344, 0x5566_7788)
+        );
+        assert_eq!(pack_ends(0, 1), 0x0000_0001_0000_0000);
+        assert_eq!(PIPE_NONBLOCK, 1);
     }
 
     /// The zero-length contract (Dexter #46 1a; step-2 THINK §2a), as

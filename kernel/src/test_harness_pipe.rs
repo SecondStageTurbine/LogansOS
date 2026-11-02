@@ -454,10 +454,13 @@ fn run_pipe_core() -> ! {
 
     // --- EPIPE: a 32-byte write into a 16-byte pipe stores 16 and parks for
     // the rest; the only reader makes a zero-length read (0) and exits. The
-    // writer wakes and returns the 16 it wrote; a later write is EPIPE.
+    // writer wakes and returns the 16 it wrote; a later write through a
+    // write end the harness holds is EPIPE (through a closed write end it
+    // would be EBADF, #56 F1).
     {
         pt_reset();
         let pipe = new_pipe(16);
+        pipe.retain(End::Write);
         let (rd0, _) = {
             // The reader must exist before the write, or the write is EPIPE
             // at once: install it first, start it after the writer parks.
@@ -479,6 +482,7 @@ fn run_pipe_core() -> ! {
         let r = pt_finish("reason=pipe_epipe_reader_stranded", rd);
         let w = pt_finish("reason=pipe_epipe_writer_stranded", wr);
         let after = pipe.try_write(b"x");
+        pipe.release(End::Write);
         serial_println!(
             "PIPE epipe zero_read={} partial_write={} later_write_epipe={}",
             r,
@@ -601,6 +605,9 @@ fn run_pipe_core() -> ! {
     // --- WAIT_ANY, end-aware: a wait on a read end of an empty pipe parks
     // and a write ends it; a wait on a write end of a full pipe parks and a
     // read ends it. Each returns mask 1 well before its 300-tick deadline.
+    // A write end is ready only when an atomic write would fit (Dexter #56
+    // F2): on a full 16-byte pipe, a 1-byte read wakes the waiter, which
+    // re-checks and parks again; draining the rest ends the wait.
     for (name, end) in [("read", End::Read), ("write", End::Write)] {
         pt_reset();
         let pipe = new_pipe(16);
@@ -620,13 +627,25 @@ fn run_pipe_core() -> ! {
         pt_until("reason=pipe_wait_never_parked", || {
             STATS.parks.load(Ordering::Relaxed) > parks0 && wait_any::debug_entries(Some(pid)) == 1
         });
+        // The write end: one byte of room is not enough.
+        let mut early = false;
+        if end == End::Write {
+            let parks1 = STATS.parks.load(Ordering::Relaxed);
+            let _ = pipe.try_read(&mut [0u8; 1]);
+            pt_until("reason=pipe_wait_write_never_reparked", || {
+                pt_result(waiter).is_some()
+                    || (STATS.parks.load(Ordering::Relaxed) > parks1
+                        && wait_any::debug_entries(Some(pid)) == 1)
+            });
+            early = pt_result(waiter).is_some();
+        }
         let t0 = crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
         match end {
             End::Read => {
                 let _ = pipe.try_write(b"w");
             }
             End::Write => {
-                let _ = pipe.try_read(&mut [0u8; 1]);
+                let _ = pipe.try_read(&mut [0u8; 16]);
             }
         }
         let r = pt_finish("reason=pipe_wait_stranded", waiter);
@@ -634,9 +653,68 @@ fn run_pipe_core() -> ! {
             .load(Ordering::Acquire)
             .saturating_sub(t0);
         pipe.release(other);
-        serial_println!("PIPE wait_{} result={} latency_ticks={}", name, r, latency);
-        if r != 1 || latency > 100 {
+        serial_println!(
+            "PIPE wait_{} early={} result={} latency_ticks={}",
+            name,
+            early,
+            r,
+            latency
+        );
+        if early || r != 1 || latency > 100 {
             fail("reason=pipe_wait_any_wrong");
+        }
+    }
+
+    // --- a sibling closes the handle a thread is parked on (Dexter #56
+    // F1): the last read end closed under a parked reader, and the last
+    // write end under a parked writer. The close wakes the parked thread,
+    // and its retry is EBADF instead of a park nothing can end. The harness
+    // closes the handle as `SYS_CLOSE` does (`HandleTable::remove`).
+    for (name, end) in [("read", End::Read), ("write", End::Write)] {
+        pt_reset();
+        let pipe = new_pipe(16);
+        let other = match end {
+            End::Read => End::Write,
+            End::Write => End::Read,
+        };
+        pipe.retain(other);
+        if end == End::Write && pipe.try_write(&[1; 16]) != Ok(16) {
+            fail("reason=pipe_close_prefill");
+        }
+        let (proc, _) = pt_process();
+        let h = pt_install(&proc, &pipe, end);
+        let pid = proc.pid;
+        let num = match end {
+            End::Read => crate::arch::x86_64::syscall::SYS_PIPE_READ,
+            End::Write => crate::arch::x86_64::syscall::SYS_PIPE_WRITE,
+        };
+        let caller = pt_start(
+            proc,
+            num,
+            [h as u64, crate::arch::x86_64::syscall::ADMISSION_KILL_VA + PT_BUF, 8, 0],
+            0,
+        );
+        pt_until("reason=pipe_close_never_parked", || {
+            pipe.parked_for_test(end) == 1
+        });
+        let gone = crate::sched::process::get(pid).and_then(|p| {
+            crate::arch::x86_64::without_interrupts(|| p.handles.lock().remove(h))
+        });
+        let closed = gone.is_some();
+        // The endpoint is released here, outside the handle lock.
+        drop(gone);
+        let r = pt_finish("reason=pipe_close_parked_stranded", caller);
+        pipe.release(other);
+        pt_settle();
+        serial_println!(
+            "PIPE close_parked_{} closed={} result={} arc={}",
+            name,
+            closed,
+            r,
+            Arc::strong_count(&pipe)
+        );
+        if !closed || r != crate::errno::EBADF || Arc::strong_count(&pipe) != 1 {
+            fail("reason=pipe_close_parked_wrong");
         }
     }
 
@@ -761,7 +839,7 @@ fn run_pipe_core() -> ! {
         fail("reason=pipe_core_zombies_left");
     }
     pass(
-        "pipe_core=ok create=round_trip round=5 eof=0 epipe=partial_then_epipe atomic=whole nonblock=eagain two_writers=eof_on_last wait=read,write rebind=rewatched cp14=no_lost_wake",
+        "pipe_core=ok create=round_trip round=5 eof=0 epipe=partial_then_epipe atomic=whole nonblock=eagain two_writers=eof_on_last wait=read,write_atomic close_parked=ebadf rebind=rewatched cp14=no_lost_wake",
     )
 }
 
