@@ -287,6 +287,75 @@ pub fn rtc_reading_utc(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> 
     })
 }
 
+/// What `CLOCK_REALTIME` holds, from `SYS_CLOCK_REALTIME_STATUS`
+/// (THINK-2026-11-02-time-zones §2.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Basis {
+    /// The kernel has no `rtc-offset` (the status call fails): realtime is
+    /// the computer's clock as read, and Home shows it as it always did, with
+    /// no zone and no marker (the kill-switch's behaviour).
+    Legacy,
+    /// Not confirmed yet: the computer's clock as read, possibly local time.
+    Rtc,
+    /// Confirmed UTC. From here on only the display applies the zone: a
+    /// later zone or RTC-mode change never re-interprets the instant.
+    Utc,
+}
+
+impl Basis {
+    /// The basis for a status call's result.
+    pub fn of(status: Result<bool, i64>) -> Self {
+        match status {
+            Ok(true) => Self::Utc,
+            Ok(false) => Self::Rtc,
+            Err(_) => Self::Legacy,
+        }
+    }
+}
+
+/// The label after the time Home shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shown {
+    /// [`Basis::Legacy`]: none.
+    Plain,
+    /// [`Basis::Rtc`]: "zone not set" (the reading isn't known to be UTC).
+    NotSet,
+    /// [`Basis::Utc`]: the zone's abbreviation ("UTC" for no zone).
+    Zone(&'static str),
+}
+
+/// The wall time (seconds, counted as if UTC) Home shows for `realtime` and
+/// its label. Only [`Basis::Utc`] applies the zone; the other two show the
+/// reading as it is.
+pub fn shown(realtime: i64, basis: Basis, zone: ZoneId) -> (i64, Shown) {
+    match basis {
+        Basis::Legacy => (realtime, Shown::Plain),
+        Basis::Rtc => (realtime, Shown::NotSet),
+        Basis::Utc => {
+            let (local, offset) = utc_to_local(realtime, zone);
+            (
+                local,
+                Shown::Zone(if zone == UTC { "UTC" } else { offset.abbr }),
+            )
+        }
+    }
+}
+
+/// The offset to confirm (`SYS_CLOCK_CONFIRM_REALTIME`) for an RTC reading
+/// `wall`: the reading less its true UTC instant, or `None` when that is
+/// unknown ([`rtc_reading_utc`]).
+pub fn confirm_offset(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> {
+    rtc_reading_utc(wall, zone, rtc_local).map(|utc| wall - utc)
+}
+
+/// After a confirm with `confirmed` (the RTC read as `realtime + confirmed`),
+/// whether the settings now in force would read the computer's clock
+/// differently: then only a restart applies them (the confirm is
+/// write-once), and Home says so.
+pub fn needs_restart(realtime: i64, confirmed: i64, zone: ZoneId, rtc_local: bool) -> bool {
+    confirm_offset(realtime + confirmed, zone, rtc_local) != Some(confirmed)
+}
+
 /// A Home verb about the clock (THINK-2026-11-02-time-zones §2.5). The WM
 /// answers these itself; they never reach Arthur.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -266,6 +266,51 @@ mod tests {
         );
     }
 
+    /// Janus (#60): once realtime is confirmed UTC, only the display applies
+    /// the zone. Every instant below is worked out by hand from day numbers
+    /// (2026-11-02 is day 20759, 2026-11-01 day 20758).
+    #[test]
+    fn confirmed_utc_is_only_displayed_in_the_zone() {
+        use super::tz::{Basis, Shown, confirm_offset, needs_restart, shown};
+        let ny = id("America/New_York");
+        let sydney = id("Australia/Sydney");
+        // J.c.'s Zenbook: RTC 01:29 local, New York: confirm -18000 s, and
+        // realtime becomes 06:29 UTC = 1793577600 + 23340.
+        let wall = 20759 * 86400 + 5340;
+        assert_eq!(confirm_offset(wall, ny, true), Some(-18000));
+        let utc = 1_793_600_940;
+        assert_eq!(
+            shown(utc, Basis::Utc, ny),
+            (20759 * 86400 + 5340, Shown::Zone("EST"))
+        );
+        // Then `timezone Australia/Sydney`: 06:29 UTC is 17:29 AEDT (UTC+11),
+        // not 01:29 AEDT (the RTC's reading re-interpreted).
+        assert_eq!(
+            shown(utc, Basis::Utc, sydney),
+            (20759 * 86400 + 62940, Shown::Zone("AEDT"))
+        );
+        // The fold: confirmed earlier, now 06:30 UTC on 1 Nov, after the
+        // 06:00 UTC change: 01:30 EST, whatever is re-entered.
+        assert_eq!(
+            shown(20758 * 86400 + 23400, Basis::Utc, ny),
+            (20758 * 86400 + 5400, Shown::Zone("EST"))
+        );
+        // No zone, confirmed: UTC itself.
+        assert_eq!(shown(utc, Basis::Utc, tz::UTC), (utc, Shown::Zone("UTC")));
+        // Unconfirmed and the kill-switch: the reading as it is.
+        assert_eq!(shown(wall, Basis::Rtc, ny), (wall, Shown::NotSet));
+        assert_eq!(shown(wall, Basis::Legacy, ny), (wall, Shown::Plain));
+        assert_eq!(Basis::of(Ok(true)), Basis::Utc);
+        assert_eq!(Basis::of(Ok(false)), Basis::Rtc);
+        assert_eq!(Basis::of(Err(-38)), Basis::Legacy);
+        // A later mode or zone that would read the RTC differently needs a
+        // restart; the same settings don't.
+        assert!(!needs_restart(utc, -18000, ny, true));
+        assert!(needs_restart(utc, -18000, ny, false));
+        assert!(needs_restart(utc, -18000, sydney, true));
+        assert!(needs_restart(utc, -18000, tz::UTC, true));
+    }
+
     #[test]
     fn home_verbs_parse() {
         use super::tz::{ClockVerb, parse_verb};

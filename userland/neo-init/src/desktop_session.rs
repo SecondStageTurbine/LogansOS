@@ -6035,6 +6035,7 @@ mod busy {
 /// answered with a card (the help card's slot), never by Arthur.
 #[cfg(all(feature = "desktop-clock", feature = "desktop-intro"))]
 mod zone_verb {
+    use super::clock::Basis;
     use super::{Line, Scene};
     use alloc::format;
     use alloc::string::String;
@@ -6045,7 +6046,8 @@ mod zone_verb {
         tz::zone(id).map_or("Etc/UTC", |z| z.name)
     }
 
-    /// "EST, UTC-05:00" for the zone now.
+    /// "EST, UTC-05:00" for the zone now. Only for confirmed UTC: before
+    /// that, realtime isn't a UTC instant to convert.
     fn now_label(id: ZoneId) -> String {
         let now = libneo::sys_clock_gettime(libneo::CLOCK_REALTIME).unwrap_or(0) / 1_000_000_000;
         let (_, o) = tz::utc_to_local(now as i64, id);
@@ -6055,25 +6057,43 @@ mod zone_verb {
     }
 
     fn status_rows(scene: &Scene, head: String) -> Vec<String> {
-        let (zone, rtc_local, known) = scene.clock.zone();
+        let mode = scene.clock.mode();
         let mut rows = Vec::new();
         rows.push(head);
-        rows.push(if zone == tz::UTC && rtc_local {
+        rows.push(if mode.zone == tz::UTC && mode.rtc_local {
             String::from("Time zone: not set")
+        } else if mode.basis == Basis::Utc {
+            format!(
+                "Time zone: {} ({})",
+                zone_name(mode.zone),
+                now_label(mode.zone)
+            )
         } else {
-            format!("Time zone: {} ({})", zone_name(zone), now_label(zone))
+            format!("Time zone: {}", zone_name(mode.zone))
         });
-        rows.push(String::from(if rtc_local {
+        rows.push(String::from(if mode.rtc_local {
             "This computer's clock keeps local time (as Windows does)."
         } else {
             "This computer's clock keeps UTC."
         }));
-        if !known {
-            rows.push(String::from("Set your zone: timezone America/New_York"));
-        } else {
-            rows.push(String::from("Change it: timezone Area/City"));
+        match mode.basis {
+            // The kill-switch kernel: the readout is the clock as read.
+            Basis::Legacy => {
+                rows.push(String::from(
+                    "Saved. This system shows the computer's clock",
+                ));
+                rows.push(String::from("as it reads, without a time zone."));
+                return rows;
+            }
+            Basis::Rtc => rows.push(String::from("Set your zone: timezone America/New_York")),
+            Basis::Utc => rows.push(String::from("Change it: timezone Area/City")),
         }
-        rows.push(String::from(if rtc_local {
+        if mode.restart {
+            rows.push(String::from(
+                "Restart to read this computer's clock this way.",
+            ));
+        }
+        rows.push(String::from(if mode.rtc_local {
             "Off by whole hours? Type: rtc utc"
         } else {
             "Off by whole hours? Type: rtc local"
@@ -6085,7 +6105,8 @@ mod zone_verb {
         let Some(verb) = tz::parse_verb(line) else {
             return Ok(());
         };
-        let (zone, rtc_local, _) = scene.clock.zone();
+        let mode = scene.clock.mode();
+        let (zone, rtc_local) = (mode.zone, mode.rtc_local);
         let rows = match verb {
             ClockVerb::Show => status_rows(scene, String::from("The clock")),
             ClockVerb::Zone(typed) => match tz::find_zone(typed) {
@@ -6096,6 +6117,8 @@ mod zone_verb {
                         .s(zone_name(id).as_bytes())
                         .s(b" id=")
                         .n(u64::from(id))
+                        .s(b" restart=")
+                        .n(u64::from(scene.clock.mode().restart))
                         .s(b"\n")
                         .emit();
                     status_rows(scene, format!("Time zone set to {}.", zone_name(id)))
@@ -6125,14 +6148,16 @@ mod zone_verb {
                 Line::new()
                     .s(b"DESKTOP zone rtc=")
                     .s(if local { b"local" } else { b"utc" })
+                    .s(b" restart=")
+                    .n(u64::from(scene.clock.mode().restart))
                     .s(b"\n")
                     .emit();
                 status_rows(
                     scene,
                     String::from(if local {
-                        "The clock now reads this computer's clock as local time."
+                        "Saved: this computer's clock keeps local time."
                     } else {
-                        "The clock now reads this computer's clock as UTC."
+                        "Saved: this computer's clock keeps UTC."
                     }),
                 )
             }
@@ -6144,8 +6169,12 @@ mod zone_verb {
 /// OT-85 (`desktop-clock`): the Home readout and the wall-clock words.
 ///
 /// * The time is `CLOCK_REALTIME`, which the kernel (`rtc-epoch`) seeded from
-///   the RTC read as local wall time; it is formatted with `libneo::civil`
-///   (the probe's formatter) and shown with no offset.
+///   the RTC as read, formatted with `libneo::civil` (the probe's formatter).
+///   THINK-2026-11-02-time-zones: once the settings make the RTC's UTC
+///   instant known, the WM confirms realtime as UTC (`rtc-offset`,
+///   write-once) and from then on only the display applies the zone
+///   (`tz::shown`). Unconfirmed, the reading shows as it is, marked "zone
+///   not set"; on a kernel without `rtc-offset`, exactly as before.
 /// * Only a real epoch is shown: realtime - monotonic read inside one tick is
 ///   0 when the kernel has none (no `rtc-epoch`, or its fallback), and then
 ///   there is no readout and the intro keeps "Good day" (never a 1970 date).
@@ -6161,7 +6190,8 @@ mod clock {
     use super::{Line, Scene, wm_rect};
     use alloc::string::String;
     use libneo::civil::{self, Civil, DateText, TimeText};
-    use libneo::tz::{self, ZoneId};
+    pub use libneo::tz::Basis;
+    use libneo::tz::{self, Shown, ZoneId};
     use libneo::{CLOCK_MONOTONIC, CLOCK_REALTIME, sys_clock_gettime};
 
     const NS_PER_MINUTE: u64 = 60 * civil::NS_PER_SECOND;
@@ -6176,13 +6206,13 @@ mod clock {
         /// defaults: no zone, an RTC that holds local time).
         zone: ZoneId,
         rtc_local: bool,
-        /// The offset this WM confirmed to the kernel (`rtc-offset`), in
-        /// seconds: realtime + it is the RTC's wall time.
-        confirmed_s: i64,
-        /// True UTC - realtime, in ns, once known (`None`: an RTC in local
-        /// time with no zone set: the readout shows its wall time, "zone not
-        /// set"). 0 once the kernel confirmed realtime as UTC.
-        skew_ns: Option<i64>,
+        /// What realtime holds (`SYS_CLOCK_REALTIME_STATUS`). Once it is
+        /// [`Basis::Utc`] the WM never re-interprets it: a later zone only
+        /// changes the display, a later RTC mode waits for a restart.
+        basis: Basis,
+        /// The offset this WM confirmed (realtime + it was the RTC's
+        /// reading), for the restart hint. `None`: not confirmed by this WM.
+        confirmed_s: Option<i64>,
     }
 
     impl Default for State {
@@ -6192,10 +6222,20 @@ mod clock {
                 next_ns: u64::MAX,
                 zone: tz::UTC,
                 rtc_local: true,
-                confirmed_s: 0,
-                skew_ns: None,
+                basis: Basis::Legacy,
+                confirmed_s: None,
             }
         }
+    }
+
+    /// What the `timezone` card says about the clock.
+    pub struct Mode {
+        pub zone: ZoneId,
+        pub rtc_local: bool,
+        pub basis: Basis,
+        /// The settings in force would read the computer's clock differently
+        /// from the confirmed reading: only a restart applies them.
+        pub restart: bool,
     }
 
     impl State {
@@ -6213,9 +6253,23 @@ mod clock {
             self.shown.map(Words::of)
         }
 
-        /// The zone in force and the RTC mode, for the `timezone` card.
-        pub fn zone(&self) -> (ZoneId, bool, bool) {
-            (self.zone, self.rtc_local, self.skew_ns.is_some())
+        /// The zone, the RTC mode and the clock's state, for the card.
+        pub fn mode(&self) -> Mode {
+            let restart = match (self.basis, self.confirmed_s, sample()) {
+                (Basis::Utc, Some(c), Some((r, _))) => tz::needs_restart(
+                    (r / civil::NS_PER_SECOND) as i64,
+                    c,
+                    self.zone,
+                    self.rtc_local,
+                ),
+                _ => false,
+            };
+            Mode {
+                zone: self.zone,
+                rtc_local: self.rtc_local,
+                basis: self.basis,
+                restart,
+            }
         }
     }
 
@@ -6258,29 +6312,16 @@ mod clock {
         None
     }
 
-    /// The local wall time to show for `realtime` (ns) and the label after
-    /// it: the zone's abbreviation, "UTC", or "zone not set".
-    fn local(st: &State, realtime: u64) -> (u64, &'static str) {
-        match st.skew_ns {
-            Some(skew) => {
-                let utc = (realtime as i64).saturating_add(skew);
-                let (local_s, offset) = tz::utc_to_local(utc.div_euclid(NS), st.zone);
-                let local = local_s
-                    .saturating_mul(NS)
-                    .saturating_add(utc.rem_euclid(NS))
-                    .max(0) as u64;
-                let label = if st.zone == tz::UTC {
-                    "UTC"
-                } else {
-                    offset.abbr
-                };
-                (local, label)
-            }
-            None => (
-                (realtime as i64).saturating_add(st.confirmed_s * NS).max(0) as u64,
-                "zone not set",
-            ),
-        }
+    /// The wall time (ns) to show for `realtime` and its label
+    /// (`tz::shown`: only confirmed UTC is converted to the zone).
+    fn local(st: &State, realtime: u64) -> (u64, Shown) {
+        let r = realtime as i64;
+        let (wall_s, label) = tz::shown(r.div_euclid(NS), st.basis, st.zone);
+        let wall = wall_s
+            .saturating_mul(NS)
+            .saturating_add(r.rem_euclid(NS))
+            .max(0) as u64;
+        (wall, label)
     }
 
     /// Set the readout to the minute of `realtime` (read at `mono`).
@@ -6289,13 +6330,14 @@ mod clock {
         let c = civil::from_realtime_ns(wall);
         let w = Words::of(c);
         let mut time = String::from(w.time.as_str());
-        time.push(' ');
-        if scene.clock.skew_ns.is_none() {
-            time.push('(');
-            time.push_str(label);
-            time.push(')');
-        } else {
-            time.push_str(label);
+        match label {
+            // The kill-switch: today's readout, no label.
+            Shown::Plain => {}
+            Shown::NotSet => time.push_str(" (zone not set)"),
+            Shown::Zone(abbr) => {
+                time.push(' ');
+                time.push_str(abbr);
+            }
         }
         scene
             .chrome
@@ -6314,72 +6356,79 @@ mod clock {
             .s(c.date_text().as_bytes())
             .s(b"\" time=\"")
             .s(c.time_text().as_bytes())
-            .s(b"\" zone=\"")
-            .s(label.as_bytes())
-            .s(b"\" realtime_s=")
-            .n(realtime / civil::NS_PER_SECOND);
-        let line = match scene.clock.skew_ns {
-            Some(skew) => line
-                .s(b" utc_s=")
-                .n(((realtime as i64).saturating_add(skew) / NS).max(0) as u64),
-            None => line,
+            .s(b"\"");
+        let line = match label {
+            Shown::Plain => line,
+            Shown::NotSet => line.s(b" zone=\"zone not set\""),
+            Shown::Zone(abbr) => line.s(b" zone=\"").s(abbr.as_bytes()).s(b"\""),
+        };
+        let line = line.s(b" realtime_s=").n(realtime / civil::NS_PER_SECOND);
+        let line = if scene.clock.basis == Basis::Utc {
+            line.s(b" utc_s=").n(realtime / civil::NS_PER_SECOND)
+        } else {
+            line
         };
         line.s(b"\n").emit();
     }
 
-    /// Work out true UTC from the settings in force (THINK-2026-11-02 §2.1)
-    /// and, the first time it is known, confirm realtime as UTC to the
-    /// kernel (`rtc-offset`, write-once). Afterwards (a zone or RTC mode
-    /// changed later) the WM keeps the difference itself: the kernel's
-    /// realtime stays as first confirmed until the next boot.
+    /// Read the clock's state and, while realtime is the unconfirmed RTC
+    /// reading, confirm it as UTC once the settings make its UTC instant
+    /// known (THINK-2026-11-02 §2.1; `rtc-offset`, write-once). Once
+    /// confirmed (by this WM or an earlier one) nothing is re-interpreted.
     fn resolve(st: &mut State, realtime: u64) {
-        let r_s = (realtime / civil::NS_PER_SECOND) as i64;
-        let wall_s = r_s + st.confirmed_s;
-        let Some(utc_s) = tz::rtc_reading_utc(wall_s, st.zone, st.rtc_local) else {
-            st.skew_ns = None;
-            log_mode(st, b"unknown", 0);
+        st.basis = Basis::of(libneo::sys_clock_realtime_status());
+        if st.basis != Basis::Rtc {
+            log_mode(
+                st,
+                if st.basis == Basis::Utc {
+                    b"kept"
+                } else {
+                    b"legacy"
+                },
+                None,
+            );
+            return;
+        }
+        let wall_s = (realtime / civil::NS_PER_SECOND) as i64;
+        let Some(offset) = tz::confirm_offset(wall_s, st.zone, st.rtc_local) else {
+            log_mode(st, b"unknown", None);
             return;
         };
-        let already = libneo::sys_clock_realtime_status().unwrap_or(false);
-        if !already && st.confirmed_s == 0 {
-            let offset = wall_s - utc_s;
-            match libneo::sys_clock_confirm_realtime(offset) {
-                Ok(()) => {
-                    st.confirmed_s = offset;
-                    st.skew_ns = Some(0);
-                    log_mode(st, b"confirmed", offset);
-                    return;
-                }
-                Err(e) => {
-                    Line::new()
-                        .s(b"DESKTOP clock confirm refused errno=")
-                        .n(e.unsigned_abs())
-                        .s(b"\n")
-                        .emit();
-                }
+        match libneo::sys_clock_confirm_realtime(offset) {
+            Ok(()) => {
+                st.basis = Basis::Utc;
+                st.confirmed_s = Some(offset);
+                log_mode(st, b"confirmed", Some(offset));
+            }
+            Err(e) => {
+                Line::new()
+                    .s(b"DESKTOP clock confirm refused errno=")
+                    .n(e.unsigned_abs())
+                    .s(b"\n")
+                    .emit();
+                // Another confirm won the race: it stands.
+                st.basis = Basis::of(libneo::sys_clock_realtime_status());
+                log_mode(st, b"unconfirmed", None);
             }
         }
-        st.skew_ns = Some((utc_s - r_s) * NS);
-        log_mode(st, b"wm", wall_s - utc_s);
     }
 
-    fn log_mode(st: &State, how: &[u8], offset_s: i64) {
+    fn log_mode(st: &State, how: &[u8], offset_s: Option<i64>) {
         let name = tz::zone(st.zone).map_or("Etc/UTC", |z| z.name);
-        Line::new()
+        let line = Line::new()
             .s(b"DESKTOP clock utc=")
             .s(how)
             .s(b" zone=")
             .s(name.as_bytes())
             .s(b" rtc=")
-            .s(if st.rtc_local { b"local" } else { b"utc" })
-            .s(if offset_s < 0 {
-                b" offset_s=-"
-            } else {
-                b" offset_s="
-            })
-            .n(offset_s.unsigned_abs())
-            .s(b"\n")
-            .emit();
+            .s(if st.rtc_local { b"local" } else { b"utc" });
+        let line = match offset_s {
+            Some(o) => line
+                .s(if o < 0 { b" offset_s=-" } else { b" offset_s=" })
+                .n(o.unsigned_abs()),
+            None => line,
+        };
+        line.s(b"\n").emit();
     }
 
     /// The zone and RTC mode from the settings store (defaults without it).
@@ -6428,8 +6477,10 @@ mod clock {
         }
     }
 
-    /// The `timezone` / `rtc` verbs: a new zone or RTC mode, shown at once.
-    /// The settings store keeps it when the WM has one.
+    /// The `timezone` / `rtc` verbs. The settings store keeps the new zone or
+    /// RTC mode when the WM has one. While realtime is unconfirmed it may now
+    /// be confirmed; once confirmed, a zone changes only the display and an
+    /// RTC mode waits for a restart ([`Mode::restart`]).
     pub fn set_mode(scene: &mut Scene, zone: ZoneId, rtc_local: bool) -> Result<(), i32> {
         #[cfg(feature = "atrium-settings-store")]
         {
@@ -6445,7 +6496,16 @@ mod clock {
         let Some((r, m)) = sample() else {
             return Ok(());
         };
-        resolve(&mut scene.clock, r);
+        if scene.clock.basis == Basis::Rtc {
+            resolve(&mut scene.clock, r);
+        } else {
+            let how: &[u8] = if scene.clock.basis == Basis::Utc {
+                b"kept"
+            } else {
+                b"legacy"
+            };
+            log_mode(&scene.clock, how, None);
+        }
         let (r, m) = sample().unwrap_or((r, m));
         set(scene, r, m);
         let b = wm_rect(scene.chrome.layout.clock_slot());

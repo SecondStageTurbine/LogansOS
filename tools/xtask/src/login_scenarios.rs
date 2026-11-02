@@ -1112,6 +1112,7 @@ impl ActionLog {
             path,
             intent,
             prev: self.link,
+            flags: 0,
         })
         .expect("a scenario record fits");
         self.link = action_log_core::link(&bytes);

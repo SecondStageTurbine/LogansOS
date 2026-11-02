@@ -905,7 +905,13 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"DESKTOP help shown via=click rows=6",
         b"timezone us/eastern\n",
     ),
-    step(b"DESKTOP zone set name=America/New_York", b"rtc utc\n"),
+    // Janus (#60): once confirmed, a zone changes only the display, and an
+    // RTC mode waits for a restart.
+    step(
+        b"DESKTOP zone set name=America/New_York",
+        b"timezone europe/london\n",
+    ),
+    step(b"DESKTOP zone set name=Europe/London", b"rtc utc\n"),
     step(b"DESKTOP zone rtc=utc", b"\x1b"),
     step(b"DESKTOP zone closed via=esc", b"hello desktop"),
     HOME_TYPED_ENTER,
@@ -18985,13 +18991,21 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "rtc: realtime confirmed as utc offset_s=-14400",
                 "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
                 "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"5:4",
-                "DESKTOP zone set name=America/New_York id=105",
+                "DESKTOP zone set name=America/New_York id=105 restart=0",
                 "DESKTOP zone card shown rows=5",
-                // `rtc utc`: the same reading is now UTC, so 13:4x EDT; the
-                // kernel keeps the confirmed base, the WM the difference.
-                "DESKTOP clock utc=wm zone=America/New_York rtc=utc offset_s=0",
-                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"1:4",
-                "DESKTOP zone rtc=utc",
+                // Janus (#60): `timezone europe/london` after the confirm only
+                // changes the display: 21:4x UTC is 10:4x PM BST. The RTC's
+                // reading isn't re-interpreted (that would give 5:4x PM); the
+                // card says a restart would read it with the new zone.
+                "DESKTOP clock utc=kept zone=Europe/London rtc=local",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"10:4",
+                "DESKTOP zone set name=Europe/London id=288 restart=1",
+                "DESKTOP zone card shown rows=6",
+                // `rtc utc`: saved; the confirmed instant stays until a restart.
+                "DESKTOP clock utc=kept zone=Europe/London rtc=utc",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"10:4",
+                "DESKTOP zone rtc=utc restart=1",
+                "DESKTOP zone card shown rows=6",
                 "DESKTOP zone closed via=esc",
                 "DESKTOP home intent submitted target=arthur",
                 "DESKTOP view switch=home residue_pixels=0",
@@ -21131,24 +21145,24 @@ fn require_clock_words(scenario: TestScenario, observed: &ObservedTest) -> Resul
     }) {
         let s = numeric(line, "realtime_s").unwrap_or(0);
         // THINK-2026-11-02-time-zones: the wall time shown. "zone not set" is
-        // the RTC's reading (realtime, unconfirmed); EDT is the WM's UTC
-        // (`utc_s`) less 4 h, worked out by hand for 21 October 2026 (DST in
-        // New York runs 8 March to 1 November).
+        // the RTC's reading (realtime, unconfirmed). Once confirmed, realtime
+        // is UTC (`utc_s`): the pinned reading + 4 h (it was EDT), and the
+        // zone only changes the display. Offsets worked out by hand for 21
+        // October 2026: EDT is UTC-4 (New York's DST runs 8 March to 1
+        // November), BST UTC+1 (London's runs 29 March to 25 October).
         let zone = quoted(line, "zone").unwrap_or_default();
-        let (wall, in_range) = match zone {
-            "zone not set" => (
+        let utc = numeric(line, "utc_s");
+        let confirmed = |u: u64| {
+            (WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900).contains(&u)
+                && u == s
+        };
+        let (wall, in_range) = match (zone, utc) {
+            ("zone not set", None) => (
                 s,
                 (WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&s),
             ),
-            "EDT" => {
-                let u = numeric(line, "utc_s").unwrap_or(0);
-                // After `timezone`: UTC is the pinned reading + 4 h; after
-                // `rtc utc`: the pinned reading itself.
-                let ok = (WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900)
-                    .contains(&u)
-                    || (WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&u);
-                (u.saturating_sub(14_400), ok)
-            }
+            ("EDT", Some(u)) => (u.saturating_sub(14_400), confirmed(u)),
+            ("BST", Some(u)) => (u + 3_600, confirmed(u)),
             _ => (s, false),
         };
         let (d, t, hour) = civil_oracle(wall);
