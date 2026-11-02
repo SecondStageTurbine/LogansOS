@@ -44,6 +44,7 @@ use style::stylesheets::{AllowImportRules, Origin, Stylesheet, UrlExtraData};
 use webrender_api::{FontInstanceKey, FontKey, IdNamespace, ImageKey};
 
 mod no_images;
+pub mod oracle;
 pub use no_images::NoImages;
 
 /// What layout sent to "paint" during a reflow.
@@ -250,6 +251,23 @@ impl StaticPage {
             rooted_nodes_for_accessibility_integrity_check: None,
         };
         self.layout.reflow(request).is_some()
+    }
+
+    /// The border box of the element with `id`, in CSS px (x, y, width,
+    /// height), rounded to whole px, after a reflow.
+    pub fn border_box(&self, id: &str) -> Option<[i32; 4]> {
+        let node = self.document.element_by_id(id)?;
+        let rect = self.layout.query_box_area(
+            self.document.address(node),
+            layout_api::BoxAreaType::Border,
+            false,
+        )?;
+        Some([
+            rect.origin.x.to_px(),
+            rect.origin.y.to_px(),
+            rect.size.width.to_px(),
+            rect.size.height.to_px(),
+        ])
     }
 
     /// How many display lists layout has sent.
