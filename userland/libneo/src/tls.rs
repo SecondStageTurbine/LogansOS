@@ -34,6 +34,15 @@ pub const PHASE4_TEST_KEY_PKCS8: &[u8] = include_bytes!("../fixtures/phase4.test
 const TLS_IO_BUF: usize = 2048;
 const TLS_STEPS: usize = 512;
 const HTTP_STEPS: usize = 128;
+/// Empty polls `recv_append` waits through. With `tls-pipelined-peer` (the
+/// fetch broker's fixture, OT-61 rung 5) it is larger than [`TLS_STEPS`]: a
+/// peer in another process can take far longer between flights than phase4's
+/// in-process client. Without the feature it is the previous bound (#29
+/// review item 5: feature-off behaviour unchanged).
+#[cfg(feature = "tls-pipelined-peer")]
+const RECV_POLLS: usize = 1 << 16;
+#[cfg(not(feature = "tls-pipelined-peer"))]
+const RECV_POLLS: usize = TLS_STEPS;
 const FIXED_TIME_2026_05_30: u64 = 1_780_185_600;
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -191,8 +200,8 @@ pub fn serve_https_once(
     let config = server_config(cert_chain, key_pkcs8)?;
     let mut conn =
         UnbufferedServerConnection::new(Arc::new(config)).map_err(|_| TlsError::RustlsNew)?;
-    drive_handshake_server(socket, &mut conn)?;
-    let request = server_read_request(socket, &mut conn)?;
+    let (early, early_plain) = drive_handshake_server(socket, &mut conn)?;
+    let request = server_read_request(socket, &mut conn, early, early_plain)?;
     if !request.starts_with(b"GET /") {
         return Err(TlsError::BadHttp);
     }
@@ -286,10 +295,20 @@ fn drive_handshake_client(
     Err(TlsError::Limit)
 }
 
+/// Drive the server handshake. With `tls-pipelined-peer`, a client may send
+/// its first request in the same flight as its Finished (any real client may
+/// pipeline it): this returns the received bytes the handshake did not consume
+/// and the application data it already decrypted; both belong to
+/// [`server_read_request`]. (rustls counts a record yielded in `ReadTraffic` as
+/// consumed, so the records must be read there, or the request is discarded
+/// with the handshake bytes.) Without the feature, both are empty and
+/// application data during the handshake is an error, as before.
 fn drive_handshake_server(
     socket: TcpSocketHandle,
     conn: &mut UnbufferedServerConnection,
-) -> Result<(), TlsError> {
+) -> Result<(Vec<u8>, Vec<u8>), TlsError> {
+    #[cfg(feature = "tls-pipelined-peer")]
+    let mut plain: Vec<u8> = Vec::new();
     let mut incoming = Vec::new();
     let mut pending = Vec::new();
     let mut out = vec![0u8; TLS_IO_BUF];
@@ -313,19 +332,31 @@ fn drive_handshake_server(
                     transmit.done();
                 }
                 ConnectionState::BlockedHandshake => need_read = true,
+                // Handshake done; application data may already be queued.
                 ConnectionState::WriteTraffic(_) => complete = true,
+                #[cfg(feature = "tls-pipelined-peer")]
+                ConnectionState::ReadTraffic(mut reader) => {
+                    while let Some(record) = reader.next_record() {
+                        let record = record.map_err(|_| TlsError::Rustls)?;
+                        plain.extend_from_slice(record.payload);
+                    }
+                    complete = true;
+                }
+                #[cfg(not(feature = "tls-pipelined-peer"))]
+                ConnectionState::ReadTraffic(_) => return Err(TlsError::Rustls),
                 ConnectionState::PeerClosed | ConnectionState::Closed => {
                     return Err(TlsError::Rustls);
                 }
-                ConnectionState::ReadTraffic(_) | ConnectionState::ReadEarlyData(_) => {
-                    return Err(TlsError::Rustls);
-                }
+                ConnectionState::ReadEarlyData(_) => return Err(TlsError::Rustls),
                 _ => return Err(TlsError::Rustls),
             }
         }
         discard_front(&mut incoming, discard);
         if complete {
-            return Ok(());
+            #[cfg(feature = "tls-pipelined-peer")]
+            return Ok((incoming, plain));
+            #[cfg(not(feature = "tls-pipelined-peer"))]
+            return Ok((Vec::new(), Vec::new()));
         }
         if need_read {
             recv_append(socket, &mut incoming)?;
@@ -337,11 +368,21 @@ fn drive_handshake_server(
 fn server_read_request(
     socket: TcpSocketHandle,
     conn: &mut UnbufferedServerConnection,
+    early: Vec<u8>,
+    early_plain: Vec<u8>,
 ) -> Result<Vec<u8>, TlsError> {
-    let mut incoming = Vec::new();
-    let mut request = Vec::new();
+    let mut incoming = early;
+    let mut request = early_plain;
+    if find_bytes(&request, b"\r\n\r\n").is_some() {
+        return Ok(request);
+    }
+    // Read more when there is nothing buffered, or when the last pass could
+    // not consume what is (a partial record).
+    let mut need_recv = incoming.is_empty();
     for _ in 0..HTTP_STEPS {
-        recv_append(socket, &mut incoming)?;
+        if need_recv {
+            recv_append(socket, &mut incoming)?;
+        }
         let discard;
         {
             let status = conn.process_tls_records(incoming.as_mut_slice());
@@ -368,6 +409,8 @@ fn server_read_request(
         if find_bytes(&request, b"\r\n\r\n").is_some() {
             return Ok(request);
         }
+        // Without `tls-pipelined-peer`, every pass reads first, as before.
+        need_recv = !cfg!(feature = "tls-pipelined-peer") || discard == 0 || incoming.is_empty();
     }
     Err(TlsError::Truncated)
 }
@@ -497,7 +540,7 @@ fn send_all(socket: TcpSocketHandle, mut buf: &[u8]) -> Result<(), TlsError> {
 
 fn recv_append(socket: TcpSocketHandle, incoming: &mut Vec<u8>) -> Result<(), TlsError> {
     let mut buf = vec![0u8; TLS_IO_BUF];
-    for _ in 0..TLS_STEPS {
+    for _ in 0..RECV_POLLS {
         let n = sys_tcp_recv(socket, &mut buf);
         if n > 0 {
             incoming.extend_from_slice(&buf[..n as usize]);
