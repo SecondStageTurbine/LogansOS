@@ -8772,6 +8772,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     let mut bare_metal_mode = false;
     let mut include_explicit = false;
     let mut keep_going = false;
+    let mut rerun_timeouts = false;
     let mut quick_tier = false;
     let mut changed_from: Option<String> = None;
     let mut shard: Option<ShardSpec> = None;
@@ -8787,6 +8788,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
             "--build-only" => build_only = true,
             "--bare-metal-mode" => bare_metal_mode = true,
             "--keep-going" => keep_going = true,
+            "--rerun-timeouts" => rerun_timeouts = true,
             "--tier" => {
                 idx += 1;
                 match args.get(idx).map(String::as_str) {
@@ -8868,6 +8870,9 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     if changed_from.is_some() && !quick_tier {
         return Err("--changed-from only applies to --tier quick".to_string());
     }
+    if rerun_timeouts && !keep_going {
+        return Err("--rerun-timeouts only applies with --keep-going".to_string());
+    }
 
     let mut scenarios = if quick_tier {
         let added = match &changed_from {
@@ -8942,9 +8947,17 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
         None if quick_tier => "tier quick".to_string(),
         None => "run".to_string(),
     };
-    run_scenarios_timed(&scenarios, &label, keep_going, |scenario| {
-        run_test_scenario_with_retries(scenario, mode)
-    })?;
+    let policy = RunPolicy {
+        keep_going,
+        rerun_timeouts,
+    };
+    run_scenarios_timed(
+        &scenarios,
+        &label,
+        policy,
+        |scenario| run_test_scenario_with_retries(scenario, mode),
+        take_qemu_runs,
+    )?;
 
     // The deliberate-failure meta-test is a runner self-check that the
     // un-sharded suite runs exactly once at the end. Under sharding it must
@@ -8972,24 +8985,79 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
 /// through `run_with_timeout_and_dump`).
 static QEMU_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static QEMU_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Whether the most recent QEMU run hit its timeout (OT-58 THINK 2.5: a
+/// timeout is classified apart from a scenario failure, and re-run once).
+static QEMU_LAST_TIMED_OUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-fn record_qemu_run(elapsed: Duration) {
+fn record_qemu_run(elapsed: Duration, timed_out: bool) {
     use std::sync::atomic::Ordering;
     QEMU_MILLIS.fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
     QEMU_RUNS.fetch_add(1, Ordering::Relaxed);
+    QEMU_LAST_TIMED_OUT.store(timed_out, Ordering::Relaxed);
 }
 
-fn take_qemu_runs() -> (Duration, u32) {
+/// What the QEMU runs of one scenario add up to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct QemuTally {
+    qemu: Duration,
+    runs: u32,
+    last_timed_out: bool,
+}
+
+fn take_qemu_runs() -> QemuTally {
     use std::sync::atomic::Ordering;
-    (
-        Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
-        QEMU_RUNS.swap(0, Ordering::Relaxed),
-    )
+    QemuTally {
+        qemu: Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
+        runs: QEMU_RUNS.swap(0, Ordering::Relaxed),
+        last_timed_out: QEMU_LAST_TIMED_OUT.swap(false, Ordering::Relaxed),
+    }
 }
 
 const TIMINGS_TSV_REL: &str = "target/neo-test/timings.tsv";
 const TIMINGS_SUMMARY_REL: &str = "target/neo-test/timings-summary.md";
 const TIMINGS_TSV_HEADER: &str = "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n";
+
+/// A scenario's outcome, as the timing table's `result` column records it
+/// (OT-58 THINK 2.5, the classification `batch-report` sorts by):
+/// - `pass`;
+/// - `FAIL`: QEMU ran and the scenario failed (an assertion, an exit status);
+/// - `FAIL-build`: it failed before any QEMU run (its kernel, userland or
+///   image build);
+/// - `FAIL-timeout`: its last QEMU run hit the scenario's timeout.
+///
+/// A row for a `--rerun-timeouts` re-run carries the same word after
+/// `rerun-` (`rerun-pass`, `rerun-FAIL-timeout`, ...).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScenarioOutcome {
+    Pass,
+    Fail,
+    BuildFail,
+    Timeout,
+}
+
+impl ScenarioOutcome {
+    fn classify(ok: bool, tally: QemuTally) -> Self {
+        if ok {
+            Self::Pass
+        } else if tally.runs == 0 {
+            Self::BuildFail
+        } else if tally.last_timed_out {
+            Self::Timeout
+        } else {
+            Self::Fail
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "FAIL",
+            Self::BuildFail => "FAIL-build",
+            Self::Timeout => "FAIL-timeout",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct ScenarioTiming {
@@ -8997,13 +9065,27 @@ struct ScenarioTiming {
     wall: Duration,
     qemu: Duration,
     qemu_runs: u32,
-    passed: bool,
+    outcome: ScenarioOutcome,
+    /// This row is a `--rerun-timeouts` re-run.
+    rerun: bool,
 }
 
 impl ScenarioTiming {
     /// Everything that isn't QEMU: the kernel and userland builds, the image.
     fn build(&self) -> Duration {
         self.wall.saturating_sub(self.qemu)
+    }
+
+    fn passed(&self) -> bool {
+        self.outcome == ScenarioOutcome::Pass
+    }
+
+    fn result(&self) -> String {
+        if self.rerun {
+            format!("rerun-{}", self.outcome.word())
+        } else {
+            self.outcome.word().to_string()
+        }
     }
 }
 
@@ -9015,7 +9097,7 @@ fn timings_tsv_row(t: &ScenarioTiming) -> String {
         t.qemu.as_secs_f64(),
         t.build().as_secs_f64(),
         t.qemu_runs,
-        if t.passed { "pass" } else { "FAIL" }
+        t.result()
     )
 }
 
@@ -9026,7 +9108,7 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
     sorted.sort_by(|a, b| b.wall.cmp(&a.wall).then_with(|| a.name.cmp(b.name)));
     let wall: Duration = rows.iter().map(|t| t.wall).sum();
     let qemu: Duration = rows.iter().map(|t| t.qemu).sum();
-    let failed = rows.iter().filter(|t| !t.passed).count();
+    let failed = rows.iter().filter(|t| !t.passed()).count();
     let mut out = String::new();
     if markdown {
         out.push_str(&format!(
@@ -9045,7 +9127,7 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
                 t.qemu.as_secs_f64(),
                 t.build().as_secs_f64(),
                 t.qemu_runs,
-                if t.passed { "pass" } else { "FAIL" }
+                t.result()
             ));
         }
     } else {
@@ -9064,15 +9146,29 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
     out
 }
 
-/// Run `scenarios` in order through `run`, timing each one. Without
-/// `keep_going`, stop at the first failure and return its error (the behaviour
-/// before S0). With it, run them all and fail with the list of failures. The
-/// timings are written either way.
+/// How `run_scenarios_timed` treats failures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RunPolicy {
+    /// Run every scenario, then fail with the list (OT-58 S0).
+    keep_going: bool,
+    /// With `keep_going`: re-run each scenario whose last QEMU run timed out,
+    /// once, after the others (OT-58 THINK 2.5; hosted TCG time varies, #19).
+    /// A timeout that passes on its re-run is not a failure, but it is
+    /// reported, since its timeout needs raising.
+    rerun_timeouts: bool,
+}
+
+/// Run `scenarios` in order through `run`, timing each one; `take` reads (and
+/// resets) the QEMU time the scenario used. Without `keep_going`, stop at the
+/// first failure and return its error (the behaviour before S0). With it, run
+/// them all and fail with the list of failures. The timings are written either
+/// way.
 fn run_scenarios_timed(
     scenarios: &[TestScenario],
     label: &str,
-    keep_going: bool,
+    policy: RunPolicy,
     mut run: impl FnMut(TestScenario) -> Result<(), String>,
+    mut take: impl FnMut() -> QemuTally,
 ) -> Result<(), String> {
     let root = workspace_root();
     let tsv_path = root.join(TIMINGS_TSV_REL);
@@ -9080,32 +9176,66 @@ fn run_scenarios_timed(
     let _ = fs::write(&tsv_path, TIMINGS_TSV_HEADER);
     let mut rows: Vec<ScenarioTiming> = Vec::new();
     let mut failures: Vec<(&'static str, String)> = Vec::new();
-    for &scenario in scenarios {
-        let _ = take_qemu_runs();
+    let mut timed_out: Vec<TestScenario> = Vec::new();
+    let mut timed_one = |scenario: TestScenario, rerun: bool, rows: &mut Vec<ScenarioTiming>| {
+        let _ = take();
         let start = Instant::now();
         let result = run(scenario);
-        let (qemu, qemu_runs) = take_qemu_runs();
+        let tally = take();
         let row = ScenarioTiming {
             name: scenario.name,
             wall: start.elapsed(),
-            qemu,
-            qemu_runs,
-            passed: result.is_ok(),
+            qemu: tally.qemu,
+            qemu_runs: tally.runs,
+            outcome: ScenarioOutcome::classify(result.is_ok(), tally),
+            rerun,
         };
         if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&tsv_path) {
             let _ = f.write_all(timings_tsv_row(&row).as_bytes());
         }
+        let outcome = row.outcome;
         rows.push(row);
+        (result, outcome)
+    };
+    for &scenario in scenarios {
+        let (result, outcome) = timed_one(scenario, false, &mut rows);
         if let Err(e) = result {
-            if !keep_going {
+            if !policy.keep_going {
                 emit_timings_summary(label, &rows);
                 return Err(e);
             }
             eprintln!(
-                "[xtask] neo-test: `{}` FAILED (keep-going): {e}",
-                scenario.name
+                "[xtask] neo-test: `{}` {} (keep-going): {e}",
+                scenario.name,
+                outcome.word()
             );
+            if policy.rerun_timeouts && outcome == ScenarioOutcome::Timeout {
+                timed_out.push(scenario);
+            }
             failures.push((scenario.name, e));
+        }
+    }
+    for scenario in timed_out {
+        eprintln!(
+            "[xtask] neo-test: `{}` timed out; re-running it once (--rerun-timeouts)",
+            scenario.name
+        );
+        let (result, outcome) = timed_one(scenario, true, &mut rows);
+        match result {
+            Ok(()) => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` passed on its re-run: a hosted-time timeout, not a \
+                     failure. Raise its timeout, with the elapsed time in the commit.",
+                    scenario.name
+                );
+                failures.retain(|(n, _)| *n != scenario.name);
+            }
+            Err(e) => {
+                let msg = format!("re-run {}: {e}", outcome.word());
+                if let Some(f) = failures.iter_mut().find(|(n, _)| *n == scenario.name) {
+                    f.1 = format!("{}; {msg}", f.1);
+                }
+            }
         }
     }
     emit_timings_summary(label, &rows);
@@ -9484,6 +9614,9 @@ fn print_neo_test_help() {
     println!("    cargo neo-test --shard I/N      run scenario subset I of N (1-based)");
     println!(
         "    cargo neo-test ... --keep-going run every selected scenario, then fail with the list"
+    );
+    println!(
+        "    cargo neo-test ... --keep-going --rerun-timeouts  re-run each timed-out scenario once at the end"
     );
     println!(
         "    cargo neo-test --tier quick [--changed-from REF]  the smoke list, plus scenarios the diff adds or edits"
@@ -17009,7 +17142,7 @@ fn run_with_timeout_and_dump(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("[xtask] qemu stderr for `{label}`:\n{stderr}");
             }
-            record_qemu_run(start.elapsed());
+            record_qemu_run(start.elapsed(), false);
             eprintln!(
                 "[xtask] neo-test: `{label}` qemu elapsed={:.1}s status={} budget={}s",
                 start.elapsed().as_secs_f64(),
@@ -17021,7 +17154,7 @@ fn run_with_timeout_and_dump(
 
         if start.elapsed() >= timeout {
             let elapsed = start.elapsed();
-            record_qemu_run(elapsed);
+            record_qemu_run(elapsed, true);
             if let Some(dump_path) = dump_target {
                 attempt_timeout_monitor_dump(label, dump_path);
             }
@@ -22294,7 +22427,12 @@ mod tests {
             wall: Duration::from_millis(wall_ms),
             qemu: Duration::from_millis(qemu_ms),
             qemu_runs: runs,
-            passed,
+            outcome: if passed {
+                ScenarioOutcome::Pass
+            } else {
+                ScenarioOutcome::Fail
+            },
+            rerun: false,
         }
     }
 
@@ -22751,28 +22889,45 @@ mod tests {
         assert_eq!(picked.len(), 4);
         let fail_on = |s: TestScenario| s.name == picked[1].name || s.name == picked[3].name;
 
+        let stop = RunPolicy::default();
+        let keep = RunPolicy {
+            keep_going: true,
+            rerun_timeouts: false,
+        };
         let mut ran = Vec::new();
-        let err = run_scenarios_timed(&picked, "test", false, |s| {
-            ran.push(s.name);
-            if fail_on(s) {
-                Err(format!("boom {}", s.name))
-            } else {
-                Ok(())
-            }
-        })
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            stop,
+            |s| {
+                ran.push(s.name);
+                if fail_on(s) {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            QemuTally::default,
+        )
         .unwrap_err();
         assert_eq!(ran, vec![picked[0].name, picked[1].name]);
         assert_eq!(err, format!("boom {}", picked[1].name));
 
         let mut ran = Vec::new();
-        let err = run_scenarios_timed(&picked, "test", true, |s| {
-            ran.push(s.name);
-            if fail_on(s) {
-                Err(format!("boom {}", s.name))
-            } else {
-                Ok(())
-            }
-        })
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            keep,
+            |s| {
+                ran.push(s.name);
+                if fail_on(s) {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            QemuTally::default,
+        )
         .unwrap_err();
         assert_eq!(ran, picked.iter().map(|s| s.name).collect::<Vec<_>>());
         assert_eq!(
@@ -22784,7 +22939,130 @@ mod tests {
             )
         );
 
-        assert!(run_scenarios_timed(&picked, "test", true, |_| Ok(())).is_ok());
+        assert!(run_scenarios_timed(&picked, "test", keep, |_| Ok(()), QemuTally::default).is_ok());
+    }
+
+    /// OT-58 THINK 2.5 (Dexter #47 item 2.4): the timing table tells a build
+    /// failure (no QEMU run), a timeout (the last QEMU run hit its limit) and
+    /// a scenario failure apart.
+    #[test]
+    fn scenario_outcome_classifies_build_timeout_and_scenario_failures() {
+        let ran = |runs, last_timed_out| QemuTally {
+            qemu: Duration::from_secs(1),
+            runs,
+            last_timed_out,
+        };
+        assert_eq!(
+            ScenarioOutcome::classify(true, ran(1, false)),
+            ScenarioOutcome::Pass
+        );
+        // A retry that timed out, then passed, is a pass.
+        assert_eq!(
+            ScenarioOutcome::classify(true, ran(2, false)),
+            ScenarioOutcome::Pass
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, QemuTally::default()),
+            ScenarioOutcome::BuildFail
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, ran(4, true)),
+            ScenarioOutcome::Timeout
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, ran(4, false)),
+            ScenarioOutcome::Fail
+        );
+
+        let mut row = timing("gamma", 5_000, 0, 0, false);
+        row.outcome = ScenarioOutcome::BuildFail;
+        assert_eq!(
+            timings_tsv_row(&row),
+            "gamma\t5.0\t0.0\t5.0\t0\tFAIL-build\n"
+        );
+        row.outcome = ScenarioOutcome::Timeout;
+        row.rerun = true;
+        assert!(timings_tsv_row(&row).ends_with("\trerun-FAIL-timeout\n"));
+    }
+
+    /// OT-58 THINK 2.5 (Dexter #47 item 2.4): `--rerun-timeouts` re-runs each
+    /// timed-out scenario once, after the others. A re-run pass clears the
+    /// failure; a scenario failure or build failure is never re-run; a
+    /// timeout that fails again stays a failure.
+    #[test]
+    fn rerun_timeouts_reruns_each_timeout_once() {
+        let suite = canonical_suite();
+        let picked: Vec<TestScenario> = suite.iter().copied().take(4).collect();
+        // [0] passes; [1] fails in QEMU; [2] times out, then passes;
+        // [3] times out twice.
+        let policy = RunPolicy {
+            keep_going: true,
+            rerun_timeouts: true,
+        };
+        let mut ran: Vec<&str> = Vec::new();
+        let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+        let last = std::cell::Cell::new(QemuTally::default());
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            policy,
+            |s| {
+                ran.push(s.name);
+                let n = seen.entry(s.name).or_insert(0);
+                *n += 1;
+                let timed_out = s.name == picked[3].name || (s.name == picked[2].name && *n == 1);
+                last.set(QemuTally {
+                    qemu: Duration::from_secs(1),
+                    runs: 1,
+                    last_timed_out: timed_out,
+                });
+                if timed_out || s.name == picked[1].name {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            || last.replace(QemuTally::default()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            ran,
+            vec![
+                picked[0].name,
+                picked[1].name,
+                picked[2].name,
+                picked[3].name,
+                picked[2].name,
+                picked[3].name,
+            ]
+        );
+        assert!(err.starts_with(&format!(
+            "2 scenario(s) failed: {} {}",
+            picked[1].name, picked[3].name
+        )));
+        assert!(err.contains("re-run FAIL-timeout"));
+
+        // Without the flag, a timeout is not re-run.
+        let mut ran = 0;
+        let _ = run_scenarios_timed(
+            &picked[..1],
+            "test",
+            RunPolicy {
+                keep_going: true,
+                rerun_timeouts: false,
+            },
+            |_| {
+                ran += 1;
+                last.set(QemuTally {
+                    qemu: Duration::from_secs(1),
+                    runs: 1,
+                    last_timed_out: true,
+                });
+                Err("slow".to_string())
+            },
+            || last.replace(QemuTally::default()),
+        );
+        assert_eq!(ran, 1);
     }
 
     /// S2-F1: every licence file the ISO stages exists and is non-empty, and
