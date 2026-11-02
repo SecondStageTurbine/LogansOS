@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 L0, the static-page host
+# DOM that patched `servo-layout` names on x86_64-unknown-neoplutarch instead
+# of `servo-script`'s (Plans/DECISION-2026-11-02-ot61-first-page-option-a.md).
+[workspace]
+
+[package]
+name = "neo-layout-dom"
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 L0: a static html5ever document implementing servo-layout-api's DOM traits, for Servo layout without script"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+app_units = "=0.7.8"
+atomic_refcell = "=0.1.14"
+euclid = "=0.22.14"
+html5ever = "=0.40.1"
+layout_api = { package = "servo-layout-api", version = "=0.7.0" }
+net_traits = { package = "servo-net-traits", version = "=0.7.0" }
+pixels = { package = "servo-pixels", version = "=0.7.0" }
+selectors = "=0.41.0"
+servo_arc = "=0.5.0"
+servo_base = { package = "servo-base", version = "=0.7.0" }
+servo_url = { package = "servo-url", version = "=0.7.0" }
+style = { package = "stylo", version = "=0.22.0" }
+style_dom = { package = "stylo_dom", version = "=0.22.0" }
