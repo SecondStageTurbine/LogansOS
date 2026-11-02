@@ -3,7 +3,8 @@
 //! OWN input focus (while Home holds the keyboard), never a client's, so the
 //! WM-blind property of ADR-074 is kept. Events are `INPUT_EVENT_V1`
 //! (8 bytes): kind 1 = key, flags bit 0 = pressed, a USB HID usage code
-//! (Keyboard/Keypad page) and the modifier bits (bit 1/5 = left/right shift).
+//! (Keyboard/Keypad page), the modifier bits (bit 1/5 = left/right shift) and
+//! the lock state (`y`: Caps Lock bit 0, Num Lock OFF bit 1).
 
 /// A key the Home view acts on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,47 +26,26 @@ pub fn decode(event: [u8; 8]) -> Option<Key> {
         return None;
     }
     let code = u16::from_le_bytes([event[2], event[3]]);
-    let shifted = u16::from_le_bytes([event[4], event[5]]) & 0x22 != 0;
-    let usage = u8::try_from(code).ok()?;
+    let modifiers = u16::from_le_bytes([event[4], event[5]]) as u8;
+    let locks = u16::from_le_bytes([event[6], event[7]]) as u8;
+    // A keypad key in navigation mode (Num Lock off) acts as its arrow.
+    let usage = keymap::effective_usage(u8::try_from(code).ok()?, modifiers, locks);
     Some(match usage {
-        0x28 => Key::Enter,
+        0x28 | keymap::USAGE_KP_ENTER => Key::Enter,
         0x29 => Key::Escape,
         0x2a => Key::Backspace,
         0x2b => Key::Tab,
         0x52 => Key::Up,
         0x51 => Key::Down,
-        _ => Key::Char(printable(usage, shifted)?),
+        _ => Key::Char(keymap::printable(usage, modifiers, locks)?),
     })
 }
 
-fn printable(usage: u8, shifted: bool) -> Option<u8> {
-    const DIGITS_SHIFTED: &[u8; 10] = b"!@#$%^&*()";
-    Some(match usage {
-        0x04..=0x1d => {
-            let c = b'a' + (usage - 0x04);
-            if shifted { c - 32 } else { c }
-        }
-        0x1e..=0x27 => {
-            let i = (usage - 0x1e) as usize;
-            if shifted {
-                DIGITS_SHIFTED[i]
-            } else {
-                b"1234567890"[i]
-            }
-        }
-        0x2c => b' ',
-        0x2d..=0x38 => {
-            const PLAIN: &[u8; 12] = b"-=[]\\?;'`,./";
-            const SHIFT: &[u8; 12] = b"_+{}|?:\"~<>?";
-            let i = (usage - 0x2d) as usize;
-            // 0x32 (non-US #) is not on the boot keyboards we support.
-            if usage == 0x32 {
-                return None;
-            }
-            if shifted { SHIFT[i] } else { PLAIN[i] }
-        }
-        _ => return None,
-    })
+/// The shared US layout (`kernel/src/drivers/keymap_us_logic.rs`): the same
+/// table the kernel and Arthur read.
+#[allow(dead_code)]
+mod keymap {
+    include!("../../../kernel/src/drivers/keymap_us_logic.rs");
 }
 
 /// The intent field's line editor: printable ASCII only, bounded.
