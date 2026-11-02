@@ -594,11 +594,20 @@ jobs:
               # scenarios (the plan job checked the names). A batch shard runs
               # every scenario and re-runs each timeout once before anyone
               # bisects; the timing table classifies what is left.
+              # The workflow comes from the dispatch ref but xtask from the
+              # batch tree, which can predate --rerun-timeouts (a prefix=0 leg
+              # on a main without it): pass it only when the tree knows it.
+              rerun=""
+              if cargo xtask neo-test --help 2>/dev/null | grep -q -- --rerun-timeouts; then
+                rerun=--rerun-timeouts
+              else
+                echo "::warning::this tree'"'"'s xtask has no --rerun-timeouts; timeouts are not re-run"
+              fi
               if [ "$SHARD" = bisect ]; then
-                exec cargo neo-test $SCENARIOS --keep-going --rerun-timeouts
+                exec cargo neo-test $SCENARIOS --keep-going $rerun
               fi
               if [ -n "$BATCH" ]; then
-                exec cargo neo-test --shard "$SHARD/4" --keep-going --rerun-timeouts
+                exec cargo neo-test --shard "$SHARD/4" --keep-going $rerun
               fi
               exec cargo neo-test --shard "$SHARD/4"
             '

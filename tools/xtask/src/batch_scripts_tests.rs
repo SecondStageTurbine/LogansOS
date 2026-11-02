@@ -179,10 +179,9 @@ fn a_batch_is_always_the_full_tier() {
     assert!(tier.contains("echo 'shards=[\"bisect\"]'"));
 
     let qemu = &ci[ci.find("\n  neo-test:\n").unwrap()..ci.find("\n  rng-seed-boot:\n").unwrap()];
-    assert!(qemu.contains("exec cargo neo-test $SCENARIOS --keep-going --rerun-timeouts"));
-    assert!(
-        qemu.contains("exec cargo neo-test --shard \"$SHARD/4\" --keep-going --rerun-timeouts")
-    );
+    assert!(qemu.contains("rerun=--rerun-timeouts"));
+    assert!(qemu.contains("exec cargo neo-test $SCENARIOS --keep-going $rerun"));
+    assert!(qemu.contains("exec cargo neo-test --shard \"$SHARD/4\" --keep-going $rerun"));
     // The quick branch can only be taken by the quick shard value.
     assert!(qemu.contains("if [ \"$SHARD\" = quick ]; then"));
 
