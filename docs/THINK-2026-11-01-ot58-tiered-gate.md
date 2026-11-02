@@ -76,11 +76,12 @@ Past K = 8, `install_stop_finish` alone (31 min) is the floor, so the next lever
 
 ## 2. The two tiers
 
-### 2.1 Quick tier: every PR, 3 jobs, no `needs`
+### 2.1 Quick tier: every PR, 3 jobs, no `needs` between them
 
-Every quick job runs `cargo xtask gate-plan` as its first step (about 1 minute, including the xtask build), so there
-is no separate `plan` job. A job whose plan says `full-alone` stops at once with a notice: the PR needs a batch of
-one.
+*As built (S2a):* a small plan job runs `cargo xtask gate-plan` once, before the three, and its output is the single
+source of the tier: `["quick"]` gives the smoke job, and `full-alone` (or a plan that fails) gives the 4 shards and
+the full-tier jobs on the same run, so a full-alone PR gets its full tier without a separate dispatch. The three
+jobs below need only the plan job, not each other. Section 3 counts the plan job.
 
 The three jobs start together:
 
@@ -296,28 +297,34 @@ Each job prints the tree hash; `batch-report` checks they are all equal and prin
 
 ## 3. Throughput (free tier: 20 jobs at once, account-wide)
 
-**As built (S2, measured on runs 41328512512 and 41353122119; this replaces the design-time estimate).** The
-quick tier kept today's separate SPDX, identity, host and product jobs instead of folding them into one
-`build-checks`, so it is 7 jobs. Four of them hold a slot for minutes; the plan, SPDX and identity jobs finish in
-under 2 minutes. The feature-gated clippy matrix is one job, and decoder fuzz and the RNG seed boot run in the full
-tier only (Dexter's #45 item 4).
+**As built (S2a, Dexter's #45 item 4).** The quick tier keeps one small plan job ahead of the three in 2.1: a GitHub
+matrix can only come from an earlier job's output, and the plan job is what picks `["quick"]` or the 4 shards. Every
+other job `needs` it, so it runs **alone, before** them (about 2 min), and never adds to a seat's peak. Counted as
+job instances, and as jobs running at the same time:
 
-| What is running | Jobs (long-lived) | Wall |
-|---|---|---|
-| One seat's quick tier | 7 (4: host 9 min, product 3, features 1-2, smoke 12) | 12.5 min (run 41328512512) |
-| A full tier: a full-alone PR's own run, or a batch (K = 4 today) | 15 (8: 4 shards, host, product, features, RNG boot), then `batch-report` | 82 min (run 41353122119) |
-| `main`'s post-landing push run | 6 (3: host, product, features) | about 9 min |
+| What is running | Job instances | At once | Jobs |
+|---|---|---|---|
+| One seat's quick tier | 4 | 3 | plan; then `host-checks`, `build-checks`, the smoke shard |
+| A full tier: a dispatch, a full-alone PR's own run, or a batch (K = 4 today) | 8 + K = 12 | 4 + K = 8 | plan; then `host-checks`, `build-checks`, the RNG seed boot, decoder fuzz (one job), K shards; then `batch-report` for a batch (about 1 min, after the shards) |
+| `main`'s post-landing push run | 3 | 2 | plan (seconds: no checkout on a push); then `host-checks`, `build-checks`. No QEMU, no RNG boot, no fuzz: the batch ran them (section 4). |
 
-| Mix (long-lived slots) | Slots | Fits 20? |
+`build-checks` is the product build, the 13 feature-gated clippy configurations (one job, one target dir), SPDX and
+the identity guard. Decoder fuzz runs its four 60 s targets in turn in one job. Both were 1 + 13 + 4 + 2 separate
+jobs before S2a. The RNG seed boot (#43) and the fuzz job run only in the full tier.
+
+| Mix (jobs at once) | At once | Fits 20? |
 |---|---|---|
-| 4 seats' quick tiers | 16 | yes |
-| 4 seats + a batch | 24 for the first ~12 min, then 8 | no while the quick tiers run: the batch's shards queue behind them for up to one smoke duration |
-| 2 seats + a batch | 16 | yes |
-| A landing's `main` run + 4 seats | 19 | yes |
+| 4 seats' quick tiers | 12 | yes |
+| 4 seats + a batch, K = 4 | 20 | yes, exactly |
+| 5 seats + a batch, K = 4 | 23 | no: 3 jobs queue, for at most one smoke duration |
+| 3 seats + a batch, K = 6 (after S3) | 19 | yes |
+| 4 seats + a batch, K = 6 (after S3) | 22 | no: 2 jobs queue. S3 either keeps K = 4 while four seats gate, or accepts the queue. |
+| A landing's `main` run + 4 seats | 14 | yes. The batch has finished before it lands, so the two never overlap. |
 
 **Scheduling rule (F19, F20):**
-- The PM dispatches a batch when at most 2 quick tiers are running. A quick tier that starts while a batch runs
-  queues for at most the batch's short jobs, then fits in the 12 slots the batch leaves.
+- The PM dispatches a batch only when at most 4 quick tiers are running (4 × 3 + 8 = 20 at K = 4).
+- While a batch runs, a fifth seat's quick tier queues for at most one smoke duration (about 13 min). That is
+  acceptable, and the PM sizes K to the free slots (20 − 3 × running quick tiers − 4).
 - A queue here costs minutes, not correctness: GitHub starts queued jobs as slots free.
 - `ot61-closure.yml` also runs on dispatch, and on pushes to `claude/ot61-**` branches and `main` that touch the
   browser paths, `tools/xtask/**` or `rust-toolchain.toml`. Its jobs count toward the 20, so a batch can be squeezed

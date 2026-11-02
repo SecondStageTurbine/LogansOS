@@ -23682,7 +23682,9 @@ mod tests {
         let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
             .expect("read CI workflow");
         let qemu_start = workflow.find("\n  neo-test:\n").expect("neo-test job");
-        let qemu_end = workflow.find("\n  spdx-lint:\n").expect("SPDX job");
+        let qemu_end = workflow
+            .find("\n  rng-seed-boot:\n")
+            .expect("RNG seed boot job");
         let qemu = &workflow[qemu_start..qemu_end];
         // OT-58 S2 (THINK 2.1, approved): the QEMU job waits only for the
         // plan job, so the quick tier's critical path is its smoke job. The
@@ -23690,6 +23692,9 @@ mod tests {
         assert!(qemu.contains("needs: [nightly-skip]\n"));
         assert!(qemu.contains("timeout-minutes: ${{ matrix.shard == 'quick' && 45 || 240 }}"));
         assert!(qemu.contains("fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}"));
+        // The smoke job uses the plan job's base; it does not plan again.
+        assert!(qemu.contains("GATE_BASE=\"${{ needs.nightly-skip.outputs.gate_base }}\""));
+        assert!(!qemu.contains("cargo xtask gate-plan"));
 
         let host_start = workflow
             .find("\n  host-checks:\n")
@@ -23698,16 +23703,33 @@ mod tests {
         assert!(!host.contains("needs: product-build"));
         assert!(host.contains("timeout-minutes: 60"));
 
+        // OT-58 (THINK 2.1, 3; Dexter #45 item 4): every build-only check is
+        // one job, and the fuzz targets are one job.
+        for gone in [
+            "\n  product-build:\n",
+            "\n  spdx-lint:\n",
+            "\n  monolithic-identity:\n",
+            "\n  feature-gated-coverage:\n",
+        ] {
+            assert!(
+                !workflow.contains(gone),
+                "{gone:?} is folded into build-checks"
+            );
+        }
         let product_start = workflow
-            .find("\n  product-build:\n")
-            .expect("blocking product build job");
-        let product_end = workflow[product_start + 1..]
-            .find("\n  # OT-69:")
-            .map(|offset| product_start + 1 + offset)
-            .expect("end of product build job");
-        let product = &workflow[product_start..product_end];
+            .find("\n  build-checks:\n")
+            .expect("blocking build-checks job");
+        let product = &workflow[product_start..];
         assert!(product.contains("--features product"));
         assert!(product.contains("--bin kernel --no-default-features\n"));
+        assert!(product.contains("every feature-gated configuration"));
+        assert!(product.contains("Check SPDX headers on source files"));
+        assert!(product.contains("scripts/check-monolithic-identity.sh"));
+        assert!(!product.contains("strategy:"));
+        let fuzz_start = workflow.find("\n  decoder-fuzz:\n").expect("fuzz job");
+        let fuzz = &workflow[fuzz_start..product_start];
+        assert!(!fuzz.contains("strategy:"));
+        assert!(fuzz.contains("needs.nightly-skip.outputs.full == 'true'"));
         assert!(!product.contains("continue-on-error: true"));
     }
 

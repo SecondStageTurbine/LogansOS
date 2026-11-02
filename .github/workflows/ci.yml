@@ -127,7 +127,10 @@ jobs:
       shards: ${{ steps.tier.outputs.shards }}
       # "true" when this run is the full tier (4 shards): a dispatch with
       # tier: full, the schedule, or a PR that gate-plan puts in full-alone.
+      # "false" for the quick tier and for `main`'s push run (host-only).
       full: ${{ steps.tier.outputs.full }}
+      # The base SHA the quick tier was planned against (empty otherwise).
+      gate_base: ${{ steps.tier.outputs.gate_base }}
     steps:
       - id: check
         env:
@@ -157,26 +160,48 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly-2026-04-16
+      # The plan is the single source of truth for the tier: the smoke job
+      # reads `gate_base` from here instead of planning again (Dexter #45
+      # item 2, note 1). A gate-plan that fails, or prints no tier, is
+      # full-alone.
       - id: tier
+        shell: bash
         env:
           BASE: origin/${{ github.base_ref || 'main' }}
+          EVENT: ${{ github.event_name }}
           WANT_QUICK: ${{ github.event_name == 'pull_request' || inputs.tier == 'quick' }}
         run: |
+          set -uo pipefail
           full=true
-          if [ "$WANT_QUICK" = true ]; then
-            plan="$(cargo run -q -p xtask -- gate-plan --base "$BASE" || echo 'tier=full-alone')"
+          gate_base=""
+          if [ "$EVENT" = push ]; then
+            # `main`'s post-landing run is host-only (THINK section 4): the
+            # batch run that preceded the landing is its QEMU evidence. No
+            # full-tier extras (RNG boot, fuzz) here; they ran in the batch.
+            full=false
+          elif [ "$WANT_QUICK" = true ]; then
+            gate_base="$(git rev-parse "$BASE")"
+            if plan="$(cargo run -q -p xtask -- gate-plan --base "$gate_base")"; then
+              :
+            else
+              echo "::warning::gate-plan failed (exit $?); treating this run as full-alone"
+              plan='tier=full-alone'
+            fi
             echo "$plan"
-            if grep -qx 'tier=quick' <<<"$plan"; then
+            tier="$(sed -n 's/^tier=//p' <<<"$plan" | tail -n 1)"
+            if [ "$tier" = quick ]; then
               full=false
             else
-              echo "::notice::gate-plan: full-alone, so this run is the full tier (4 QEMU shards). $(sed -n 's/^reasons=//p' <<<"$plan")"
+              echo "::notice::gate-plan: ${tier:-no tier}, so this run is the full tier (4 QEMU shards). $(sed -n 's/^reasons=//p' <<<"$plan")"
             fi
           fi
           echo "full=$full" >> "$GITHUB_OUTPUT"
-          if [ "$full" = true ]; then
-            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
-          else
+          echo "gate_base=$gate_base" >> "$GITHUB_OUTPUT"
+          # A push never runs the QEMU job; its shards value is unused.
+          if [ "$full" = false ] && [ "$EVENT" != push ]; then
             echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
           fi
 
       # OT-58 S2b: resolve a batch once (heads, quick-green, gate-plan, tree).
@@ -494,14 +519,13 @@ jobs:
             -e CARGO_NET_RETRY \
             -e SHARD="${{ matrix.shard }}" \
             -e BATCH="${{ inputs.batch }}${{ inputs.prefix }}" \
-            -e GATE_BASE="origin/${{ github.base_ref || 'main' }}" \
+            -e GATE_BASE="${{ needs.nightly-skip.outputs.gate_base }}" \
             neo \
             bash -c '
               set -e
               if [ "$SHARD" = quick ]; then
                 mkdir -p target/neo-test
                 git config --global --add safe.directory /workspace
-                cargo xtask gate-plan --base "$GATE_BASE" | tee target/neo-test/gate-plan.txt
                 exec cargo neo-test --tier quick --changed-from "$GATE_BASE" --keep-going
               fi
               if [ -n "$BATCH" ]; then
@@ -717,86 +741,6 @@ jobs:
             neo \
             bash scripts/ci/rng-seed-boot.sh
 
-  spdx-lint:
-    name: SPDX License Headers
-    needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 5
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Assemble the batch tree (OT-58)
-        if: inputs.batch != '' || inputs.prefix != ''
-        uses: ./.github/actions/assemble-batch
-        with:
-          base: ${{ needs.nightly-skip.outputs.batch_base }}
-          members: ${{ needs.nightly-skip.outputs.batch_members }}
-          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
-
-      - name: Check SPDX headers on source files
-        run: |
-          echo "Checking SPDX-License-Identifier headers..."
-          missing=0
-
-          # Rust source files (MPL-2.0)
-          for f in $(find kernel/ userland/ tools/ -name '*.rs' 2>/dev/null); do
-            if ! head -5 "$f" | grep -q 'SPDX-License-Identifier'; then
-              echo "MISSING: $f"
-              missing=$((missing + 1))
-            fi
-          done
-
-          # TOML config files (MPL-2.0)
-          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './target/*' 2>/dev/null); do
-            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier'; then
-              echo "MISSING: $f"
-              missing=$((missing + 1))
-            fi
-          done
-
-          if [ $missing -gt 0 ]; then
-            echo ""
-            echo "ERROR: $missing file(s) missing SPDX-License-Identifier header."
-            echo "Every first-party source file must start with:"
-            echo "  // SPDX-License-Identifier: MPL-2.0  (for .rs)"
-            echo "  # SPDX-License-Identifier: MPL-2.0   (for .toml/.sh/.ps1)"
-            exit 1
-          fi
-
-          echo "All source files have SPDX headers."
-
-  monolithic-identity:
-    name: Monolithic Identity Guard
-    # Catches the recurring drift where first-party docs call NeoPlutarch a
-    # "microkernel" (we are monolithic — Bible Article 4.1, ADR-001). This has
-    # recurred 3x; this mechanical guard stops the 4th. Lightweight, no Docker,
-    # runs on every push/PR/schedule. Checks docs/ and Plans/ (excluding archive/
-    # and the authoritative Bible/ADR-001 which are already correct).
-    needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 2
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Assemble the batch tree (OT-58)
-        if: inputs.batch != '' || inputs.prefix != ''
-        uses: ./.github/actions/assemble-batch
-        with:
-          base: ${{ needs.nightly-skip.outputs.batch_base }}
-          members: ${{ needs.nightly-skip.outputs.batch_members }}
-          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
-
-      - name: Check monolithic identity in docs
-        run: |
-          echo "Checking for microkernel-identity drift..."
-          bash scripts/check-monolithic-identity.sh
-
   host-checks:
     name: Host Tests, Format & Lint
     needs: nightly-skip
@@ -984,27 +928,26 @@ jobs:
           echo "::endgroup::"
 
   # Lane 2c: the decoder fuzz guardrail (docs/THINK-2026-10-31-lived-in-os-lanes.md
-  # §4 item 3). Four arms, one per target, each with a fixed 60 s budget.
-  # GitHub-hosted on purpose: the dispatch asks for hosted runners and the arms
-  # are short; this job must not compete for the QEMU shard pool.
+  # §4 item 3). Four targets, each with a fixed 60 s budget.
+  # GitHub-hosted on purpose: the targets are short, and this job must not
+  # compete for the QEMU shard pool.
   #
   # `timeout(1)` is the backstop for a decoder that never returns. The harness
   # stops itself at --seconds; a SIGKILL from timeout means a hang and fails the
   # job. A panic aborts (the workspace builds panic = "abort"), and the harness's
   # panic hook writes the exact input to target/image-decode-fuzz/crashes, which
   # the failure artifact step uploads.
+  #
+  # OT-58 (Dexter #45 item 4): a full-tier check (a dispatch, a full-alone PR,
+  # a batch), not a per-push one, and ONE job that runs the four targets in
+  # turn on one build (about 5 minutes) instead of four jobs. Every target runs;
+  # the job fails with the list of those that failed.
   decoder-fuzz:
-    name: Decoder Fuzz (${{ matrix.target }})
+    name: Decoder Fuzz (inflate-zlib, inflate-raw, png, jpeg)
     needs: nightly-skip
-    # OT-58 (Dexter #45 item 4): four 60-second fuzz jobs are a full-tier
-    # check, not a per-push one.
     if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        target: [inflate-zlib, inflate-raw, png, jpeg]
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -1027,40 +970,56 @@ jobs:
       - name: Build the fuzz harness
         run: cargo build -p image-decode-fuzz
 
-      - name: Fuzz ${{ matrix.target }} (60 s)
+      - name: Fuzz every target (60 s each)
         run: |
           budget=60
-          # +60 s of slack over the harness's own budget; if timeout(1) fires,
-          # the decoder hung and the arm fails with SIGKILL.
-          timeout --signal=KILL $((budget + 60)) \
-            ./target/debug/image-decode-fuzz \
-              --target '${{ matrix.target }}' \
-              --seconds "$budget" \
-              --seed 234
+          failed=()
+          for target in inflate-zlib inflate-raw png jpeg; do
+            echo "::group::Fuzz ${target} (${budget} s)"
+            # +60 s of slack over the harness's own budget; if timeout(1)
+            # fires, the decoder hung and the target fails with SIGKILL.
+            if ! timeout --signal=KILL $((budget + 60)) \
+                ./target/debug/image-decode-fuzz \
+                  --target "$target" \
+                  --seconds "$budget" \
+                  --seed 234; then
+              failed+=("$target")
+            fi
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::decoder fuzz failed: ${failed[*]}"
+            exit 1
+          fi
 
       - name: Upload crash inputs on failure
         if: failure()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: decoder-fuzz-crash-${{ matrix.target }}
+          name: decoder-fuzz-crashes
           path: target/image-decode-fuzz/crashes/
           if-no-files-found: ignore
           retention-days: 7
 
-  # OT-78: the feature set that ships must be a blocking build, not an
-  # operator-only command. Keep this separate from the deliberately
-  # non-blocking OT-69 lint matrix below: a product-only compile regression
-  # must make the workflow red and prevent the expensive QEMU gate from
-  # starting.
-  product-build:
-    name: Product Feature Build (blocking)
+  # OT-58 (THINK 2.1 `Quick: build-checks`; Dexter #45 item 4): one job for
+  # every build-only check, so a PR's quick tier is three jobs (host-checks,
+  # build-checks, the smoke shard) after the plan job, not seven. It shares one
+  # checkout, one toolchain install and one target dir. Each check after the
+  # first runs even if an earlier one failed (`success() || failure()`), so a
+  # red job still reports every check.
+  #   - SPDX headers and the monolithic-identity guard (seconds);
+  #   - OT-78: the feature set that ships is a blocking build, not an
+  #     operator-only command;
+  #   - OT-69: the 13 feature-gated kernel clippy configurations (below).
+  build-checks:
+    name: Build Checks (product build, feature clippy, SPDX, identity)
     needs: nightly-skip
     if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # self-hosted (2026-08-10): free minutes. See the runner-history note on
     # host-checks for the full rationale.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
     # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
@@ -1102,8 +1061,8 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly-2026-04-16
-          components: rust-src,llvm-tools-preview
-          targets: x86_64-unknown-none
+          components: rust-src,llvm-tools-preview,clippy
+          targets: x86_64-unknown-none,aarch64-unknown-none
 
       # No actions/cache — see the note in host-checks: the self-hosted
       # workspace is already warm, and a target/ upload costs minutes + quota.
@@ -1117,6 +1076,7 @@ jobs:
       # and opt-level 3 (Arthur latency NOTE, fix 1). The clippy matrix checks
       # these features but never codegens at the shipped opt-level; this does.
       - name: xtask image-kernel-build (the shipped kernel, opt-level 3, blocking)
+        if: success() || failure()
         run: cargo run -p xtask -- image-kernel-build
 
       # The FXSAVE build. `inference-preemptible` (in both `default` and
@@ -1138,6 +1098,7 @@ jobs:
       # production features (the QEMU scenario builds the -boot-test variants),
       # so build them here or a break would pass every gate.
       - name: cargo build neo-init + neo-arthur --features desktop-session, clippy desktop-glass (blocking)
+        if: success() || failure()
         run: |
           (cd userland/neo-init && cargo build -Zjson-target-spec --bin neo-init --features desktop-session)
           (cd userland/neo-arthur && cargo build -Zjson-target-spec --bin neo-arthur --features desktop-session)
@@ -1186,6 +1147,7 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-motion-rm-boot-test -- -D warnings)
 
       - name: cargo build kernel --no-default-features (FXSAVE asm, blocking)
+        if: success() || failure()
         working-directory: kernel
         run: cargo build -Zjson-target-spec --bin kernel --no-default-features
 
@@ -1194,109 +1156,58 @@ jobs:
       # build with default features). threads-futex runs ring-3 threads under
       # browser-runtime, the closest scenario to the context-switch paths.
       - name: cargo build kernel --no-default-features + neo-test scenario (FXSAVE asm, blocking)
+        if: success() || failure()
         working-directory: kernel
         run: cargo build -Zjson-target-spec --bin kernel --no-default-features --features neo-test,neo-test-threads-futex
 
-  # OT-69: feature-gated subsystem coverage (BLOCKING since 2026-10-16).
-  # The kernel clippy steps in host-checks run DEFAULT features + one neo-test
-  # scenario. Whole subsystems sit behind non-default #[cfg(feature = "...")]:
-  # the USB stack (~6.5K LoC), Intel GPU driver (~5K), WiFi driver (~3.7K),
-  # Atrium compositor (~1.5K), VT-d/IOMMU (~1.2K), threaded matmul (~700), and
-  # many smaller features. A deliberately planted syntax error in mt7601u/ survived
-  # a green cargo build (proven by Oracle, 2026-08-01).
-  #
-  # This job closes the hole. It ran NON-BLOCKING while the gated surface carried
-  # pre-existing clippy debt; that debt was paid down (the three USB
-  # result_large_err sites are banked by item-level allows pending the CB-4
-  # error-type refactor) and the job was flipped blocking — OT-69's close
-  # condition. The matrix respects mutually-exclusive features:
-  # neo-test scenarios conflict with each other, so the subsystem arms carry
-  # none. The exception is the scenario arms at the end: each is exactly
-  # ONE scenario (so no conflict), added because those scenarios pull in
-  # feature sets (real-lm, inference-stack) that the single neo-test step in
-  # host-checks never compiles, and B1c's scenario landed clippy-red unseen.
-  #
-  # Feature matrix design (7 subsystem builds covering every non-default feature, plus 6 scenario builds):
-  #   wifi-usb:     mt7601u,wpa3-sae          -> mt7601u, wifi, usb-host, wpa3-sae, kernel-rng
-  #   gpu-iommu:    accel-intel,vtd           -> accel-intel, vtd (ACPI/DMAR)
-  #   atrium-ai:    atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
-  #                 -> atrium-compositor-g1, threaded-matmul, phase9-real-quant, gguf, ai-generate,
-  #                    forward-perf, ot16-graph-walker, phase9-data-driven-config
-  #   misc:         browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
-  #                 -> browser-runtime, net-dial-cap, virtio-accel, framebuffer-console, kernel-rng,
-  #                    model-boot-module (B1a: boot-module registry + second allocator zone)
-  #   boot-eth0:    boot-eth0                         -> usb-host, interface-identity
-  #   desktop:      desktop                           -> the shipped desktop set: product +
-  #                 desktop-session (atrium-input-routing, usb-hid, usb-hid-mouse) +
-  #                 SYS_FB_OUTPUT_QUERY + the production session boot path in main.rs
-  #   product-real-lm: desktop,atrium-pointer-forward,real-lm,model-boot-module,boot-model-preload
-  #                 -> the B1c product image's kernel: real-lm (phase9-real-quant, inference-stack,
-  #                 MAX_ORDER 16), and the boot model built once at boot (Zenbook ask-freeze)
-  #   kill-*:       one force-kill scenario each (B1c inference_stack_kill, its
-  #                 control, CP-66's admission_park_kill control and CP-67's
-  #                 ipc_park_kill control; each control is a superset of its
-  #                 base scenario's features)
-  #   real-lm-generate: B1c's real generation scenario (real-lm)
-  #   preemptible-liveness: the inference-preemptible liveness probe
-  #
-  # -A dead_code is deliberate: cross-feature scaffolding gated at the umbrella
-  # level is "never used" when only a subset of features is enabled in one build.
-  # Those findings are a cfg-granularity artifact, not rot (same rationale as the
-  # neo-test-gated step above).
-  feature-gated-coverage:
-    # OT-58 (THINK 2.1; Dexter #45 item 4): the 13 feature-gated clippy
-    # configurations in ONE job, one after another on one target dir, instead
-    # of a 13-cell matrix: the same invocations, one checkout and toolchain
-    # setup instead of thirteen, and one free-tier slot instead of up to two
-    # at a time for ~10 minutes. Every configuration runs; the job fails with
-    # the list of those that failed.
-    name: Feature-Gated Coverage (blocking, 13 configurations)
-    needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true'
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 60
-
-    env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
-      CARGO_HOME: ${{ github.workspace }}/.cargo-home
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Assemble the batch tree (OT-58)
-        if: inputs.batch != '' || inputs.prefix != ''
-        uses: ./.github/actions/assemble-batch
-        with:
-          base: ${{ needs.nightly-skip.outputs.batch_base }}
-          members: ${{ needs.nightly-skip.outputs.batch_members }}
-          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
-
-      - name: Ensure rustup is present (self-hosted runners)
-        run: |
-          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
-          if ! command -v rustup >/dev/null 2>&1; then
-            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
-          fi
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
-
-      - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-04-16
-          components: rust-src,llvm-tools-preview,rustfmt,clippy
-          targets: x86_64-unknown-none,aarch64-unknown-none
-
-      # No actions/cache — see the note in host-checks. Expect cold rebuilds
-      # here specifically: which matrix arm lands on which runner is not
-      # controlled, and a feature-set change forces a full kernel rebuild
-      # regardless. That cost is wall-clock on a lint-only job, which is
-      # exactly the cost we are willing to pay.
-
+    # OT-69: feature-gated subsystem coverage (BLOCKING since 2026-10-16).
+    # The kernel clippy steps in host-checks run DEFAULT features + one neo-test
+    # scenario. Whole subsystems sit behind non-default #[cfg(feature = "...")]:
+    # the USB stack (~6.5K LoC), Intel GPU driver (~5K), WiFi driver (~3.7K),
+    # Atrium compositor (~1.5K), VT-d/IOMMU (~1.2K), threaded matmul (~700), and
+    # many smaller features. A deliberately planted syntax error in mt7601u/ survived
+    # a green cargo build (proven by Oracle, 2026-08-01).
+    #
+    # This job closes the hole. It ran NON-BLOCKING while the gated surface carried
+    # pre-existing clippy debt; that debt was paid down (the three USB
+    # result_large_err sites are banked by item-level allows pending the CB-4
+    # error-type refactor) and the job was flipped blocking — OT-69's close
+    # condition. The matrix respects mutually-exclusive features:
+    # neo-test scenarios conflict with each other, so the subsystem arms carry
+    # none. The exception is the scenario arms at the end: each is exactly
+    # ONE scenario (so no conflict), added because those scenarios pull in
+    # feature sets (real-lm, inference-stack) that the single neo-test step in
+    # host-checks never compiles, and B1c's scenario landed clippy-red unseen.
+    #
+    # Feature matrix design (7 subsystem builds covering every non-default feature, plus 6 scenario builds):
+    #   wifi-usb:     mt7601u,wpa3-sae          -> mt7601u, wifi, usb-host, wpa3-sae, kernel-rng
+    #   gpu-iommu:    accel-intel,vtd           -> accel-intel, vtd (ACPI/DMAR)
+    #   atrium-ai:    atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
+    #                 -> atrium-compositor-g1, threaded-matmul, phase9-real-quant, gguf, ai-generate,
+    #                    forward-perf, ot16-graph-walker, phase9-data-driven-config
+    #   misc:         browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
+    #                 -> browser-runtime, net-dial-cap, virtio-accel, framebuffer-console, kernel-rng,
+    #                    model-boot-module (B1a: boot-module registry + second allocator zone)
+    #   boot-eth0:    boot-eth0                         -> usb-host, interface-identity
+    #   desktop:      desktop                           -> the shipped desktop set: product +
+    #                 desktop-session (atrium-input-routing, usb-hid, usb-hid-mouse) +
+    #                 SYS_FB_OUTPUT_QUERY + the production session boot path in main.rs
+    #   product-real-lm: desktop,atrium-pointer-forward,real-lm,model-boot-module,boot-model-preload
+    #                 -> the B1c product image's kernel: real-lm (phase9-real-quant, inference-stack,
+    #                 MAX_ORDER 16), and the boot model built once at boot (Zenbook ask-freeze)
+    #   kill-*:       one force-kill scenario each (B1c inference_stack_kill, its
+    #                 control, CP-66's admission_park_kill control and CP-67's
+    #                 ipc_park_kill control; each control is a superset of its
+    #                 base scenario's features)
+    #   real-lm-generate: B1c's real generation scenario (real-lm)
+    #   preemptible-liveness: the inference-preemptible liveness probe
+    #
+    # -A dead_code is deliberate: cross-feature scaffolding gated at the umbrella
+    # level is "never used" when only a subset of features is enabled in one build.
+    # Those findings are a cfg-granularity artifact, not rot (same rationale as the
+    # neo-test-gated step above).
       - name: "cargo clippy kernel, every feature-gated configuration (blocking)"
+        if: success() || failure()
         run: |
           configs=(
             "wifi-usb|mt7601u,wpa3-sae"
@@ -1329,54 +1240,46 @@ jobs:
           fi
           echo "all ${#configs[@]} feature-gated configurations clean"
 
-  # OT-58 S2b (THINK 2.4, 2.5): a batch's report. Every failing scenario from
-  # every shard (they ran with --keep-going), and the block the PM's merge
-  # report carries: base, members, tree, run.
-  batch-report:
-    name: Batch report
-    needs: [nightly-skip, neo-test]
-    if: always() && (inputs.batch != '' || inputs.prefix != '')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Download every shard's timings
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          pattern: neo-test-timings-shard-*
-          path: timings
-      - name: Report
-        env:
-          BASE: ${{ needs.nightly-skip.outputs.batch_base }}
-          MEMBERS: ${{ needs.nightly-skip.outputs.batch_members }}
-          TREE: ${{ needs.nightly-skip.outputs.batch_tree }}
-          QEMU_RESULT: ${{ needs.neo-test.result }}
+      - name: Check SPDX headers on source files
+        if: success() || failure()
         run: |
-          {
-            echo "### Batch"
-            echo
-            echo "- base: \`$BASE\`"
-            echo "- members (PR:head, landing order): \`$MEMBERS\`"
-            echo "- tree: \`$TREE\`"
-            echo "- run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo "- QEMU shards: $QEMU_RESULT"
-            echo
-            echo "#### Failing scenarios"
-            echo
-            found=0
-            for tsv in timings/*/timings.tsv; do
-              [ -f "$tsv" ] || continue
-              shard="$(basename "$(dirname "$tsv")")"
-              while IFS=$'\t' read -r name wall qemu build runs result; do
-                [ "$result" = pass ] && continue
-                echo "- \`$name\` ($shard): wall ${wall} s, QEMU ${qemu} s, ${runs} QEMU run(s)"
-                found=1
-              done < <(tail -n +2 "$tsv")
-            done
-            [ "$found" = 0 ] && echo "none"
-            missing=$(( 4 - $(ls -d timings/*/ 2>/dev/null | wc -l) ))
-            if [ "$missing" -gt 0 ]; then
-              echo
-              echo "**${missing} shard(s) left no timing table: infra (runner loss, disk, OOM), so re-fire them; don't bisect.**"
+          echo "Checking SPDX-License-Identifier headers..."
+          missing=0
+
+          # Rust source files (MPL-2.0)
+          for f in $(find kernel/ userland/ tools/ -name '*.rs' 2>/dev/null); do
+            if ! head -5 "$f" | grep -q 'SPDX-License-Identifier'; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
             fi
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          done
+
+          # TOML config files (MPL-2.0)
+          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './target/*' 2>/dev/null); do
+            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier'; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
+            fi
+          done
+
+          if [ $missing -gt 0 ]; then
+            echo ""
+            echo "ERROR: $missing file(s) missing SPDX-License-Identifier header."
+            echo "Every first-party source file must start with:"
+            echo "  // SPDX-License-Identifier: MPL-2.0  (for .rs)"
+            echo "  # SPDX-License-Identifier: MPL-2.0   (for .toml/.sh/.ps1)"
+            exit 1
+          fi
+
+          echo "All source files have SPDX headers."
+
+      # Monolithic identity guard: catches the recurring drift where
+      # first-party docs call NeoPlutarch a "microkernel" (we are monolithic,
+      # Bible Article 4.1, ADR-001). It recurred 3x; this mechanical guard stops
+      # the 4th. Checks docs/ and Plans/ (excluding archive/ and the
+      # authoritative Bible/ADR-001).
+      - name: Check monolithic identity in docs
+        if: success() || failure()
+        run: |
+          echo "Checking for microkernel-identity drift..."
+          bash scripts/check-monolithic-identity.sh
