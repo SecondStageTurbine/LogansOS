@@ -1940,6 +1940,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C2.4: upstream Stylo (the vendored closure) styles an
+        // html5ever document on-target, checked against hand-derived values.
+        name: "stylo_smoke",
+        feature: "neo-test-stylo-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C2.3b: upstream html5ever + selectors (the vendored closure,
         // third_party/ot61-browser) parse and match on-target, the vendored
         // parking_lot_core parker under contention, and memchr on yielding
@@ -6505,6 +6514,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "std_sealed" | "std_sealed_ambient" => &["std-real-sealed"],
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
+        "stylo_smoke" => &[STYLO_SMOKE_BIN],
         _ => &[],
     }
 }
@@ -7426,6 +7436,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SERVO_CLOSURE_BIN) {
             build_servo_closure_smoke()?;
         }
+        if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
+            build_closure_smoke(STYLO_SMOKE_BIN, STYLO_SMOKE_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7435,25 +7448,38 @@ fn build_user_members(
 /// third-party closure; it links the same overlay-built std.
 const SERVO_CLOSURE_BIN: &str = "servo-closure-smoke";
 const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
+/// OT-61 C2.4: upstream Stylo over the same vendored tree, its own crate.
+const STYLO_SMOKE_BIN: &str = "stylo-smoke";
+const STYLO_SMOKE_DIR: &str = "userland/stylo-smoke";
 
-/// Build the closure smoke (the overlay must already be applied) and run the
+/// The std crates with their own target dir (the vendored-closure smokes),
+/// each built as a known target (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`).
+fn is_closure_smoke_dir(subdir: &str) -> bool {
+    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR
+}
+
+fn build_servo_closure_smoke() -> Result<(), String> {
+    build_closure_smoke(SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR)
+}
+
+/// Build a closure smoke (the overlay must already be applied) and run the
 /// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
 /// read of their own.
-fn build_servo_closure_smoke() -> Result<(), String> {
+fn build_closure_smoke(bin: &str, dir: &str) -> Result<(), String> {
     invalidate_stale_overlay_std_in(
-        &workspace_root().join(SERVO_CLOSURE_DIR).join("target"),
+        &workspace_root().join(dir).join("target"),
         "RUSTC_BOOTSTRAP_SYNTHETIC_TARGET=1",
     )?;
     build_member(
-        &format!("userspace {SERVO_CLOSURE_BIN}"),
-        SERVO_CLOSURE_BIN,
-        SERVO_CLOSURE_BIN,
-        SERVO_CLOSURE_DIR,
+        &format!("userspace {bin}"),
+        bin,
+        bin,
+        dir,
         "x86_64-unknown-neoplutarch",
         &[],
         false,
     )?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    let elf = std_real_bin_path(bin);
     verify_std_real_syscall_sites(&elf)?;
     verify_std_real_tcb_reads(&elf)
 }
@@ -7463,13 +7489,17 @@ fn build_servo_closure_smoke() -> Result<(), String> {
 /// builds the vendored closure (J.c., 2026-10-29: its build scripts and proc
 /// macros run on the CI runners).
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: cargo xtask ot61-closure-build".to_string());
-    }
+    // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
+    // Python, allowed by J.c. 2026-10-31 with no network fetch).
+    let (bin, dir) = match args {
+        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
+        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+    };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_servo_closure_smoke()?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    build_closure_smoke(bin, dir)?;
+    let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
         .len();
@@ -7894,9 +7924,14 @@ fn std_real_smoke_path() -> PathBuf {
 /// The built ELF of a staged std bin: the closure smoke from its own crate,
 /// every other one from `userland/std-real-smoke`.
 fn std_real_bin_path(bin: &str) -> PathBuf {
-    if bin == SERVO_CLOSURE_BIN {
+    if bin == SERVO_CLOSURE_BIN || bin == STYLO_SMOKE_BIN {
+        let dir = if bin == STYLO_SMOKE_BIN {
+            STYLO_SMOKE_DIR
+        } else {
+            SERVO_CLOSURE_DIR
+        };
         workspace_root()
-            .join(SERVO_CLOSURE_DIR)
+            .join(dir)
             .join("target/x86_64-unknown-neoplutarch/debug")
             .join(bin)
     } else {
@@ -7975,11 +8010,11 @@ fn build_member_at_opt_level(
         eprintln!("[xtask] building {label} with dev opt-level=2");
         cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "2");
     }
-    if subdir == "userland/std-real-smoke" || subdir == SERVO_CLOSURE_DIR {
+    if subdir == "userland/std-real-smoke" || is_closure_smoke_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if subdir == SERVO_CLOSURE_DIR {
+    if is_closure_smoke_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
         // list (JSON targets included), and then every crate that uses std
         // needs `#![feature(restricted_std)]`: the vendored closure would need
@@ -12343,6 +12378,9 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
             | "servo_closure_smoke"
             | "servo_closure_smoke_avx"
+            // OT-61 C2.4: std's RandomState (any std HashMap in the closure)
+            // seeds from the kernel CSPRNG, as std_entropy.
+            | "stylo_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -16502,6 +16540,21 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "the real-std smoke must print to stdout+stderr and the panic arm must abort LOUDLY (message, then exit 134)",
+            )?;
+        }
+    }
+    if scenario.name == "stylo_smoke" {
+        for needle in [
+            "[ stylo ] ok: Stylo built no thread pool (num_cpus is 1 here)",
+            "[ stylo ] ok: the traversal styled <html>",
+            "[ stylo ] ok: the style thread ran to the end",
+            "[ stylo ] pass",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Stylo must style the document sequentially and match every hand-derived value",
             )?;
         }
     }
