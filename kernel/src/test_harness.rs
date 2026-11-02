@@ -851,6 +851,10 @@ const SCENARIO: &str = "phase3_fat32_exec_blocked_by_default";
 const SCENARIO: &str = "phase3_fat32_exec_with_opt_in";
 #[cfg(feature = "neo-test-phase3-fat32-type-import-is-regular")]
 const SCENARIO: &str = "phase3_fat32_type_import_is_regular";
+#[cfg(feature = "neo-test-phase3-fat32-mbr-mount-read")]
+const SCENARIO: &str = "phase3_fat32_mbr_mount_read";
+#[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
+const SCENARIO: &str = "phase3_fat32_mbr_off";
 #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
 const SCENARIO: &str = "phase3_ext4_mount_readonly";
 #[cfg(feature = "neo-test-phase3-ext4-readdir-root")]
@@ -1092,6 +1096,14 @@ const SCENARIO: &str = "ot90_stuck_disk";
 const SCENARIO: &str = "ot90_stuck_sink_off";
 #[cfg(feature = "neo-test-ot90-stuck-sink-restart")]
 const SCENARIO: &str = "ot90_stuck_sink_restart";
+#[cfg(feature = "neo-test-ot90-stop-cpus")]
+const SCENARIO: &str = "ot90_stop_cpus";
+#[cfg(feature = "neo-test-ot90-stop-holdout")]
+const SCENARIO: &str = "ot90_stop_holdout";
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+const SCENARIO: &str = "ot90_stop_shootdown";
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+const SCENARIO: &str = "ot90_stop_wedged";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1543,6 +1555,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-fat32-exec-blocked-by-default",
     feature = "neo-test-phase3-fat32-exec-with-opt-in",
     feature = "neo-test-phase3-fat32-type-import-is-regular",
+    feature = "neo-test-phase3-fat32-mbr-mount-read",
+    feature = "neo-test-phase3-fat32-mbr-off",
     feature = "neo-test-phase3-ext4-mount-readonly",
     feature = "neo-test-phase3-ext4-readdir-root",
     feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -1653,6 +1667,10 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
     feature = "neo-test-ot90-straggler-forced",
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-shootdown",
+    feature = "neo-test-ot90-stop-wedged",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -1886,6 +1904,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-phase3-fat32-exec-blocked-by-default",
         feature = "neo-test-phase3-fat32-exec-with-opt-in",
         feature = "neo-test-phase3-fat32-type-import-is-regular",
+        feature = "neo-test-phase3-fat32-mbr-mount-read",
+        feature = "neo-test-phase3-fat32-mbr-off",
         feature = "neo-test-phase3-ext4-mount-readonly",
         feature = "neo-test-phase3-ext4-readdir-root",
         feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -4992,6 +5012,14 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ot90-stuck-disk")]
     run_ot90_stuck_disk();
+    #[cfg(any(
+        feature = "neo-test-ot90-stop-cpus",
+        feature = "neo-test-ot90-stop-holdout",
+        feature = "neo-test-ot90-stop-wedged"
+    ))]
+    run_ot90_stop_cpus();
+    #[cfg(feature = "neo-test-ot90-stop-shootdown")]
+    run_ot90_stop_shootdown();
 
     #[cfg(any(
         feature = "neo-test-ot90-stuck-sink-off",
@@ -5305,6 +5333,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-phase3-fat32-type-import-is-regular")]
     run_phase3_fat32_type_import_is_regular();
+
+    #[cfg(any(
+        feature = "neo-test-phase3-fat32-mbr-mount-read",
+        feature = "neo-test-phase3-fat32-mbr-off"
+    ))]
+    run_phase3_fat32_mbr();
 
     #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
     run_phase3_ext4_mount_readonly();
@@ -29119,23 +29153,52 @@ fn run_ps2_keyboard() -> ! {
     use alloc::vec::Vec;
 
     const TICK_HZ: u64 = 100;
-    // (usage, modifiers, pressed), in order.
-    const EXPECTED: &[(u8, u8, bool)] = &[
-        (0x04, 0x00, true), // a
-        (0x04, 0x00, false),
-        (0x1E, 0x00, true), // 1
-        (0x1E, 0x00, false),
-        (0x05, 0x02, true), // shift-b (left Shift held)
-        (0x05, 0x02, false),
-        (0x52, 0x00, true), // Up (E0 48)
-        (0x52, 0x00, false),
-        (0x06, 0x10, true), // ctrl_r-c (E0 1D, right Ctrl)
-        (0x06, 0x10, false),
-        (0x48, 0x00, true), // Pause (E1 1D 45 E1 9D C5)
-        (0x48, 0x00, false),
-        (0x28, 0x00, true), // Enter
-        (0x28, 0x00, false),
+    // (usage, modifiers, locks, pressed), in order.
+    const EXPECTED: &[(u8, u8, u8, bool)] = &[
+        (0x04, 0x00, 0, true), // a
+        (0x04, 0x00, 0, false),
+        (0x1E, 0x00, 0, true), // 1
+        (0x1E, 0x00, 0, false),
+        (0x05, 0x02, 0, true), // shift-b (left Shift held)
+        (0x05, 0x02, 0, false),
+        (0x52, 0x00, 0, true), // Up (E0 48)
+        (0x52, 0x00, 0, false),
+        (0x06, 0x10, 0, true), // ctrl_r-c (E0 1D, right Ctrl)
+        (0x06, 0x10, 0, false),
+        (0x48, 0x00, 0, true), // Pause (E1 1D 45 E1 9D C5)
+        (0x48, 0x00, 0, false),
+        (0x28, 0x00, 0, true), // Enter
+        (0x28, 0x00, 0, false),
+        (0x33, 0x02, 0, true), // shift-semicolon: `:`
+        (0x33, 0x02, 0, false),
+        (0x34, 0x20, 0, true), // shift_r-apostrophe: `"` (right Shift)
+        (0x34, 0x20, 0, false),
+        (0x39, 0x00, 1, true), // Caps Lock on (the press carries it)
+        (0x39, 0x00, 1, false),
+        (0x04, 0x00, 1, true), // a, under Caps Lock: `A`
+        (0x04, 0x00, 1, false),
+        (0x39, 0x00, 0, true), // Caps Lock off again
+        (0x39, 0x00, 0, false),
+        (0x5F, 0x00, 0, true), // keypad 7 (0x47)
+        (0x5F, 0x00, 0, false),
+        (0x55, 0x00, 0, true), // keypad * (0x37)
+        (0x55, 0x00, 0, false),
+        (0x54, 0x00, 0, true), // keypad / (E0 35)
+        (0x54, 0x00, 0, false),
+        (0x58, 0x00, 0, true), // keypad Enter (E0 1C)
+        (0x58, 0x00, 0, false),
+        (0x53, 0x00, 2, true), // Num Lock off (the press carries it)
+        (0x53, 0x00, 2, false),
+        (0x60, 0x00, 2, true), // keypad 8, Num Lock off: Up
+        (0x60, 0x00, 2, false),
+        (0x53, 0x00, 0, true), // Num Lock on again
+        (0x53, 0x00, 0, false),
     ];
+    // The usages the keypad presses act as (after `effective_usage`), from
+    // keypad 7 on: 7, *, /, Enter, Num Lock, Up (keypad 8), Num Lock.
+    const KEYPAD_ACTS_AS: &[u8] = &[0x5F, 0x55, 0x54, 0x58, 0x53, 0x52, 0x53];
+    // The text the presses after Enter type, through the shared US keymap.
+    const TEXT_AFTER_ENTER: &[u8] = b":\"A7*/";
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
 
     serial_println!("PS2KBD ready");
@@ -29193,7 +29256,9 @@ fn run_ps2_keyboard() -> ! {
     }
     let want: Vec<InputEventV1> = EXPECTED
         .iter()
-        .map(|&(usage, modifiers, pressed)| InputEventV1::key(usage, modifiers, pressed))
+        .map(|&(usage, modifiers, locks, pressed)| {
+            InputEventV1::key_locked(usage, modifiers, locks, pressed)
+        })
         .collect();
     if got != want {
         fail_with_hex(
@@ -29201,11 +29266,42 @@ fn run_ps2_keyboard() -> ! {
             got.len() as u64,
         );
     }
+    let enter = got.iter().position(|e| e.code == 0x28).unwrap_or(got.len());
+    let text: Vec<u8> = got[enter..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .filter_map(|e| {
+            crate::drivers::keymap_us_logic::printable(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    serial_println!(
+        "ps2_keyboard text={:?}",
+        core::str::from_utf8(&text).unwrap_or("<non-utf8>")
+    );
+    if text != TEXT_AFTER_ENTER {
+        fail_with_hex("reason=ps2_keyboard_text_mismatch len", text.len() as u64);
+    }
+    let keypad = got.iter().position(|e| e.code == 0x5F).unwrap_or(got.len());
+    let acts_as: Vec<u8> = got[keypad..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .map(|e| {
+            crate::drivers::keymap_us_logic::effective_usage(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    if acts_as != KEYPAD_ACTS_AS {
+        fail_with_hex(
+            "reason=ps2_keyboard_keypad_mismatch len",
+            acts_as.len() as u64,
+        );
+    }
     // The hook never polls: every byte came through IRQ1 on the I/O APIC.
     if counters.irqs == 0 || counters.polled != 0 || counters.irq_bytes != counters.bytes {
         fail_with_hex("reason=ps2_keyboard_not_via_irq1 irqs", counters.irqs);
     }
-    pass("ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause");
+    pass(
+        "ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause text=colon,quote,caps keypad=digits,ops,enter,numlock_nav",
+    );
 }
 
 /// Key auto-repeat: xtask holds Backspace 1.5 s, then Escape 1.5 s, then
@@ -37916,6 +38012,74 @@ fn run_phase3_fat32_type_import_is_regular() -> ! {
     debug_exit(EXIT_SUCCESS);
 }
 
+/// L3a (G7): device1 is an MBR disk whose partition 1 (type `0x0C`, LBA
+/// 2048) holds the FAT32 fixture volume. With `mbr-partitions`: the whole
+/// device does not mount (sector 0 is a table, not a boot sector), the empty
+/// slot `p2` is ENOENT, a malformed `p5` is EINVAL, and `device1:p1` mounts
+/// and reads back byte-exact, subdirectory and LFN included. Without it (the
+/// kill-switch, `-off`): `device1:p1` is EINVAL, as before L3a.
+#[cfg(any(
+    feature = "neo-test-phase3-fat32-mbr-mount-read",
+    feature = "neo-test-phase3-fat32-mbr-off"
+))]
+fn run_phase3_fat32_mbr() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    if crate::drivers::block::get_device(1).is_none() {
+        fail("reason=fat32_mbr_device1_missing");
+    }
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let mount = |source: &str| {
+        let req = mount4b_build_request_v1(3, source, "fat32");
+        crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0)
+    };
+
+    #[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
+    {
+        let rc = mount("device1:p1");
+        if rc != crate::errno::EINVAL {
+            fail_with_hex("reason=fat32_mbr_off_p1_not_einval rc", rc as u64);
+        }
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} mbr_partitions=off source=device1:p1 errno={}",
+            SCENARIO,
+            rc
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
+
+    #[cfg(feature = "neo-test-phase3-fat32-mbr-mount-read")]
+    {
+        let whole = mount("device1");
+        if whole == 0 {
+            fail("reason=fat32_mbr_whole_device_mounted");
+        }
+        let p2 = mount("device1:p2");
+        if p2 != crate::errno::ENOENT {
+            fail_with_hex("reason=fat32_mbr_p2_not_enoent rc", p2 as u64);
+        }
+        let p5 = mount("device1:p5");
+        if p5 != crate::errno::EINVAL {
+            fail_with_hex("reason=fat32_mbr_p5_not_einval rc", p5 as u64);
+        }
+        let rc = mount("device1:p1");
+        if rc != 0 {
+            fail_with_hex("reason=fat32_mbr_p1_mount_rc", rc as u64);
+        }
+        fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+        fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+        fat32_expect_file_bytes("/fat32/long filename with spaces.txt", b"LFN test\n");
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} mbr_partitions=on source=device1:p1 first_lba=2048 whole_rc={} p2_errno={} p5_errno={} hello=match nested=match lfn=match",
+            SCENARIO,
+            whole,
+            p2,
+            p5
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
+}
+
 // === BUILD-4D ext4 read-only foreign filesystem scenarios ==============
 
 #[cfg(feature = "neo-test-phase3-ext4")]
@@ -40487,6 +40651,81 @@ fn run_ot90_straggler_forced() -> ! {
         crate::sched::yield_now();
         crate::sched::reap();
         core::hint::black_box(&channel);
+    }
+}
+
+/// OT-90 P3b `ot90_stop_cpus` / `ot90_stop_holdout`: power-off with K4 and
+/// K5. The APs are idle (or running the harness's own threads) when the
+/// shutdown starts; K4 must park every one of them before S5, by the STOP
+/// IPI, or (`-holdout`, where the highest AP ignores it once) the NMI. xtask
+/// judges it by QMP and the K4/K5 lines.
+#[cfg(any(
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-wedged"
+))]
+fn run_ot90_stop_cpus() -> ! {
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// `ot90_stop_shootdown`: shootdowns the sender completed.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_SENT: AtomicU64 = AtomicU64::new(0);
+/// Set by K4 (`acpi::shutdown::stop_world`) just before it closes
+/// shootdowns: the sender starts then, so the storm overlaps K4 and nothing
+/// earlier (a long storm on TCG starves the other vCPUs' acknowledgements).
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_GO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// The sender: once K4 says go, a full-flush shootdown to every other ready
+/// CPU (the shutdown CPU among them), interrupts off around each (the
+/// review's IF=0 sender), one after another with a yield between.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+extern "C" fn ot90_storm_sender() -> ! {
+    while !OT90_STORM_GO.load(Ordering::Acquire) {
+        crate::sched::yield_now();
+    }
+    loop {
+        crate::arch::x86_64::disable_interrupts();
+        crate::mm::tlb_shootdown::shootdown(None, crate::mm::tlb_shootdown::other_cpus_mask());
+        OT90_STORM_SENT.fetch_add(1, Ordering::Release);
+        crate::arch::x86_64::enable_interrupts();
+        crate::sched::yield_now();
+    }
+}
+
+/// Review #6 item 1 (CP-64): power-off while the highest AP sends
+/// shootdowns at every other CPU, the shutdown CPU among them. K4 starts the
+/// sender, waits until it has completed some, then closes shootdowns: it must
+/// take the sender lock (waiting out the one in flight and acknowledging it)
+/// before it stops answering, and the AP must park by the STOP IPI. A
+/// shootdown timeout panics the run.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+fn run_ot90_stop_shootdown() -> ! {
+    use crate::arch::x86_64::per_cpu::MAX_CPUS;
+    let me = crate::arch::x86_64::per_cpu::current_cpu_id();
+    let Some(ap) = (0..MAX_CPUS as u32)
+        .rev()
+        .find(|&cpu| cpu != me && crate::sched::scheduler::cpu_scheduler_ready(cpu))
+    else {
+        fail("reason=no_ap");
+    };
+    let t = crate::sched::thread::Thread::new("ot90-storm", ot90_storm_sender);
+    if crate::sched::scheduler::place_thread_on_cpu(t, ap).is_err() {
+        fail("reason=storm_place_failed");
+    }
+    frame("INFO", &alloc::format!("stage=storm_ready ap={ap}"));
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
     }
 }
 

@@ -15,7 +15,7 @@ mod ioapic_logic;
 
 #[path = "../../../kernel/src/drivers/ps2/i8042_logic.rs"]
 #[allow(dead_code)]
-mod i8042_logic;
+pub(crate) mod i8042_logic;
 
 use i8042_logic::{ByteSource, Decoder, KeyEvent};
 

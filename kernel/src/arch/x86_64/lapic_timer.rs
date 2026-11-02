@@ -298,6 +298,12 @@ fn calibrate_lapic() -> RateChoice {
     choose_rate(crystal, &measured[..n], None)
 }
 
+/// OT-90 P3b, K5: stop this CPU's tick before power-off or restart.
+#[cfg(feature = "power-stop-cpus")]
+pub fn disarm_for_shutdown() {
+    disarm();
+}
+
 /// Mask and stop the LAPIC timer: a mode that never ticked is disarmed
 /// before the next is tried.
 fn disarm() {

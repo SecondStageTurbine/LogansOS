@@ -395,6 +395,12 @@ power-control = []
 # restarts anyway. Off => nothing of it is compiled: P2 exactly (the
 # kill-switch).
 power-clean = ["power-control"]
+# OT-90 P3b (K4, K5): before power-off or restart, the shutdown stops every
+# other CPU (a STOP IPI, vector 0xfb; an NMI for any that hasn't parked in
+# 100 ms), then stops its own LAPIC tick and masks every I/O APIC entry.
+# After K4 the kernel prints to the UART only. Off: P3a's sequence, the
+# other CPUs live at K7, as before.
+power-stop-cpus = ["power-clean"]
 # Aggregate-only kernel status syscall for neo-shell `status`. OFF by default;
 # when disabled SYS_SYSSTAT returns ENOSYS and exposes no observability surface.
 kernel-sysstat = []
@@ -1342,6 +1348,10 @@ model-from-neofs = ["boot-model-preload"]
 # volume that fits), and the NeoFS mount probes such partitions before whole
 # devices. Off: the guard and the mount are bit-for-bit today's.
 neofs-partition = []
+# L3a (G7, THINK-2026-10-31-l3a-fat-readonly §6a): a FAT mount's source may
+# name an MBR partition, `deviceN:pM` (primary entries, FAT types, checked
+# against the device). Off: such a source is Invalid, as before.
+mbr-partitions = []
 # NFS-W1: kernel NeoFS writes a file of any size (to the 2 GiB format limit)
 # in one piece: data and pointer blocks in contiguous runs straight to the
 # device (through the guard, or the installer's claim), the single, double and
@@ -1836,6 +1846,9 @@ neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32"]
 neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32"]
 neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32"]
 neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32"]
+# L3a (G7): `device1:p1` on an MBR disk reads back; `-off` is the kill-switch.
+neo-test-phase3-fat32-mbr-mount-read = ["neo-test-phase3-fat32", "mbr-partitions"]
+neo-test-phase3-fat32-mbr-off = ["neo-test-phase3-fat32"]
 # Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
 neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
 neo-test-phase3-ext4-mount-readonly = ["neo-test-phase3-ext4"]
@@ -2087,6 +2100,20 @@ neo-test-ot90-stuck-disk-no-deadline = ["neo-test-ot90-stuck-disk"]
 neo-test-ot90-stuck-sink-off = ["neo-test", "power-clean"]
 neo-test-ot90-stuck-sink-restart = ["neo-test", "power-clean"]
 neo-test-ot90-stuck-sink-no-close = ["power-clean"]
+# OT-90 P3b: power-off with the other CPUs stopped (K4) and the interrupt
+# sources masked (K5), at NEO_SMP=4; and the same with one AP ignoring the
+# STOP IPI, so the NMI parks it.
+neo-test-ot90-stop-cpus = ["neo-test", "power-stop-cpus"]
+neo-test-ot90-stop-holdout = ["neo-test", "power-stop-cpus"]
+# Review #6 item 1 (CP-64): one kernel thread per AP sends TLB shootdowns
+# (interrupts off, every other CPU targeted) in a loop while K4 runs; K4 must
+# drain them and park every AP by the STOP IPI, with no shootdown timeout.
+neo-test-ot90-stop-shootdown = ["neo-test", "power-stop-cpus"]
+# Review #6 item 2: the highest AP takes neither the STOP IPI nor the NMI and
+# sits in its NMI handler holding the UART lock, and K4's PM timer reads as
+# frozen. K4 must end on its poll count, report the holdout, skip K5 and
+# still reach S5.
+neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]

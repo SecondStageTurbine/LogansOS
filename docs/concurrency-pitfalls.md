@@ -4647,3 +4647,39 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   it, and the number stays reserved so it isn't reused. Anyone who sees an out-of-order loopback segment drop
   (`tcp: loopback segment dropped` stays in the log) should reopen it with a trace.
 - **Lesson.** Instrument before guarding: a lock added on an inferred race "fixed" a flake by timing alone.
+
+### CP-105 — Stopping the other CPUs: an in-flight shootdown, a CPU that never stops, a lock a parked CPU holds
+
+- **Shape.** A shutdown (or panic, or kexec) path stops every other CPU with an IPI, an NMI as the
+  fallback, then carries on as if it were alone. Three traps, each independent:
+  1. **The stopper stops answering too early.** It masks interrupts before sending STOP. A sender already
+     in its IF=0 ack wait has targeted the stopper; the stopper can't ACK, the sender can't take STOP, and
+     the sender's shootdown deadline (50 ms) fires before the stopper's NMI escalation (CP-64's shape, on
+     the shutdown path).
+  2. **A CPU that never stops is assumed stopped.** Some CPU takes neither the STOP IPI nor the NMI (an
+     earlier NMI still running blocks the second; a wedged CPU). Code after the stop then forces a lock
+     open, programs a shared register pair (I/O APIC index/data, PCI CF8/CFC), or waits on a lock that CPU
+     holds. A wait bounded only by a timer that has stopped (a PM timer reading a constant) never reaches
+     the fallback at all.
+  3. **A parked CPU holds a lock.** STOP is taken only with interrupts on, so its parks hold no IRQ-safe
+     lock, but they can hold a plain spin lock taken with interrupts on; an NMI park can hold anything. Any
+     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free.
+- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5.
+- **Guard (OT-90 P3b-1).**
+  - The stopper takes the TLB-shootdown sender lock with interrupts on (waiting out and acknowledging any
+    sender in flight), then masks interrupts and leaves the ready set, and never releases the lock
+    (`tlb_shootdown::close_for_stop`). A CPU that later tries to send waits with interrupts on and takes
+    STOP.
+  - Each wait is bounded twice: the PM timer, and a poll count with a POST-port write per poll.
+  - After the stop the stopper takes no shared lock: the UART is written lock-free (bytes may interleave
+    with a holdout's), and the power plan is read from a copy taken before the stop.
+  - With any holdout, the single-CPU steps (I/O APIC and PCI masking) are skipped and the path goes straight
+    to the power-off or reset, which ends every CPU. The holdouts are reported.
+- **Discriminators.** `ot90_stop_shootdown`: an AP sends IF=0 shootdowns at every other CPU while K4
+  starts; every AP must park by STOP (with the old mask-first order it fails 4/4, the sender parked only
+  by the NMI). `ot90_stop_wedged`: the highest AP ignores STOP and, in its NMI handler, takes the UART lock
+  and never acknowledges; the PM timer reads as frozen. K4 must end on its poll count, report that AP as
+  the holdout, skip K5 and reach S5.
+- **Source.** Ours, with the principle from Linux's `smp_send_stop` / `crash_smp_send_stop` (read for
+  principle only): the stop is best-effort, the caller must not assume it worked, and panic-time printing
+  uses a lock-free console path.
