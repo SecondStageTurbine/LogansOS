@@ -488,6 +488,11 @@ impl<IO: Read + Write + Seek, TP, OCC> FileSystem<IO, TP, OCC> {
         fat_slice(io, &self.bpb)
     }
 
+    /// LogansOS patch: the volume's data-cluster count (bounds a chain walk).
+    pub(crate) fn total_clusters_bound(&self) -> u32 {
+        self.total_clusters
+    }
+
     pub(crate) fn cluster_iter(
         &self,
         cluster: u32,

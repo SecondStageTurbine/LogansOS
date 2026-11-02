@@ -5159,6 +5159,38 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L3a-2: what rust-fatfs (`fat-fs`) adds over the native driver (a FAT16
+    // volume), the T4/T5 no-write proof on a dirty volume, and the
+    // kill-switch control (the native driver reads the fixture, as before).
+    TestScenario {
+        name: "phase3_fat32_fat16_read",
+        feature: "neo-test-phase3-fat32-fat16-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_readonly_no_write",
+        feature: "neo-test-phase3-fat32-readonly-no-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Chad's #18 review: looping file and directory chains are errors.
+    TestScenario {
+        name: "phase3_fat32_loop_chain",
+        feature: "neo-test-phase3-fat32-loop-chain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_native_control",
+        feature: "neo-test-phase3-fat32-native-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // Phase 3 BUILD-4D: ext4 read-only foreign filesystem.
     TestScenario {
         name: "phase3_ext4_mount_readonly",
@@ -5544,6 +5576,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "phase3_neofs_cache_evict_off",
         feature: "neo-test-phase3-neofs-cache-evict-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L7.1: the boot-time stamps, QEMU's no-FPDT path, the record, and
+    // SYS_BOOT_TIMES's checks.
+    TestScenario {
+        name: "boot_time",
+        feature: "neo-test-boot-time",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -6458,11 +6499,14 @@ fn build_product_image_kernel() -> Result<(), String> {
 /// The product image's kernel plus `extra` features (a boot witness's test
 /// hooks; empty for the image itself).
 fn build_product_image_kernel_with(extra: &[String]) -> Result<(), String> {
-    let kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
+    let mut kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
         .iter()
         .map(|f| f.to_string())
         .chain(extra.iter().cloned())
         .collect();
+    if boot_time_image() {
+        kernel_features.push("boot-time".to_string());
+    }
     let ub_checks_on = product_image_ub_checks_on();
     eprintln!(
         "[xtask] product image kernel: opt-level={} ub-checks={} ({}=on keeps them)",
@@ -6486,11 +6530,27 @@ fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     build_product_image_kernel()
 }
 
-/// The product-image flags: the old `--hwp-performance` and `--perf-probes`,
-/// both no-ops now (each feature is in image A).
+/// L7.1: `--boot-time` builds image A with the boot-time numbers: the
+/// kernel's `boot-time`, the sign-in card's row (neo-init `boot-time`) and
+/// Arthur's summary line (`arthur-boot-time`), for a Zenbook run's evidence
+/// (`docs/runbook-baremetal-zenbook-s14.md`). Image A without it is unchanged.
+const BOOT_TIME_FLAG: &str = "--boot-time";
+static BOOT_TIME_IMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn boot_time_image() -> bool {
+    BOOT_TIME_IMAGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The product-image flags: `--boot-time` (L7.1), and the old
+/// `--hwp-performance` and `--perf-probes`, both no-ops now (each feature is
+/// in image A).
 fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
+    BOOT_TIME_IMAGE.store(false, std::sync::atomic::Ordering::Relaxed);
     for arg in args {
-        if arg == HWP_PERFORMANCE_FLAG {
+        if arg == BOOT_TIME_FLAG {
+            BOOT_TIME_IMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[xtask] {command}: {BOOT_TIME_FLAG}: image A with the boot-time numbers");
+        } else if arg == HWP_PERFORMANCE_FLAG {
             eprintln!(
                 "[xtask] {command}: {HWP_PERFORMANCE_FLAG} is the default now (hwp-performance is in image A)"
             );
@@ -6500,7 +6560,7 @@ fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
             );
         } else {
             return Err(format!(
-                "{command} takes no options (got {args:?}); it builds the product image"
+                "{command} takes only {BOOT_TIME_FLAG} (got {args:?}); it builds the product image"
             ));
         }
     }
@@ -7466,6 +7526,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
     if extra_features_include("cap-rooted-open") {
         init_features.push("cap-rooted-open");
         shell_features.push("cap-rooted-open");
+    }
+    // L7.1: `iso --with-model --boot-time`.
+    let mut arthur_features = arthur_features;
+    if boot_time_image() && feature == Some("desktop-with-model") {
+        init_features.push("boot-time");
+        arthur_features.push("arthur-boot-time");
     }
     build_user_members(
         init_features.as_slice(),
@@ -14639,6 +14705,15 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         // L3a (G7): the same volume inside an MBR partition at LBA 2048.
         let device1 = if scenario_uses_fat32_mbr_disk(scenario_name) {
             prepare_fat32_mbr_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_fat16_read" {
+            // L3a-2: the same fixture on a FAT16 volume.
+            prepare_fat16_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_readonly_no_write" {
+            // L3a-2 (T4/T5): the FAT32 fixture, marked dirty.
+            prepare_fat32_dirty_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_loop_chain" {
+            // Chad's #18 review: looping chains.
+            prepare_fat32_loop_storage_disk(&device1)?
         } else {
             prepare_fat32_storage_disk(&device1)?
         };
@@ -16449,6 +16524,67 @@ fn model_vocab_sidecar(
 }
 
 fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, FAT32_DISK_SIZE, &["-F", "-v", "NEOFAT32"])
+}
+
+/// L3a-2: the fixture on a 32 MiB volume `mformat` makes FAT16 (one-sector
+/// clusters, 65020 of them, under FAT16's 65525). The native driver refuses
+/// it; rust-fatfs reads it.
+fn prepare_fat16_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, 32 * 1024 * 1024, &["-v", "NEOFAT16"])?;
+    let mut boot = [0u8; 62];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut boot))
+        .map_err(|e| format!("read FAT16 boot sector {}: {e}", path.display()))?;
+    if &boot[54..62] != b"FAT16   " {
+        return Err(format!(
+            "mformat did not make FAT16 for {} (type field {:?})",
+            path.display(),
+            String::from_utf8_lossy(&boot[54..62])
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// L3a-2 (traps T4/T5): the FAT32 fixture, left as a stick pulled without
+/// unmounting: the BPB's status byte (0x41 on FAT32) has its dirty bit set,
+/// and FSInfo's free-cluster count (sector 1, byte 488) is out of range, so
+/// the mount's FSInfo check runs. A read-only mount must change neither.
+fn prepare_fat32_dirty_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("open FAT32 disk {}: {e}", path.display()))?;
+    let mut lead = [0u8; 4];
+    file.seek(SeekFrom::Start(512))
+        .and_then(|_| file.read_exact(&mut lead))
+        .map_err(|e| format!("read FSInfo {}: {e}", path.display()))?;
+    if &lead != b"RRaA" {
+        return Err(format!("{}: FSInfo is not at sector 1", path.display()));
+    }
+    let mut flags = [0u8; 1];
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.read_exact(&mut flags))
+        .map_err(|e| format!("read FAT32 status byte {}: {e}", path.display()))?;
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.write_all(&[flags[0] | 1]))
+        .and_then(|_| file.seek(SeekFrom::Start(512 + 488)))
+        .and_then(|_| file.write_all(&0xffff_fff0u32.to_le_bytes()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("mark FAT32 disk dirty {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// A blank `size`-byte image formatted by `mformat <format_args>`, holding
+/// the FAT fixture tree (hello, readme, subdir/nested, an LFN file, a
+/// `.neom` that must import as Regular).
+fn prepare_fat_fixture_disk(
+    path: &Path,
+    size: u64,
+    format_args: &[&str],
+) -> Result<PathBuf, String> {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -16457,14 +16593,17 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
 
     let file =
         fs::File::create(path).map_err(|e| format!("create FAT32 disk {}: {e}", path.display()))?;
-    file.set_len(FAT32_DISK_SIZE)
+    file.set_len(size)
         .map_err(|e| format!("size FAT32 disk {}: {e}", path.display()))?;
     file.sync_all()
         .map_err(|e| format!("sync empty FAT32 disk {}: {e}", path.display()))?;
     drop(file);
 
     let image = path.display().to_string();
-    run_mtools("mformat", &["-i", &image, "-F", "-v", "NEOFAT32", "::"])?;
+    let mut args = vec!["-i", image.as_str()];
+    args.extend_from_slice(format_args);
+    args.push("::");
+    run_mtools("mformat", &args)?;
 
     let fixture_dir = workspace_root()
         .join(TEST_OUTPUT_REL)
@@ -16500,6 +16639,106 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
     )?;
     run_mtools("mcopy", &["-i", &image, &weights_path, "::/weights.neom"])?;
 
+    Ok(path.to_path_buf())
+}
+
+/// Chad's #18 review: the FAT32 fixture plus `loop.bin` (three clusters) and
+/// `loopdir` (its first cluster filled with 8.3 entries, so it has no end
+/// marker), then both chains patched by hand in every FAT copy: the file's
+/// second cluster points back at its first (`A -> B -> A`), the directory's
+/// first cluster at itself.
+fn prepare_fat32_loop_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let image = path.display().to_string();
+    let mut img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let bps = u16_at(&img, 11);
+    let cluster = bps * img[13] as usize;
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("fat32-fixtures");
+    let loop_file = fixture_dir.join("loop.bin");
+    fs::write(&loop_file, vec![0x5au8; cluster * 3])
+        .map_err(|e| format!("write {}: {e}", loop_file.display()))?;
+    run_mtools(
+        "mcopy",
+        &[
+            "-i",
+            &image,
+            &loop_file.display().to_string(),
+            "::/LOOP.BIN",
+        ],
+    )?;
+    run_mtools("mmd", &["-i", &image, "::/LOOPDIR"])?;
+    let tiny = write_fat32_fixture(&fixture_dir, "tiny.txt", b"x")?;
+    for i in 0..cluster / 32 - 2 {
+        run_mtools(
+            "mcopy",
+            &[
+                "-i",
+                &image,
+                &tiny.display().to_string(),
+                &format!("::/LOOPDIR/F{i:04}.TXT"),
+            ],
+        )?;
+    }
+    img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let reserved = u16_at(&img, 14);
+    let fats = img[16] as usize;
+    let per_fat = u32_at(&img, 36) as usize;
+    let root_cluster = u32_at(&img, 44);
+    let fat_at = |c: u32| reserved * bps + c as usize * 4;
+    let data_at = |c: u32| (reserved + fats * per_fat) * bps + (c as usize - 2) * cluster;
+    let next = |img: &[u8], c: u32| u32_at(img, fat_at(c)) & 0x0fff_ffff;
+    // Find a short entry in the root directory (following its chain, bounded).
+    let find = |img: &[u8], name: &[u8; 11]| -> Result<u32, String> {
+        let mut c = root_cluster;
+        for _ in 0..64 {
+            let base = data_at(c);
+            for i in 0..cluster / 32 {
+                let e = &img[base + i * 32..base + i * 32 + 32];
+                if &e[0..11] == name {
+                    return Ok(((u16_at(e, 20) as u32) << 16) | u16_at(e, 26) as u32);
+                }
+            }
+            c = next(img, c);
+            if c >= 0x0fff_fff8 {
+                break;
+            }
+        }
+        Err(format!(
+            "{}: no {:?} in the root",
+            path.display(),
+            String::from_utf8_lossy(name)
+        ))
+    };
+    let file_first = find(&img, b"LOOP    BIN")?;
+    let dir_first = find(&img, b"LOOPDIR    ")?;
+    let file_second = next(&img, file_first);
+    if !(2..0x0fff_fff7).contains(&file_second) {
+        return Err(format!(
+            "{}: loop.bin has no second cluster",
+            path.display()
+        ));
+    }
+    for f in 0..fats {
+        let off = f * per_fat * bps;
+        let put = |img: &mut Vec<u8>, c: u32, v: u32| {
+            let at = off + fat_at(c);
+            img[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        put(&mut img, file_second, file_first);
+        put(&mut img, dir_first, dir_first);
+    }
+    let dir_base = data_at(dir_first);
+    if (0..cluster / 32).any(|i| img[dir_base + i * 32] == 0) {
+        return Err(format!(
+            "{}: loopdir's first cluster is not full",
+            path.display()
+        ));
+    }
+    fs::write(path, &img).map_err(|e| format!("write FAT32 disk {}: {e}", path.display()))?;
     Ok(path.to_path_buf())
 }
 

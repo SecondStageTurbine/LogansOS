@@ -153,6 +153,73 @@ findings `docs/RESEARCH-2026-10-23-zenbook-i2c-hid-touchpad-FINDINGS.md`). At bo
 A machine that is not this Zenbook prints only `i2c-hid: no match (...)` and the touchpad lane touches
 nothing.
 
+## Boot time (L7.1)
+
+A run that measures boot time uses image A built with **`--boot-time`**:
+`cargo xtask iso --with-model <neom> --boot-time`. It adds the boot-time numbers to image A:
+- the kernel's `boot-time`;
+- a row on Home's intro card and on the sign-in card;
+- a line in Arthur's transcript.
+
+Without the flag, image A is unchanged. Boot it the usual way, and don't interrupt it: the times run from
+power-on.
+
+**What to photograph.**
+1. **Home's intro card, its second row**, as soon as Home appears. It's the evidence, and it needs no
+   typing:
+
+   `From power-on: firmware 4.12 s, model ready 6.50 s, desktop 7.95 s, Home 8.40 s.`
+
+   The four times:
+   - **Firmware** is the firmware's own exit-boot-services time, its handoff to the bootloader, from the
+     ACPI FPDT.
+   - **Model ready** is when the kernel finished building the boot model Arthur answers with
+     (`boot-model-preload`, before userland).
+   - **Desktop** is when the kernel handed the screen to the desktop.
+   - **Home** is when Home first showed.
+
+   To fit the card, this image drops one of the card's middle rows.
+2. If a sign-in screen shows (a machine with an installed `.system/`; not the Zenbook today), **its card's
+   last row**: `Sign-in 9.87 s after power-on (firmware 4.12 s).`
+3. Optionally, **Arthur's first transcript line**, once you have asked it something:
+
+   `From power-on: firmware 4.12 s, model ready 6.50 s, desktop 7.95 s, Arthur ready 31.70 s.`
+
+   Image A starts Arthur only when you type on Home, so its time includes how long you took. The boot
+   number is Home's row.
+4. Optionally, **the boot console's last line**, just before the desktop takes the screen. It flashes by:
+
+   `[ boot ] time: firmware handoff 4.12 s, kernel entry 4.30 s, model ready 6.50 s, desktop start 7.95 s (from power-on; TSC … Hz)`
+
+   The code makes the cross-check itself: the TSC times are called **from power-on** only when the
+   firmware recorded its handoff and the kernel entry comes after it. Otherwise every line says **since
+   TSC reset** (`(since TSC reset; …)` here, `Since TSC reset: …` on Home) and leaves the firmware time
+   out, since it is on another clock. Record such a run, but note that its times aren't from power-on.
+
+**Recording a run.** Add a row to the table below in the same PR as the photo's reading. A run is a cold
+boot: power off fully first (step 1 above).
+
+| Date | Image (commit) | Firmware | Model ready | Desktop | Home | Notes |
+|---|---|---|---|---|---|---|
+| | | | | | | |
+
+**If a time is missing.**
+- `firmware … unknown (<reason>)` or no firmware part: the FPDT was not found or not readable. The reason
+  names which (`no-fpdt`, `bad-record`, `address-out-of-range`, …). Without the firmware's handoff, the
+  times read `since TSC reset`.
+- `firmware handoff not recorded`: the FPDT is there, but its handoff time is 0 (not recorded). It is
+  never shown as `0.00 s`; the times read `since TSC reset`.
+- No `model ready` part: the image has no boot model, or its build failed (the boot console says which).
+- The kernel line ends with `rate=`, where the TSC rate came from:
+  - `calibrated` (the LAPIC timer's, the normal case);
+  - `cpuid-15`;
+  - `cpuid-16-estimate`, the processor's base frequency, which Intel says need not be the TSC's: the times
+    are then estimates. Home's row says `(estimated clock)`, and the kernel line ends `…Hz, estimated)`;
+    say so in the table's notes.
+
+  `at TSC … (no TSC rate)` means none of them was available; divide by a rate from the `timer:` lines
+  below.
+
 ## If it does not boot
 
 - **Nothing at all after the boot menu** (black screen, no Limine menu): the stick is not a raw image,

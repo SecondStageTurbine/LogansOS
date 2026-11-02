@@ -810,6 +810,14 @@ const SCENARIO: &str = "phase3_fat32_type_import_is_regular";
 const SCENARIO: &str = "phase3_fat32_mbr_mount_read";
 #[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
 const SCENARIO: &str = "phase3_fat32_mbr_off";
+#[cfg(feature = "neo-test-phase3-fat32-fat16-read")]
+const SCENARIO: &str = "phase3_fat32_fat16_read";
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+const SCENARIO: &str = "phase3_fat32_readonly_no_write";
+#[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+const SCENARIO: &str = "phase3_fat32_loop_chain";
+#[cfg(feature = "neo-test-phase3-fat32-native-control")]
+const SCENARIO: &str = "phase3_fat32_native_control";
 #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
 const SCENARIO: &str = "phase3_ext4_mount_readonly";
 #[cfg(feature = "neo-test-phase3-ext4-readdir-root")]
@@ -1122,6 +1130,8 @@ const SCENARIO: &str = "phase3_neofs_write_readback_same_boot";
 const SCENARIO: &str = "phase3_neofs_cache_evict";
 #[cfg(feature = "neo-test-phase3-neofs-cache-evict-off")]
 const SCENARIO: &str = "phase3_neofs_cache_evict_off";
+#[cfg(feature = "neo-test-boot-time")]
+const SCENARIO: &str = "boot_time";
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
 const SCENARIO: &str = "phase3_neofs_allocator_reuse_guard";
 #[cfg(feature = "neo-test-phase3-neofs-reboot-persistence-small-file")]
@@ -1448,6 +1458,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
+    feature = "neo-test-boot-time",
     feature = "neo-test-phase3-neofs-allocator-reuse-guard",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -1516,6 +1527,10 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-fat32-type-import-is-regular",
     feature = "neo-test-phase3-fat32-mbr-mount-read",
     feature = "neo-test-phase3-fat32-mbr-off",
+    feature = "neo-test-phase3-fat32-fat16-read",
+    feature = "neo-test-phase3-fat32-readonly-no-write",
+    feature = "neo-test-phase3-fat32-loop-chain",
+    feature = "neo-test-phase3-fat32-native-control",
     feature = "neo-test-phase3-ext4-mount-readonly",
     feature = "neo-test-phase3-ext4-readdir-root",
     feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -1865,6 +1880,10 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-phase3-fat32-type-import-is-regular",
         feature = "neo-test-phase3-fat32-mbr-mount-read",
         feature = "neo-test-phase3-fat32-mbr-off",
+        feature = "neo-test-phase3-fat32-fat16-read",
+        feature = "neo-test-phase3-fat32-readonly-no-write",
+        feature = "neo-test-phase3-fat32-loop-chain",
+        feature = "neo-test-phase3-fat32-native-control",
         feature = "neo-test-phase3-ext4-mount-readonly",
         feature = "neo-test-phase3-ext4-readdir-root",
         feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -5094,6 +5113,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-phase3-neofs-cache-evict-off"
     ))]
     run_neofs_cache_evict();
+    #[cfg(feature = "neo-test-boot-time")]
+    run_boot_time();
 
     #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
     run_phase3_neofs_allocator_reuse_guard();
@@ -5296,6 +5317,18 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-phase3-fat32-mbr-off"
     ))]
     run_phase3_fat32_mbr();
+
+    #[cfg(any(
+        feature = "neo-test-phase3-fat32-fat16-read",
+        feature = "neo-test-phase3-fat32-native-control"
+    ))]
+    run_phase3_fat32_fixture_read();
+
+    #[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+    run_phase3_fat32_readonly_no_write();
+
+    #[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+    run_phase3_fat32_loop_chain();
 
     #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
     run_phase3_ext4_mount_readonly();
@@ -33803,6 +33836,135 @@ fn run_neofs_cache_evict() -> ! {
     debug_exit(EXIT_SUCCESS);
 }
 
+/// L7.1: the kernel half of the boot-time numbers. The entry stamp was taken
+/// before anything else ran; QEMU's firmware has no FPDT, so the firmware
+/// part reports `no-fpdt` (the parse itself is host-tested on a hand-laid
+/// table); the desktop stamp follows the entry stamp; the record the
+/// syscall writes decodes to the snapshot; and `SYS_BOOT_TIMES` refuses a
+/// wrong length or a kernel address.
+#[cfg(feature = "neo-test-boot-time")]
+fn run_boot_time() -> ! {
+    use crate::boot_time_logic::{BOOT_TIMES_V1_LEN, FpdtError, decode, encode};
+    let rsdp = crate::rsdp_phys();
+    let firmware = crate::boot_time::read_firmware(rsdp);
+    if firmware != Err(FpdtError::NoFpdt) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_firmware_not_no_fpdt got={:?}",
+            SCENARIO,
+            firmware
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    crate::boot_time::stamp_desktop(rsdp);
+    let times = crate::boot_time::snapshot();
+    if times.tsc_kernel_entry == 0 {
+        fail("reason=boot_time_no_entry_stamp");
+    }
+    if times.tsc_desktop_start <= times.tsc_kernel_entry {
+        fail("reason=boot_time_desktop_not_after_entry");
+    }
+    if times.tsc_hz == 0 {
+        fail("reason=boot_time_no_tsc_rate");
+    }
+    if decode(&encode(&times)) != Some(times) {
+        fail("reason=boot_time_record_roundtrip");
+    }
+    let mut kernel_buf = [0u8; BOOT_TIMES_V1_LEN];
+    let wrong_len = crate::arch::x86_64::syscall::debug_sys_boot_times_for_test(
+        kernel_buf.as_mut_ptr() as u64,
+        BOOT_TIMES_V1_LEN - 1,
+    );
+    let kernel_addr = crate::arch::x86_64::syscall::debug_sys_boot_times_for_test(
+        kernel_buf.as_mut_ptr() as u64,
+        BOOT_TIMES_V1_LEN,
+    );
+    if wrong_len != crate::errno::EINVAL || kernel_addr >= 0 || kernel_buf != [0; BOOT_TIMES_V1_LEN]
+    {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_syscall_checks wrong_len={} kernel_addr={}",
+            SCENARIO,
+            wrong_len,
+            kernel_addr
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    let copyout = boot_time_copyout_legs(&encode(&times));
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={} copyout={}",
+        SCENARIO,
+        times.tsc_hz,
+        times.tsc_kernel_entry,
+        times.tsc_desktop_start,
+        wrong_len,
+        kernel_addr,
+        copyout
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// Review #16 item 2: `SYS_BOOT_TIMES` writes through `Pmap::write_user_bytes`
+/// (page-table walk under the pmap lock, HHDM write), so a bad user buffer is
+/// an error with nothing written, never a ring-0 fault. A scratch address
+/// space holds four pages: p0 and p1 writable, p2 unmapped, p3 read-only.
+/// Legs: a record straddling p0/p1 lands intact; one straddling p1/p2 (40
+/// bytes before the hole) is refused and leaves p1 untouched; p2 alone and
+/// p3 alone are refused; a range ending past the user half is refused.
+#[cfg(feature = "neo-test-boot-time")]
+fn boot_time_copyout_legs(record: &[u8]) -> &'static str {
+    use crate::mm::pmap::{Pmap, flags};
+    use x86_64::VirtAddr;
+    let pmap = Pmap::new().unwrap_or_else(|_| fail("reason=boot_time_pmap_new"));
+    let base = pmap
+        .allocate_user_region(4 * 4096, flags::USER_DATA_RW)
+        .unwrap_or_else(|_| fail("reason=boot_time_region"));
+    let (p1, p2, p3) = (base + 4096, base + 2 * 4096, base + 3 * 4096);
+    if pmap.unmap_user_range(VirtAddr::new(p2), 4096).is_err()
+        || pmap
+            .protect_user(VirtAddr::new(p3), 4096, flags::USER_DATA_RO)
+            .is_err()
+    {
+        fail("reason=boot_time_region_setup");
+    }
+    let read = |va: u64, out: &mut [u8]| {
+        for (i, b) in out.iter_mut().enumerate() {
+            let pa = pmap
+                .translate(VirtAddr::new(va + i as u64))
+                .unwrap_or_else(|| fail("reason=boot_time_readback_unmapped"));
+            // SAFETY: a present frame of the scratch Pmap, read via the HHDM.
+            *b = unsafe { *crate::mm::phys_to_virt(pa).as_ptr::<u8>() };
+        }
+    };
+    let n = record.len() as u64;
+    let straddle_ok = pmap.write_user_bytes(p1 - 40, record).is_ok();
+    let mut back = [0u8; 80];
+    read(p1 - 40, &mut back[..record.len()]);
+    let landed = back[..record.len()] == *record;
+    let hole = pmap.write_user_bytes(p2 - 40, record).is_err();
+    let mut tail = [0u8; 40];
+    read(p2 - 40, &mut tail);
+    let untouched = tail == [0u8; 40];
+    let unmapped = pmap.write_user_bytes(p2, record).is_err();
+    let read_only = pmap.write_user_bytes(p3, record).is_err();
+    let past_half = pmap
+        .write_user_bytes(0x0000_8000_0000_0000 - n / 2, record)
+        .is_err();
+    if !(straddle_ok && landed && hole && untouched && unmapped && read_only && past_half) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_copyout straddle_ok={} landed={} hole={} untouched={} unmapped={} read_only={} past_half={}",
+            SCENARIO,
+            straddle_ok,
+            landed,
+            hole,
+            untouched,
+            unmapped,
+            read_only,
+            past_half
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    "straddle+hole+unmapped+ro+past-half"
+}
+
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
 fn run_phase3_neofs_allocator_reuse_guard() -> ! {
     const PATH_A: &str = "/neofs/alloc-a.bin";
@@ -37694,6 +37856,219 @@ fn run_phase3_fat32_mbr() -> ! {
         );
         debug_exit(EXIT_SUCCESS);
     }
+}
+
+/// L3a-2: the fixture reads back through whichever FAT driver the build has.
+/// `fat16_read`: device1 is a FAT16 volume (the native driver refuses
+/// FAT16), so this passes only on rust-fatfs. `native_control` (the
+/// kill-switch): no `fat-fs`, the FAT32 fixture through the native driver.
+#[cfg(any(
+    feature = "neo-test-phase3-fat32-fat16-read",
+    feature = "neo-test-phase3-fat32-native-control"
+))]
+fn run_phase3_fat32_fixture_read() -> ! {
+    fat32_mount_or_fail(0);
+    let entries = fat32_collect_dirents("/fat32");
+    fat32_expect_dirent(&entries, "hello.txt", 2);
+    fat32_expect_dirent(&entries, "subdir", 1);
+    fat32_expect_dirent(&entries, "long filename with spaces.txt", 2);
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    fat32_expect_file_bytes("/fat32/LONG FILENAME WITH SPACES.TXT", b"LFN test\n");
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} driver={} entries={} hello=match nested=match lfn=match",
+        SCENARIO,
+        if cfg!(feature = "fat-fs") {
+            "fatfs"
+        } else {
+            "native"
+        },
+        entries.len()
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// Device1's first sectors hashed by the no-write scenario: the boot sector,
+/// FSInfo, the backup boot sector, both FATs and the root directory of the
+/// fixture volume (every sector an unmount could rewrite).
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+const FAT_NO_WRITE_SECTORS: u64 = 4096;
+
+/// FNV-1a over device1's first [`FAT_NO_WRITE_SECTORS`] sectors.
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+fn fat_no_write_hash() -> u64 {
+    const CHUNK_SECTORS: u64 = 128;
+    let device = crate::drivers::block::get_device(1)
+        .unwrap_or_else(|| fail("reason=fat_no_write_device1_missing"));
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut lba = 0;
+    while lba < FAT_NO_WRITE_SECTORS {
+        let dma = crate::drivers::block::DmaBuffer::alloc_zeroed((CHUNK_SECTORS * 512) as usize)
+            .unwrap_or_else(|_| fail("reason=fat_no_write_dma"));
+        if device.read_block(lba, core::slice::from_ref(&dma)).is_err() {
+            fail_with_hex("reason=fat_no_write_read lba", lba);
+        }
+        // SAFETY: the synchronous read completed; the buffer is ours alone.
+        for &b in unsafe { dma.as_slice() } {
+            hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        lba += CHUNK_SECTORS;
+    }
+    hash
+}
+
+/// L3a-2, traps T4/T5: device1 is the FAT32 fixture with the volume's dirty
+/// flag set (as a stick pulled without unmounting has). Mount, list, read,
+/// try a write (refused by rights), unmount; the first 2 MiB hash the same
+/// before and after, and rust-fatfs attempted no write at all.
+/// Chad's #18 review: xtask's fixture has `loop.bin` (three clusters) with
+/// its chain patched to `A -> B -> A`, and `loopdir`, whose first cluster is
+/// full and points at itself. Reading the file to its end must fail (not
+/// return the same clusters again), and listing the directory must fail (not
+/// walk forever: a directory has no size to stop at). The rest of the volume
+/// still reads.
+#[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+fn run_phase3_fat32_loop_chain() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let req = mount4b_build_request_v1(3, "device1", "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_loop_mount_rc", rc as u64);
+    }
+    // The file: read until an error; the whole of it (3 clusters' worth) or
+    // more coming back means the loop was followed.
+    let file = fat32_open_or_fail("/fat32/loop.bin", crate::fs::FileRights::READ);
+    let mut buf = [0u8; 512];
+    let mut total = 0usize;
+    let file_err = loop {
+        match file.read(&mut buf) {
+            Ok(0) => break None,
+            Ok(n) => total += n,
+            Err(e) => break Some(e),
+        }
+        if total > 1 << 20 {
+            break None;
+        }
+    };
+    drop(file);
+    // The directory: list until an error (bounded, so a missed loop fails
+    // here rather than hanging inside the library, which the fix prevents).
+    let dir = fat32_open_or_fail("/fat32/loopdir", fat32_dir_rights());
+    let mut cursor = 0u64;
+    let mut listed = 0usize;
+    let dir_err = loop {
+        match dir.readdir_one(cursor, crate::fs::FileRights::READDIR) {
+            Ok(Some(entry)) => {
+                cursor = entry.next_cursor;
+                listed += 1;
+                if listed > 4096 {
+                    break None;
+                }
+            }
+            Ok(None) => break None,
+            Err(e) => break Some(e),
+        }
+    };
+    drop(dir);
+    // The rest of the volume still reads.
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    if file_err.is_none() || dir_err.is_none() {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=fat_loop_followed file_bytes={} file_err={:?} dir_listed={} dir_err={:?}",
+            SCENARIO,
+            total,
+            file_err,
+            listed,
+            dir_err
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} file_err={:?} file_bytes_before={} dir_err={:?} dir_listed_before={} hello=match",
+        SCENARIO,
+        file_err,
+        total,
+        dir_err,
+        listed
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+fn run_phase3_fat32_readonly_no_write() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    let before = fat_no_write_hash();
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let req = mount4b_build_request_v1(3, "device1", "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_no_write_mount_rc", rc as u64);
+    }
+    // T4: the fixture's BPB status byte is dirty and FAT[1] is clean; the
+    // mount reads the two apart (bit 0 BPB, bit 1 FAT[1]).
+    let dirty = crate::fs::fat::LAST_DIRTY.load(core::sync::atomic::Ordering::Relaxed);
+    if dirty != 0b01 {
+        fail_with_hex("reason=fat_no_write_dirty_pair", u64::from(dirty));
+    }
+    // The directory is read through a handle dropped before the unmount
+    // (`fat32_collect_dirents` installs an fd it never closes, which keeps
+    // the mount busy: umount would be EBUSY).
+    let entries = {
+        let dir = fat32_open_or_fail("/fat32", fat32_dir_rights());
+        let mut names = alloc::vec::Vec::new();
+        let mut cursor = 0u64;
+        while let Some(entry) = dir
+            .readdir_one(cursor, crate::fs::FileRights::READDIR)
+            .unwrap_or_else(|err| neofs_2c_fail_vfs("fat_no_write_readdir", err))
+        {
+            cursor = entry.next_cursor;
+            names.push(entry.name);
+            if names.len() > 64 {
+                fail("reason=fat_no_write_readdir_runaway");
+            }
+        }
+        names
+    };
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    match crate::fs::open_root_temporary(
+        "/fat32/hello.txt",
+        crate::fs::OPEN_ROOT_TEMPORARY,
+        crate::fs::FileRights::WRITE,
+    ) {
+        Err(crate::fs::VfsError::InsufficientRights) => {}
+        Err(err) => neofs_2c_fail_vfs("fat_no_write_write_open_wrong_error", err),
+        Ok(_) => fail("reason=fat_no_write_write_open_allowed"),
+    }
+    let rc = crate::arch::x86_64::syscall::debug_sys_umount_for_test(dir_fd, "fat32", 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_no_write_umount_rc", rc as u64);
+    }
+    let after = fat_no_write_hash();
+    let attempts = crate::fs::fat::WRITE_ATTEMPTS.load(core::sync::atomic::Ordering::Relaxed);
+    if attempts != 0 {
+        fail_with_hex("reason=fat_no_write_write_attempted count", attempts);
+    }
+    if before != after {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=fat_no_write_bytes_changed before={:#018x} after={:#018x}",
+            SCENARIO,
+            before,
+            after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} dirty_volume=1 dirty_bpb=1 dirty_fat1=0 entries={} umount=0 write_attempts=0 sectors={} hash={:#018x} unchanged=true",
+        SCENARIO,
+        entries.len(),
+        FAT_NO_WRITE_SECTORS,
+        after
+    );
+    debug_exit(EXIT_SUCCESS);
 }
 
 // === BUILD-4D ext4 read-only foreign filesystem scenarios ==============
