@@ -135,18 +135,21 @@ name and the zone's **final POSIX TZ rule**: the footer `zic` writes at the end 
 every time after the release's last explicit transition. For example
 `America/New_York` → `EST5EDT,M3.2.0,M11.1.0`, `Asia/Kolkata` → `IST-5:30`, `Europe/Dublin` → `IST-1GMT0,M10.5.0,M3.5.0/1`.
 
-- **Generator:** an `xtask tzdata` command reads a raw tzdata release (the `tzdata*.tar.gz` from IANA, fetched with
-  `curl`, never through a summarizing fetch). It runs `zic` locally and takes each zone's footer line. Its output is
-  `userland/libneo/src/tz_table.rs`, with the tzdata version in a header comment and a test that pins it.
+- **Generator:** `cargo xtask tzdata --src <tz checkout>` reads a tz release as a `git` checkout of the release tag
+  (`https://github.com/eggert/tz`, the tz maintainers' repository; `data.iana.org` is refused by the build hosts'
+  egress proxy). It's never fetched through a summarizing fetch.
+  - It runs the host's `zic`, takes each zone's footer line and parses it **at generation time**.
+  - Its output is `userland/libneo/src/tz_table.rs`: the rules as Rust constants, plus the release tag and commit,
+    which a test pins.
 - **Ids are stable and append-only:** a zone keeps its id across tzdata updates; a zone that's been removed keeps its id
   as an alias of its replacement. Id 0 is `UTC`.
 - **Aliases** (`US/Eastern`, `Asia/Calcutta`) resolve to their canonical zone by name, but never get their own id.
 - **Refresh: cadence and owner.** Each IANA release (a few a year, announced on the `tz-announce` list) gets one
   regeneration PR. The owner is whichever seat the PM names for the standing item; the build proposes adding it to the
   open-threads board.
-  - The generator pins the tarball URL (`https://data.iana.org/time-zones/releases/tzdata<version>.tar.gz`) and the
-    tarball's SHA-256, which is recorded when IANA's detached signature (`.asc`) is first checked.
-  - It refuses a mismatch.
+  - The generator refuses a checkout that isn't exactly at a release tag (`git describe --tags --exact-match`), and
+    records the tag and commit in the table. 2026e is tag `2026e`, commit `039ef27c`, and its signed tag object is
+    `db07415c`; anyone can check that signature with `git tag -v 2026e`.
 - **Settings validation:** the generator also writes `TZ_ZONE_COUNT` into `userland/settings-core/src/tz_ids.rs`, so
   `settings-core`, which doesn't depend on `libneo`, can range-check the `TimeZone` id itself. Ids are dense and
   append-only, so a count is enough.
@@ -221,8 +224,12 @@ come from the crates.io API.
 
 All the licences above are on the CLAUDE.md allow list (MIT, Apache-2.0, Unlicense, public domain). Nothing is GPL.
 
-**Recommendation:** use the compiled POSIX-rule table (§2.4) with `tz-rs` as the evaluator if it builds `no_std` here,
-and our own evaluator if not. Option (b) stays open behind the same API.
+**Recommendation (revised at slice 1):** use the compiled POSIX-rule table (§2.4) with **our own evaluator**.
+- `tz-rs`'s POSIX parser is `std`-only.
+- Its `no_std` rule types would work, but once the rules are parsed at generation time, the runtime is ~150 lines of
+  date arithmetic. That's less than the adapter code a dependency would need, and it adds no crate to every userland
+  binary.
+- `tz-rs` and `jiff` stay design references (read, not copied). Option (b) stays open behind the same API.
 
 ## 4. Tests (byte-exact, computed by hand)
 
@@ -306,7 +313,7 @@ preview switched to `-rtc base=localtime`) follows the PM's "nothing for J.c. to
 | 2 (New York + southern-hemisphere KATs) | FAIL | §4: Sydney 2026 KATs computed by hand, both transitions, with the ambiguous and the skipped local hour. |
 | 3 (kernel on UTC: `CLOCK_REALTIME` wasn't UTC with `RtcLocal = 1`; §0 and §2.1 contradicted each other) | FAIL | PM decision (option 3). §0 and §2.1 now state one contract, "realtime is UTC, or marked unconfirmed". New kernel rung `rtc-offset` (two syscalls, write-once, kill-switch, Codex review); §2.3 defaults and the display table; §4 kernel KATs and scenario; §5 slice 2. |
 | 4 (setting and showing the zone) | PASS | Notes fixed: N1, the reply is a WM status card, not Arthur (§2.5); N2, the card shows the IANA name (§2.5); N3, `TimeText` grows to `Text<16>` (§2.7); N4, superseded by confirmed UTC (§2.1). |
-| F1 (footer is the final rule, not "now") | note | §2.4: wording made precise, refresh cadence and owner, pinned tarball checksum, Casablanca limitation KAT. |
+| F1 (footer is the final rule, not "now") | note | §2.4: wording made precise, refresh cadence and owner, the release pinned by tag and commit, Casablanca limitation KAT. |
 | F2 (`settings-core` can't see the table) | note | §2.4: the generator writes `TZ_ZONE_COUNT` into `settings-core`. |
 | F3 (RTC-local display drifts after a transition) | note | Gone with confirmed UTC; §2.7 says so. |
 | Unchecked consumer (`action_log.rs`) | — | §2.7: classified; records carry the confirmed flag. |
