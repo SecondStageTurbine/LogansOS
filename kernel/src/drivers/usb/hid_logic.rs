@@ -196,37 +196,20 @@ impl BootKeyboardDecoder {
     }
 }
 
+/// The shared US layout (`drivers/keymap_us_logic.rs`), by `include!` so the
+/// host test crates that take this file by `#[path]` get it too.
+#[allow(dead_code)]
+mod keymap {
+    include!("../keymap_us_logic.rs");
+}
+
+/// The legacy (pre-routing) byte path: a key's ASCII byte, Enter, Backspace
+/// and Tab as control bytes. No Caps Lock here: this path keeps no state.
 pub fn keycode_to_ascii(keycode: u8, shifted: bool) -> Option<u8> {
     match keycode {
-        0x04..=0x1d => {
-            let base = b'a' + (keycode - 0x04);
-            Some(if shifted { base - 32 } else { base })
-        }
-        0x1e..=0x26 => {
-            let unshifted = b'1' + (keycode - 0x1e);
-            let shifted_digits = b"!@#$%^&*(";
-            Some(if shifted {
-                shifted_digits[(keycode - 0x1e) as usize]
-            } else {
-                unshifted
-            })
-        }
-        0x27 => Some(if shifted { b')' } else { b'0' }),
         0x28 => Some(b'\n'),
         0x2a => Some(0x08),
         0x2b => Some(b'\t'),
-        0x2c => Some(b' '),
-        0x2d => Some(if shifted { b'_' } else { b'-' }),
-        0x2e => Some(if shifted { b'+' } else { b'=' }),
-        0x2f => Some(if shifted { b'{' } else { b'[' }),
-        0x30 => Some(if shifted { b'}' } else { b']' }),
-        0x31 => Some(if shifted { b'|' } else { b'\\' }),
-        0x33 => Some(if shifted { b':' } else { b';' }),
-        0x34 => Some(if shifted { b'"' } else { b'\'' }),
-        0x35 => Some(if shifted { b'~' } else { b'`' }),
-        0x36 => Some(if shifted { b'<' } else { b',' }),
-        0x37 => Some(if shifted { b'>' } else { b'.' }),
-        0x38 => Some(if shifted { b'?' } else { b'/' }),
-        _ => None,
+        _ => keymap::printable(keycode, if shifted { keymap::MOD_SHIFT } else { 0 }, 0),
     }
 }
