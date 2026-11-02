@@ -17311,6 +17311,23 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             ));
         }
         eprintln!("[xtask] {}: {line}", scenario.name);
+        // The budget (TCG, GitHub-hosted runner), from gate 41480459303:
+        // frames 30 ms mean / 40 ms max, the release's move 1.40 s (the
+        // control, before the fix: 122 / 160 ms and 2.3-5.7 s). About 2.5x
+        // headroom for runner noise (2.4x seen between runs) and the 10 ms
+        // clock tick.
+        if scenario.name == "desktop_drag_perf_boot" {
+            const FRAME_US_MAX: u64 = 100_000;
+            const RELEASE_MOVE_US_MAX: u64 = 3_500_000;
+            let (frame_max, release) = (field("frame_us_max="), field("release_move_us="));
+            if frame_max > FRAME_US_MAX || release > RELEASE_MOVE_US_MAX {
+                return Err(format!(
+                    "`{}`: over the drag budget (frame max {frame_max} us <= {FRAME_US_MAX}, \
+                     release move {release} us <= {RELEASE_MOVE_US_MAX}): {line}",
+                    scenario.name
+                ));
+            }
+        }
     }
     if scenario.name == "desktop_pointer_boot" || scenario.name == "desktop_resize_boot" {
         require_serial_sequence(
