@@ -182,6 +182,12 @@ pub mod model_rights {
 pub mod net_dial_rights {
     /// Authorise one outbound dial within the immutable handle scope.
     pub const DIAL: u8 = 1 << 0;
+    /// OT-61 rung 5b (`net-dial-public-only`): the dial may reach non-public
+    /// addresses (loopback, private, link-local; `net_dial_cap_logic::
+    /// v4_public`/`v6_public`). Root caps carry it, so they dial as before; a
+    /// cap derived without it reaches only public addresses, checked after
+    /// the kernel's own resolution (the fetch broker's per-request caps).
+    pub const NON_PUBLIC: u8 = 1 << 1;
 }
 
 /// OT-61 C1.1 — semantic rights for the `BrowserRuntime` cap (the thread/VM
@@ -372,8 +378,19 @@ pub const fn mount_authority_cap_rights() -> CapRights {
     CapRights::new(meta_rights::USE, mount_authority_rights::MOUNT)
 }
 
+#[cfg(not(feature = "net-dial-public-only"))]
 pub const fn full_net_dial_rights() -> CapRights {
     CapRights::new(full_meta_rights(), net_dial_rights::DIAL)
+}
+
+/// With `net-dial-public-only`, a root cap also carries `NON_PUBLIC`, so every
+/// existing holder dials exactly as without the feature.
+#[cfg(feature = "net-dial-public-only")]
+pub const fn full_net_dial_rights() -> CapRights {
+    CapRights::new(
+        full_meta_rights(),
+        net_dial_rights::DIAL | net_dial_rights::NON_PUBLIC,
+    )
 }
 
 /// Full (compositor root) GPU-submit rights: SUBMIT + full meta. Minted only by
