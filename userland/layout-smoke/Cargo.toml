@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 L0, the closure probe for
+# Servo layout without script (Plans/DECISION-2026-11-02-ot61-first-page-option-a.md,
+# docs/THINK-2026-11-01-ot61-first-page-layout.md §5). WIP: crates come from
+# crates.io until the closure is vendored.
+[workspace]
+
+[package]
+name = "layout-smoke"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 L0 gate: patched servo-layout over neo-layout-dom builds for x86_64-unknown-neoplutarch"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+layout = { package = "servo-layout", version = "=0.7.0" }
+neo-layout-dom = { path = "../neo-layout-dom" }
+# servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
+# `derive` feature; upstream gets it through servo-script's half of the graph.
+zeroize = { version = "1", features = ["derive"] }
+# Cross-process channels in-process: there is one process's worth of layout here.
+ipc-channel = { version = "=0.23.1", features = ["force-inprocess"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+
+[patch.crates-io]
+libc = { path = "../../third_party/ot61-browser/patched/libc-0.2.191" }
+parking_lot_core = { path = "../../third_party/ot61-browser/patched/parking_lot_core-0.9.12" }
+servo-base = { path = "../../third_party/ot61-browser/patched/servo-base-0.7.0" }
+servo-url = { path = "../../third_party/ot61-browser/patched/servo-url-0.7.0" }
+servo-fonts-traits = { path = "../../third_party/ot61-browser/patched/servo-fonts-traits-0.7.0" }
+servo-allocator = { path = "../../third_party/ot61-browser/patched/servo-allocator-0.7.0" }
+servo-embedder-traits = { path = "../../third_party/ot61-browser/patched/servo-embedder-traits-0.7.0" }
+servo-layout = { path = "../../third_party/ot61-browser/patched/servo-layout-0.7.0" }
+servo-paint-api = { path = "../../third_party/ot61-browser/patched/servo-paint-api-0.7.0" }
+stylo = { path = "../../third_party/ot61-browser/patched/stylo-0.22.0" }
+hyper-util = { path = "../../third_party/ot61-browser/stubs/hyper-util-0.1.21" }
+windows-sys = { path = "../../third_party/ot61-browser/stubs/windows-sys-0.61.2" }
+# WIP: #25's patched copy (third_party/ot61-swgl), not on this branch's base yet.
+wr_glyph_rasterizer = { path = "/tmp/claude-0/-home-user-LogansOS/e4e66893-c338-5f46-aade-d9cf409d43ce/scratchpad/l0-probe/wrg/patched/wr_glyph_rasterizer-0.70.1" }
