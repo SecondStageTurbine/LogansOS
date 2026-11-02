@@ -33,7 +33,11 @@ extern "C" fn pt_caller() -> ! {
     })
     .unwrap_or_else(|| fail("reason=pipe_caller_unknown"));
     let a = call.2;
-    let ret = syscall_dispatch4_for_test(call.1, a[0], a[1], a[2], a[3]);
+    // A real `syscall` enters the dispatcher with IF=0 (SFMASK masks IF),
+    // and the token park requires it.
+    let ret = crate::arch::x86_64::without_interrupts(|| {
+        syscall_dispatch4_for_test(call.1, a[0], a[1], a[2], a[3])
+    });
     crate::arch::x86_64::without_interrupts(|| {
         if let Some(c) = PT_CALLS.lock().iter_mut().find(|c| c.0 == pid) {
             c.3 = ret;
@@ -218,6 +222,10 @@ extern "C" fn pt_create_caller() -> ! {
         syscall_dispatch4_for_test as sys,
     };
     let buf = ADMISSION_KILL_VA + PT_BUF;
+    // IF=0, as a real `syscall` enters (see `pt_caller`).
+    let sys = |n, a0, a1, a2, a3| {
+        crate::arch::x86_64::without_interrupts(|| sys(n, a0, a1, a2, a3))
+    };
     let bad = sys(SYS_PIPE_CREATE, 0, 0, 0, 0);
     let both = sys(SYS_PIPE_CREATE, 64, 0, 0, 0);
     let (rd, wr) = ((both as u64) & 0xffff_ffff, (both as u64) >> 32);
