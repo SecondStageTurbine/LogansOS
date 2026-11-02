@@ -381,26 +381,29 @@ fn run_pipe_core() -> ! {
 
     // --- round trip: a reader parks on an empty pipe; a writer's five bytes
     // wake it and arrive whole; with both gone, both ends are closed and only
-    // the harness's `Arc` is left.
+    // the harness's `Arc` is left. The writer's handle is installed before
+    // the reader starts (with no writer the read would be EOF at once); its
+    // thread starts after the reader parks.
     {
         pt_reset();
         let pipe = new_pipe(64);
-        let (rd, rbase) = pt_reader(&pipe, 16, 0);
-        pt_until("reason=pipe_round_reader_never_parked", || {
-            pipe.parked_for_test(End::Read) == 1
-        });
-        let wr = {
+        let (wproc, wh) = {
             let (proc, base) = pt_process();
             // SAFETY: the stand-in's own page, before its thread runs.
             unsafe { core::ptr::copy_nonoverlapping(b"hello".as_ptr(), base.add(PT_BUF as usize), 5) };
             let h = pt_install(&proc, &pipe, End::Write);
-            pt_start(
-                proc,
-                crate::arch::x86_64::syscall::SYS_PIPE_WRITE,
-                [h as u64, crate::arch::x86_64::syscall::ADMISSION_KILL_VA + PT_BUF, 5, 0],
-                0,
-            )
+            (proc, h)
         };
+        let (rd, rbase) = pt_reader(&pipe, 16, 0);
+        pt_until("reason=pipe_round_reader_never_parked", || {
+            pipe.parked_for_test(End::Read) == 1
+        });
+        let wr = pt_start(
+            wproc,
+            crate::arch::x86_64::syscall::SYS_PIPE_WRITE,
+            [wh as u64, crate::arch::x86_64::syscall::ADMISSION_KILL_VA + PT_BUF, 5, 0],
+            0,
+        );
         let r = pt_finish("reason=pipe_round_reader_stranded", rd);
         let w = pt_finish("reason=pipe_round_writer_stranded", wr);
         pt_settle();
@@ -429,11 +432,18 @@ fn run_pipe_core() -> ! {
     {
         pt_reset();
         let pipe = new_pipe(64);
+        let (wproc, _) = pt_process();
+        let wh = pt_install(&wproc, &pipe, End::Write);
         let (rd, _) = pt_reader(&pipe, 16, 0);
         pt_until("reason=pipe_eof_reader_never_parked", || {
             pipe.parked_for_test(End::Read) == 1
         });
-        let wr = pt_writer(&pipe, 0, 0);
+        let wr = pt_start(
+            wproc,
+            crate::arch::x86_64::syscall::SYS_PIPE_WRITE,
+            [wh as u64, crate::arch::x86_64::syscall::ADMISSION_KILL_VA + PT_BUF, 0, 0],
+            0,
+        );
         let w = pt_finish("reason=pipe_eof_writer_stranded", wr);
         let r = pt_finish("reason=pipe_eof_reader_stranded", rd);
         serial_println!("PIPE eof zero_write={} read={}", w, r);
@@ -541,10 +551,7 @@ fn run_pipe_core() -> ! {
         let pipe = new_pipe(64);
         let hold = new_pipe(16);
         hold.retain(End::Write);
-        let (rd, _) = pt_reader(&pipe, 16, 0);
-        pt_until("reason=pipe_two_reader_never_parked", || {
-            pipe.parked_for_test(End::Read) == 1
-        });
+        // The writers first: with no writer, the read would be EOF at once.
         let mut writers = [0u32; 2];
         for w in writers.iter_mut() {
             let (proc, _) = pt_process();
@@ -559,6 +566,10 @@ fn run_pipe_core() -> ! {
         }
         pt_until("reason=pipe_two_writers_never_parked", || {
             hold.parked_for_test(End::Read) == 2
+        });
+        let (rd, _) = pt_reader(&pipe, 16, 0);
+        pt_until("reason=pipe_two_reader_never_parked", || {
+            pipe.parked_for_test(End::Read) == 1
         });
         let first = crate::sched::process::terminate(crate::sched::process::ProcessId(writers[0]));
         pt_until("reason=pipe_two_first_not_gone", || pt_gone(writers[0]));
