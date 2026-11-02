@@ -28,3 +28,9 @@ servo_base = { package = "servo-base", version = "=0.7.0" }
 servo_url = { package = "servo-url", version = "=0.7.0" }
 style = { package = "stylo", version = "=0.22.0" }
 style_dom = { package = "stylo_dom", version = "=0.22.0" }
+
+[dev-dependencies]
+# servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
+# `derive` feature (layout-smoke carries the same line).
+zeroize = { version = "1", features = ["derive"] }
+url = "=2.5.8"
