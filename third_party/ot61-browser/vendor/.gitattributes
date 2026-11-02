@@ -1,0 +1,3 @@
+# Vendored crates stay byte-identical to crates.io (.cargo-checksum.json):
+# no line-ending normalisation (the repo-wide eol=lf would rewrite CRLF files).
+* -text
