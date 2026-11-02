@@ -28714,23 +28714,52 @@ fn run_ps2_keyboard() -> ! {
     use alloc::vec::Vec;
 
     const TICK_HZ: u64 = 100;
-    // (usage, modifiers, pressed), in order.
-    const EXPECTED: &[(u8, u8, bool)] = &[
-        (0x04, 0x00, true), // a
-        (0x04, 0x00, false),
-        (0x1E, 0x00, true), // 1
-        (0x1E, 0x00, false),
-        (0x05, 0x02, true), // shift-b (left Shift held)
-        (0x05, 0x02, false),
-        (0x52, 0x00, true), // Up (E0 48)
-        (0x52, 0x00, false),
-        (0x06, 0x10, true), // ctrl_r-c (E0 1D, right Ctrl)
-        (0x06, 0x10, false),
-        (0x48, 0x00, true), // Pause (E1 1D 45 E1 9D C5)
-        (0x48, 0x00, false),
-        (0x28, 0x00, true), // Enter
-        (0x28, 0x00, false),
+    // (usage, modifiers, locks, pressed), in order.
+    const EXPECTED: &[(u8, u8, u8, bool)] = &[
+        (0x04, 0x00, 0, true), // a
+        (0x04, 0x00, 0, false),
+        (0x1E, 0x00, 0, true), // 1
+        (0x1E, 0x00, 0, false),
+        (0x05, 0x02, 0, true), // shift-b (left Shift held)
+        (0x05, 0x02, 0, false),
+        (0x52, 0x00, 0, true), // Up (E0 48)
+        (0x52, 0x00, 0, false),
+        (0x06, 0x10, 0, true), // ctrl_r-c (E0 1D, right Ctrl)
+        (0x06, 0x10, 0, false),
+        (0x48, 0x00, 0, true), // Pause (E1 1D 45 E1 9D C5)
+        (0x48, 0x00, 0, false),
+        (0x28, 0x00, 0, true), // Enter
+        (0x28, 0x00, 0, false),
+        (0x33, 0x02, 0, true), // shift-semicolon: `:`
+        (0x33, 0x02, 0, false),
+        (0x34, 0x20, 0, true), // shift_r-apostrophe: `"` (right Shift)
+        (0x34, 0x20, 0, false),
+        (0x39, 0x00, 1, true), // Caps Lock on (the press carries it)
+        (0x39, 0x00, 1, false),
+        (0x04, 0x00, 1, true), // a, under Caps Lock: `A`
+        (0x04, 0x00, 1, false),
+        (0x39, 0x00, 0, true), // Caps Lock off again
+        (0x39, 0x00, 0, false),
+        (0x5F, 0x00, 0, true), // keypad 7 (0x47)
+        (0x5F, 0x00, 0, false),
+        (0x55, 0x00, 0, true), // keypad * (0x37)
+        (0x55, 0x00, 0, false),
+        (0x54, 0x00, 0, true), // keypad / (E0 35)
+        (0x54, 0x00, 0, false),
+        (0x58, 0x00, 0, true), // keypad Enter (E0 1C)
+        (0x58, 0x00, 0, false),
+        (0x53, 0x00, 2, true), // Num Lock off (the press carries it)
+        (0x53, 0x00, 2, false),
+        (0x60, 0x00, 2, true), // keypad 8, Num Lock off: Up
+        (0x60, 0x00, 2, false),
+        (0x53, 0x00, 0, true), // Num Lock on again
+        (0x53, 0x00, 0, false),
     ];
+    // The usages the keypad presses act as (after `effective_usage`), from
+    // keypad 7 on: 7, *, /, Enter, Num Lock, Up (keypad 8), Num Lock.
+    const KEYPAD_ACTS_AS: &[u8] = &[0x5F, 0x55, 0x54, 0x58, 0x53, 0x52, 0x53];
+    // The text the presses after Enter type, through the shared US keymap.
+    const TEXT_AFTER_ENTER: &[u8] = b":\"A7*/";
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
 
     serial_println!("PS2KBD ready");
@@ -28788,7 +28817,9 @@ fn run_ps2_keyboard() -> ! {
     }
     let want: Vec<InputEventV1> = EXPECTED
         .iter()
-        .map(|&(usage, modifiers, pressed)| InputEventV1::key(usage, modifiers, pressed))
+        .map(|&(usage, modifiers, locks, pressed)| {
+            InputEventV1::key_locked(usage, modifiers, locks, pressed)
+        })
         .collect();
     if got != want {
         fail_with_hex(
@@ -28796,11 +28827,42 @@ fn run_ps2_keyboard() -> ! {
             got.len() as u64,
         );
     }
+    let enter = got.iter().position(|e| e.code == 0x28).unwrap_or(got.len());
+    let text: Vec<u8> = got[enter..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .filter_map(|e| {
+            crate::drivers::keymap_us_logic::printable(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    serial_println!(
+        "ps2_keyboard text={:?}",
+        core::str::from_utf8(&text).unwrap_or("<non-utf8>")
+    );
+    if text != TEXT_AFTER_ENTER {
+        fail_with_hex("reason=ps2_keyboard_text_mismatch len", text.len() as u64);
+    }
+    let keypad = got.iter().position(|e| e.code == 0x5F).unwrap_or(got.len());
+    let acts_as: Vec<u8> = got[keypad..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .map(|e| {
+            crate::drivers::keymap_us_logic::effective_usage(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    if acts_as != KEYPAD_ACTS_AS {
+        fail_with_hex(
+            "reason=ps2_keyboard_keypad_mismatch len",
+            acts_as.len() as u64,
+        );
+    }
     // The hook never polls: every byte came through IRQ1 on the I/O APIC.
     if counters.irqs == 0 || counters.polled != 0 || counters.irq_bytes != counters.bytes {
         fail_with_hex("reason=ps2_keyboard_not_via_irq1 irqs", counters.irqs);
     }
-    pass("ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause");
+    pass(
+        "ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause text=colon,quote,caps keypad=digits,ops,enter,numlock_nav",
+    );
 }
 
 /// Key auto-repeat: xtask holds Backspace 1.5 s, then Escape 1.5 s, then
