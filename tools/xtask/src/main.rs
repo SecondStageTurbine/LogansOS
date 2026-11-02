@@ -1106,6 +1106,13 @@ const PS2_KEYBOARD_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
         HMP_CAPS_LOCK,
         b'a',
         HMP_CAPS_LOCK,
+        HMP_KP_7,
+        HMP_KP_MULTIPLY,
+        HMP_KP_DIVIDE,
+        HMP_KP_ENTER,
+        HMP_NUM_LOCK,
+        HMP_KP_8,
+        HMP_NUM_LOCK,
     ],
 }];
 /// Key auto-repeat: Backspace held 1.5 s, then Escape held 1.5 s, then 'x'
@@ -13861,6 +13868,14 @@ const HMP_CAPTURE_0: u8 = 0x97;
 const HMP_CAPS_LOCK: u8 = 0xA2;
 /// `ps2_keyboard`: `"` typed with the right Shift.
 const HMP_RSHIFT_QUOTE: u8 = 0xA3;
+/// `ps2_keyboard`, the keypad: keypad 7, `*` (0x37), `/` (`E0 35`), Enter
+/// (`E0 1C`), Num Lock (0x45), keypad 8.
+const HMP_KP_7: u8 = 0xA4;
+const HMP_KP_MULTIPLY: u8 = 0xA5;
+const HMP_KP_DIVIDE: u8 = 0xA6;
+const HMP_KP_ENTER: u8 = 0xA7;
+const HMP_NUM_LOCK: u8 = 0xA8;
+const HMP_KP_8: u8 = 0xA9;
 const HMP_CAPTURES: u8 = 5;
 /// Where the script's numbered captures go (the scenario sets it per boot).
 static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -13959,6 +13974,12 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         0x85 => Some("sendkey pause\n"),
         HMP_CAPS_LOCK => Some("sendkey caps_lock\n"),
         HMP_RSHIFT_QUOTE => Some("sendkey shift_r-apostrophe\n"),
+        HMP_KP_7 => Some("sendkey kp_7\n"),
+        HMP_KP_MULTIPLY => Some("sendkey kp_multiply\n"),
+        HMP_KP_DIVIDE => Some("sendkey kp_divide\n"),
+        HMP_KP_ENTER => Some("sendkey kp_enter\n"),
+        HMP_NUM_LOCK => Some("sendkey num_lock\n"),
+        HMP_KP_8 => Some("sendkey kp_8\n"),
         HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
         HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
         HMP_PGUP => Some("sendkey pgup\n"),

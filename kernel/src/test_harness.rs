@@ -28732,9 +28732,26 @@ fn run_ps2_keyboard() -> ! {
         (0x04, 0x00, 1, false),
         (0x39, 0x00, 0, true), // Caps Lock off again
         (0x39, 0x00, 0, false),
+        (0x5F, 0x00, 0, true), // keypad 7 (0x47)
+        (0x5F, 0x00, 0, false),
+        (0x55, 0x00, 0, true), // keypad * (0x37)
+        (0x55, 0x00, 0, false),
+        (0x54, 0x00, 0, true), // keypad / (E0 35)
+        (0x54, 0x00, 0, false),
+        (0x58, 0x00, 0, true), // keypad Enter (E0 1C)
+        (0x58, 0x00, 0, false),
+        (0x53, 0x00, 2, true), // Num Lock off (the press carries it)
+        (0x53, 0x00, 2, false),
+        (0x60, 0x00, 2, true), // keypad 8, Num Lock off: Up
+        (0x60, 0x00, 2, false),
+        (0x53, 0x00, 0, true), // Num Lock on again
+        (0x53, 0x00, 0, false),
     ];
+    // The usages the keypad presses act as (after `effective_usage`), from
+    // keypad 7 on: 7, *, /, Enter, Num Lock, Up (keypad 8), Num Lock.
+    const KEYPAD_ACTS_AS: &[u8] = &[0x5F, 0x55, 0x54, 0x58, 0x53, 0x52, 0x53];
     // The text the presses after Enter type, through the shared US keymap.
-    const TEXT_AFTER_ENTER: &[u8] = b":\"A";
+    const TEXT_AFTER_ENTER: &[u8] = b":\"A7*/";
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
 
     serial_println!("PS2KBD ready");
@@ -28817,12 +28834,26 @@ fn run_ps2_keyboard() -> ! {
     if text != TEXT_AFTER_ENTER {
         fail_with_hex("reason=ps2_keyboard_text_mismatch len", text.len() as u64);
     }
+    let keypad = got.iter().position(|e| e.code == 0x5F).unwrap_or(got.len());
+    let acts_as: Vec<u8> = got[keypad..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .map(|e| {
+            crate::drivers::keymap_us_logic::effective_usage(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    if acts_as != KEYPAD_ACTS_AS {
+        fail_with_hex(
+            "reason=ps2_keyboard_keypad_mismatch len",
+            acts_as.len() as u64,
+        );
+    }
     // The hook never polls: every byte came through IRQ1 on the I/O APIC.
     if counters.irqs == 0 || counters.polled != 0 || counters.irq_bytes != counters.bytes {
         fail_with_hex("reason=ps2_keyboard_not_via_irq1 irqs", counters.irqs);
     }
     pass(
-        "ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause text=colon,quote,caps",
+        "ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause text=colon,quote,caps keypad=digits,ops,enter,numlock_nav",
     );
 }
 

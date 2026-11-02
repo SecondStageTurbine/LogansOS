@@ -4,7 +4,7 @@
 //! WM-blind property of ADR-074 is kept. Events are `INPUT_EVENT_V1`
 //! (8 bytes): kind 1 = key, flags bit 0 = pressed, a USB HID usage code
 //! (Keyboard/Keypad page), the modifier bits (bit 1/5 = left/right shift) and
-//! the lock state (Caps Lock, bit 0 of `y`).
+//! the lock state (`y`: Caps Lock bit 0, Num Lock OFF bit 1).
 
 /// A key the Home view acts on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -28,9 +28,10 @@ pub fn decode(event: [u8; 8]) -> Option<Key> {
     let code = u16::from_le_bytes([event[2], event[3]]);
     let modifiers = u16::from_le_bytes([event[4], event[5]]) as u8;
     let locks = u16::from_le_bytes([event[6], event[7]]) as u8;
-    let usage = u8::try_from(code).ok()?;
+    // A keypad key in navigation mode (Num Lock off) acts as its arrow.
+    let usage = keymap::effective_usage(u8::try_from(code).ok()?, modifiers, locks);
     Some(match usage {
-        0x28 => Key::Enter,
+        0x28 | keymap::USAGE_KP_ENTER => Key::Enter,
         0x29 => Key::Escape,
         0x2a => Key::Backspace,
         0x2b => Key::Tab,

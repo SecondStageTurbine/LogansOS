@@ -218,8 +218,8 @@ mod showcase_s2_tests;
 #[cfg(test)]
 mod showcase_tests {
     use super::showcase_logic::{
-        OutputRoute, glyph_rows, input_event_to_ascii, keycode_to_ascii, output_route,
-        wants_root_lens,
+        OutputRoute, ScrollKey, glyph_rows, input_event_to_ascii, input_event_to_scroll,
+        keycode_to_ascii, output_route, wants_root_lens,
     };
 
     /// DS-1c: the Lens blooms only for the exact supported forms (Chad DS-1c
@@ -295,6 +295,23 @@ mod showcase_tests {
             input_event_to_ascii([1, 1, 0x1d, 0, 0x20, 0, 1, 0]),
             Some(b'z')
         );
+
+        // Keypad: digits with Num Lock on, keypad Enter as Enter; with Num
+        // Lock off keypad 3 types nothing and scrolls a page down.
+        assert_eq!(
+            input_event_to_ascii([1, 1, 0x62, 0, 0, 0, 0, 0]),
+            Some(b'0')
+        );
+        assert_eq!(
+            input_event_to_ascii([1, 1, 0x58, 0, 0, 0, 0, 0]),
+            Some(b'\n')
+        );
+        assert_eq!(input_event_to_ascii([1, 1, 0x5b, 0, 0, 0, 2, 0]), None);
+        assert_eq!(
+            input_event_to_scroll([1, 1, 0x5b, 0, 0, 0, 2, 0]),
+            Some(ScrollKey::PageDown)
+        );
+        assert_eq!(input_event_to_scroll([1, 1, 0x5b, 0, 0, 0, 0, 0]), None);
 
         let pressed_a = [1, 1, 0x04, 0, 0, 0, 0, 0];
         let released_a = [1, 0, 0x04, 0, 0, 0, 0, 0];
