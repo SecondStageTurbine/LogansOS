@@ -429,6 +429,23 @@ mod tests {
         );
     }
 
+    /// The PM's #42 note: REP has a cap. vte saturates every parameter at
+    /// 65535 (`third_party/vte/src/lib.rs`, the decimal accumulation), so
+    /// `CSI 99999999 b` is `CSI 65535 b`: at most 65535 repeats per sequence.
+    #[test]
+    fn rep_is_capped_at_65535() {
+        let mut huge = term();
+        huge.process(b"z\x1b[99999999b");
+        let mut capped = term();
+        capped.process(b"z\x1b[65535b");
+        assert_eq!(rows(&huge), rows(&capped));
+        assert_eq!(
+            huge.screen().cursor_position(),
+            capped.screen().cursor_position()
+        );
+        assert_eq!(huge.screen().cursor_position(), (2, 6));
+    }
+
     #[test]
     fn vt_and_ff_are_line_feeds() {
         check(
