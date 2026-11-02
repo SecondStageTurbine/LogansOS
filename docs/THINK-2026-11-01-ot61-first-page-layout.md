@@ -187,6 +187,13 @@ WebDriver and HTTP **types**, not by anything layout does. The likely fix is to 
 (a target-cfg edge in the two traits crates, or `force-inprocess` plus stubs), not to port `mio`. Porting `mio` would
 be the growing compat island ADR-078's A4 rule exists to stop.
 
+**Second pass**, with the fixes we already have applied: `getrandom`'s custom backend (`--cfg getrandom_backend="custom"`,
+and the 0.2 `custom` feature), `ipc-channel`'s `force-inprocess`, `libz-sys`'s `static` feature, and #4's and
+#25's patched `stylo` and `wr_glyph_rasterizer`. `getrandom`, `stylo` and `wr_glyph_rasterizer` then build.
+The same five still fail: `mio`, `socket2`, `libz-sys` (`off_t` is still missing from our `libc`), `servo-allocator`
+and `surfman`. Everything above them still waits, so L0's next step is those five stubs or cfg edges. Only after
+them does the probe reach `tokio`, `ipc-channel` and the `servo-*` crates.
+
 `harfbuzz-sys` (C++) built for our target unchanged. `freetype-sys` and `fontsan` sit behind `libz-sys`, and
 `tokio`, `ipc-channel` and the `servo-*` traits crates sit behind `mio`/`socket2`/`getrandom`, so they are the
 probe's second layer. **None of the first layer needs a layout or DOM change**: each is a provider seam (entropy,
