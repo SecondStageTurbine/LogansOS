@@ -17,7 +17,9 @@ packaged disks have booted to the desktop session's first screen in CI.
    the 64-bit Windows installers, download the newest `qemu-w64-setup-….exe`
    and run it. Keep the default folder, `C:\Program Files\qemu`, so the start
    file can find it. (QEMU isn't in the download: its licence is GPL, so it is
-   installed from its own site.)
+   installed from its own site.) QEMU from MSYS2 also works
+   (`pacman -S mingw-w64-ucrt-x86_64-qemu`): the start file looks in
+   `C:\msys64\ucrt64\bin` (and `mingw64`, `clang64`) too.
 2. **Download and unzip.** On the release page, download
    `LogansOS-preview-<version>.zip` (around half a gigabyte). Right-click it and
    choose **Extract All**.

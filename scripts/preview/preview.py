@@ -108,6 +108,13 @@ title LogansOS preview
 
 set "QEMU=%ProgramFiles%\qemu\qemu-system-x86_64.exe"
 if exist "%QEMU%" goto found
+rem MSYS2 installs (pacman -S mingw-w64-ucrt-x86_64-qemu, or the mingw64/clang64 variants).
+for %%D in (ucrt64 mingw64 clang64) do (
+  if exist "C:\msys64\%%D\bin\qemu-system-x86_64.exe" (
+    set "QEMU=C:\msys64\%%D\bin\qemu-system-x86_64.exe"
+    goto found
+  )
+)
 set "QEMU="
 for %%Q in (qemu-system-x86_64.exe) do set "QEMU=%%~$PATH:Q"
 if defined QEMU goto found
