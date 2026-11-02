@@ -48,7 +48,7 @@ diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor
 diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-fonts-0.7.0/platform/neoplutarch/font.rs patched/servo-fonts-0.7.0/platform/neoplutarch/font.rs
 --- vendor/servo-fonts-0.7.0/platform/neoplutarch/font.rs
 +++ patched/servo-fonts-0.7.0/platform/neoplutarch/font.rs
-@@ -0,0 +1,329 @@
+@@ -0,0 +1,337 @@
 +// SPDX-License-Identifier: MPL-2.0
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -64,6 +64,14 @@ diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor
 +//! does. Not ported: FreeType's legacy `kern` table lookup (HarfBuzz applies
 +//! GPOS kerning when shaping) and the synthetic-bold widening of advances (the
 +//! flag still reaches WebRender).
++//!
++//! Hinting: advances here are unhinted, which is what the FreeType backend
++//! gives with `FT_LOAD_NO_HINTING`, Servo's default on Android and OHOS
++//! (`FALLBACK_HINTING_STYLE = None` there). On desktop Linux it loads glyphs with
++//! light hinting, which can round advances to whole pixels, so text there can
++//! measure a little differently from here. That is a known, deliberate
++//! difference: unhinted values are exactly the font's `hmtx` scaled, which is
++//! what L1's hand-derived oracle checks.
 +
 +use app_units::Au;
 +use euclid::default::{Point2D, Rect, Size2D};

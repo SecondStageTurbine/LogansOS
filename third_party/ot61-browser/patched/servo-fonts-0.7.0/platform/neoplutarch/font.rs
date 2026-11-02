@@ -13,6 +13,14 @@
 //! does. Not ported: FreeType's legacy `kern` table lookup (HarfBuzz applies
 //! GPOS kerning when shaping) and the synthetic-bold widening of advances (the
 //! flag still reaches WebRender).
+//!
+//! Hinting: advances here are unhinted, which is what the FreeType backend
+//! gives with `FT_LOAD_NO_HINTING`, Servo's default on Android and OHOS
+//! (`FALLBACK_HINTING_STYLE = None` there). On desktop Linux it loads glyphs with
+//! light hinting, which can round advances to whole pixels, so text there can
+//! measure a little differently from here. That is a known, deliberate
+//! difference: unhinted values are exactly the font's `hmtx` scaled, which is
+//! what L1's hand-derived oracle checks.
 
 use app_units::Au;
 use euclid::default::{Point2D, Rect, Size2D};
