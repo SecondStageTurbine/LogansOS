@@ -526,16 +526,20 @@ impl Scene {
         #[cfg(feature = "desktop-session-boot-test")]
         let started = drag_perf::now();
         let mut presented = 0u64;
-        if !damage.is_empty() {
-            presented += damage.w as u64 * damage.h as u64;
-            self.present(true, damage).map_err(|c| 100 + c)?;
-        }
-        for edge in edges {
-            let edge = edge.intersect(&screen);
-            if !edge.is_empty() {
-                presented += edge.w as u64 * edge.h as u64;
-                self.present(true, edge).map_err(|c| 100 + c)?;
+        // The sprite's and each edge's rect are composed on their own, then
+        // committed and presented once, as the box around what was composed
+        // (one present and fence per frame, not one per strip). The rest of
+        // that box in the output plane is what is already on screen.
+        let mut written = Rect::default();
+        for rect in core::iter::once(damage).chain(edges) {
+            let rect = rect.intersect(&screen);
+            if !rect.is_empty() {
+                presented += rect.w as u64 * rect.h as u64;
+                written = written.union(&self.compose(true, rect).map_err(|c| 100 + c)?);
             }
+        }
+        if !written.is_empty() {
+            self.commit_present(written).map_err(|c| 100 + c)?;
         }
         #[cfg(feature = "desktop-session-boot-test")]
         if drag_frame {
@@ -739,16 +743,33 @@ impl Scene {
         debug_assert!(self.home.is_none(), "a frame change painted over Home");
         let stride = self.geo.screen.w;
         let mut damage = Rect::default();
-        for region in old.into_iter().chain(self.reach()) {
+        // F7 (drag smoothness): each pixel is painted once. The new reach
+        // first, then whatever of the old reach (and of the new reach's
+        // second rect) lies outside what is already painted; a short move's
+        // old and new frames overlap almost entirely. Painting is per pixel
+        // and deterministic, so the base is the same as painting all four.
+        let mut painted: alloc::vec::Vec<Rect> = alloc::vec::Vec::new();
+        for region in self.reach().into_iter().chain(old) {
             if region.is_empty() {
                 continue;
             }
-            self.chrome.paint_rect(
-                self.base.slice_mut(),
-                stride,
-                self.focused,
-                atrium_rect(region),
-            );
+            let mut pieces = alloc::vec![region];
+            for done in &painted {
+                pieces = pieces
+                    .iter()
+                    .flat_map(|piece| piece.minus(done))
+                    .filter(|piece| !piece.is_empty())
+                    .collect();
+            }
+            for piece in &pieces {
+                self.chrome.paint_rect(
+                    self.base.slice_mut(),
+                    stride,
+                    self.focused,
+                    atrium_rect(*piece),
+                );
+            }
+            painted.push(region);
             damage = damage.union(&region);
         }
         damage
