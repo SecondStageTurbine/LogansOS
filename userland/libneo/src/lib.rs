@@ -16,9 +16,20 @@
 //!     RFLAGS). All other GP regs preserved by the kernel's syscall path.
 
 #![no_std]
-#![feature(alloc_error_handler)]
+// The handler exists only when libneo owns the allocator; with the host-only
+// `image-decode` feature std owns it, so gate the unstable feature too (an
+// unused `feature` gate is a warning, and the close gate denies warnings).
+#![cfg_attr(not(feature = "image-decode"), feature(alloc_error_handler))]
 
 extern crate alloc;
+
+// Lane 2b: the image-decode implementation is std-only, so its `image-decode`
+// feature must never be enabled for the OS target. The re-export below is the
+// public API; the compile_error keeps a mistaken OS build loud.
+#[cfg(all(feature = "image-decode", target_os = "none"))]
+compile_error!(
+    "libneo's `image-decode` feature is host-only: the vendored `png` 0.18 decoder requires std"
+);
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
@@ -44,6 +55,11 @@ pub mod civil;
 pub mod grant_store;
 /// OT-61 C2.1: the `SYS_HANDLE_INFO` record (pure).
 pub mod handle_info;
+/// Lane 2b: host-only image decode (`png` + `zune-jpeg`), bytes in, RGBA out.
+/// The implementation is the `neo-image-decode` crate; this re-export is the
+/// libneo-level API the OS's future image consumers call.
+#[cfg(feature = "image-decode")]
+pub use neo_image_decode as image_decode;
 /// OT-87 R4.4: the installer's disk list and run (kernel `installer`).
 pub mod install;
 /// OT-87 R4.4: the installer's ABI and text (pure).
@@ -919,6 +935,10 @@ pub mod process_rights {
 
 pub mod net_dial_rights {
     pub const DIAL: u8 = 1 << 0;
+    /// OT-61 rung 5b: the cap may reach non-public addresses (root caps carry
+    /// it on a `net-dial-public-only` kernel; a cap derived without it dials
+    /// only public addresses).
+    pub const NON_PUBLIC: u8 = 1 << 1;
 }
 
 /// GPU P1 Slice 6 semantic rights.  These mirror the kernel's typed
@@ -2697,6 +2717,11 @@ unsafe impl GlobalAlloc for LibneoHeap {
     }
 }
 
+// With `image-decode` (a host-only feature) std is linked and owns the global
+// allocator; the kernel-backed `LibneoHeap` would issue a `sys_map_region` at
+// the first host allocation and fail. Every OS-target build has the feature
+// off, so this is the same allocator as before.
+#[cfg(not(feature = "image-decode"))]
 #[global_allocator]
 static HEAP: LibneoHeap = LibneoHeap::new();
 
@@ -2704,6 +2729,7 @@ static HEAP: LibneoHeap = LibneoHeap::new();
 /// allocation cannot be satisfied; we surface the failure on stderr (well,
 /// stdout — Phase 1.5b's only fd) and exit. Userspace `Vec::push` and
 /// friends call this on OOM.
+#[cfg(not(feature = "image-decode"))]
 #[alloc_error_handler]
 fn on_alloc_error(layout: Layout) -> ! {
     const MSG: &[u8] = b"[ libneo ] allocation failed (OOM); exiting\n";

@@ -228,9 +228,13 @@ fn clean(kind: Kind, keep: Option<ProcessId>) {
 }
 
 /// K4 and K5. Everything they need is read and mapped first, while the other
-/// CPUs still run; from the STOP IPI on, interrupts stay off on this CPU
-/// until K7, nothing is allocated or mapped, and nothing waits on a lock a
-/// parked CPU could hold.
+/// CPUs still run; then TLB shootdowns are closed for good (CP-64), and from
+/// there interrupts stay off on this CPU until K7, nothing is allocated or
+/// mapped, and no shared lock is taken (the UART is written lock-free, the
+/// power plan read from its copy). With holdouts (CPUs that took neither the
+/// STOP IPI nor the NMI) K5 is skipped: its masking assumes one CPU at the
+/// I/O APIC and PCI config ports, and K7's power-off or reset ends every CPU
+/// anyway (`cpu_stop`, Holdouts).
 #[cfg(feature = "power-stop-cpus")]
 fn stop_world() {
     use crate::arch::x86_64::cpu_stop;
@@ -242,30 +246,90 @@ fn stop_world() {
     let ioapics =
         super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
     crate::serial_println!("[ power ] K4 start");
-    x86_64::instructions::interrupts::disable();
+    // `ot90_stop_shootdown`: start the AP's sender and let it run, so one is
+    // likely in flight at the close (interrupts are still on here).
+    #[cfg(feature = "neo-test-ot90-stop-shootdown")]
+    {
+        use core::sync::atomic::Ordering;
+        crate::test_harness::OT90_STORM_GO.store(true, Ordering::Release);
+        let start = ticks();
+        while crate::test_harness::OT90_STORM_SENT.load(Ordering::Acquire) < 50
+            && ticks().saturating_sub(start) < 500
+        {
+            core::hint::spin_loop();
+        }
+        crate::serial_println!(
+            "[ power ] test: storm sent={} before the close",
+            crate::test_harness::OT90_STORM_SENT.load(Ordering::Acquire)
+        );
+    }
+    // Waits out any shootdown in flight (acknowledging it), then IF=0 for good.
+    crate::mm::tlb_shootdown::close_for_stop();
+    #[cfg(not(feature = "neo-test-ot90-stop-wedged"))]
     let report = cpu_stop::stop_others(|us, done| super::power::spin_us(timer.as_ref(), us, done));
-    crate::drivers::console::serial::enter_stopped_world(report.parked_by_nmi != 0);
+    // `ot90_stop_wedged`: a PM timer that never advances; only `done` (and
+    // with it K4's poll count) can end a wait.
+    #[cfg(feature = "neo-test-ot90-stop-wedged")]
+    let report = {
+        let _ = timer;
+        cpu_stop::stop_others(|_, done| {
+            loop {
+                if done() {
+                    return true;
+                }
+            }
+        })
+    };
+    crate::drivers::console::serial::enter_stopped_world();
     crate::serial_println!(
-        "[ power ] K4 targets={:#x} parked_by_ipi={:#x} parked_by_nmi={:#x} holdouts={:#x}",
+        "[ power ] K4 targets={:#x} parked_by_ipi={:#x} parked_by_nmi={:#x} holdouts={:#x} shootdowns=closed",
         report.targets,
         report.parked_by_ipi,
         report.parked_by_nmi,
         report.holdouts
     );
+    if report.holdouts != 0 {
+        super::power::note_holdouts();
+        crate::serial_println!(
+            "[ power ] K5 skipped: holdouts={:#x} still run; straight to K7",
+            report.holdouts
+        );
+        return;
+    }
     #[cfg(feature = "lapic-timer")]
     crate::arch::x86_64::lapic_timer::disarm_for_shutdown();
     let masked = ioapics.map(|plan| plan.mask_all());
+    let pci = crate::drivers::pci::mask_interrupts_for_stop();
     crate::serial_println!(
-        "[ power ] K5 lapic_timer={} ioapic_entries_masked={}",
+        "[ power ] K5 lapic_timer={} ioapic={} pci_functions={} msi_disabled={} msix_masked={} msi_left_on={}",
         if cfg!(feature = "lapic-timer") {
             "disarmed"
         } else {
             "none"
         },
-        masked.map_or(-1, |n| n as i64)
+        IoapicMasked(masked),
+        pci.functions,
+        pci.msi_disabled,
+        pci.msix_masked,
+        pci.left_on
     );
     #[cfg(feature = "power-quiesce")]
     quiesce.run(&|us, done| super::power::spin_us(timer.as_ref(), us, done));
+}
+
+/// K5's I/O APIC part of the log line: `masked=N`, or `no-madt` when the
+/// firmware has no MADT (so there was nothing to mask by).
+#[cfg(feature = "power-stop-cpus")]
+struct IoapicMasked(Option<u32>);
+
+#[cfg(feature = "power-stop-cpus")]
+impl core::fmt::Display for IoapicMasked {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(n) => write!(f, "masked={n}"),
+            None => write!(f, "no-madt"),
+        }
+    }
 }
 
 /// K1: terminate every user process but `keep`, reaping as they go, for at

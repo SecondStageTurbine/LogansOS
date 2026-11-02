@@ -659,6 +659,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fetch-proto"
+version = "0.0.1"
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -691,7 +695,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
 dependencies = [
  "crc32fast",
- "miniz_oxide 0.9.1",
+ "miniz_oxide 0.9.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "zlib-rs",
 ]
 
@@ -706,6 +710,10 @@ name = "foldhash"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
+
+[[package]]
+name = "fpu-logic-tests"
+version = "0.0.1"
 
 [[package]]
 name = "frame-guard-logic-tests"
@@ -895,6 +903,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 
 [[package]]
+name = "image-decode-fuzz"
+version = "0.0.1"
+dependencies = [
+ "miniz_oxide 0.9.1",
+ "neo-image-decode",
+]
+
+[[package]]
+name = "image-decode-logic-tests"
+version = "0.0.1"
+dependencies = [
+ "neo-image-decode",
+ "sha2",
+]
+
+[[package]]
 name = "imagesize"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1014,6 +1038,7 @@ version = "0.0.1"
 dependencies = [
  "getrandom 0.2.17",
  "linked_list_allocator",
+ "neo-image-decode",
  "rustls",
  "rustls-rustcrypto",
  "spin",
@@ -1082,6 +1107,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b947ae49db0d222b1dbc6b113ce7248a3fc3a6ca21b696717bfc000ba4484d8"
 
 [[package]]
+name = "miniz-oxide-logic-tests"
+version = "0.0.1"
+dependencies = [
+ "miniz_oxide 0.9.1",
+]
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1089,6 +1121,13 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+dependencies = [
+ "adler2",
 ]
 
 [[package]]
@@ -1142,10 +1181,20 @@ name = "neo-extract-log"
 version = "0.0.1"
 
 [[package]]
+name = "neo-image-decode"
+version = "0.0.1"
+dependencies = [
+ "png 0.18.1",
+ "zune-core",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "neo-init"
 version = "0.0.1"
 dependencies = [
  "action-log-core",
+ "fetch-proto",
  "libneo",
  "login-core",
  "neo-atrium",
@@ -1169,6 +1218,13 @@ name = "neo-std-pal"
 version = "0.0.1"
 dependencies = [
  "linked_list_allocator",
+]
+
+[[package]]
+name = "neo-term-core"
+version = "0.0.1"
+dependencies = [
+ "vt100",
 ]
 
 [[package]]
@@ -1388,6 +1444,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "pipe-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "pkcs1"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1417,6 +1477,16 @@ dependencies = [
  "der",
  "pkcs5",
  "spki",
+]
+
+[[package]]
+name = "png"
+version = "0.18.1"
+dependencies = [
+ "bitflags 2.11.1",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
 ]
 
 [[package]]
@@ -2062,7 +2132,7 @@ dependencies = [
  "bytemuck",
  "cfg-if",
  "log",
- "png",
+ "png 0.18.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "tiny-skia-path",
 ]
 
@@ -2116,6 +2186,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
+name = "unicode-width"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca718471876992059f251e33aafc334346ada08042b7661dd1fe313a9bced557"
+
+[[package]]
 name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2136,6 +2212,10 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "usb-msc-logic-tests"
+version = "0.0.1"
 
 [[package]]
 name = "usvg"
@@ -2274,6 +2354,23 @@ name = "volatile"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f05a5337d258c4ef40d920ffcc5a729278951d57e6596f8b62ca7d4827613e77"
+
+[[package]]
+name = "vt100"
+version = "0.18.1"
+dependencies = [
+ "itoa",
+ "unicode-width",
+ "vte",
+]
+
+[[package]]
+name = "vte"
+version = "0.15.0"
+dependencies = [
+ "arrayvec",
+ "memchr",
+]
 
 [[package]]
 name = "wasi"
@@ -2623,6 +2720,7 @@ dependencies = [
  "blake3",
  "fatfs",
  "settings-core",
+ "sha2",
 ]
 
 [[package]]
@@ -2676,3 +2774,14 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zune-core"
+version = "0.5.3"
+
+[[package]]
+name = "zune-jpeg"
+version = "0.5.16-rc3"
+dependencies = [
+ "zune-core",
+]

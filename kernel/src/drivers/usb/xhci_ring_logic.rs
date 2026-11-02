@@ -44,11 +44,11 @@ pub enum TrbType {
     // `endpoint_recovery` builders (gated `mt7601u` OR `test`), so gate the
     // variants identically to avoid a never-constructed warning in a non-WiFi
     // kernel under `-D warnings`.
-    #[cfg(any(feature = "mt7601u", test))]
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage", test))]
     ResetEndpointCmd = 14,
-    #[cfg(any(feature = "mt7601u", test))]
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage", test))]
     StopEndpointCmd = 15,
-    #[cfg(any(feature = "mt7601u", test))]
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage", test))]
     SetTrDequeuePointerCmd = 16,
     NoOpCmd = 23,
     TransferEvent = 32,
@@ -148,10 +148,10 @@ pub fn control_for(ty: TrbType, cycle: bool, extra_flags: u32) -> u32 {
 // Gated to `mt7601u` (the only kernel consumer) OR `test` (the host byte-oracle
 // in tools/ai-ops-tests), so a non-WiFi kernel carries none of it — no dead code
 // under the default-features `-D warnings` clippy gate.
-#[cfg(any(feature = "mt7601u", test))]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage", test))]
 pub use endpoint_recovery::*;
 
-#[cfg(any(feature = "mt7601u", test))]
+#[cfg(any(feature = "mt7601u", feature = "usb-storage", test))]
 mod endpoint_recovery {
     use super::{Trb, TrbType, control_for};
 

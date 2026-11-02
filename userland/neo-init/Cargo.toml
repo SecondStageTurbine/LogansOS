@@ -26,6 +26,9 @@ settings-core = { path = "../settings-core", optional = true }
 action-log-core = { path = "../action-log-core", optional = true }
 # Desktop S3 (feature `desktop-glass`): the glass chrome scene.
 neo-atrium = { path = "../neo-atrium", optional = true }
+# OT-61 rung 5c: the fetch broker's wire format (the content side of the
+# fetch_broker scenario).
+fetch-proto = { path = "../fetch-proto", optional = true }
 
 [features]
 default = []
@@ -281,6 +284,8 @@ socket-teardown-test = []
 exit-codes-test = []
 # Dexter #187 item 3a: the mount_authority scenario.
 mount-authority-test = []
+# The user_copy_fault scenario (user-copy-fixup).
+user-copy-fault-test = ["libneo/neo-test"]
 # OT-66 K1a: hand Arthur and the shell a derived RootDirCap at spawn (for a
 # `cap-rooted-open` kernel).
 cap-rooted-open = ["libneo/cap-rooted-open"]
@@ -378,4 +383,10 @@ phase4-socket-udp-loopback = []
 phase4-slaac-udp-ipv6-loopback = []
 net-dial-cap = []
 phase4-https-fetch = ["net-dial-cap"]
+# OT-61 rung 5b: phase4's flow plus a NON_PUBLIC-narrowed cap that must not
+# reach the loopback fixture (scenario net_dial_public_only).
+net-dial-public-only = ["phase4-https-fetch"]
+# OT-61 rung 5c: neo-init plays the content process of the fetch broker
+# (scenario fetch_broker); the worker serves the HTTPS fixture.
+fetch-broker = ["net-dial-cap", "dep:fetch-proto"]
 net-dial-cap-kill-switch = []

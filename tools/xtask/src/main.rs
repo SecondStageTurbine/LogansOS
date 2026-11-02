@@ -68,6 +68,8 @@ mod install_bundle;
 #[path = "../../../kernel/src/install_bundle_logic.rs"]
 #[allow(dead_code)]
 mod install_bundle_logic;
+/// OT-61: vendored crates still match what crates.io published.
+mod vendor_verify;
 
 #[cfg(test)]
 mod build_id_tests;
@@ -1702,6 +1704,13 @@ fn scenario_timeout(name: &str) -> Duration {
         // OT-90 P2: two boots in one QEMU process, then S5.
         "ot90_restart_second_boot" | "ot90_restart_fallback_i8042" => Duration::from_secs(300),
         "accel_residency_daemon" => Duration::from_secs(540),
+        // NFS-W1: a 9 MiB write, then four more full mounts that each
+        // re-validate the volume (the 9 MiB file's content hash included).
+        // GitHub-hosted 4-vCPU TCG runners: 158.2 s at a0ae0f7 (run
+        // 41230352536), then 180 s timeouts on every attempt at 76a1f03
+        // (run 41244601019) with the same kernel code, each stopped after
+        // step 3. Headroom only; the oracle is unchanged.
+        "neofs_large_write" => Duration::from_secs(300),
         // DM-1: every view/Lens/focus change is a paced transition, each
         // frame a full TCG recompose of its rects (~0.1 s); desktop_motion_boot
         // ran 147 s of the old 180 s locally. Headroom, not a hang budget.
@@ -1926,6 +1935,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // a budgeted sibling's OOM aborts only itself (ADR-078 §3, C2).
         name: "servo_host_smoke",
         feature: "neo-test-servo-host-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C2.4: upstream Stylo (the vendored closure) styles an
+        // html5ever document on-target, checked against hand-derived values.
+        name: "stylo_smoke",
+        feature: "neo-test-stylo-smoke",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -2365,6 +2383,18 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "xsave_ymm_context_switch",
         feature: "neo-test-xsave-ymm-context-switch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The preview's WHPX boot #GP: CPUID.(0DH,0):EBX understates the
+        // XSAVE area (576 with AVX enabled). The area must be sized from the
+        // per-component leaves. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ebx-understated-control
+        // (EBX trusted, as before: the first tick's iretq takes a #GP).
+        name: "xsave_ebx_understated",
+        feature: "neo-test-xsave-ebx-understated",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -4303,6 +4333,26 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 5b: phase4's HTTPS fetch on a net-dial-public-only
+        // kernel, plus a cap narrowed without NON_PUBLIC that must not reach
+        // the loopback fixture after the kernel's own resolution.
+        name: "net_dial_public_only",
+        feature: "neo-test-net-dial-public-only",
+        user_feature: Some("net-dial-public-only"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 5c: the fetch broker serves neo-init (as content) over a
+        // channel: HTTPS with TLS in user space, policy refusals, and a
+        // loopback-resolving name refused by the kernel (rung 5b).
+        name: "fetch_broker",
+        feature: "neo-test-fetch-broker",
+        user_feature: Some("fetch-broker"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "net_dial_cap_kill_switch",
         feature: "neo-test-net-dial-cap-kill-switch",
         user_feature: Some("net-dial-cap-kill-switch"),
@@ -4320,6 +4370,19 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "mount_authority",
         feature: "neo-test-mount-authority",
         user_feature: Some("mount-authority-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // user-copy-fixup: syscalls whose user buffer is unmapped, crosses
+        // into an unmapped page, or is read-only return EFAULT, commit
+        // nothing (SYS_READ's offset, a join), and the kernel keeps running;
+        // futex, IPC and TLS legs too (CP-99). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-user-copy-fault-control (the
+        // page-fault shim's recovery off: the first fault halts).
+        name: "user_copy_fault",
+        feature: "neo-test-user-copy-fault",
+        user_feature: Some("user-copy-fault-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -4488,6 +4551,33 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "usb_enumerate",
         feature: "neo-test-usb-enumerate",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L3u-2: a usb-storage stick with the FAT32 fixture binds, mounts and
+    // reads back; `usb_storage_off` is the kill-switch (it enumerates and
+    // stays unclaimed).
+    TestScenario {
+        name: "usb_storage_read",
+        feature: "neo-test-usb-storage-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_storage_off",
+        feature: "neo-test-usb-storage-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // #30: the stick hot-plugged, bound, read, then pulled with a reader
+    // running: every read after (and the one in flight) is NoDevice and the
+    // block device leaves the registry.
+    TestScenario {
+        name: "usb_storage_unplug",
+        feature: "neo-test-usb-storage-unplug",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -5832,6 +5922,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // Review #6: K4 while every AP storms TLB shootdowns (CP-64); and a
+    // wedged AP (no STOP, no NMI, holding the UART lock) with a frozen PM
+    // timer, which K4 reports as a holdout before S5.
+    TestScenario {
+        name: "ot90_stop_shootdown",
+        feature: "neo-test-ot90-stop-shootdown",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_wedged",
+        feature: "neo-test-ot90-stop-wedged",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
     // then S5.
     TestScenario {
@@ -5869,6 +5976,7 @@ fn main() -> ExitCode {
     let result = match cmd {
         "build" => cmd_build(&args[1..]),
         "iso" => cmd_iso(&args[1..]),
+        "vendor-verify" => cmd_vendor_verify(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "run-headless" => cmd_run_headless(&args[1..]),
         "run-vnc" => cmd_run_vnc(&args[1..]),
@@ -6035,6 +6143,9 @@ fn print_help() {
     println!("COMMANDS:");
     println!("    build         compile the kernel for {KERNEL_TARGET}");
     println!("    iso           build the kernel and produce {ISO_OUTPUT_REL}");
+    println!(
+        "    vendor-verify      check every third_party/*/vendor crate against its .cargo-checksum.json"
+    );
     println!(
         "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
     );
@@ -6339,7 +6450,7 @@ const FXSAVE_KERNEL_SCENARIOS: &[&str] = &["servo_closure_smoke"];
 
 /// The kernel's default features less `inference-preemptible` (see
 /// `kernel/Cargo.toml`'s `default`).
-const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim"];
+const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim", "user-copy-fixup"];
 
 fn build_test_kernel(scenario: TestScenario, mode: ScenarioBundleMode) -> Result<(), String> {
     let mut features = vec!["neo-test", scenario.feature];
@@ -6477,6 +6588,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "std_sealed" | "std_sealed_ambient" => &["std-real-sealed"],
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
+        "stylo_smoke" => &[STYLO_SMOKE_BIN],
         _ => &[],
     }
 }
@@ -6511,6 +6623,35 @@ const LOGIN_CUT_SCENARIO: &str = "login_cut_steps";
 static STAGE_LOGIN_CUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The step module's bytes as staged; each boot rewrites the four digits.
 const LOGIN_CUT_MODULE: &[u8] = b"LOGINCUT step=0000\n";
+
+/// OT-61 rung 5c: the fetch broker, built with its fixture allowance and
+/// staged as `/modules/neo-fetch-broker`, only for `fetch_broker`.
+static STAGE_FETCH_BROKER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+const FETCH_BROKER_SCENARIO: &str = "fetch_broker";
+const FETCH_BROKER_DIR: &str = "userland/fetch-broker";
+
+fn stage_fetch_broker() -> bool {
+    STAGE_FETCH_BROKER.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn fetch_broker_path() -> PathBuf {
+    fetch_broker_bin_path("fetch-broker")
+}
+
+/// The scenario's content process (#29 review item 1), from the same crate.
+fn fetch_content_path() -> PathBuf {
+    fetch_broker_bin_path("fetch-content")
+}
+
+fn fetch_broker_bin_path(bin: &str) -> PathBuf {
+    workspace_root()
+        .join(FETCH_BROKER_DIR)
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(bin)
+}
 
 fn set_fault_probe_stage(bin: Option<&'static str>) {
     *FAULT_PROBE_STAGE.lock().expect("fault probe stage lock") = bin;
@@ -6751,6 +6892,10 @@ fn build_user_for_scenario(scenario: TestScenario) -> Result<(), String> {
     // Build the real-std ELFs + apply the overlay ONLY for their scenarios.
     set_stage_std_real_smoke(std_real_bins_for(scenario.name));
     set_fault_probe_stage(fault_probe_for(scenario.name));
+    STAGE_FETCH_BROKER.store(
+        scenario.name == FETCH_BROKER_SCENARIO,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     STAGE_LOGIN_CUT.store(
         scenario.name == LOGIN_CUT_SCENARIO
             || scenario.name == login_scenarios::SETTINGS_CUT_SCENARIO,
@@ -6978,6 +7123,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-66 L1 (Dexter #186 item 4): the no-cap record probe.
         Some("login-record-guard-test") => vec!["record-guard-probe"],
         Some("net-dial-cap-kill-switch") => vec!["phase4-https-fetch"],
+        // OT-61 rung 5b/5c: the same HTTPS fixture server.
+        Some("net-dial-public-only") => vec!["phase4-https-fetch"],
+        // #29 review item 5: only this scenario's worker gets libneo's
+        // pipelined-request TLS server.
+        Some("fetch-broker") => vec!["fetch-broker-fixture"],
         // OT-61 C1.1 (blocker D): the cap-compose scenario's no-cap child is the
         // guard-fault worker's prober role (thread_create → EPERM → exit 41);
         // neo-worker has no `threads-cap-compose` feature of its own.
@@ -7325,6 +7475,26 @@ fn build_user_members(
     // a 6.5 MB build-std=std test ELF; the default build is genuinely untouched.
     // OT-83: the ring-3 fault probe + the second-process probe, only for their
     // scenario.
+    if stage_fetch_broker() {
+        build_member(
+            "userspace fetch-broker",
+            "fetch-broker",
+            "fetch-broker",
+            FETCH_BROKER_DIR,
+            USER_TARGET,
+            &["fixture-loopback"],
+            false,
+        )?;
+        build_member(
+            "userspace fetch-content",
+            "fetch-broker",
+            "fetch-content",
+            FETCH_BROKER_DIR,
+            USER_TARGET,
+            &["fixture-loopback"],
+            false,
+        )?;
+    }
     if let Some(bin) = fault_probe_stage() {
         for b in [bin, "fault-probe-ok"] {
             build_member(
@@ -7398,6 +7568,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SERVO_CLOSURE_BIN) {
             build_servo_closure_smoke()?;
         }
+        if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
+            build_closure_smoke(STYLO_SMOKE_BIN, STYLO_SMOKE_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7407,25 +7580,38 @@ fn build_user_members(
 /// third-party closure; it links the same overlay-built std.
 const SERVO_CLOSURE_BIN: &str = "servo-closure-smoke";
 const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
+/// OT-61 C2.4: upstream Stylo over the same vendored tree, its own crate.
+const STYLO_SMOKE_BIN: &str = "stylo-smoke";
+const STYLO_SMOKE_DIR: &str = "userland/stylo-smoke";
 
-/// Build the closure smoke (the overlay must already be applied) and run the
+/// The std crates with their own target dir (the vendored-closure smokes),
+/// each built as a known target (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`).
+fn is_closure_smoke_dir(subdir: &str) -> bool {
+    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR
+}
+
+fn build_servo_closure_smoke() -> Result<(), String> {
+    build_closure_smoke(SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR)
+}
+
+/// Build a closure smoke (the overlay must already be applied) and run the
 /// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
 /// read of their own.
-fn build_servo_closure_smoke() -> Result<(), String> {
+fn build_closure_smoke(bin: &str, dir: &str) -> Result<(), String> {
     invalidate_stale_overlay_std_in(
-        &workspace_root().join(SERVO_CLOSURE_DIR).join("target"),
+        &workspace_root().join(dir).join("target"),
         "RUSTC_BOOTSTRAP_SYNTHETIC_TARGET=1",
     )?;
     build_member(
-        &format!("userspace {SERVO_CLOSURE_BIN}"),
-        SERVO_CLOSURE_BIN,
-        SERVO_CLOSURE_BIN,
-        SERVO_CLOSURE_DIR,
+        &format!("userspace {bin}"),
+        bin,
+        bin,
+        dir,
         "x86_64-unknown-neoplutarch",
         &[],
         false,
     )?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    let elf = std_real_bin_path(bin);
     verify_std_real_syscall_sites(&elf)?;
     verify_std_real_tcb_reads(&elf)
 }
@@ -7435,13 +7621,17 @@ fn build_servo_closure_smoke() -> Result<(), String> {
 /// builds the vendored closure (J.c., 2026-10-29: its build scripts and proc
 /// macros run on the CI runners).
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: cargo xtask ot61-closure-build".to_string());
-    }
+    // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
+    // Python, allowed by J.c. 2026-10-31 with no network fetch).
+    let (bin, dir) = match args {
+        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
+        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+    };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_servo_closure_smoke()?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    build_closure_smoke(bin, dir)?;
+    let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
         .len();
@@ -7866,9 +8056,14 @@ fn std_real_smoke_path() -> PathBuf {
 /// The built ELF of a staged std bin: the closure smoke from its own crate,
 /// every other one from `userland/std-real-smoke`.
 fn std_real_bin_path(bin: &str) -> PathBuf {
-    if bin == SERVO_CLOSURE_BIN {
+    if bin == SERVO_CLOSURE_BIN || bin == STYLO_SMOKE_BIN {
+        let dir = if bin == STYLO_SMOKE_BIN {
+            STYLO_SMOKE_DIR
+        } else {
+            SERVO_CLOSURE_DIR
+        };
         workspace_root()
-            .join(SERVO_CLOSURE_DIR)
+            .join(dir)
             .join("target/x86_64-unknown-neoplutarch/debug")
             .join(bin)
     } else {
@@ -7947,11 +8142,11 @@ fn build_member_at_opt_level(
         eprintln!("[xtask] building {label} with dev opt-level=2");
         cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "2");
     }
-    if subdir == "userland/std-real-smoke" || subdir == SERVO_CLOSURE_DIR {
+    if subdir == "userland/std-real-smoke" || is_closure_smoke_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if subdir == SERVO_CLOSURE_DIR {
+    if is_closure_smoke_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
         // list (JSON targets included), and then every crate that uses std
         // needs `#![feature(restricted_std)]`: the vendored closure would need
@@ -8052,6 +8247,37 @@ fn build_id_from(hash: &str, dirty: bool) -> String {
 }
 
 // === iso ===
+
+/// `cargo xtask vendor-verify`: every `third_party/*/vendor/<crate>/` still
+/// matches its `.cargo-checksum.json` (see `vendor_verify`).
+fn cmd_vendor_verify(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask vendor-verify".to_string());
+    }
+    let crates = vendor_verify::vendored_crates(&workspace_root());
+    let mut files = 0;
+    let mut bad = Vec::new();
+    for dir in &crates {
+        match vendor_verify::verify_crate(dir) {
+            Ok(n) => files += n,
+            Err(errs) => bad.extend(errs),
+        }
+    }
+    if !bad.is_empty() {
+        for b in &bad {
+            eprintln!("vendor-verify: {b}");
+        }
+        return Err(format!(
+            "{} vendored file(s) differ from what crates.io published (patch a crate under patched/, not vendor/)",
+            bad.len()
+        ));
+    }
+    println!(
+        "vendor-verify: {} crates, {files} files, all match their .cargo-checksum.json",
+        crates.len()
+    );
+    Ok(())
+}
 
 fn cmd_iso(args: &[String]) -> Result<(), String> {
     let (with_model, rest) = split_with_model(args)?;
@@ -8430,6 +8656,16 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
             &staging_modules.join("neo-fault-probe-ok"),
         )?;
     }
+    if stage_fetch_broker() {
+        copy_user_elf_into(
+            &fetch_broker_path(),
+            &staging_modules.join("neo-fetch-broker"),
+        )?;
+        copy_user_elf_into(
+            &fetch_content_path(),
+            &staging_modules.join("neo-fetch-content"),
+        )?;
+    }
     // OT-27a: stage the vendor firmware blob as /modules/mt7601u-fw iff present.
     // The driver looks it up by path-suffix `/mt7601u-fw` at cold bring-up.
     if stage_firmware {
@@ -8588,6 +8824,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     let mut build_only = false;
     let mut bare_metal_mode = false;
     let mut include_explicit = false;
+    let mut keep_going = false;
     let mut shard: Option<ShardSpec> = None;
     let mut requested: Vec<&str> = Vec::new();
 
@@ -8600,6 +8837,7 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
             "--meta-only" => meta_only = true,
             "--build-only" => build_only = true,
             "--bare-metal-mode" => bare_metal_mode = true,
+            "--keep-going" => keep_going = true,
             "all" => include_explicit = true,
             "-h" | "--help" => {
                 print_neo_test_help();
@@ -8689,9 +8927,13 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     } else {
         ScenarioBundleMode::Vmware
     };
-    for scenario in scenarios {
-        run_test_scenario_with_retries(scenario, mode)?;
-    }
+    let label = match shard {
+        Some(spec) => format!("shard {}/{}", spec.index, spec.count),
+        None => "run".to_string(),
+    };
+    run_scenarios_timed(&scenarios, &label, keep_going, |scenario| {
+        run_test_scenario_with_retries(scenario, mode)
+    })?;
 
     // The deliberate-failure meta-test is a runner self-check that the
     // un-sharded suite runs exactly once at the end. Under sharding it must
@@ -8705,6 +8947,185 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+// === neo-test timings (OT-58 S0) ===
+//
+// Per-scenario wall-clock and QEMU time, kept where CI can still read them when
+// the job log is too long to fetch whole (the job-log API returns only its last
+// 5,000 lines): appended row by row to `target/neo-test/timings.tsv`, printed as a
+// sorted table at the end of the run (inside that tail), and written as Markdown
+// to `target/neo-test/timings-summary.md` for the workflow's job summary.
+
+/// QEMU time and run count since the last `take_qemu_runs` (every QEMU run goes
+/// through `run_with_timeout_and_dump`).
+static QEMU_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static QEMU_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn record_qemu_run(elapsed: Duration) {
+    use std::sync::atomic::Ordering;
+    QEMU_MILLIS.fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
+    QEMU_RUNS.fetch_add(1, Ordering::Relaxed);
+}
+
+fn take_qemu_runs() -> (Duration, u32) {
+    use std::sync::atomic::Ordering;
+    (
+        Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
+        QEMU_RUNS.swap(0, Ordering::Relaxed),
+    )
+}
+
+const TIMINGS_TSV_REL: &str = "target/neo-test/timings.tsv";
+const TIMINGS_SUMMARY_REL: &str = "target/neo-test/timings-summary.md";
+const TIMINGS_TSV_HEADER: &str = "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n";
+
+#[derive(Clone, Debug, PartialEq)]
+struct ScenarioTiming {
+    name: &'static str,
+    wall: Duration,
+    qemu: Duration,
+    qemu_runs: u32,
+    passed: bool,
+}
+
+impl ScenarioTiming {
+    /// Everything that isn't QEMU: the kernel and userland builds, the image.
+    fn build(&self) -> Duration {
+        self.wall.saturating_sub(self.qemu)
+    }
+}
+
+fn timings_tsv_row(t: &ScenarioTiming) -> String {
+    format!(
+        "{}\t{:.1}\t{:.1}\t{:.1}\t{}\t{}\n",
+        t.name,
+        t.wall.as_secs_f64(),
+        t.qemu.as_secs_f64(),
+        t.build().as_secs_f64(),
+        t.qemu_runs,
+        if t.passed { "pass" } else { "FAIL" }
+    )
+}
+
+/// The end-of-run table, slowest first, with totals. `markdown` selects the
+/// job-summary form; otherwise plain text for the log.
+fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> String {
+    let mut sorted: Vec<&ScenarioTiming> = rows.iter().collect();
+    sorted.sort_by(|a, b| b.wall.cmp(&a.wall).then_with(|| a.name.cmp(b.name)));
+    let wall: Duration = rows.iter().map(|t| t.wall).sum();
+    let qemu: Duration = rows.iter().map(|t| t.qemu).sum();
+    let failed = rows.iter().filter(|t| !t.passed).count();
+    let mut out = String::new();
+    if markdown {
+        out.push_str(&format!(
+            "### neo-test timings, {label}\n\n{} scenario(s), {failed} failed; wall {:.0} s, QEMU {:.0} s, build and image {:.0} s\n\n\
+             | Scenario | Wall s | QEMU s | Build s | QEMU runs | Result |\n|---|---|---|---|---|---|\n",
+            rows.len(),
+            wall.as_secs_f64(),
+            qemu.as_secs_f64(),
+            wall.saturating_sub(qemu).as_secs_f64(),
+        ));
+        for t in sorted {
+            out.push_str(&format!(
+                "| {} | {:.1} | {:.1} | {:.1} | {} | {} |\n",
+                t.name,
+                t.wall.as_secs_f64(),
+                t.qemu.as_secs_f64(),
+                t.build().as_secs_f64(),
+                t.qemu_runs,
+                if t.passed { "pass" } else { "FAIL" }
+            ));
+        }
+    } else {
+        out.push_str(&format!(
+            "[xtask] neo-test timings, {label}: {} scenario(s), {failed} failed; wall {:.0}s qemu {:.0}s build+image {:.0}s\n",
+            rows.len(),
+            wall.as_secs_f64(),
+            qemu.as_secs_f64(),
+            wall.saturating_sub(qemu).as_secs_f64(),
+        ));
+        for t in sorted {
+            out.push_str("[xtask] timing\t");
+            out.push_str(&timings_tsv_row(t));
+        }
+    }
+    out
+}
+
+/// Run `scenarios` in order through `run`, timing each one. Without
+/// `keep_going`, stop at the first failure and return its error (the behaviour
+/// before S0). With it, run them all and fail with the list of failures. The
+/// timings are written either way.
+fn run_scenarios_timed(
+    scenarios: &[TestScenario],
+    label: &str,
+    keep_going: bool,
+    mut run: impl FnMut(TestScenario) -> Result<(), String>,
+) -> Result<(), String> {
+    let root = workspace_root();
+    let tsv_path = root.join(TIMINGS_TSV_REL);
+    // Best effort: timings are diagnostics, never a test verdict.
+    let _ = fs::write(&tsv_path, TIMINGS_TSV_HEADER);
+    let mut rows: Vec<ScenarioTiming> = Vec::new();
+    let mut failures: Vec<(&'static str, String)> = Vec::new();
+    for &scenario in scenarios {
+        let _ = take_qemu_runs();
+        let start = Instant::now();
+        let result = run(scenario);
+        let (qemu, qemu_runs) = take_qemu_runs();
+        let row = ScenarioTiming {
+            name: scenario.name,
+            wall: start.elapsed(),
+            qemu,
+            qemu_runs,
+            passed: result.is_ok(),
+        };
+        if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&tsv_path) {
+            let _ = f.write_all(timings_tsv_row(&row).as_bytes());
+        }
+        rows.push(row);
+        if let Err(e) = result {
+            if !keep_going {
+                emit_timings_summary(label, &rows);
+                return Err(e);
+            }
+            eprintln!(
+                "[xtask] neo-test: `{}` FAILED (keep-going): {e}",
+                scenario.name
+            );
+            failures.push((scenario.name, e));
+        }
+    }
+    emit_timings_summary(label, &rows);
+    keep_going_verdict(&failures)
+}
+
+fn emit_timings_summary(label: &str, rows: &[ScenarioTiming]) {
+    eprint!("{}", timings_summary(label, rows, false));
+    let _ = fs::write(
+        workspace_root().join(TIMINGS_SUMMARY_REL),
+        timings_summary(label, rows, true),
+    );
+}
+
+fn keep_going_verdict(failures: &[(&'static str, String)]) -> Result<(), String> {
+    if failures.is_empty() {
+        return Ok(());
+    }
+    let mut msg = format!(
+        "{} scenario(s) failed: {}",
+        failures.len(),
+        failures
+            .iter()
+            .map(|(n, _)| *n)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
+    for (name, e) in failures {
+        msg.push_str(&format!("\n  `{name}`: {e}"));
+    }
+    Err(msg)
 }
 
 fn cmd_neo_test_build(args: &[String]) -> Result<(), String> {
@@ -8894,6 +9315,7 @@ fn run_test_scenario_with_retries(
                     "[xtask] neo-test: `{}` attempt {}/{} failed: {}",
                     scenario.name, attempt, attempts, err
                 );
+                print_serial_tail(&err);
                 eprintln!(
                     "[xtask] neo-test: retrying `{}` after transient QEMU failure candidate",
                     scenario.name
@@ -8901,6 +9323,7 @@ fn run_test_scenario_with_retries(
                 previous_error = Some(err);
             }
             Err(err) => {
+                print_serial_tail(&err);
                 if let Some(previous) = previous_error {
                     return Err(format!(
                         "`{}` failed after {} attempts; last error: {}; previous error: {}",
@@ -8913,6 +9336,36 @@ fn run_test_scenario_with_retries(
     }
 
     unreachable!("attempt loop always returns")
+}
+
+/// Lines of a failed attempt's serial log to print into the job log.
+const SERIAL_TAIL_LINES: usize = 40;
+
+/// Print the end of the serial log a failure message names (`serial=<path>`)
+/// into the job log. A CI seat that can't download the run's artifacts can
+/// then still see why a scenario failed. Best-effort: no path, or an
+/// unreadable file, prints nothing.
+fn print_serial_tail(err: &str) {
+    let Some(path) = err
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("serial="))
+        .map(|p| p.trim_end_matches([';', ',']))
+    else {
+        return;
+    };
+    let Ok(bytes) = fs::read(path) else {
+        return;
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(SERIAL_TAIL_LINES);
+    eprintln!(
+        "[xtask] neo-test: last {} serial line(s) of {path}:",
+        lines.len() - start
+    );
+    for line in &lines[start..] {
+        eprintln!("[serial] {line}");
+    }
 }
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
@@ -9018,6 +9471,9 @@ fn print_neo_test_help() {
     println!("USAGE:");
     println!("    cargo neo-test [all|SCENARIO] [--include-ignored] [--no-meta]");
     println!("    cargo neo-test --shard I/N      run scenario subset I of N (1-based)");
+    println!(
+        "    cargo neo-test ... --keep-going run every selected scenario, then fail with the list"
+    );
     println!("    cargo neo-test SCENARIO --bare-metal-mode");
     println!("    cargo neo-test --build-only SCENARIO");
     println!("    cargo neo-test --build-only SCENARIO --bare-metal-mode");
@@ -9671,6 +10127,8 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stuck_sink_off"
         | "ot90_stop_cpus"
         | "ot90_stop_holdout"
+        | "ot90_stop_shootdown"
+        | "ot90_stop_wedged"
         | "ot90_quiesce" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
@@ -9805,22 +10263,64 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             ));
         }
     }
-    // OT-90 P3b: K4 parked every AP before K5 and S5.
-    if scenario.name == "ot90_stop_cpus" || scenario.name == "ot90_stop_holdout" {
+    // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
+    // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
+    if scenario.name == "ot90_stop_cpus"
+        || scenario.name == "ot90_stop_holdout"
+        || scenario.name == "ot90_stop_shootdown"
+    {
+        let mut want = vec!["[ power ] K3 log flushed"];
+        if scenario.name == "ot90_stop_shootdown" {
+            want.insert(0, "stage=storm_ready ap=");
+        }
+        want.push("[ power ] K4 start");
+        if scenario.name == "ot90_stop_shootdown" {
+            want.push("[ power ] test: storm sent=");
+        }
+        want.extend([
+            "[ power ] K4 targets=",
+            "[ power ] K5 lapic_timer=",
+            "power: S5 PM1a=",
+        ]);
+        ot90_require_in_order(scenario.name, &serial, &want)?;
+        ot90_check_k5(&serial).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+        if serial.contains("tlb_shootdown_timeout") {
+            return Err(format!(
+                "`{}`: a TLB shootdown timed out; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(scenario.name == "ot90_stop_holdout", k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
+    if scenario.name == "ot90_stop_wedged" {
         ot90_require_in_order(
             scenario.name,
             &serial,
             &[
-                "[ power ] K3 log flushed",
                 "[ power ] K4 start",
                 "[ power ] K4 targets=",
-                "[ power ] K5 lapic_timer=",
+                "[ power ] K5 skipped: holdouts=",
                 "power: S5 PM1a=",
             ],
         )?;
         let k4 = ot90_k4_report(&serial)
             .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
-        ot90_check_k4(scenario.name == "ot90_stop_holdout", k4).map_err(|e| {
+        ot90_check_wedged(k4).map_err(|e| {
             format!(
                 "`{}`: {e}; serial={}",
                 scenario.name,
@@ -9832,6 +10332,45 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         "[xtask] neo-test: `{}` PASS on QMP {:?}",
         scenario.name, events
     );
+    Ok(())
+}
+
+/// Review #6 item 3: K5's line shows the PCI pass ran and left no function
+/// with MSI enabled or MSI-X unmasked, and names the I/O APIC result.
+fn ot90_check_k5(serial: &str) -> Result<(), String> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K5 lapic_timer="))
+        .ok_or("no K5 line")?;
+    let field = |key: &str| -> Option<u64> {
+        let at = line.find(key)? + key.len();
+        line[at..].split_whitespace().next()?.parse().ok()
+    };
+    if field("pci_functions=").unwrap_or(0) == 0 {
+        return Err(format!("K5 found no PCI function: {line}"));
+    }
+    if field("msi_left_on=") != Some(0) {
+        return Err(format!("K5 left MSI/MSI-X open: {line}"));
+    }
+    if !line.contains("ioapic=masked=") {
+        return Err(format!("K5 masked no I/O APIC (QEMU has a MADT): {line}"));
+    }
+    Ok(())
+}
+
+/// Review #6 item 2 `ot90_stop_wedged`: the highest AP is the one holdout,
+/// the rest parked by the STOP IPI, K5 skipped, and S5 still reached.
+fn ot90_check_wedged([targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets.count_ones() < 2 {
+        return Err("needs at least two APs (NEO_SMP >= 3)".into());
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    if holdouts != highest || ipi != targets & !highest || nmi != 0 {
+        return Err(format!(
+            "K4 ipi={ipi:#x} nmi={nmi:#x} holdouts={holdouts:#x}; expected ipi={:#x} nmi=0 holdouts={highest:#x}",
+            targets & !highest
+        ));
+    }
     Ok(())
 }
 
@@ -12129,11 +12668,14 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
         scenario_name,
         "kernel_rng_selftest"
             | "phase4_https_fetch"
+            | "net_dial_public_only"
+            | "fetch_broker"
             | "net_dial_cap_kill_switch"
             | "arthur_memory_encrypted"
             | "arthur_memory_delegation"
             | "arthur_memory_forgetting"
             | "xsave_ymm_context_switch"
+            | "xsave_ebx_understated"
             // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
             // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
             | "irq_xmm_preserve"
@@ -12165,6 +12707,9 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
             | "servo_closure_smoke"
             | "servo_closure_smoke_avx"
+            // OT-61 C2.4: std's RandomState (any std HashMap in the closure)
+            // seeds from the kernel CSPRNG, as std_entropy.
+            | "stylo_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -12524,6 +13069,38 @@ fn run_qemu_test_invocation(
             .arg("usb-storage,drive=usbstick,bus=xhci0.0");
     }
 
+    if scenario.name == "usb_storage_unplug" {
+        // #30: no stick at boot; the script plugs it into root port 2 and
+        // pulls it (`HMP_HOTPLUG_ADD_STICK` / `_DEL_STICK`). The drive is
+        // defined up front so `device_add` can name it.
+        let stick = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join(format!("{}-usbstick.raw", scenario.name));
+        let stick = prepare_fat32_storage_disk(&stick)?;
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-drive").arg(format!(
+            "if=none,id=usbstick,format=raw,file={}",
+            stick.display()
+        ));
+    }
+
+    if scenario.name == "usb_storage_read" || scenario.name == "usb_storage_off" {
+        // L3u-2: QEMU's Bulk-Only usb-storage (46f4:0001) on qemu-xhci,
+        // holding the FAT32 fixture volume (the same image the phase3_fat32_*
+        // scenarios mount from virtio).
+        let stick = workspace_root()
+            .join(TEST_OUTPUT_REL)
+            .join(format!("{}-usbstick.raw", scenario.name));
+        let stick = prepare_fat32_storage_disk(&stick)?;
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        qemu.arg("-drive").arg(format!(
+            "if=none,id=usbstick,format=raw,file={}",
+            stick.display()
+        ));
+        qemu.arg("-device")
+            .arg("usb-storage,drive=usbstick,bus=xhci0.0");
+    }
+
     let virtio_accel_host = if virtio_accel_scenario {
         let host = start_virtio_accel_host(scenario.name)?;
         qemu.arg("-chardev").arg(format!(
@@ -12796,6 +13373,12 @@ fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
         }),
         "usb_hotplug" => Some(ScenarioScript {
             steps: USB_HOTPLUG_HMP_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
+        "usb_storage_unplug" => Some(ScenarioScript {
+            steps: USB_STORAGE_UNPLUG_HMP_STEPS,
             transport: ScriptTransport::HmpKeyboard,
             screenshot_rel: None,
             screenshot_after_command: None,
@@ -13229,6 +13812,22 @@ const HMP_HOTPLUG_ADD_KBD: u8 = 0x86;
 const HMP_HOTPLUG_DEL_KBD: u8 = 0x87;
 const HMP_HOTPLUG_ADD_KBD_HUB: u8 = 0x88;
 
+/// usb_storage_unplug (#30): plug and pull the stick.
+const HMP_HOTPLUG_ADD_STICK: u8 = 0xA0;
+const HMP_HOTPLUG_DEL_STICK: u8 = 0xA1;
+
+/// usb_storage_unplug (#30): plug the stick, then pull it once a reader runs.
+const USB_STORAGE_UNPLUG_HMP_STEPS: &[SerialScriptStep] = &[
+    SerialScriptStep {
+        prompt: b"msc-unplug=ready-for-plug",
+        command: &[HMP_HOTPLUG_ADD_STICK],
+    },
+    SerialScriptStep {
+        prompt: b"msc-unplug=unplug-now",
+        command: &[HMP_HOTPLUG_DEL_STICK],
+    },
+];
+
 /// ps2_key_repeat: hold a key 1.5 s (QEMU sends the make, then the break
 /// when the hold time ends).
 const HMP_HOLD_BACKSPACE: u8 = 0x89;
@@ -13354,6 +13953,10 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         HMP_HOTPLUG_ADD_KBD => Some("device_add usb-kbd,bus=xhci0.0,port=2,id=hotkbd\n"),
         HMP_HOTPLUG_DEL_KBD => Some("device_del hotkbd\n"),
         HMP_HOTPLUG_ADD_KBD_HUB => Some("device_add usb-kbd,bus=xhci0.0,port=1.1,id=hotkbd\n"),
+        HMP_HOTPLUG_ADD_STICK => {
+            Some("device_add usb-storage,drive=usbstick,bus=xhci0.0,port=2,id=hotstick\n")
+        }
+        HMP_HOTPLUG_DEL_STICK => Some("device_del hotstick\n"),
         // i8042 lane (`ps2_keyboard`): a shifted letter, an `E0` key, a
         // right-hand modifier, and the `E1` Pause sequence.
         0x82 => Some("sendkey shift-b\n"),
@@ -15986,6 +16589,7 @@ fn run_with_timeout_and_dump(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("[xtask] qemu stderr for `{label}`:\n{stderr}");
             }
+            record_qemu_run(start.elapsed());
             eprintln!(
                 "[xtask] neo-test: `{label}` qemu elapsed={:.1}s status={} budget={}s",
                 start.elapsed().as_secs_f64(),
@@ -15997,6 +16601,7 @@ fn run_with_timeout_and_dump(
 
         if start.elapsed() >= timeout {
             let elapsed = start.elapsed();
+            record_qemu_run(elapsed);
             if let Some(dump_path) = dump_target {
                 attempt_timeout_monitor_dump(label, dump_path);
             }
@@ -16264,6 +16869,21 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "the real-std smoke must print to stdout+stderr and the panic arm must abort LOUDLY (message, then exit 134)",
+            )?;
+        }
+    }
+    if scenario.name == "stylo_smoke" {
+        for needle in [
+            "[ stylo ] ok: Stylo built no thread pool (num_cpus is 1 here)",
+            "[ stylo ] ok: the traversal styled <html>",
+            "[ stylo ] ok: the style thread ran to the end",
+            "[ stylo ] pass",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Stylo must style the document sequentially and match every hand-derived value",
             )?;
         }
     }
@@ -18435,6 +19055,69 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "cap-routed HTTPS must prove NetDialCap authority and close every legacy egress root",
         )?;
     }
+    if scenario.name == "net_dial_public_only" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdialcap no_cap=denied in_scope=ok out_of_scope=denied post_revoke=denied legacy_connect_tcp=denied legacy_sendto=denied legacy_egress=closed",
+            "the public-only kernel must keep every phase4 NetDialCap property",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdial public_only narrowed_to_loopback=denied",
+            "a NetDial cap without NON_PUBLIC must not reach a loopback-resolving name",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "net_dial denied reason=non_public",
+            "the refusal must come from the kernel's public-only dial",
+        )?;
+    }
+    if scenario.name == FETCH_BROKER_SCENARIO {
+        require_serial_contains(
+            scenario,
+            observed,
+            "fetch_broker private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok",
+            "the fetch broker must serve the fixture and refuse private, cleartext and loopback-resolving URLs",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-content ] direct_dial=refused private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok",
+            "the content process must hold no dial capability (its own dials refused) and still fetch through the broker",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "net_dial denied reason=non_public",
+            "the loopback-resolving name must be refused by the kernel's dial, not only by the broker",
+        )?;
+        // #29 item 4: the broker drops its GRANT-bearing root, so no dial cap
+        // it holds can leave it; and (the re-check's new item) each request's
+        // scope is revoked when the request ends. Request 3's refused dial
+        // revokes its scope before the broker answers, so that line always
+        // precedes the content process's exit.
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] root dial cap closed: derive_from_root=refused grant_request_cap=refused",
+            "the broker must close its GRANT-bearing root and keep only a cap it can't hand on",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] request scope revoked",
+            "a request's scope must be revoked when the request ends",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "revoke of a request scope failed",
+            "every request scope revoke must succeed (REVOKE kept on the request root)",
+        )?;
+    }
     if scenario.name == "net_dial_cap_kill_switch" {
         require_serial_contains(
             scenario,
@@ -19682,6 +20365,10 @@ fn write_limine_conf(
         conf = inject_module_line(&conf, "/modules/login-cut")?;
     }
     // OT-83: the ring-3 fault probes, only for their scenario.
+    if stage_fetch_broker() {
+        conf = inject_module_line(&conf, "/modules/neo-fetch-broker")?;
+        conf = inject_module_line(&conf, "/modules/neo-fetch-content")?;
+    }
     if fault_probe_stage().is_some() {
         conf = inject_module_line(&conf, "/modules/neo-fault-probe")?;
         conf = inject_module_line(&conf, "/modules/neo-fault-probe-ok")?;
@@ -21173,6 +21860,103 @@ mod tests {
     /// matrix shards. This is the partition's "full set" of record.
     fn canonical_suite() -> Vec<TestScenario> {
         select_test_scenarios(&[], false, false).expect("default scenario selection")
+    }
+
+    fn timing(
+        name: &'static str,
+        wall_ms: u64,
+        qemu_ms: u64,
+        runs: u32,
+        passed: bool,
+    ) -> ScenarioTiming {
+        ScenarioTiming {
+            name,
+            wall: Duration::from_millis(wall_ms),
+            qemu: Duration::from_millis(qemu_ms),
+            qemu_runs: runs,
+            passed,
+        }
+    }
+
+    /// OT-58 S0: the TSV row and both summary forms, against hand-written bytes.
+    #[test]
+    fn timings_rows_and_summary_match_hand_written_bytes() {
+        assert_eq!(
+            TIMINGS_TSV_HEADER,
+            "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n"
+        );
+        let a = timing("alpha", 12_340, 4_000, 1, true);
+        let b = timing("beta", 30_050, 21_000, 2, false);
+        assert_eq!(timings_tsv_row(&a), "alpha\t12.3\t4.0\t8.3\t1\tpass\n");
+        assert_eq!(timings_tsv_row(&b), "beta\t30.1\t21.0\t9.1\t2\tFAIL\n");
+        // QEMU longer than the wall (can't happen, but never underflows).
+        assert_eq!(
+            timings_tsv_row(&timing("odd", 1_000, 2_000, 1, true)),
+            "odd\t1.0\t2.0\t0.0\t1\tpass\n"
+        );
+
+        let rows = [a, b];
+        assert_eq!(
+            timings_summary("shard 2/4", &rows, false),
+            "[xtask] neo-test timings, shard 2/4: 2 scenario(s), 1 failed; wall 42s qemu 25s build+image 17s\n\
+             [xtask] timing\tbeta\t30.1\t21.0\t9.1\t2\tFAIL\n\
+             [xtask] timing\talpha\t12.3\t4.0\t8.3\t1\tpass\n"
+        );
+        assert_eq!(
+            timings_summary("shard 2/4", &rows, true),
+            "### neo-test timings, shard 2/4\n\n\
+             2 scenario(s), 1 failed; wall 42 s, QEMU 25 s, build and image 17 s\n\n\
+             | Scenario | Wall s | QEMU s | Build s | QEMU runs | Result |\n\
+             |---|---|---|---|---|---|\n\
+             | beta | 30.1 | 21.0 | 9.1 | 2 | FAIL |\n\
+             | alpha | 12.3 | 4.0 | 8.3 | 1 | pass |\n"
+        );
+    }
+
+    /// OT-58 S0 kill-switch: without `--keep-going` the timed runner stops at
+    /// the first failure with that scenario's own error, exactly as the plain
+    /// loop did; with it, every scenario runs and the error lists the failures.
+    #[test]
+    fn run_scenarios_timed_stops_at_first_failure_unless_keep_going() {
+        let suite = canonical_suite();
+        let picked: Vec<TestScenario> = suite.iter().copied().take(4).collect();
+        assert_eq!(picked.len(), 4);
+        let fail_on = |s: TestScenario| s.name == picked[1].name || s.name == picked[3].name;
+
+        let mut ran = Vec::new();
+        let err = run_scenarios_timed(&picked, "test", false, |s| {
+            ran.push(s.name);
+            if fail_on(s) {
+                Err(format!("boom {}", s.name))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(ran, vec![picked[0].name, picked[1].name]);
+        assert_eq!(err, format!("boom {}", picked[1].name));
+
+        let mut ran = Vec::new();
+        let err = run_scenarios_timed(&picked, "test", true, |s| {
+            ran.push(s.name);
+            if fail_on(s) {
+                Err(format!("boom {}", s.name))
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(ran, picked.iter().map(|s| s.name).collect::<Vec<_>>());
+        assert_eq!(
+            err,
+            format!(
+                "2 scenario(s) failed: {a} {b}\n  `{a}`: boom {a}\n  `{b}`: boom {b}",
+                a = picked[1].name,
+                b = picked[3].name
+            )
+        );
+
+        assert!(run_scenarios_timed(&picked, "test", true, |_| Ok(())).is_ok());
     }
 
     /// S2-F1: every licence file the ISO stages exists and is non-empty, and

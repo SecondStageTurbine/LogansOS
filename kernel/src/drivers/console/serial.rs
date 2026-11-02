@@ -30,17 +30,26 @@ static SERIAL: Mutex<Option<SerialPort>> = Mutex::new(None);
 #[cfg(feature = "power-stop-cpus")]
 static STOPPED_WORLD: AtomicBool = AtomicBool::new(false);
 
-/// OT-90 P3b: after K4. `nmi_parked`: a CPU was parked by NMI, so it may
-/// hold the UART lock too; the lock is then forced (its holder never runs
-/// again).
+/// OT-90 P3b: after K4, every print writes the UART without `SERIAL`'s
+/// lock (review #6 item 2): a CPU parked by NMI may hold it for good, and a
+/// holdout may still be printing through it. Waiting could be forever;
+/// forcing the lock could overlap a live owner. A lock-free write can at
+/// worst interleave bytes with a holdout's.
 #[cfg(feature = "power-stop-cpus")]
-pub fn enter_stopped_world(nmi_parked: bool) {
+pub fn enter_stopped_world() {
     STOPPED_WORLD.store(true, Ordering::Release);
-    if nmi_parked && SERIAL.is_locked() {
-        // SAFETY: the holder is a CPU halted for good (K4's NMI park); no
-        // other CPU runs.
-        unsafe { SERIAL.force_unlock() };
-    }
+}
+
+/// The stopped world's print: a second handle on COM1 that only writes the
+/// transmit register (COM1 was initialized by `init` long before K4).
+#[cfg(feature = "power-stop-cpus")]
+fn print_stopped(args: fmt::Arguments) {
+    crate::arch::x86_64::without_interrupts(|| {
+        // SAFETY: COM1 is initialized; this handle takes no lock and only
+        // writes bytes.
+        let mut port = unsafe { SerialPort::new(COM1) };
+        let _ = port.write_fmt(args);
+    });
 }
 
 /// Whether K4 has stopped the other CPUs (`log::flush` skips the sink then).
@@ -122,6 +131,19 @@ pub fn panic_holding_lock_for_test() -> ! {
     panic!("fb_panic_holding_serial: panicked holding SERIAL");
 }
 
+/// `ot90_stop_wedged`: take `SERIAL` (waiting for a holder to finish) and
+/// never release it.
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+pub fn hold_forever_for_test() {
+    loop {
+        if let Some(guard) = SERIAL.try_lock() {
+            core::mem::forget(guard);
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
 /// Whether `SERIAL` is held (by anyone).
 #[cfg(feature = "neo-test-fb-panic-holding-serial")]
 pub fn locked_for_test() -> bool {
@@ -139,11 +161,7 @@ pub fn _print(args: fmt::Arguments) {
     }
     #[cfg(feature = "power-stop-cpus")]
     if STOPPED_WORLD.load(Ordering::Acquire) {
-        crate::arch::x86_64::without_interrupts(|| {
-            if let Some(port) = SERIAL.lock().as_mut() {
-                let _ = port.write_fmt(args);
-            }
-        });
+        print_stopped(args);
         #[cfg(feature = "fb-progress-console")]
         crate::drivers::fb::progress::write_fmt(args);
         return;
@@ -183,6 +201,11 @@ pub fn _print(args: fmt::Arguments) {
 /// register writes.
 #[cfg(any(feature = "neo-test", feature = "power-control"))]
 pub fn _print_isr(args: fmt::Arguments) {
+    #[cfg(feature = "power-stop-cpus")]
+    if STOPPED_WORLD.load(Ordering::Acquire) {
+        print_stopped(args);
+        return;
+    }
     crate::arch::x86_64::without_interrupts(|| {
         if let Some(port) = SERIAL.lock().as_mut() {
             let _ = port.write_fmt(args);

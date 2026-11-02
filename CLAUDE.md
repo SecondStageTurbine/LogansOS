@@ -463,7 +463,12 @@ QEMU gate may depend on a host-variable input — not the live internet, and not
 runner. A green gate must mean "the code is correct," never "the runner cooperated." The fix that established
 this: `phase4_https_fetch` flaked by *which runner picked it up* because RDRAND under pure TCG advertises the
 CPUID bit but returns CF=0 (`-cpu qemu64,+rdrand`), starving the guest's getrandom; RDRAND-consuming scenarios
-now run under `-cpu max` (the `kernel_rng_selftest` treatment) so they're deterministic on any runner. A
+now run under `-cpu max` (the `kernel_rng_selftest` treatment) so they're deterministic on any runner.
+**Correction (2026-11-01, #43):** the "TCG returns CF=0" diagnosis was very likely our own bug: `rdrand_u64` treated
+the carry flag backwards (CF=1 means a valid value), so it threw away good draws. The product image panicked at boot
+on it, hidden from the gate because every `neo-test` kernel seeds the DRBG with a fixed seed. The `rng-seed-boot` CI
+job now boots a non-`neo-test` kernel through `Csprng::init`. Lesson: a test-only seed or stub must never be the only
+path the gate exercises; at least one gated boot runs the product initialisation. A
 scenario that genuinely needs real external network is reclassified *out* of the gate (the
 `mt7601u_scan_baremetal` precedent), never left in to flake. Corollary: an artifact/storage-upload failure is
 infra, never a test verdict — the upload-on-failure step is `continue-on-error` so a full quota can't redden a

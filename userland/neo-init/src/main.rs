@@ -46,6 +46,7 @@
         feature = "socket-teardown-test",
         feature = "exit-codes-test",
         feature = "mount-authority-test",
+        feature = "user-copy-fault-test",
         feature = "interface-cap-derive-revoke",
         feature = "arthur-grant-revoke",
         feature = "atrium-slice1",
@@ -107,6 +108,7 @@
         feature = "phase4-slaac-udp-ipv6-loopback",
         feature = "phase4-https-fetch",
         feature = "net-dial-cap-kill-switch",
+        feature = "fetch-broker",
         feature = "vault-phase-b",
         feature = "desktop-session"
     ),
@@ -243,6 +245,11 @@ fn run_selected_scenario() -> i32 {
 #[cfg(feature = "mount-authority-test")]
 fn run_selected_scenario() -> i32 {
     mount_authority_tests::run()
+}
+
+#[cfg(feature = "user-copy-fault-test")]
+fn run_selected_scenario() -> i32 {
+    user_copy_fault_tests::run()
 }
 
 #[cfg(feature = "vault-phase-b")]
@@ -783,6 +790,11 @@ fn run_selected_scenario() -> i32 {
 #[cfg(feature = "net-dial-cap-kill-switch")]
 fn run_selected_scenario() -> i32 {
     https_fetch_kill_switch_tests::run()
+}
+
+#[cfg(feature = "fetch-broker")]
+fn run_selected_scenario() -> i32 {
+    fetch_broker_tests::run()
 }
 
 #[cfg(feature = "phase4-socket-udp-loopback")]
@@ -2153,6 +2165,7 @@ mod gpu_glass_slice6_tests {
     feature = "socket-teardown-test",
     feature = "exit-codes-test",
     feature = "mount-authority-test",
+    feature = "user-copy-fault-test",
     feature = "interface-cap-derive-revoke",
     feature = "arthur-grant-revoke",
     feature = "atrium-slice1",
@@ -2210,6 +2223,7 @@ mod gpu_glass_slice6_tests {
     feature = "phase4-slaac-udp-ipv6-loopback",
     feature = "phase4-https-fetch",
     feature = "net-dial-cap-kill-switch",
+    feature = "fetch-broker",
     feature = "vm-primitives",
     feature = "wallclock-probe",
     feature = "threads-futex",
@@ -8448,6 +8462,75 @@ mod vfs_tests {
     }
 }
 
+/// OT-61 rung 5c: neo-init as the browser's launcher. It holds the root dial
+/// cap and hands it to the fetch broker; the content process it spawns gets
+/// only its channel to the broker, so it has no way to dial at all (#29 review
+/// item 1). The content process does the fetches and the checks
+/// (`userland/fetch-broker/src/content.rs`, THINK §7.1); its exit code is the
+/// verdict.
+#[cfg(feature = "fetch-broker")]
+mod fetch_broker_tests {
+    use libneo::{Handle, sys_chan_create, sys_recv, sys_spawn, sys_wait, sys_write};
+
+    const READY: &[u8] = b"ready";
+
+    fn say(msg: &[u8]) {
+        let _ = sys_write(1, msg.as_ptr(), msg.len());
+    }
+
+    pub fn run() -> i32 {
+        // The HTTPS fixture, as in phase4_https_fetch.
+        let (local, remote) = match sys_chan_create() {
+            Ok(pair) => pair,
+            Err(_) => return 81,
+        };
+        let (_pid, worker) = match sys_spawn("worker", &[remote, Handle(0)]) {
+            Ok(spawned) => spawned,
+            Err(_) => return 82,
+        };
+        let mut ready = [0u8; 8];
+        let n = sys_recv(local, &mut ready);
+        if n != READY.len() as i64 || &ready[..READY.len()] != READY {
+            return 83;
+        }
+
+        // One channel: the broker's end with the root dial cap, the content
+        // process's end alone. (A channel end is closed per handle, so this
+        // launcher keeps its copies of both ends: closing one would close the
+        // peer's side under the process using it.)
+        let (broker_end, content_end) = match sys_chan_create() {
+            Ok(pair) => pair,
+            Err(_) => return 84,
+        };
+        let (_bpid, broker) = match sys_spawn("fetch-broker", &[broker_end, Handle(0)]) {
+            Ok(spawned) => spawned,
+            Err(_) => return 85,
+        };
+        let (_cpid, content) = match sys_spawn("fetch-content", &[content_end]) {
+            Ok(spawned) => spawned,
+            Err(_) => return 93,
+        };
+
+        // The content process's verdict; its exit closes the channel, which
+        // ends the broker.
+        match sys_wait(content, 0) {
+            Ok(0) => {}
+            Ok(code) => return code,
+            Err(_) => return 94,
+        }
+        match sys_wait(broker, 0) {
+            Ok(0) => {}
+            _ => return 91,
+        }
+        match sys_wait(worker, 0) {
+            Ok(0) => {}
+            _ => return 92,
+        }
+        say(b"[ neo-init ] fetch_broker private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok\n");
+        0
+    }
+}
+
 #[cfg(feature = "phase4-https-fetch")]
 mod https_fetch_tests {
     use libneo::{
@@ -8517,6 +8600,34 @@ mod https_fetch_tests {
         ) != Err(EACCES)
         {
             return 91;
+        }
+
+        // OT-61 rung 5b: the same scope with NON_PUBLIC narrowed away must not
+        // reach the fixture, which resolves only to loopback (127.0.0.1, ::1).
+        // `cap` keeps the right, so the dial below still works.
+        #[cfg(feature = "net-dial-public-only")]
+        {
+            let narrow = match libneo::sys_derive(
+                cap.0,
+                libneo::CapRights::new(
+                    libneo::meta_rights::USE | libneo::meta_rights::DERIVE,
+                    libneo::net_dial_rights::DIAL,
+                ),
+            ) {
+                Ok(h) => NetDialCap(h),
+                Err(_) => return 95,
+            };
+            if sys_net_dial(
+                narrow,
+                libneo::tls::PHASE4_TEST_HOST,
+                libneo::tls::PHASE4_TEST_PORT,
+            ) != Err(EACCES)
+            {
+                return 96;
+            }
+            let _ = sys_revoke(narrow.0);
+            let msg = b"[ neo-init ] netdial public_only narrowed_to_loopback=denied\n";
+            let _ = sys_write(1, msg.as_ptr(), msg.len());
         }
 
         let socket = match dial_server(cap) {
@@ -10050,6 +10161,429 @@ mod mount_authority_tests {
             }
             Err(code) => {
                 say(b"[ mount-authority ] FAIL\n");
+                code
+            }
+        }
+    }
+}
+
+/// user-copy-fixup, the `user_copy_fault` scenario: syscalls whose user
+/// buffer faults return EFAULT instead of halting the kernel. Three buffers:
+/// a page that was mapped and then unmapped (`hole`), one that starts 8 bytes
+/// before it in a mapped page (`crossing`), and a read-only page (`ro`, for
+/// the kernel's writes). Output paths: SYS_HANDLE_INFO's record, SYS_READDIR's
+/// entry and its cursor (also a read-only cursor), SYS_READ (the offset must
+/// not move). Input path: SYS_WRITE to stdout. Also: futex waits (an
+/// unmapped word, and one the kernel unmaps between its translation and its
+/// re-check), IPC rendezvous in both directions, a join's status pointer (the
+/// thread stays joinable), and the TLS key wipe (EFAULT; a half read-only key
+/// stays whole). Each must be EFAULT; then a well-formed call still works.
+/// Returns 0, or the first failed step.
+#[cfg(feature = "user-copy-fault-test")]
+mod user_copy_fault_tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+    use libneo::nthread;
+    use libneo::{
+        EAGAIN, EFAULT, FileRights, OPEN_ROOT_TEMPORARY, PROT_READ, PROT_WRITE, SYS_FUTEX_WAIT,
+        SYS_HANDLE_INFO, SYS_NET_CONNECT_TCP, SYS_NET_TCP_ENABLE_TLS, SYS_READ, SYS_READDIR,
+        SYS_RECV, SYS_SEND, SYS_THREAD_JOIN, SYS_WRITE, SockAddr, SockAddrIn, TLS_KEY_MATERIAL_LEN,
+        TcpSocketHandle, raw3, raw4, sys_chan_create, sys_open, sys_tcp_close,
+        sys_test_thread_create_on, sys_thread_exit, sys_thread_join, sys_vm_map, sys_vm_protect,
+        sys_vm_unmap,
+    };
+
+    const PAGE: usize = 4096;
+    /// The kernel's `USER_COPY_FAULT_FUTEX_UNMAP`: a futex wait with this
+    /// `expected` has its word's page unmapped between the translation and
+    /// the value re-check (a sibling's unmap, made deterministic).
+    const FUTEX_UNMAP_MAGIC: u32 = 0xEFA0_17ED;
+    const THREAD_STACK: usize = 16 * 1024;
+
+    /// The IPC legs' receiver thread: its channel end and buffer.
+    static RECV_CHAN: AtomicU64 = AtomicU64::new(0);
+    static RECV_BUF: AtomicU64 = AtomicU64::new(0);
+    static RECV_LEN: AtomicU64 = AtomicU64::new(0);
+
+    /// Receive once into `RECV_BUF`; the exit code is SYS_RECV's result.
+    extern "C" fn receiver(_: usize) -> i32 {
+        let h = RECV_CHAN.load(Ordering::Acquire);
+        let buf = RECV_BUF.load(Ordering::Acquire);
+        let len = RECV_LEN.load(Ordering::Acquire);
+        // SAFETY: SYS_RECV(h, buf, len) writes at most `len` bytes at `buf`
+        // (or returns EFAULT).
+        unsafe { raw3(SYS_RECV, h, buf, len) as i32 }
+    }
+
+    /// The parallel-unmap leg: the kernel's `copy_race_test::RACE_LEN`.
+    const RACE_LEN: usize = 72;
+    /// Its two pages (fresh, zeroed), and the channel ends (A low, B high).
+    static RACE_SRC: AtomicU64 = AtomicU64::new(0);
+    static RACE_DST: AtomicU64 = AtomicU64::new(0);
+    static RACE_CHANS: AtomicU64 = AtomicU64::new(0);
+    static UNMAPPER_READY: AtomicU32 = AtomicU32::new(0);
+
+    extern "C" fn race_sender(_: usize) -> ! {
+        let chan = RACE_CHANS.load(Ordering::Acquire) & 0xFFFF_FFFF;
+        let src = RACE_SRC.load(Ordering::Acquire);
+        // SAFETY: SYS_SEND reads RACE_LEN bytes of the source page.
+        let r = unsafe { raw3(SYS_SEND, chan, src, RACE_LEN as u64) };
+        sys_thread_exit(r as i32)
+    }
+
+    extern "C" fn race_receiver(_: usize) -> ! {
+        let chan = RACE_CHANS.load(Ordering::Acquire) >> 32;
+        let dst = RACE_DST.load(Ordering::Acquire);
+        // SAFETY: SYS_RECV writes at most RACE_LEN bytes of the destination page.
+        let r = unsafe { raw3(SYS_RECV, chan, dst, RACE_LEN as u64) };
+        sys_thread_exit(r as i32)
+    }
+
+    /// Wait for the kernel's go (a page address in the first word of either
+    /// page), then unmap that page; exits with SYS_VM_UNMAP's result (0), or
+    /// 1000 if no go came.
+    extern "C" fn race_unmapper(_: usize) -> ! {
+        UNMAPPER_READY.store(1, Ordering::Release);
+        let words = [
+            RACE_SRC.load(Ordering::Acquire) as *const AtomicU64,
+            RACE_DST.load(Ordering::Acquire) as *const AtomicU64,
+        ];
+        for _ in 0..2_000_000_000u64 {
+            for w in words {
+                // SAFETY: both pages stay mapped until this thread unmaps one.
+                let go = unsafe { (*w).load(Ordering::Acquire) };
+                if go != 0 {
+                    let code = match sys_vm_unmap(go as *mut u8, PAGE) {
+                        Ok(()) => 0,
+                        Err(e) => e as i32,
+                    };
+                    sys_thread_exit(code)
+                }
+            }
+            core::hint::spin_loop();
+        }
+        sys_thread_exit(1000)
+    }
+
+    extern "C" fn exits_seven(_: usize) -> i32 {
+        7
+    }
+
+    /// Run `receiver` into `buf..buf+len` on `peer` while this thread sends
+    /// `len` bytes from `src`; returns (send's result, the receiver's).
+    fn rendezvous(peer: u64, chan: u64, buf: u64, src: u64, len: u64) -> Result<(i64, i64), i32> {
+        RECV_CHAN.store(peer, Ordering::Release);
+        RECV_BUF.store(buf, Ordering::Release);
+        RECV_LEN.store(len, Ordering::Release);
+        let t = nthread::spawn(receiver, 0, THREAD_STACK).map_err(|_| 50)?;
+        // SAFETY: SYS_SEND(h, src, len) reads `len` bytes at `src` (or
+        // returns EFAULT).
+        let sent = unsafe { raw3(SYS_SEND, chan, src, len) };
+        let got = t.join().map_err(|_| 51)?;
+        Ok((sent, i64::from(got)))
+    }
+
+    fn say(line: &[u8]) {
+        sys_write(1, line.as_ptr(), line.len());
+    }
+
+    fn expect_efault(r: i64, step: i32) -> Result<(), i32> {
+        if r == EFAULT { Ok(()) } else { Err(step) }
+    }
+
+    fn steps() -> Result<(), i32> {
+        let rw = PROT_READ | PROT_WRITE;
+        let base = sys_vm_map(2 * PAGE, rw, false).map_err(|_| 1)?;
+        let hole = base.wrapping_add(PAGE);
+        sys_vm_unmap(hole, PAGE).map_err(|_| 2)?;
+        let crossing = hole.wrapping_sub(8);
+        let ro = sys_vm_map(PAGE, rw, false).map_err(|_| 3)?;
+        sys_vm_protect(ro, PAGE, PROT_READ).map_err(|_| 4)?;
+        let (chan, _peer) = sys_chan_create().map_err(|_| 5)?;
+        let dir = sys_open(
+            "/",
+            OPEN_ROOT_TEMPORARY,
+            FileRights::LOOKUP.union(FileRights::READDIR),
+        )
+        .map_err(|_| 6)?;
+
+        // Output: SYS_HANDLE_INFO's 16-byte record.
+        for (i, buf) in [hole, crossing, ro].into_iter().enumerate() {
+            let r = unsafe { raw3(SYS_HANDLE_INFO, chan.0 as u64, buf as u64, 16) };
+            expect_efault(r, 10 + i as i32)?;
+        }
+        say(b"[ user-copy ] handle_info: unmapped, crossing, read-only -> EFAULT\n");
+        // Output: SYS_READDIR's entry, then its cursor.
+        let mut cursor = 0u64;
+        for (i, buf) in [hole, crossing, ro].into_iter().enumerate() {
+            let r = unsafe {
+                raw4(
+                    SYS_READDIR,
+                    dir.0 as u64,
+                    buf as u64,
+                    256,
+                    &mut cursor as *mut u64 as u64,
+                )
+            };
+            expect_efault(r, 20 + i as i32)?;
+        }
+        let mut entry = [0u8; 256];
+        let r = unsafe {
+            raw4(
+                SYS_READDIR,
+                dir.0 as u64,
+                entry.as_mut_ptr() as u64,
+                entry.len() as u64,
+                hole as u64,
+            )
+        };
+        expect_efault(r, 23)?;
+        say(b"[ user-copy ] readdir: entry and cursor -> EFAULT\n");
+        // Input: SYS_WRITE to stdout.
+        for (i, buf) in [hole, crossing].into_iter().enumerate() {
+            let r = unsafe { raw3(SYS_WRITE, 1, buf as u64, 16) };
+            expect_efault(r, 30 + i as i32)?;
+        }
+        say(b"[ user-copy ] write: unmapped, crossing -> EFAULT\n");
+
+        // SYS_READ: a faulting copy-out leaves the file offset where it was.
+        // /hello.txt (root testfs) is "NeoPlutarch testfs hello\n".
+        let hello =
+            sys_open("/hello.txt", OPEN_ROOT_TEMPORARY, FileRights::READ).map_err(|_| 60)?;
+        let read = |buf: u64, len: u64| unsafe { raw3(SYS_READ, hello.0 as u64, buf, len) };
+        expect_efault(read(hole as u64, 1), 61)?;
+        expect_efault(read(hole as u64 - 1, 2), 62)?;
+        expect_efault(read(ro as u64, 1), 63)?;
+        let mut byte = [0u8; 2];
+        if read(byte.as_mut_ptr() as u64, 2) != 2 || byte != *b"Ne" {
+            return Err(64);
+        }
+        say(b"[ user-copy ] read: unmapped, crossing, read-only -> EFAULT, offset kept\n");
+
+        // SYS_READDIR: a read-only cursor (holding 0, a valid first cursor)
+        // takes the entry, then faults writing the cursor back.
+        let r = unsafe {
+            raw4(
+                SYS_READDIR,
+                dir.0 as u64,
+                entry.as_mut_ptr() as u64,
+                entry.len() as u64,
+                ro as u64,
+            )
+        };
+        expect_efault(r, 65)?;
+        say(b"[ user-copy ] readdir: read-only cursor -> EFAULT\n");
+
+        // SYS_FUTEX_WAIT: an unmapped word; then the word's page unmapped
+        // after the translation, so the value re-check under the queue lock
+        // faults (CP-99). The queue still works after.
+        let futex = |word: u64, expected: u32| unsafe {
+            raw3(SYS_FUTEX_WAIT, word, u64::from(expected), 0)
+        };
+        expect_efault(futex(hole as u64, 0), 70)?;
+        let fpage = sys_vm_map(PAGE, rw, false).map_err(|_| 71)?;
+        expect_efault(futex(fpage as u64, FUTEX_UNMAP_MAGIC), 72)?;
+        expect_efault(futex(fpage as u64, 0), 73)?;
+        let word = 0u32;
+        if futex(&word as *const u32 as u64, 1) != EAGAIN {
+            return Err(74);
+        }
+        say(b"[ user-copy ] futex: unmapped, unmapped under the queue lock -> EFAULT\n");
+
+        // IPC (SYS_SEND/SYS_RECV, one process's two threads): a read-only or
+        // unmapped receive buffer and an unmapped send buffer are EFAULT to
+        // both sides; then a well-formed rendezvous delivers.
+        let (a, b) = sys_chan_create().map_err(|_| 80)?;
+        let (a, b) = (a.0 as u64, b.0 as u64);
+        let payload = *b"user-copy ipc ok";
+        let src = payload.as_ptr() as u64;
+        for (i, (dst, src, len)) in [
+            (ro as u64, src, 16),
+            (hole as u64, src, 16),
+            (crossing as u64, src, 16),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (sent, got) = rendezvous(b, a, dst, src, len)?;
+            if sent != EFAULT || got != EFAULT {
+                return Err(81 + i as i32);
+            }
+        }
+        let mut inbox = [0u8; 16];
+        for (i, src) in [hole as u64, crossing as u64].into_iter().enumerate() {
+            let (sent, got) = rendezvous(b, a, inbox.as_mut_ptr() as u64, src, 16)?;
+            if sent != EFAULT || got != EFAULT {
+                return Err(84 + i as i32);
+            }
+        }
+        let (sent, got) = rendezvous(b, a, inbox.as_mut_ptr() as u64, src, 16)?;
+        if sent != 16 || got != 16 || inbox != payload {
+            return Err(86);
+        }
+        say(b"[ user-copy ] ipc: read-only, unmapped, crossing -> EFAULT; then delivered\n");
+
+        // IPC against a parallel unmap. A sender (CPU 3) and a receiver (CPU
+        // 1) rendezvous 72 bytes between two fresh pages; a sibling on CPU 2
+        // unmaps the peer side's page while the copy runs. The scenario
+        // kernel holds that copy open until the unmap is waiting on the
+        // peer's page-table lock (its go: the peer page's address, written
+        // into the live side's buffer), and the harness checks the frame was
+        // still mapped when the copy finished. Here: the copy delivers to
+        // both sides, then the unmap succeeds.
+        let src_page = sys_vm_map(PAGE, rw, false).map_err(|_| 110)?;
+        let dst_page = sys_vm_map(PAGE, rw, false).map_err(|_| 110)?;
+        RACE_SRC.store(src_page as u64, Ordering::Release);
+        RACE_DST.store(dst_page as u64, Ordering::Release);
+        RACE_CHANS.store(a | (b << 32), Ordering::Release);
+        UNMAPPER_READY.store(0, Ordering::Release);
+        let on = |f: extern "C" fn(usize) -> !, cpu: u32| {
+            sys_test_thread_create_on(f, 0, THREAD_STACK, cpu).map_err(|_| 111)
+        };
+        let u = on(race_unmapper, 2)?;
+        while UNMAPPER_READY.load(Ordering::Acquire) == 0 {
+            libneo::sys_sched_yield();
+        }
+        let r = on(race_receiver, 1)?;
+        let t = on(race_sender, 3)?;
+        let sent = sys_thread_join(t).map_err(|_| 112)?;
+        let got = sys_thread_join(r).map_err(|_| 112)?;
+        let unmapped = sys_thread_join(u).map_err(|_| 112)?;
+        if sent != RACE_LEN as i32 || got != RACE_LEN as i32 || unmapped != 0 {
+            return Err(113);
+        }
+        say(b"[ user-copy ] ipc: peer's page unmapped mid-copy -> unmap waits, copy delivers\n");
+
+        // SYS_THREAD_JOIN: a faulting status pointer is EFAULT before the
+        // join takes the exit record, so the thread is still joinable.
+        let t = nthread::spawn(exits_seven, 0, THREAD_STACK).map_err(|_| 90)?;
+        let join = |out: u64| unsafe { raw3(SYS_THREAD_JOIN, t.tid(), out, 0) };
+        expect_efault(join(hole as u64), 91)?;
+        expect_efault(join(ro as u64), 92)?;
+        let mut code = 0i32;
+        if join(&mut code as *mut i32 as u64) != 0 || code != 7 {
+            return Err(93);
+        }
+        say(b"[ user-copy ] join: unmapped, read-only -> EFAULT, still joinable\n");
+
+        // SYS_NET_TCP_ENABLE_TLS: the caller's key is wiped before TLS is
+        // installed; a key that can't be wiped is EFAULT (it used to be
+        // dropped, and the call went on). A key that is half read-only is
+        // left whole. A writable key is still wiped (EINVAL: not
+        // established).
+        let remote = SockAddr::Inet(SockAddrIn::new_loopback(7019));
+        let r = unsafe {
+            raw3(
+                SYS_NET_CONNECT_TCP,
+                remote.as_ptr() as u64,
+                remote.len() as u64,
+                7013,
+            )
+        };
+        if r < 0 {
+            return Err(100);
+        }
+        let tcp = TcpSocketHandle(r as u32);
+        let tls = |key: u64| unsafe {
+            raw3(
+                SYS_NET_TCP_ENABLE_TLS,
+                tcp.0 as u64,
+                key,
+                TLS_KEY_MATERIAL_LEN as u64,
+            )
+        };
+        expect_efault(tls(ro as u64), 101)?;
+        let pair = sys_vm_map(2 * PAGE, rw, false).map_err(|_| 102)?;
+        let ro_half = pair.wrapping_add(PAGE);
+        let head = 40;
+        let key = ro_half.wrapping_sub(head);
+        // SAFETY: `key..ro_half` is the writable page's last 40 bytes.
+        unsafe { core::ptr::write_bytes(key, 0xAA, head) };
+        sys_vm_protect(ro_half, PAGE, PROT_READ).map_err(|_| 103)?;
+        expect_efault(tls(key as u64), 104)?;
+        // SAFETY: as above.
+        if unsafe { core::slice::from_raw_parts(key, head) }
+            .iter()
+            .any(|&b| b != 0xAA)
+        {
+            return Err(105);
+        }
+        let mut good = [0xAAu8; TLS_KEY_MATERIAL_LEN];
+        if tls(good.as_mut_ptr() as u64) == EFAULT || good.iter().any(|&b| b != 0) {
+            return Err(106);
+        }
+        let _ = sys_tcp_close(tcp);
+        say(b"[ user-copy ] tls: read-only, half read-only key -> EFAULT, key kept\n");
+
+        // SYS_SOCKET_RECV / SYS_SOCKET_RECVFROM: the datagram is copied out
+        // before it leaves the queue, so an unmapped or read-only buffer (or
+        // a read-only address buffer) is EFAULT and the datagram is still
+        // there for the next receive.
+        let udp =
+            libneo::sys_socket_create(libneo::AF_INET, libneo::SOCK_DGRAM).map_err(|_| 120)?;
+        let here = SockAddrIn::new_loopback(7021);
+        if libneo::sys_socket_bind_in(udp, &here) != 0 {
+            return Err(121);
+        }
+        let dgram = *b"keep-me!";
+        if libneo::sys_socket_sendto(udp, &dgram, &SockAddr::Inet(here)) != dgram.len() as i64 {
+            return Err(122);
+        }
+        let recv = |buf: u64| unsafe {
+            raw4(
+                libneo::SYS_SOCKET_RECV,
+                udp.0 as u64,
+                buf,
+                dgram.len() as u64,
+                0,
+            )
+        };
+        expect_efault(recv(hole as u64), 123)?;
+        expect_efault(recv(ro as u64), 124)?;
+        let mut got = [0u8; 8];
+        let mut addr_len = 16usize;
+        let r = unsafe {
+            libneo::raw6(
+                libneo::SYS_SOCKET_RECVFROM,
+                udp.0 as u64,
+                got.as_mut_ptr() as u64,
+                got.len() as u64,
+                0,
+                ro as u64,
+                &mut addr_len as *mut usize as u64,
+            )
+        };
+        expect_efault(r, 125)?;
+        if recv(got.as_mut_ptr() as u64) != dgram.len() as i64 || got != dgram {
+            return Err(126);
+        }
+        let _ = libneo::sys_socket_close(udp);
+        say(b"[ user-copy ] udp recv: unmapped, read-only, read-only address -> EFAULT, datagram kept\n");
+
+        // Still serving: a well-formed call works.
+        let mut record = [0u8; 16];
+        let r = unsafe {
+            raw3(
+                SYS_HANDLE_INFO,
+                chan.0 as u64,
+                record.as_mut_ptr() as u64,
+                16,
+            )
+        };
+        if r != 0 {
+            return Err(40);
+        }
+        Ok(())
+    }
+
+    pub fn run() -> i32 {
+        match steps() {
+            Ok(()) => {
+                say(b"[ user-copy ] PASS: every faulting copy returned EFAULT\n");
+                0
+            }
+            Err(code) => {
+                say(b"[ user-copy ] FAIL\n");
                 code
             }
         }
