@@ -27,6 +27,10 @@ pub const STDIN_PIPE_CAPACITY: usize = 4 * 1024;
 pub const STDOUT_PIPE_CAPACITY: usize = 64 * 1024;
 /// The largest pipe a caller may create.
 pub const MAX_PIPE_CAPACITY: usize = 64 * 1024;
+/// A write of at most this many bytes (and no more than the capacity) is
+/// atomic: it is stored whole or waits for room, so two writers' small
+/// writes never interleave (POSIX's minimum `PIPE_BUF`; step-2 THINK §2a).
+pub const PIPE_ATOMIC: usize = 512;
 
 /// Which end a handle is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +78,9 @@ pub enum PipeError {
     TooManyEndpoints,
     /// Closing an end that has no endpoints left (a double close).
     NoSuchEndpoint,
+    /// Adding an endpoint to an end whose count reached 0: once an end is
+    /// closed it stays closed (Dexter #46 note 1b).
+    EndClosed,
 }
 
 /// The state of one pipe. The bytes live in caller-owned storage of exactly
@@ -134,12 +141,34 @@ impl Pipe {
         self.len < self.capacity || self.readers == 0
     }
 
-    /// One more handle on `end` (a grant or a duplicate).
+    /// A pipe with given endpoint counts, for the host KATs of the count
+    /// bounds (`TooManyEndpoints`, `EndClosed`); the kernel uses [`Pipe::new`].
+    #[doc(hidden)]
+    pub const fn with_endpoints(
+        capacity: usize,
+        readers: u32,
+        writers: u32,
+    ) -> Result<Self, PipeError> {
+        match Self::new(capacity) {
+            Ok(mut p) => {
+                p.readers = readers;
+                p.writers = writers;
+                Ok(p)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One more handle on `end` (a grant or a duplicate). An end already
+    /// closed (count 0) can't be reopened.
     pub fn add_endpoint(&mut self, end: End) -> Result<(), PipeError> {
         let count = match end {
             End::Read => &mut self.readers,
             End::Write => &mut self.writers,
         };
+        if *count == 0 {
+            return Err(PipeError::EndClosed);
+        }
         *count = count.checked_add(1).ok_or(PipeError::TooManyEndpoints)?;
         Ok(())
     }
@@ -173,7 +202,12 @@ impl Pipe {
         })
     }
 
-    /// Store up to `src.len()` bytes into `storage` (`capacity` bytes).
+    /// Store up to `src.len()` bytes into `storage` (`capacity` bytes). A
+    /// write of at most [`PIPE_ATOMIC`] bytes that fits the capacity is
+    /// atomic: all of it, or `WouldBlock` until there is room for all of it.
+    /// A larger write stores what fits. A zero-length write is `BrokenPipe`
+    /// with no reader, else `Written(0)` (the zero-length contract, as
+    /// Linux's).
     pub fn write(
         &mut self,
         storage: &mut [u8],
@@ -189,7 +223,8 @@ impl Pipe {
             return Ok((WriteOutcome::Written(0), Wake::default()));
         }
         let space = self.capacity - self.len;
-        if space == 0 {
+        let atomic = src.len() <= PIPE_ATOMIC && src.len() <= self.capacity;
+        if space == 0 || (atomic && space < src.len()) {
             return Ok((WriteOutcome::WouldBlock, Wake::default()));
         }
         let n = space.min(src.len());
@@ -208,7 +243,13 @@ impl Pipe {
         ))
     }
 
-    /// Copy up to `dst.len()` buffered bytes out of `storage`.
+    /// Copy up to `dst.len()` buffered bytes out of `storage`. A zero-length
+    /// read is `Read(0)` while bytes or a writer remain, `Eof` with neither.
+    ///
+    /// Every read that frees space wakes the writers, not only one from a
+    /// full pipe: an atomic writer parks while the pipe is not full but has
+    /// too little room for its whole write, and must see each new byte of
+    /// room. A writer that still doesn't fit parks again.
     pub fn read(
         &mut self,
         storage: &[u8],
@@ -231,7 +272,6 @@ impl Pipe {
             return Ok((ReadOutcome::Read(0), Wake::default()));
         }
         let n = self.len.min(dst.len());
-        let was_full = self.len == self.capacity;
         let first = n.min(self.capacity - self.head);
         dst[..first].copy_from_slice(&storage[self.head..self.head + first]);
         dst[first..n].copy_from_slice(&storage[..n - first]);
@@ -244,7 +284,7 @@ impl Pipe {
             ReadOutcome::Read(n),
             Wake {
                 readers: false,
-                writers: was_full,
+                writers: true,
             },
         ))
     }

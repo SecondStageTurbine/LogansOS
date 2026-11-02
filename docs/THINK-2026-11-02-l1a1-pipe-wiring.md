@@ -52,7 +52,10 @@ and the wait item):
 - **Blocking write (Dexter 3a/5.4):** a blocking write loops until all `len` bytes are written. A write of at most
   `PIPE_ATOMIC = 512` bytes is atomic: it waits for room for all of it, so two writers' small writes never
   interleave. A kill or `EPIPE` mid-loop returns the count written so far, if any. KATs in `pipe-logic-tests` for
-  the atomic-write rule (a `write_all_or_none` helper in `pipe_logic.rs`).
+  the atomic-write rule, which lives in `pipe_logic::Pipe::write` itself (`PIPE_ATOMIC`). **This changes one rule
+  step 1's review saw:** an atomic writer can park on a pipe that isn't full (too little room for its whole write), so
+  every read that frees space now wakes the writers, not only a read from a full pipe; a writer that still doesn't fit
+  parks again. Without that change the atomic rule would lose a wake.
 - **Zero-length I/O (Dexter 1a), pinned as the contract:** a zero-length write is `EPIPE` with no reader, else 0; a
   zero-length read is 0 with bytes or a writer, `EOF` (0) with neither. Same as Linux. KATs for the full-pipe and
   no-reader cases.

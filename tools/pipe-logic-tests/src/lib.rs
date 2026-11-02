@@ -75,10 +75,12 @@ mod tests {
         let mut p = P::new(16);
         assert_eq!(p.write(b"hello"), (WriteOutcome::Written(5), READERS));
         assert_eq!(p.write(b" world"), (WriteOutcome::Written(6), NONE));
-        assert_eq!(p.read(3), (ReadOutcome::Read(3), NONE, b"hel".to_vec()));
+        // Every read that frees space wakes the writers (step 2: atomic
+        // writers park on a pipe that isn't full).
+        assert_eq!(p.read(3), (ReadOutcome::Read(3), WRITERS, b"hel".to_vec()));
         assert_eq!(
             p.read(100),
-            (ReadOutcome::Read(8), NONE, b"lo world".to_vec())
+            (ReadOutcome::Read(8), WRITERS, b"lo world".to_vec())
         );
         assert_eq!(p.read(1).0, ReadOutcome::WouldBlock);
     }
@@ -93,8 +95,8 @@ mod tests {
         assert_eq!(p.read(8).2, b"fGHIJKLM".to_vec());
     }
 
-    /// A write larger than the space stores what fits (partial success);
-    /// a full pipe would block; draining a full pipe wakes the writers.
+    /// A write larger than the capacity stores what fits (partial success);
+    /// a full pipe would block; draining wakes the writers.
     #[test]
     fn partial_write_then_block_then_wake() {
         let mut p = P::new(4);
@@ -103,8 +105,41 @@ mod tests {
         assert_eq!(p.write(b"g"), (WriteOutcome::WouldBlock, NONE));
         assert_eq!(p.read(1), (ReadOutcome::Read(1), WRITERS, b"a".to_vec()));
         assert!(p.pipe.writable());
-        // Not full any more: a further read wakes nobody.
-        assert_eq!(p.read(1).1, NONE);
+        // Not full any more, and the read still wakes the writers.
+        assert_eq!(p.read(1).1, WRITERS);
+        // An empty pipe's read frees nothing and wakes nobody.
+        let mut q = P::new(4);
+        q.pipe.close_endpoint(End::Write).unwrap();
+        assert_eq!(q.read(1).1, NONE);
+    }
+
+    /// Step 2 §2a: a write of at most PIPE_ATOMIC bytes that fits the
+    /// capacity is stored whole or not at all.
+    #[test]
+    fn small_writes_are_atomic() {
+        assert_eq!(PIPE_ATOMIC, 512);
+        let mut p = P::new(8);
+        p.write(b"abcde"); // 3 bytes of room
+        assert_eq!(p.write(b"wxyz"), (WriteOutcome::WouldBlock, NONE));
+        assert_eq!(p.pipe.buffered(), 5);
+        // One byte read: 4 bytes of room, and the writer is woken for it.
+        assert_eq!(p.read(1).1, WRITERS);
+        assert_eq!(p.write(b"wxyz").0, WriteOutcome::Written(4));
+        assert_eq!(p.read(8).2, b"bcdewxyz".to_vec());
+    }
+
+    /// A write larger than PIPE_ATOMIC, or than the capacity, may be split.
+    #[test]
+    fn large_writes_may_be_split() {
+        let mut p = P::new(1024);
+        p.write(&[1; 1000]); // 24 bytes of room
+        assert_eq!(p.write(&[2; 600]).0, WriteOutcome::Written(24));
+        let mut q = P::new(4);
+        q.write(b"ab");
+        // 3 bytes fit the capacity of 4, so the write is atomic: it waits.
+        assert_eq!(q.write(b"xyz").0, WriteOutcome::WouldBlock);
+        // 6 bytes > capacity: not atomic, stores what fits.
+        assert_eq!(q.write(b"uvwxyz").0, WriteOutcome::Written(2));
     }
 
     /// OT-88 §3.2: "last writer closed → reader gets EOF after the buffer
@@ -115,8 +150,8 @@ mod tests {
         p.write(b"tail");
         assert_eq!(p.pipe.close_endpoint(End::Write), Ok(READERS));
         assert!(p.pipe.readable());
-        assert_eq!(p.read(2), (ReadOutcome::Read(2), NONE, b"ta".to_vec()));
-        assert_eq!(p.read(9), (ReadOutcome::Read(2), NONE, b"il".to_vec()));
+        assert_eq!(p.read(2), (ReadOutcome::Read(2), WRITERS, b"ta".to_vec()));
+        assert_eq!(p.read(9), (ReadOutcome::Read(2), WRITERS, b"il".to_vec()));
         assert_eq!(p.read(9).0, ReadOutcome::Eof);
         assert_eq!(p.read(9).0, ReadOutcome::Eof);
     }
@@ -165,6 +200,47 @@ mod tests {
         assert!(p.pipe.is_dead());
     }
 
+    /// Dexter #46 1b: an end at count 0 can't be reopened.
+    #[test]
+    fn a_closed_end_stays_closed() {
+        let mut p = Pipe::new(8).unwrap();
+        p.close_endpoint(End::Write).unwrap();
+        assert_eq!(p.add_endpoint(End::Write), Err(PipeError::EndClosed));
+        assert_eq!(p.writers(), 0);
+        // The read end still grants.
+        p.add_endpoint(End::Read).unwrap();
+        assert_eq!(p.readers(), 2);
+    }
+
+    /// Dexter #46 note 2: the count bound.
+    #[test]
+    fn endpoint_counts_cannot_overflow() {
+        let mut p = Pipe::with_endpoints(8, u32::MAX, 1).unwrap();
+        assert_eq!(p.add_endpoint(End::Read), Err(PipeError::TooManyEndpoints));
+        assert_eq!(p.readers(), u32::MAX);
+        assert!(Pipe::with_endpoints(0, 1, 1).is_err());
+    }
+
+    /// Dexter #46 note 4: the wrong storage length on the read path too.
+    #[test]
+    fn read_checks_the_storage_length() {
+        let mut p = Pipe::new(8).unwrap();
+        let mut dst = [0u8; 4];
+        assert_eq!(p.read(&[0u8; 7], &mut dst), Err(PipeError::BadCapacity));
+    }
+
+    /// Dexter #46 note 4: the last reader goes, then the last writer: EPIPE
+    /// first, then the object is dead with nothing to wake.
+    #[test]
+    fn reader_then_writer_close() {
+        let mut p = P::new(4);
+        p.write(b"ab");
+        assert_eq!(p.pipe.close_endpoint(End::Read), Ok(WRITERS));
+        assert_eq!(p.write(b"c").0, WriteOutcome::BrokenPipe);
+        assert_eq!(p.pipe.close_endpoint(End::Write), Ok(READERS));
+        assert!(p.pipe.is_dead());
+    }
+
     #[test]
     fn a_double_close_is_refused() {
         let mut p = Pipe::new(8).unwrap();
@@ -191,6 +267,9 @@ mod tests {
         assert!(r.pipe.writable(), "EPIPE is writable");
     }
 
+    /// The zero-length contract (Dexter #46 1a; step-2 THINK §2a), as
+    /// Linux's: a write is EPIPE with no reader, else 0, even on a full
+    /// pipe; a read is 0 while bytes or a writer remain, EOF with neither.
     #[test]
     fn zero_length_calls() {
         let mut p = P::new(4);
@@ -199,6 +278,14 @@ mod tests {
         p.write(b"x");
         assert_eq!(p.read(0).0, ReadOutcome::Read(0));
         assert_eq!(p.pipe.buffered(), 1);
+        p.write(b"yzw"); // full
+        assert_eq!(p.write(b""), (WriteOutcome::Written(0), NONE));
+        let mut no_reader = P::new(4);
+        no_reader.pipe.close_endpoint(End::Read).unwrap();
+        assert_eq!(no_reader.write(b"").0, WriteOutcome::BrokenPipe);
+        let mut no_writer = P::new(4);
+        no_writer.pipe.close_endpoint(End::Write).unwrap();
+        assert_eq!(no_writer.read(0).0, ReadOutcome::Eof);
     }
 
     /// A long stream through a small pipe, in uneven pieces, arrives whole
@@ -225,14 +312,11 @@ mod tests {
             if let ReadOutcome::Read(_) = o {
                 out.extend(got);
             }
-            if w.writers {
-                writer_parked = false;
+            if let ReadOutcome::Read(n) = o {
+                // Every read that freed space wakes a parked writer.
+                assert_eq!(w.writers, n > 0);
             }
-            if writer_parked && !p.pipe.writable() {
-                // Parked on a full pipe: the next read must wake it.
-                let (_, w, got) = p.read(1);
-                out.extend(got);
-                assert!(w.writers, "a read from a full pipe wakes the writer");
+            if w.writers {
                 writer_parked = false;
             }
         }
