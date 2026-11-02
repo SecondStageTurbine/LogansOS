@@ -91,3 +91,6 @@ RELAY 270 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-268-270.
 RELAY 271 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-271.md | Section "Relay 271" (#45 re-check + #47 review; RETURN `Plans/RETURN-2026-11-02-pr45-pr47-review-dexter.md`)
 RELAY 272 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-02-relays-272-273.md | Section 272 (#42 item 1 re-check; RETURN `Plans/RETURN-2026-11-02-pr42-recheck-jarvis.md`)
 RELAY 273 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-272-273.md | Section 273 (#56 pipe step 2 design; RETURN `Plans/RETURN-2026-11-02-pr56-pipe2-review-dexter.md`)
+RELAY 274 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-02-relays-274-276.md | Section 274 (#57 re-check; RETURN `Plans/RETURN-2026-11-02-pr57-recheck-chad.md`)
+RELAY 275 | chad | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-02-relays-274-276.md | Section 275 (#17 item 1 re-check; RETURN `Plans/RETURN-2026-11-02-pr17-recheck-chad.md`)
+RELAY 276 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-274-276.md | Section 276 (#51 r2 re-check; RETURN `Plans/RETURN-2026-11-02-pr51-recheck-dexter.md`)

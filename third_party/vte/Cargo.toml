@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# Vendored alacritty/vte at 89c9c22f5b8fcc3feba0a9d9f50a020801e74acc; see VENDORED.md.
+# Upstream's manifest is Cargo.toml.upstream, unchanged.
+[package]
+authors = ["Joe Wilm <joe@jwilm.com>", "Christian Duerr <contact@christianduerr.com>"]
+description = "Parser for implementing terminal emulators"
+repository = "https://github.com/alacritty/vte"
+readme = "README.md"
+license = "Apache-2.0 OR MIT"
+version = "0.15.0"
+name = "vte"
+edition = "2021"
+rust-version = "1.62.1"
+publish = false
+
+[features]
+ansi = ["log", "cursor-icon", "bitflags"]
+default = ["std"]
+std = ["memchr/std"]
+serde = ["dep:serde"]
+
+[dependencies]
+arrayvec = { version = "0.7.2", default-features = false }
+bitflags = { version = "2.3.3", default-features = false, optional = true }
+cursor-icon = { version = "1.0.0", default-features = false, optional = true }
+log = { version = "0.4.17", optional = true }
+memchr = { version = "2.7.4", default-features = false }
+serde = { version = "1.0.160", features = ["derive"], optional = true }

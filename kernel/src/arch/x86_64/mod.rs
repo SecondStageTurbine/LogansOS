@@ -19,6 +19,9 @@ use x86_64::registers::control::Cr3;
 pub mod apic;
 pub mod apic_logic;
 pub mod context;
+/// OT-90 P3b: K4, the shutdown's STOP IPI and the parked CPUs.
+#[cfg(feature = "power-stop-cpus")]
+pub mod cpu_stop;
 /// Arthur latency round 2: APERF/MPERF evidence and the HWP request.
 #[cfg(any(feature = "prefill-perf", feature = "hwp-performance"))]
 pub mod cpufreq;
@@ -31,9 +34,17 @@ pub mod fpu_logic;
 pub mod gdt;
 pub mod idt;
 /// i8042 lane: one I/O APIC redirection entry for an ISA IRQ (IRQ1).
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 pub mod ioapic;
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 #[path = "ioapic_logic.rs"]
 pub mod ioapic_logic;
 #[cfg(feature = "lapic-timer")]

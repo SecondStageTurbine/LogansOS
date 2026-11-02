@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-term-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L1a.2: the terminal's core (term page, key encoder, line discipline, answerbacks, paste sanitizer); no_std"
+
+[lib]
+name = "neo_term_core"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# The VT parser and screen: vendored doy/vt100-rust (MIT) at fb0f54ec, with
+# its vendored alacritty/vte (Apache-2.0 OR MIT) at 89c9c22f; `std` off
+# (THINK L1a §9). See third_party/vt100/VENDORED.md.
+vt100 = { path = "../../third_party/vt100", default-features = false }
