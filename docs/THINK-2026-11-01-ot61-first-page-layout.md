@@ -194,6 +194,15 @@ The same five still fail: `mio`, `socket2`, `libz-sys` (`off_t` is still missing
 and `surfman`. Everything above them still waits, so L0's next step is those five stubs or cfg edges. Only after
 them does the probe reach `tokio`, `ipc-channel` and the `servo-*` crates.
 
+**Third pass**, adding local probe patches for `servo-allocator` (std's allocator on our target) and `libz-sys` (a
+64-bit `z_off_t`): both then build. `fontsan`'s C++ (the OTS sanitizer) **compiles** for our target, and only its
+Rust side fails, on `libc::{c_int, size_t, off_t}`. That is the pattern behind three of the failures
+(`libz-sys`, `servo-allocator`, `fontsan`): **the `libc` crate has no arm for `target_os = "neoplutarch"`**, so
+the C types every `-sys` crate names don't exist. One fix covers all three: a types-only `libc` arm (`c_int`,
+`size_t`, `off_t` and the rest, matching neo-crt's musl ABI from #2). It declares no functions, so it adds no
+syscall surface (A4 unchanged), and it beats patching each `-sys` crate. What still fails after that:
+`mio`, `socket2` and `surfman`.
+
 `harfbuzz-sys` (C++) built for our target unchanged. `freetype-sys` and `fontsan` sit behind `libz-sys`, and
 `tokio`, `ipc-channel` and the `servo-*` traits crates sit behind `mio`/`socket2`/`getrandom`, so they are the
 probe's second layer. **None of the first layer needs a layout or DOM change**: each is a provider seam (entropy,
