@@ -564,6 +564,100 @@ jobs:
             neo \
             bash scripts/ci/rng-seed-boot.sh
 
+  # #52 review item 3: the product kernel (`iso --product-kernel`: the image's
+  # features and opt-level, no model), booted with the preview's WHPX CPUID
+  # (CPUID.(0DH,0):EBX=576 with AVX enabled). The witness needs the area sized
+  # from the components, the AP admitted under the boot CPU's FPU policy and
+  # the scheduler on LAPIC ticks; the control (EBX trusted, as before the fix)
+  # must end in the product panic screen with the #GP diagnostics (item 4).
+  # Its first run caught a CPUID asm defect only the opt-level-3 kernel hit.
+  # Hermetic (no model, no network); same trigger as the QEMU shards.
+  product-xsave-boot:
+    name: Product kernel boot, WHPX XSAVE CPUID (no neo-test)
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 90
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - name: Free disk space (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare container cache directories
+        run: mkdir -p .docker .home .rustup-home .cargo-home
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Restore-only: the QEMU shards own this cache entry's save.
+      - name: Restore Docker layers
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Build dev container (with buildx cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+
+      - name: Restore cargo registry, git, and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.rustup-home
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            ${{ github.workspace }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-product-xsave-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Bootstrap pinned Rust toolchain on cache miss
+        run: |
+          TOOLCHAIN=nightly-2026-04-16-x86_64-unknown-linux-gnu
+          if [ ! -x ".rustup-home/toolchains/${TOOLCHAIN}/bin/cargo" ]; then
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview,rustfmt,clippy \
+                --target x86_64-unknown-none,aarch64-unknown-none
+          fi
+
+      - name: Boot the product kernel with CPUID.(0DH,0):EBX=576 (witness, then control)
+        run: |
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e LIMINE_DIR=/opt/limine \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            neo \
+            bash -c "bash scripts/ci/product-xsave-boot.sh witness && bash scripts/ci/product-xsave-boot.sh control"
+
   spdx-lint:
     name: SPDX License Headers
     needs: nightly-skip

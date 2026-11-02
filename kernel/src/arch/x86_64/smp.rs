@@ -46,6 +46,16 @@ static BSP_APIC_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// the lock-hold window). See `run_ap_bootstrap`.
 static APS_READY: AtomicU32 = AtomicU32::new(0);
 
+/// APs that could not run under the boot CPU's FPU save policy and stayed
+/// offline (#52 review, item 1).
+static APS_REJECTED: AtomicU32 = AtomicU32::new(0);
+
+/// `xsave_ap_policy`: how many APs stayed offline for the FPU save policy.
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+pub fn aps_rejected_for_test() -> u32 {
+    APS_REJECTED.load(Ordering::Acquire)
+}
+
 /// Called by each AP from `run_ap_bootstrap` once it has completed per-CPU init,
 /// releasing one count of the BSP's `bring_up_aps` readiness barrier.
 pub fn signal_ap_ready() {
@@ -195,12 +205,24 @@ pub fn bring_up_aps() {
         let expected = started + 1;
         cpu.bootstrap(ap_entry, cpu_id as u64);
         started += 1;
+        let rejected_before = APS_REJECTED.load(Ordering::Acquire);
         let mut spins: u64 = 0;
-        while APS_READY.load(Ordering::Acquire) < expected && spins < AP_READY_SPIN_LIMIT {
+        while APS_READY.load(Ordering::Acquire) < expected
+            && APS_REJECTED.load(Ordering::Acquire) == rejected_before
+            && spins < AP_READY_SPIN_LIMIT
+        {
             core::hint::spin_loop();
             spins += 1;
         }
-        if APS_READY.load(Ordering::Acquire) < expected {
+        if APS_REJECTED.load(Ordering::Acquire) != rejected_before {
+            // It halted in `ap_entry` and never signals ready: not started.
+            started -= 1;
+            serial_println!(
+                "[ kernel ] smp: cpu_id={} lapic_id={} left offline - it cannot run under the FPU save policy",
+                cpu_id,
+                cpu.lapic_id
+            );
+        } else if APS_READY.load(Ordering::Acquire) < expected {
             serial_println!(
                 "[ kernel ] smp: cpu_id={} did not signal ready within limit - proceeding (AP degraded)",
                 cpu_id
@@ -244,8 +266,13 @@ unsafe extern "C" fn ap_entry(info: &MpInfo) -> ! {
     // CR0/CR4 are CPU-local. Enable SSE/SMEP/SMAP before this AP executes any
     // meaningful Rust path that might use compiler-emitted SIMD or user-access
     // policy state.
-    unsafe {
-        x86_64::enable_sse();
+    // #52 review item 1: an AP that cannot run under the boot CPU's FPU save
+    // policy stays offline (it never changes the policy). It halts before it
+    // touches any shared state, and the bringup loop moves on.
+    // SAFETY: this AP owns its CR0/CR4; nothing else runs on it yet.
+    if !unsafe { x86_64::enable_sse() } {
+        APS_REJECTED.fetch_add(1, Ordering::Release);
+        halt_forever();
     }
 
     let cpu_id = info.extra_argument() as u32;

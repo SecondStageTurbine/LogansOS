@@ -143,8 +143,13 @@ pub fn halt_forever() -> ! {
 ///
 /// MUST be called before any code that LLVM might vectorize. In practice that
 /// means: very early in `_kernel_start`, right after `serial::init()`.
+///
+/// Returns whether this CPU may come online. The boot CPU always may: it
+/// publishes the FPU save policy. An AP may only if it can run under that
+/// policy (#52 review, item 1); one that cannot must stay offline.
 #[inline(always)]
-pub unsafe fn enable_sse() {
+#[must_use]
+pub unsafe fn enable_sse() -> bool {
     let mut cr0: u64;
     // SAFETY: caller guarantees early single-CPU boot ownership of CR0/CR4.
     unsafe {
@@ -194,7 +199,18 @@ pub unsafe fn enable_sse() {
     }
 
     #[cfg(feature = "xsave-fpu")]
-    fpu::finish_xsave_init(xsave_requested);
+    {
+        let verdict = fpu::finish_xsave_init(xsave_requested);
+        if verdict != fpu_logic::ApVerdict::Admit {
+            crate::serial_println!(
+                "[ kernel ] cpu: FPU save policy (area={} mask=0x{:x}) not supported here: {:?} - this CPU stays offline",
+                fpu::save_area_size(),
+                fpu::xstate_mask(),
+                verdict
+            );
+            return false;
+        }
+    }
 
     // Don't trust the bootloader (BSP) or the AP trampoline to hand over the
     // power-on x87/MXCSR state: the adopted boot thread (and, without
@@ -245,6 +261,7 @@ pub unsafe fn enable_sse() {
     // CPU). Off ⇒ not compiled, and the kernel never writes a power MSR.
     #[cfg(feature = "hwp-performance")]
     cpufreq::hwp_performance();
+    true
 }
 
 #[inline]
@@ -352,21 +369,11 @@ fn cpuid_leaf7_ebx() -> u32 {
         return 0;
     }
 
-    let ebx: u32;
-    unsafe {
-        asm!(
-            "push rbx",
-            "cpuid",
-            "mov {ebx:e}, ebx",
-            "pop rbx",
-            inout("eax") 7_u32 => _,
-            inout("ecx") 0_u32 => _,
-            lateout("edx") _,
-            ebx = lateout(reg) ebx,
-            options(nomem)
-        );
-    }
-    ebx
+    // `__cpuid_count`, not hand-written `push rbx; cpuid; mov {out:e}, ebx;
+    // pop rbx`: with a `reg` output the allocator may pick rbx itself, and the
+    // `pop` then discards CPUID's EBX (seen in the opt-level-3 product kernel,
+    // #52 follow-up: an AP read CPUID.(0DH,2):EBX as a stack address).
+    core::arch::x86_64::__cpuid_count(7, 0).ebx
 }
 
 fn cpuid_max_basic_leaf() -> u32 {
