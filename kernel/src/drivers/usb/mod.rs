@@ -45,6 +45,11 @@ pub mod hid_keyboard;
 pub mod hid_logic;
 #[cfg(feature = "usb-hid-mouse")]
 pub mod hid_mouse;
+// L3u: USB mass storage (Bulk-Only Transport + SCSI), read-only.
+#[cfg(feature = "usb-storage")]
+pub mod msc;
+#[cfg(feature = "usb-storage")]
+pub mod msc_logic;
 #[cfg(feature = "mt7601u")]
 pub mod mt7601u;
 #[cfg(feature = "mt7601u")]
@@ -62,6 +67,10 @@ pub use usb_parse::{UsbConfiguration, UsbEndpoint};
 pub struct UsbDevice {
     pub slot_id: u8,
     pub port: u8,
+    /// The route string below the root port (0 on the root port itself), so
+    /// a hub-port detach finds the devices under it.
+    #[cfg(feature = "usb-hotplug")]
+    pub route: u32,
     pub speed: UsbSpeed,
     pub vendor_id: u16,
     pub product_id: u16,
@@ -133,6 +142,69 @@ pub trait UsbClassDriver: Send + Sync {
         let _ = device;
         Err(claimed)
     }
+    /// The device this driver bound has been unplugged (#30): stop using it,
+    /// fail its outstanding and later I/O, and withdraw whatever it
+    /// registered. Called by the port service, from process context, with
+    /// no USB lock held. The default keeps nothing, so needs nothing.
+    #[cfg(feature = "usb-hotplug")]
+    fn detach(&self, device: &UsbDevice) {
+        let _ = device;
+    }
+}
+
+/// A bound device and the driver that bound it.
+#[cfg(feature = "usb-hotplug")]
+type Binding = (Arc<UsbDevice>, Arc<dyn UsbClassDriver>);
+
+/// Which driver bound which device (#30: the detach goes to it).
+#[cfg(feature = "usb-hotplug")]
+static BOUND: SwitchMutex<Vec<Binding>> =
+    SwitchMutex::new_ordered(Vec::new(), crate::sync::lock_order::USB_CORE);
+
+/// The port service saw `root_port` (and `route` below it: 0 for the root
+/// port itself) disconnect: every enumerated device in that subtree leaves
+/// the device list, and the driver that bound it is told (`detach`).
+/// Returns how many bound devices were detached.
+#[cfg(feature = "usb-hotplug")]
+pub(crate) fn detach_subtree(root_port: u32, route: u32) -> usize {
+    let under = |d: &UsbDevice| {
+        u32::from(d.port) == root_port && xhci_silicon_logic::route_is_under(d.route, route)
+    };
+    DEVICES.lock().retain(|d| !under(d));
+    #[cfg(feature = "xhci-silicon")]
+    {
+        let gone: Vec<u8> = BOUND
+            .lock()
+            .iter()
+            .filter(|(d, _)| under(d))
+            .map(|(d, _)| d.slot_id)
+            .collect();
+        CLAIMS.lock().retain(|(slot, _)| !gone.contains(slot));
+    }
+    let detached: Vec<Binding> = {
+        let mut bound = BOUND.lock();
+        let mut out = Vec::new();
+        let mut index = 0;
+        while index < bound.len() {
+            if under(&bound[index].0) {
+                out.push(bound.swap_remove(index));
+            } else {
+                index += 1;
+            }
+        }
+        out
+    };
+    for (device, driver) in &detached {
+        crate::serial_println!(
+            "usb: device slot={} vid={:04x} pid={:04x} detached from '{}'",
+            device.slot_id,
+            device.vendor_id,
+            device.product_id,
+            driver.name()
+        );
+        driver.detach(device);
+    }
+    detached.len()
 }
 
 /// Registered class drivers + enumerated devices. Ordered ABOVE every AI
@@ -201,6 +273,8 @@ pub(crate) fn offer_device(
                 crate::log::flush();
                 #[cfg(feature = "xhci-silicon")]
                 CLAIMS.lock().push((device.slot_id, driver.name()));
+                #[cfg(feature = "usb-hotplug")]
+                BOUND.lock().push((device.clone(), driver.clone()));
                 DEVICES.lock().push(device);
                 return None;
             }
@@ -256,6 +330,11 @@ pub fn init() {
     #[cfg(feature = "usb-hid-mouse")]
     hid_mouse::init();
     register_class_driver(Arc::new(cdc_ecm::CdcEcmDriver));
+    // L3u-2: USB sticks as read-only block devices. Off (the kill-switch):
+    // not registered, so a mass-storage device enumerates and is left
+    // unclaimed, as before.
+    #[cfg(feature = "usb-storage")]
+    msc::init();
     // Phase 7.5 BUILD-W1: the MT7601U WiFi scan driver (feature-gated; off ⇒
     // not registered ⇒ the offer path is BUILD-A/B exactly).
     #[cfg(feature = "mt7601u")]

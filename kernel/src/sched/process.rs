@@ -182,6 +182,12 @@ pub mod model_rights {
 pub mod net_dial_rights {
     /// Authorise one outbound dial within the immutable handle scope.
     pub const DIAL: u8 = 1 << 0;
+    /// OT-61 rung 5b (`net-dial-public-only`): the dial may reach non-public
+    /// addresses (loopback, private, link-local; `net_dial_cap_logic::
+    /// v4_public`/`v6_public`). Root caps carry it, so they dial as before; a
+    /// cap derived without it reaches only public addresses, checked after
+    /// the kernel's own resolution (the fetch broker's per-request caps).
+    pub const NON_PUBLIC: u8 = 1 << 1;
 }
 
 /// OT-61 C1.1 — semantic rights for the `BrowserRuntime` cap (the thread/VM
@@ -387,8 +393,19 @@ pub const fn power_control_cap_rights() -> CapRights {
     )
 }
 
+#[cfg(not(feature = "net-dial-public-only"))]
 pub const fn full_net_dial_rights() -> CapRights {
     CapRights::new(full_meta_rights(), net_dial_rights::DIAL)
+}
+
+/// With `net-dial-public-only`, a root cap also carries `NON_PUBLIC`, so every
+/// existing holder dials exactly as without the feature.
+#[cfg(feature = "net-dial-public-only")]
+pub const fn full_net_dial_rights() -> CapRights {
+    CapRights::new(
+        full_meta_rights(),
+        net_dial_rights::DIAL | net_dial_rights::NON_PUBLIC,
+    )
 }
 
 /// Full (compositor root) GPU-submit rights: SUBMIT + full meta. Minted only by
@@ -4840,7 +4857,8 @@ pub fn thread_create_for_current(entry: u64, arg: u64, stack_size: usize, guard:
 /// Panics if the placement fails: this scenario's target ring is never full.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 pub fn thread_create_for_current_on_cpu(
     entry: u64,
@@ -4994,7 +5012,16 @@ pub fn thread_exit_current(code: i32) -> ! {
 /// ENCODED exit status (`WAIT_EXITED_TAG | code`) or a negative errno; the
 /// syscall layer decodes and writes the user out-param.
 #[cfg(feature = "browser-runtime")]
-pub fn thread_join_for_current(target_tid: u64) -> i64 {
+///
+/// `deliver` receives the exit code under the registry lock, BEFORE the
+/// record is collected (CP-99): `SYS_THREAD_JOIN` writes the caller's status
+/// word there. If it fails (EFAULT), its error is returned and the record is
+/// left as it was, still done and joinable, so a faulting status pointer
+/// commits nothing.
+pub fn thread_join_for_current(
+    target_tid: u64,
+    deliver: impl FnOnce(i32) -> Result<(), i64>,
+) -> i64 {
     use crate::errno::{EINVAL, ESRCH};
 
     let pid = scheduler::current_pid();
@@ -5038,6 +5065,9 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
             // the created-stack unmap (blocker B) still happens exactly once.
             let code = rec.exit_code;
             let reaped = rec.reaped;
+            if let Err(e) = deliver(code) {
+                return e;
+            }
             if reaped {
                 reg.records.remove(pos);
             } else {
@@ -5068,7 +5098,7 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
         }
         let r = crate::sched::futex::wait_on_key(
             crate::sched::futex::join_key(target_tid),
-            || unsafe { (*done_word_ptr).load(Ordering::Acquire) } == 0,
+            || Ok(unsafe { (*done_word_ptr).load(Ordering::Acquire) } == 0),
             crate::sched::futex::DEADLINE_INFINITE,
         );
         if r == ESRCH {
@@ -5084,6 +5114,11 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
     let mut reg = reg_lock.lock();
     if let Some(pos) = reg.records.iter().position(|r| r.tid == target_tid) {
         let code = reg.records[pos].exit_code;
+        if let Err(e) = deliver(code) {
+            // Un-claim: the record is done, so the next join collects it.
+            reg.records[pos].join_claimed = false;
+            return e;
+        }
         if reg.records[pos].reaped {
             reg.records.remove(pos);
         } else {
@@ -5538,11 +5573,13 @@ pub fn tail_hold_for_test() {
         return;
     }
     let flag = TAIL_HOLD_FLAG.load(Ordering::Acquire);
-    // SAFETY: `flag` was validated as a 4-byte user range when armed, and
-    // this is the arming thread, so its address space is the active one.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::write_volatile(flag as *mut u32, 1)
-    });
+    // `flag` was validated as a 4-byte user range (and checked writable) when
+    // armed, and this is the arming thread, so its address space is the
+    // active one. The write goes through the fault-tolerant copy (CP-99): if
+    // the page was unmapped since, nobody can see the go, so don't hold.
+    if crate::arch::x86_64::syscall::write_user(flag as *mut u32, 1u32).is_err() {
+        return;
+    }
     let pid = scheduler::current_pid();
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
     let start = ticks();

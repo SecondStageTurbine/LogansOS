@@ -66,8 +66,6 @@ use super::gdt::{
     kernel_code_selector, kernel_data_selector, user_code_64_selector, user_data_selector,
 };
 use super::per_cpu;
-#[cfg(any(feature = "kernel-rng", feature = "browser-runtime"))]
-use super::with_user_access;
 
 #[cfg(feature = "neo-test-arthur-real-brain-boot-qwen35")]
 mod qwen35_llama_cpp_golden {
@@ -207,6 +205,13 @@ pub const SYS_MEM_INFO: u64 = 0x53;
 /// there is silently ignored today.
 #[cfg(feature = "obj-quota")]
 pub const SYS_SPAWN_BUDGETED2: u64 = 0x54;
+/// L7.1: `SYS_BOOT_TIMES(out, 80)` writes the boot-time record
+/// (`boot_time_logic`, version 1): the TSC rate, the kernel-entry and
+/// desktop-start TSC stamps and the firmware's boot timestamps. Reads only;
+/// any process may ask (they are timings, not secrets, and the TSC is
+/// readable from ring 3 anyway).
+#[cfg(feature = "boot-time")]
+pub const SYS_BOOT_TIMES: u64 = 0x55;
 // C1.1 test-only: queue-length probe (borrows 0x4E from C1.2 reserved slot).
 // Must NOT ship in production — test-only discriminator for the threads_futex barrier.
 #[cfg(all(feature = "browser-runtime", feature = "neo-test"))]
@@ -415,7 +420,8 @@ pub const SYS_TEST_TLS: u64 = 0xF04;
 /// that scenario's builds; never ships.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 pub const SYS_TEST_THREAD_CREATE_ON: u64 = 0xF05;
 /// OT-61 C1.3b test-only: arm the calling thread so its next `SYS_FUTEX_WAIT`
@@ -1109,6 +1115,8 @@ extern "C" fn syscall_dispatch(
         ),
         #[cfg(feature = "mem-quota")]
         SYS_MEM_INFO => sys_mem_info_impl(a0, a1 as usize),
+        #[cfg(feature = "boot-time")]
+        SYS_BOOT_TIMES => sys_boot_times_impl(a0, a1 as usize),
         #[cfg(all(feature = "browser-runtime", feature = "neo-test"))]
         SYS_FUTEX_QUEUE_LEN => sys_futex_queue_len_impl(a0),
         #[cfg(feature = "neo-test-syscall-mxcsr-entry")]
@@ -1331,7 +1339,8 @@ extern "C" fn syscall_dispatch(
         SYS_TEST_TLS => sys_test_tls_impl(a0, a1),
         #[cfg(any(
             feature = "neo-test-threads-tls",
-            feature = "neo-test-threads-exit-group"
+            feature = "neo-test-threads-exit-group",
+            feature = "neo-test-user-copy-fault"
         ))]
         SYS_TEST_THREAD_CREATE_ON => sys_test_thread_create_on_impl(a0, a1, a2 as usize, a3),
         #[cfg(feature = "neo-test-threads-exit-group")]
@@ -1339,10 +1348,15 @@ extern "C" fn syscall_dispatch(
         #[cfg(feature = "neo-test-threads-exit-group")]
         SYS_TEST_KERNEL_SPIN => sys_test_kernel_spin_impl(a0),
         #[cfg(feature = "neo-test-threads-exit-group")]
-        SYS_TEST_TAIL_HOLD => match validate_user_buf(a0, 4) {
-            Ok(()) => crate::sched::process::arm_tail_hold_for_test(a0),
-            Err(e) => e,
-        },
+        SYS_TEST_TAIL_HOLD => {
+            // CP-99: the flag must be mapped user-writable now (checked in
+            // the page tables, not written); the tail's write is also
+            // fault-tolerant, for an unmap after this.
+            match validate_user_buf(a0, 4).and_then(|()| check_user_writable(a0 as *mut u8, 4)) {
+                Ok(()) => crate::sched::process::arm_tail_hold_for_test(a0),
+                Err(e) => e,
+            }
+        }
         #[cfg(feature = "neo-test-cap-graph-revoke")]
         SYS_TEST_CAP_GRAPH_RACE => match a0 {
             0 => {
@@ -1552,6 +1566,71 @@ fn unpack_rights(packed: u16) -> CapRights {
     CapRights::new((packed >> 8) as u8, (packed & 0xff) as u8)
 }
 
+/// Copy `len` bytes between kernel and user memory, one side each, through
+/// the kernel's fault-tolerant copy (`arch::x86_64::user_copy`): `EFAULT`
+/// when a user page faults (unmapped, not writable, or unmapped by another
+/// thread mid-copy) instead of halting the kernel. The user side must be
+/// `validate_user_buf`'d (in the user half); this makes it survivable when
+/// it isn't mapped. Every syscall copy to or from user memory goes through
+/// here (or `read_user`/`write_user`, which do).
+fn user_copy(dst: *mut u8, src: *const u8, len: usize) -> Result<(), i64> {
+    // SAFETY: the kernel side is the caller's buffer of `len` bytes; the user
+    // side is in the user half, and a fault on it is recovered (EFAULT).
+    if unsafe { crate::arch::x86_64::user_copy::try_copy(dst, src, len) } {
+        Ok(())
+    } else {
+        Err(EFAULT)
+    }
+}
+
+/// Check, without touching it, that every page of the user range
+/// `dst..dst+len` is mapped user-writable in the caller's address space
+/// (`Pmap::translate_user`, a lock-free walk of its page tables). Used before
+/// an action that can't be undone, so a buffer that is unmapped or
+/// read-only is `EFAULT` first. It is only a check: a sibling thread can
+/// unmap or protect the buffer right after it, so the final copy still goes
+/// through the fault-tolerant routine and its error is still handled.
+fn check_user_writable(dst: *mut u8, len: usize) -> Result<(), i64> {
+    if len == 0 {
+        return Ok(());
+    }
+    let pmap = pmap_for_caller()?;
+    let start = dst as u64;
+    let last = start + (len as u64 - 1);
+    let mut page = start & !0xFFF;
+    while page <= last {
+        if pmap
+            .translate_user(x86_64::VirtAddr::new(page), true)
+            .is_none()
+        {
+            return Err(EFAULT);
+        }
+        page += 0x1000;
+    }
+    Ok(())
+}
+
+/// Read a `T` from user memory (any bytes are a valid `T`: plain data).
+fn read_user<T: Copy>(src: *const T) -> Result<T, i64> {
+    let mut out = core::mem::MaybeUninit::<T>::uninit();
+    user_copy(
+        out.as_mut_ptr().cast(),
+        src.cast(),
+        core::mem::size_of::<T>(),
+    )?;
+    // SAFETY: the copy filled all of `out`; `T` is plain data.
+    Ok(unsafe { out.assume_init() })
+}
+
+/// Write `value` to user memory.
+pub(crate) fn write_user<T: Copy>(dst: *mut T, value: T) -> Result<(), i64> {
+    user_copy(
+        dst.cast(),
+        (&value as *const T).cast(),
+        core::mem::size_of::<T>(),
+    )
+}
+
 /// Copy `len` bytes from user memory into a fresh kernel-heap `Vec`. Every
 /// caller bounds `len` by its ABI before calling (`EINVAL`), and the
 /// allocation itself is fallible: the kernel heap is one fixed region, and an
@@ -1562,12 +1641,8 @@ fn copy_user_bytes(src: *const u8, len: usize) -> Result<alloc::vec::Vec<u8>, i6
     out.try_reserve_exact(len).map_err(|_| ENOMEM)?;
     // SAFETY: `try_reserve_exact` gave `len` bytes of capacity; the caller
     // validated `src..src+len` as user memory, and the copy fills them all.
-    unsafe {
-        out.set_len(len);
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), len);
-        });
-    }
+    user_copy(out.as_mut_ptr(), src, len)?;
+    unsafe { out.set_len(len) };
     Ok(out)
 }
 
@@ -1587,25 +1662,16 @@ const MAX_TENSOR_BYTES: usize = (1usize << crate::mm::frame::MAX_ORDER) * 4096;
 fn copy_user_array<const N: usize>(src: *const u8) -> Result<[u8; N], i64> {
     validate_user_buf(src as u64, N)?;
     let mut out = [0u8; N];
-    // SAFETY: `validate_user_buf` checked `[src, src + N)` is mapped user
-    // memory; `out` is a distinct kernel stack array of exactly `N` bytes.
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), N);
-        });
-    }
+    user_copy(out.as_mut_ptr(), src, N)?;
     Ok(out)
 }
 
-fn copy_user_u32s(src: *const u32, count: usize) -> alloc::vec::Vec<u32> {
-    let mut out = alloc::vec::Vec::with_capacity(count);
-    unsafe {
-        out.set_len(count);
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(src, out.as_mut_ptr(), count);
-        });
-    }
-    out
+fn copy_user_u32s(src: *const u32, count: usize) -> Result<alloc::vec::Vec<u32>, i64> {
+    let mut out = alloc::vec::Vec::<u32>::with_capacity(count);
+    user_copy(out.as_mut_ptr().cast(), src.cast(), count * 4)?;
+    // SAFETY: the copy filled `count` u32s of the capacity.
+    unsafe { out.set_len(count) };
+    Ok(out)
 }
 
 #[cfg(any(
@@ -1716,20 +1782,19 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
     ])
 }
 
-fn copy_kernel_bytes_to_user(dst: *mut u8, src: &[u8]) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
-        });
-    }
+fn copy_kernel_bytes_to_user(dst: *mut u8, src: &[u8]) -> Result<(), i64> {
+    user_copy(dst, src.as_ptr(), src.len())
 }
 
-fn zero_user_bytes(dst: *mut u8, len: usize) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_bytes(dst, 0, len);
-        });
+fn zero_user_bytes(dst: *mut u8, len: usize) -> Result<(), i64> {
+    static ZEROS: [u8; 256] = [0; 256];
+    let mut done = 0;
+    while done < len {
+        let n = (len - done).min(ZEROS.len());
+        user_copy(dst.wrapping_add(done), ZEROS.as_ptr(), n)?;
+        done += n;
     }
+    Ok(())
 }
 
 fn current_process_for_syscall() -> Result<alloc::sync::Arc<process::Process>, i64> {
@@ -1750,86 +1815,59 @@ fn current_process_for_syscall() -> Result<alloc::sync::Arc<process::Process>, i
     process::get(pid).ok_or(EINVAL)
 }
 
-fn copy_user_u64(src: *const u64) -> u64 {
-    let mut out = 0u64;
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            out = core::ptr::read_unaligned(src);
-        });
-    }
-    out
+fn copy_user_u64(src: *const u64) -> Result<u64, i64> {
+    read_user(src)
 }
 
-fn copy_user_usize(src: *const usize) -> usize {
-    let mut out = 0usize;
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            out = core::ptr::read_unaligned(src);
-        });
-    }
-    out
+fn copy_user_usize(src: *const usize) -> Result<usize, i64> {
+    read_user(src)
 }
 
-fn copy_kernel_u64_to_user(dst: *mut u64, value: u64) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst, value);
-        });
-    }
+fn copy_kernel_u64_to_user(dst: *mut u64, value: u64) -> Result<(), i64> {
+    write_user(dst, value)
 }
 
-fn copy_kernel_usize_to_user(dst: *mut usize, value: usize) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst, value);
-        });
-    }
+fn copy_kernel_usize_to_user(dst: *mut usize, value: usize) -> Result<(), i64> {
+    write_user(dst, value)
 }
 
-fn copy_process_snapshot_to_user(dst: *mut ProcessSnapshotV1, value: ProcessSnapshotV1) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst, value);
-        });
-    }
+fn copy_process_snapshot_to_user(
+    dst: *mut ProcessSnapshotV1,
+    value: ProcessSnapshotV1,
+) -> Result<(), i64> {
+    write_user(dst, value)
 }
 
 #[cfg(feature = "kernel-sysstat")]
-fn copy_sysstat_to_user(dst: *mut SysStatV1, value: SysStatV1) {
+fn copy_sysstat_to_user(dst: *mut SysStatV1, value: SysStatV1) -> Result<(), i64> {
     // SAFETY: sys_sysstat_impl validates the fixed-size user output buffer
     // before this write. SMAP remains closed except inside with_user_access.
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst, value);
-        });
-    }
+    write_user(dst, value)
 }
 
 #[cfg(feature = "kernel-observability")]
-fn copy_observability_to_user(dst: *mut KernelObservabilityV1, value: KernelObservabilityV1) {
+fn copy_observability_to_user(
+    dst: *mut KernelObservabilityV1,
+    value: KernelObservabilityV1,
+) -> Result<(), i64> {
     // SAFETY: sys_observe_impl validates the fixed-size user output buffer
     // before this write. SMAP remains closed except inside with_user_access.
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst, value);
-        });
-    }
+    write_user(dst, value)
 }
 
-fn copy_net_stats_to_user(dst: *mut NetStatsV1, value: NetStatsV1) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst, value);
-        });
-    }
+fn copy_net_stats_to_user(dst: *mut NetStatsV1, value: NetStatsV1) -> Result<(), i64> {
+    write_user(dst, value)
 }
 
-fn copy_net_candidates_to_user(dst: *mut dns::NetCandidate, values: &[dns::NetCandidate]) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(values.as_ptr(), dst, values.len());
-        });
-    }
+fn copy_net_candidates_to_user(
+    dst: *mut dns::NetCandidate,
+    values: &[dns::NetCandidate],
+) -> Result<(), i64> {
+    user_copy(
+        dst.cast(),
+        values.as_ptr().cast(),
+        core::mem::size_of_val(values),
+    )
 }
 
 /// SYS_SPAWN dispatcher (Phase 1.5b). Validates name + handle-array
@@ -1894,7 +1932,10 @@ fn sys_spawn_impl(
     let mut inherited: alloc::vec::Vec<InheritedHandle> =
         alloc::vec::Vec::with_capacity(handles_count);
     if handles_count > 0 {
-        let user_indices = copy_user_u32s(handles_ptr, handles_count);
+        let user_indices = match copy_user_u32s(handles_ptr, handles_count) {
+            Ok(indices) => indices,
+            Err(e) => return e,
+        };
         if let Err(e) = crate::arch::x86_64::without_interrupts(|| {
             let table = caller.handles.lock();
             for idx in user_indices {
@@ -2166,6 +2207,7 @@ fn dial_errno(e: DialError) -> i64 {
         DialError::Resolve => EAGAIN,
         DialError::NoCandidates => ENOENT,
         DialError::AllFailed => EAGAIN,
+        DialError::NonPublic => EACCES,
     }
 }
 
@@ -2195,14 +2237,8 @@ fn copy_tensor_create_desc_from_user(
     Ok(unsafe { core::ptr::read_unaligned(desc_bytes.as_ptr().cast::<TensorCreateDesc>()) })
 }
 
-fn copy_tensor_query_to_user(dst: *mut u8, value: TensorQueryDesc) {
-    // SAFETY: caller validated `dst` with validate_user_buf for the exact
-    // TensorQueryDesc length; write_unaligned preserves the ABI alignment.
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst.cast::<TensorQueryDesc>(), value);
-        });
-    }
+fn copy_tensor_query_to_user(dst: *mut u8, value: TensorQueryDesc) -> Result<(), i64> {
+    write_user(dst.cast::<TensorQueryDesc>(), value)
 }
 
 /// Resolve a tensor handle to its USE-gated identity — table read only, no
@@ -2401,7 +2437,9 @@ fn sys_tensor_query_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
     // exactly the pre-O1b Arc-derived figure at any quiescent point.
     let refcount = u64::from(crate::ai::arena::handle_count(slot).unwrap_or(0));
     let desc = tensor.query_desc(refcount);
-    copy_tensor_query_to_user(out, desc);
+    if let Err(e) = copy_tensor_query_to_user(out, desc) {
+        return e;
+    }
     0
 }
 
@@ -2548,12 +2586,8 @@ fn sys_tensor_write_impl(h: u32, offset: u64, data_ptr: *const u8, data_len: usi
     tensor_write_into(&tensor, offset, &data)
 }
 
-fn copy_model_query_to_user(dst: *mut u8, value: ModelQueryDesc) {
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::write_unaligned(dst.cast::<ModelQueryDesc>(), value);
-        });
-    }
+fn copy_model_query_to_user(dst: *mut u8, value: ModelQueryDesc) -> Result<(), i64> {
+    write_user(dst.cast::<ModelQueryDesc>(), value)
 }
 
 fn model_lookup(h: u32) -> Result<alloc::sync::Arc<model::Model>, i64> {
@@ -3176,10 +3210,10 @@ fn sys_model_query_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
         return e;
     }
     match model_query_desc(h) {
-        Ok(desc) => {
-            copy_model_query_to_user(out, desc);
-            0
-        }
+        Ok(desc) => match copy_model_query_to_user(out, desc) {
+            Ok(()) => 0,
+            Err(e) => e,
+        },
         Err(e) => e,
     }
 }
@@ -3360,7 +3394,7 @@ fn graph_infer_inputs(
     let input_handles = if input_len == 0 {
         alloc::vec::Vec::new()
     } else {
-        copy_user_u32s(inputs_ptr, input_len)
+        copy_user_u32s(inputs_ptr, input_len)?
     };
     let mut inputs = alloc::vec::Vec::with_capacity(input_len);
     for handle in input_handles {
@@ -3740,6 +3774,14 @@ fn infer_run_routed(
         Err(e) => return e,
     };
     let mut out_handles: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(outputs.len());
+    // CP-99: a failure after some outputs are installed (an install refused,
+    // or the handle array's copy-out faulting) closes the ones installed, so
+    // the error leaves the caller's table as it was.
+    let undo = |installed: &[u32]| {
+        for &idx in installed {
+            let _ = process::close_handle(&proc, idx, |h| matches!(h, Handle::Tensor { .. }));
+        }
+    };
     for tensor in outputs {
         let meta = tensor.meta();
         let slot = crate::ai::arena::alloc(tensor, crate::ai::arena::default_home());
@@ -3755,11 +3797,17 @@ fn infer_run_routed(
         crate::ai::arena::release(slot);
         let idx = match installed {
             Ok(idx) => idx,
-            Err(_) => return EINVAL,
+            Err(_) => {
+                undo(&out_handles);
+                return EINVAL;
+            }
         };
         let idx = match u32::try_from(idx) {
             Ok(idx) => idx,
-            Err(_) => return EINVAL,
+            Err(_) => {
+                undo(&out_handles);
+                return EINVAL;
+            }
         };
         out_handles.push(idx);
     }
@@ -3769,7 +3817,10 @@ fn infer_run_routed(
         // preserves the syscall ABI's little-endian handle array.
         let bytes =
             unsafe { core::slice::from_raw_parts(out_handles.as_ptr().cast::<u8>(), output_bytes) };
-        copy_kernel_bytes_to_user(outputs_ptr.cast::<u8>(), bytes);
+        if let Err(e) = copy_kernel_bytes_to_user(outputs_ptr.cast::<u8>(), bytes) {
+            undo(&out_handles);
+            return e;
+        }
     }
     #[cfg(feature = "neo-test-arthur-real-brain-boot")]
     serial_println!(
@@ -4286,7 +4337,10 @@ fn sys_generate_impl(
         return model::model_errno(e);
     }
 
-    let prompt = copy_user_u32s(prompt_ptr, prompt_len);
+    let prompt = match copy_user_u32s(prompt_ptr, prompt_len) {
+        Ok(tokens) => tokens,
+        Err(e) => return e,
+    };
     if prompt.iter().any(|&t| t > i32::MAX as u32) {
         return EINVAL;
     }
@@ -4366,7 +4420,9 @@ fn sys_generate_impl(
                 n_written * core::mem::size_of::<u32>(),
             )
         };
-        copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes);
+        if let Err(e) = copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes) {
+            return e;
+        }
     }
     n_written as i64
 }
@@ -4461,7 +4517,10 @@ fn sys_generate_constrained_impl(
     if let Err(e) = validate_user_buf(desc.tokens_ptr, token_bytes) {
         return e;
     }
-    let candidate_tokens = copy_user_u32s(desc.tokens_ptr as *const u32, tokens_len);
+    let candidate_tokens = match copy_user_u32s(desc.tokens_ptr as *const u32, tokens_len) {
+        Ok(tokens) => tokens,
+        Err(e) => return e,
+    };
     let mut candidate_sequences: alloc::vec::Vec<&[u32]> =
         alloc::vec::Vec::with_capacity(sequence_count);
     for sequence in &sequence_descs {
@@ -4492,7 +4551,10 @@ fn sys_generate_constrained_impl(
     }
     let inventory_model = is_stage_b_inventory_model(&model);
 
-    let mut context = copy_user_u32s(prompt_ptr, prompt_len);
+    let mut context = match copy_user_u32s(prompt_ptr, prompt_len) {
+        Ok(tokens) => tokens,
+        Err(e) => return e,
+    };
     if context.iter().any(|&token| token > i32::MAX as u32) {
         return EINVAL;
     }
@@ -4520,7 +4582,9 @@ fn sys_generate_constrained_impl(
                 n_written * core::mem::size_of::<u32>(),
             )
         };
-        copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes);
+        if let Err(e) = copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes) {
+            return e;
+        }
     }
     n_written as i64
 }
@@ -4737,7 +4801,10 @@ fn sys_generate_masked_impl(
     }
     let inventory_model = is_stage_b_inventory_model(&model);
 
-    let context = copy_user_u32s(prompt_ptr, prompt_len);
+    let context = match copy_user_u32s(prompt_ptr, prompt_len) {
+        Ok(tokens) => tokens,
+        Err(e) => return e,
+    };
     if context.iter().any(|&token| token > i32::MAX as u32) {
         return EINVAL;
     }
@@ -4765,7 +4832,9 @@ fn sys_generate_masked_impl(
         Err(_) => return EINVAL,
     };
     let bytes = next.to_le_bytes();
-    copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), &bytes);
+    if let Err(e) = copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), &bytes) {
+        return e;
+    }
     #[cfg(feature = "neo-test")]
     serial_println!(
         "masked_sample step=0 tok={} mask_bits={} disabled={} model={}",
@@ -4853,7 +4922,10 @@ fn sys_generate_impl(
     if let Err(e) = model_still_current(&model) {
         return model::model_errno(e);
     }
-    let prompt = copy_user_u32s(prompt_ptr, prompt_len);
+    let prompt = match copy_user_u32s(prompt_ptr, prompt_len) {
+        Ok(tokens) => tokens,
+        Err(e) => return e,
+    };
     if prompt.iter().any(|&t| t > i32::MAX as u32) {
         return EINVAL;
     }
@@ -4927,7 +4999,9 @@ fn sys_generate_impl(
                 n_written * core::mem::size_of::<u32>(),
             )
         };
-        copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes);
+        if let Err(errno) = copy_kernel_bytes_to_user(out_ptr.cast::<u8>(), bytes) {
+            return errno;
+        }
     }
     n_written as i64
 }
@@ -5334,7 +5408,9 @@ fn sys_net_resolve_impl(
         Err(e) => return dns_errno(e),
     };
     let n = core::cmp::min(out_len, candidates.len());
-    copy_net_candidates_to_user(out_ptr, &candidates[..n]);
+    if let Err(e) = copy_net_candidates_to_user(out_ptr, &candidates[..n]) {
+        return e;
+    }
     n as i64
 }
 
@@ -5402,7 +5478,7 @@ fn sys_net_dial_impl(name_ptr: *const u8, name_len: usize, port: u16, cap_h: u32
     // Snapshot the immutable scope under the established per-process handle
     // lock, then drop it before DNS/TCP work (CP-1: no new nested lock order).
     let scope = crate::arch::x86_64::without_interrupts(|| proc.handles.lock().get(cap_h));
-    let (scope_host, scope_port) = match scope {
+    let (scope_host, scope_port, scope_rights) = match scope {
         Some(Handle::NetDial {
             host,
             port: scope_port,
@@ -5411,7 +5487,7 @@ fn sys_net_dial_impl(name_ptr: *const u8, name_len: usize, port: u16, cap_h: u32
         }) if rights.has_meta(meta_rights::USE)
             && rights.has_semantic(process::net_dial_rights::DIAL) =>
         {
-            (host, scope_port)
+            (host, scope_port, rights)
         }
         _ => {
             serial_println!(
@@ -5435,9 +5511,32 @@ fn sys_net_dial_impl(name_ptr: *const u8, name_len: usize, port: u16, cap_h: u32
         return EACCES;
     }
 
-    let socket = match happy_eyeballs::dial_name(proc.pid, name, port) {
+    #[cfg(not(feature = "net-dial-public-only"))]
+    let dialed = {
+        let _ = scope_rights;
+        happy_eyeballs::dial_name(proc.pid, name, port)
+    };
+    // OT-61 rung 5b: a cap without NON_PUBLIC reaches only public addresses.
+    #[cfg(feature = "net-dial-public-only")]
+    let dialed = if scope_rights.has_semantic(process::net_dial_rights::NON_PUBLIC) {
+        happy_eyeballs::dial_name(proc.pid, name, port)
+    } else {
+        happy_eyeballs::dial_name_public(proc.pid, name, port)
+    };
+    let socket = match dialed {
         Ok(socket) => socket,
-        Err(e) => return dial_errno(e),
+        Err(e) => {
+            #[cfg(feature = "net-dial-public-only")]
+            if e == happy_eyeballs::DialError::NonPublic {
+                serial_println!(
+                    "[ kernel ] net_dial denied reason=non_public pid={} host={} port={}",
+                    proc.pid.0,
+                    name,
+                    port
+                );
+            }
+            return dial_errno(e);
+        }
     };
     tcp::pump_loopback_egress();
     let tuple = socket.tuple();
@@ -5500,9 +5599,20 @@ fn sys_net_tcp_enable_tls_impl(h: u32, key_ptr: *mut u8, key_len: usize) -> i64 
         Ok(bytes) => bytes,
         Err(e) => return e,
     };
+    // CP-99: the caller's copy of the key is wiped BEFORE TLS is installed,
+    // and a wipe that faults is EFAULT with nothing installed. Every page of
+    // it is checked writable in the page tables first, so a key that is
+    // partly read-only is left whole (not half wiped). A sibling's unmap
+    // after the check can still leave it half wiped; TLS is then still not
+    // installed.
+    if let Err(e) =
+        check_user_writable(key_ptr, key_len).and_then(|()| zero_user_bytes(key_ptr, key_len))
+    {
+        tls_record::wipe_secret(&mut key_material);
+        return e;
+    }
     let result = socket.enable_tls(&mut key_material);
     tls_record::wipe_secret(&mut key_material);
-    zero_user_bytes(key_ptr, key_len);
     match result {
         Ok(()) => 0,
         Err(e) => tcp_errno(e),
@@ -5556,12 +5666,8 @@ fn sys_getrandom_impl(buf: *mut u8, len: usize) -> i64 {
         return e;
     }
 
-    // SAFETY: `validate_user_buf` confirmed [buf, buf+len) is in user half.
-    // `with_user_access` temporarily lifts SMAP for the copy window.
-    unsafe {
-        with_user_access(|| {
-            core::ptr::copy_nonoverlapping(kernel_buf.as_ptr(), buf, len);
-        });
+    if let Err(e) = copy_kernel_bytes_to_user(buf, &kernel_buf) {
+        return e;
     }
 
     len as i64
@@ -5702,15 +5808,15 @@ fn sys_socket_recv_impl(h: u32, buf: *mut u8, len: usize, flags: u32) -> i64 {
     if let Err(e) = validate_user_buf(buf as u64, len) {
         return e;
     }
+    // CP-99: each receive copies to the user buffer BEFORE the bytes leave
+    // the socket's queue (`recv_stream_with`/`recv_from_with`, under the
+    // socket lock); a copy that faults is EFAULT with nothing consumed.
     match tcp_socket_lookup(h, socket_rights::READ) {
         Ok(socket) => {
-            let mut tmp = alloc::vec![0u8; len];
             for _ in 0..1024 {
-                match socket.recv_stream(&mut tmp) {
-                    Ok(n) => {
-                        copy_kernel_bytes_to_user(buf, &tmp[..n]);
-                        return n as i64;
-                    }
+                match socket.recv_stream_with(len, |bytes| copy_kernel_bytes_to_user(buf, bytes)) {
+                    Ok(Ok(n)) => return n as i64,
+                    Ok(Err(e)) => return e,
                     Err(TcpError::WouldBlock) => crate::sched::yield_now(),
                     Err(e) => return tcp_errno(e),
                 }
@@ -5724,13 +5830,10 @@ fn sys_socket_recv_impl(h: u32, buf: *mut u8, len: usize, flags: u32) -> i64 {
         Ok(socket) => socket,
         Err(e) => return e,
     };
-    let mut tmp = alloc::vec![0u8; len];
     for _ in 0..1024 {
-        match socket.recv(&mut tmp) {
-            Ok(n) => {
-                copy_kernel_bytes_to_user(buf, &tmp[..n]);
-                return n as i64;
-            }
+        match socket.recv_from_with(len, |bytes, _src| copy_kernel_bytes_to_user(buf, bytes)) {
+            Ok(Ok(n)) => return n as i64,
+            Ok(Err(e)) => return e,
             Err(SocketError::WouldBlock) => crate::sched::yield_now(),
             Err(e) => return socket_errno(e),
         }
@@ -5760,7 +5863,10 @@ fn sys_socket_recvfrom_impl(
         if let Err(e) = validate_user_buf(addr_len_io as u64, core::mem::size_of::<usize>()) {
             return e;
         }
-        let cap = copy_user_usize(addr_len_io);
+        let cap = match copy_user_usize(addr_len_io) {
+            Ok(cap) => cap,
+            Err(e) => return e,
+        };
         if let Err(e) = validate_user_buf(addr_out as u64, cap) {
             return e;
         }
@@ -5772,22 +5878,26 @@ fn sys_socket_recvfrom_impl(
         Ok(socket) => socket,
         Err(e) => return e,
     };
-    let mut tmp = alloc::vec![0u8; len];
-    for _ in 0..1024 {
-        match socket.recv_from(&mut tmp) {
-            Ok((n, src)) => {
-                if wants_addr {
-                    let mut encoded = [0u8; 20];
-                    let encoded_len = encode_socket_addr(src, &mut encoded);
-                    if addr_capacity < encoded_len {
-                        return EINVAL;
-                    }
-                    copy_kernel_bytes_to_user(addr_out, &encoded[..encoded_len]);
-                    copy_kernel_usize_to_user(addr_len_io, encoded_len);
-                }
-                copy_kernel_bytes_to_user(buf, &tmp[..n]);
-                return n as i64;
+    // CP-99: the address, its length and the data are all copied out BEFORE
+    // the datagram leaves the queue (`recv_from_with`, under the socket
+    // lock): a copy that faults, or an address buffer too small for the
+    // source (EINVAL), leaves the datagram queued.
+    let deliver = |bytes: &[u8], src: socket::SocketAddr| -> Result<(), i64> {
+        if wants_addr {
+            let mut encoded = [0u8; 20];
+            let encoded_len = encode_socket_addr(src, &mut encoded);
+            if addr_capacity < encoded_len {
+                return Err(EINVAL);
             }
+            copy_kernel_bytes_to_user(addr_out, &encoded[..encoded_len])?;
+            copy_kernel_usize_to_user(addr_len_io, encoded_len)?;
+        }
+        copy_kernel_bytes_to_user(buf, bytes)
+    };
+    for _ in 0..1024 {
+        match socket.recv_from_with(len, deliver) {
+            Ok(Ok(n)) => return n as i64,
+            Ok(Err(e)) => return e,
             Err(SocketError::WouldBlock) => crate::sched::yield_now(),
             Err(e) => return socket_errno(e),
         }
@@ -5853,7 +5963,7 @@ fn sys_net_stats_impl(h: u32, out: *mut NetStatsV1, out_len: usize) -> i64 {
         Err(e) => return e,
     };
     let stats = socket.stats();
-    copy_net_stats_to_user(
+    match copy_net_stats_to_user(
         out,
         NetStatsV1 {
             packets_in: stats.packets_in,
@@ -5861,8 +5971,10 @@ fn sys_net_stats_impl(h: u32, out: *mut NetStatsV1, out_len: usize) -> i64 {
             bytes_in: stats.bytes_in,
             bytes_out: stats.bytes_out,
         },
-    );
-    0
+    ) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 /// Resolve the calling process's `Arc<Pmap>`. Used by every syscall that
@@ -6247,12 +6359,9 @@ fn sys_wait_any_impl(items_ptr: u64, n: usize, deadline_ns: u64) -> i64 {
         if let Err(e) = validate_user_buf(items_ptr, n * 8) {
             return e;
         }
-        // SAFETY: validated user range of exactly n*8 bytes; SMAP opened for
-        // this copy only. A fixed stack array, no heap (CP-30).
-        unsafe {
-            crate::arch::x86_64::with_user_access(|| {
-                core::ptr::copy_nonoverlapping(items_ptr as *const u8, raw.as_mut_ptr(), n * 8);
-            });
+        // A fixed stack array, no heap (CP-30).
+        if let Err(e) = user_copy(raw.as_mut_ptr(), items_ptr as *const u8, n * 8) {
+            return e;
         }
     }
     let mut items = [WaitItem { handle: 0, kind: 0 }; ITEMS_MAX];
@@ -6371,10 +6480,10 @@ fn sys_write_impl(fd: u32, buf: *const u8, len: usize) -> i64 {
     while copied < len {
         let chunk_len = min(SYS_WRITE_CHUNK, len - copied);
         let mut chunk = [0u8; SYS_WRITE_CHUNK];
-        unsafe {
-            crate::arch::x86_64::with_user_access(|| {
-                core::ptr::copy_nonoverlapping(buf.add(copied), chunk.as_mut_ptr(), chunk_len);
-            });
+        // A fault ends the write: what was written stands (its count), and
+        // nothing written is EFAULT.
+        if user_copy(chunk.as_mut_ptr(), buf.wrapping_add(copied), chunk_len).is_err() {
+            return if copied == 0 { EFAULT } else { copied as i64 };
         }
         write_bytes(&chunk[..chunk_len]);
         #[cfg(feature = "framebuffer-console")]
@@ -6525,6 +6634,13 @@ fn sys_read_impl(fd: u32, buf: *mut u8, len: usize) -> i64 {
     }
     #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
     if fd == STDIN_FD {
+        // CP-99: a byte taken from stdin is gone and can't be put back, so
+        // check the buffer first (page tables, no write). A sibling's unmap
+        // after the check still loses the bytes read: stdin is outside the
+        // no-partial-state guarantee.
+        if let Err(e) = check_user_writable(buf, min(len, SYS_WRITE_CHUNK)) {
+            return e;
+        }
         return sys_read_stdin(buf, len);
     }
     let (file, rights) = match file_lookup_with_rights(fd) {
@@ -6537,13 +6653,21 @@ fn sys_read_impl(fd: u32, buf: *mut u8, len: usize) -> i64 {
     // CP-2). That lock is IRQ-safe since OT-74 (2026-10-16), but the NeoFS
     // inode-level locks (`entries`/`root`/`record`, plain `SwitchMutex`es) can
     // still be held across a block-I/O park here, so the read keeps running
-    // IF-on (into a kernel buffer); the user copy below stays IF-off.
-    let n = match crate::arch::x86_64::with_interrupts_enabled(|| file.read_as(&mut tmp, rights)) {
-        Ok(n) => n,
-        Err(e) => return vfs_errno(e),
-    };
-    copy_kernel_bytes_to_user(buf, &tmp[..n]);
-    n as i64
+    // IF-on (into a kernel buffer); the user copy stays IF-off.
+    //
+    // CP-99: the copy to the user buffer runs before the file offset moves
+    // (`read_as_then`), so a read whose buffer faults is EFAULT with the
+    // offset where it was.
+    let read = crate::arch::x86_64::with_interrupts_enabled(|| {
+        file.read_as_then(&mut tmp, rights, |bytes| {
+            crate::arch::x86_64::without_interrupts(|| copy_kernel_bytes_to_user(buf, bytes))
+        })
+    });
+    match read {
+        Ok(Ok(n)) => n as i64,
+        Ok(Err(e)) => e,
+        Err(e) => vfs_errno(e),
+    }
 }
 
 #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
@@ -6572,7 +6696,9 @@ fn sys_read_stdin(buf: *mut u8, len: usize) -> i64 {
         copied += 1;
     }
 
-    copy_kernel_bytes_to_user(buf, &tmp[..copied]);
+    if let Err(e) = copy_kernel_bytes_to_user(buf, &tmp[..copied]) {
+        return e;
+    }
     copied as i64
 }
 
@@ -6606,7 +6732,10 @@ fn sys_readdir_impl(fd: u32, out_ptr: *mut u8, out_len: usize, cursor_ptr: *mut 
         return e;
     }
 
-    let cursor = copy_user_u64(cursor_ptr);
+    let cursor = match copy_user_u64(cursor_ptr) {
+        Ok(cursor) => cursor,
+        Err(e) => return e,
+    };
     let (file, rights) = match file_lookup_with_rights(fd) {
         Ok(found) => found,
         Err(e) => return e,
@@ -6619,8 +6748,12 @@ fn sys_readdir_impl(fd: u32, out_ptr: *mut u8, out_len: usize, cursor_ptr: *mut 
     let mut record = alloc::vec![0u8; 16 + entry.name.len()];
     match encode_dirent_v1(&entry, &mut record) {
         Ok(n) if n <= out_len => {
-            copy_kernel_bytes_to_user(out_ptr, &record[..n]);
-            copy_kernel_u64_to_user(cursor_ptr, entry.next_cursor);
+            if let Err(e) = copy_kernel_bytes_to_user(out_ptr, &record[..n]) {
+                return e;
+            }
+            if let Err(e) = copy_kernel_u64_to_user(cursor_ptr, entry.next_cursor) {
+                return e;
+            }
             n as i64
         }
         Ok(_) | Err(VfsError::Invalid) => EINVAL,
@@ -6801,6 +6934,7 @@ fn sys_close_impl(fd: u32) -> i64 {
     if fd == STDIN_FD {
         return EBADF;
     }
+    #[cfg(not(feature = "net-dial-public-only"))]
     if fd == STDOUT_FD {
         return EBADF;
     }
@@ -6808,11 +6942,32 @@ fn sys_close_impl(fd: u32) -> i64 {
         Ok(proc) => proc,
         Err(e) => return e,
     };
-    let removed = process::close_handle(&proc, fd, |h| {
-        matches!(h, Handle::File { .. } | Handle::Channel { .. })
+    // Index 1 is also stdout, which `SYS_WRITE` serves without the handle
+    // table, so a close of it is refused (EBADF) as before, unless the slot
+    // holds a NetDial cap: the fetch broker's root is spawned into handle 1
+    // (#29 item 4). Stdout itself is unaffected by that close.
+    #[cfg(feature = "net-dial-public-only")]
+    if fd == STDOUT_FD {
+        return match process::close_handle(&proc, fd, |h| matches!(h, Handle::NetDial { .. })) {
+            Ok(_) => 0,
+            Err(e) => e,
+        };
+    }
+    // OT-61 rung 5 (#29 item 4): on a `net-dial-public-only` kernel a NetDial
+    // cap can be closed too, so a holder can drop a GRANT-bearing dial cap once
+    // it has derived the GRANT-less one it keeps (the fetch broker's root).
+    // Like every close, its children re-parent to its parent, so the donor's
+    // revoke still reaches them. Off, SYS_CLOSE is unchanged.
+    let removed = process::close_handle(&proc, fd, |h| match h {
+        Handle::File { .. } | Handle::Channel { .. } => true,
+        #[cfg(feature = "net-dial-public-only")]
+        Handle::NetDial { .. } => true,
+        _ => false,
     });
     match removed {
         Ok(Handle::File { .. }) => 0,
+        #[cfg(feature = "net-dial-public-only")]
+        Ok(Handle::NetDial { .. }) => 0,
         Ok(Handle::Channel { channel, side, .. }) => {
             // Explicit endpoint drop has the same observable peer semantics
             // as process death: a blocked/next peer operation receives EPIPE.
@@ -6896,15 +7051,15 @@ fn copy_user_bytes_in_chunks(src: *const u8, len: usize) -> Result<alloc::vec::V
     let mut done = 0;
     while done < len {
         let n = core::cmp::min(REPLACE_COPY_CHUNK, len - done);
-        // SAFETY: `try_reserve_exact` gave `len` bytes of capacity and
-        // `done + n <= len`; the caller validated `src..src+len` as user
-        // memory. The length is set only once the bytes are written.
-        unsafe {
-            crate::arch::x86_64::with_user_access(|| {
-                core::ptr::copy_nonoverlapping(src.add(done), out.as_mut_ptr().add(done), n);
-            });
-            out.set_len(done + n);
-        }
+        // `try_reserve_exact` gave `len` bytes of capacity and
+        // `done + n <= len`. The length is set only once the bytes are written.
+        user_copy(
+            out.as_mut_ptr().wrapping_add(done),
+            src.wrapping_add(done),
+            n,
+        )?;
+        // SAFETY: the copy wrote bytes `done..done + n`.
+        unsafe { out.set_len(done + n) };
         done += n;
         if done < len {
             crate::arch::x86_64::with_interrupts_enabled(core::hint::spin_loop);
@@ -7275,6 +7430,7 @@ fn sys_clock_gettime_impl(clock_id: u64) -> i64 {
 /// `guard_low..guard_low+guard_len`.
 #[cfg(feature = "browser-runtime")]
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ThreadInfoV1 {
     pub tid: u64,
     pub usable_low: u64,
@@ -7319,14 +7475,31 @@ fn sys_futex_wait_impl(uaddr: u64, expected: u32, deadline_ns: u64) -> i64 {
             Ok(p) => p,
             Err(e) => return e,
         };
-        match pmap.translate(x86_64::VirtAddr::new(uaddr)) {
+        let paddr = match pmap.translate(x86_64::VirtAddr::new(uaddr)) {
             Some(pa) => pa.as_u64(),
             None => return EFAULT,
+        };
+        // `user_copy_fault` test only: the word's page goes away after the
+        // translation, as a sibling's unmap on another CPU could do, so the
+        // value re-check under the queue guard faults (CP-99) and must come
+        // back EFAULT instead of halting.
+        #[cfg(feature = "neo-test-user-copy-fault")]
+        if expected == USER_COPY_FAULT_FUTEX_UNMAP {
+            let page = x86_64::VirtAddr::new(uaddr & !0xFFF);
+            if pmap.unmap_user_range(page, 0x1000).is_err() {
+                return EINVAL;
+            }
         }
+        paddr
         // pmap Arc dropped here.
     };
     crate::sched::futex::wait(paddr, uaddr, expected, deadline_ns)
 }
+
+/// `user_copy_fault` test only: a `SYS_FUTEX_WAIT` whose `expected` is this
+/// unmaps the word's page between its translation and its value re-check.
+#[cfg(feature = "neo-test-user-copy-fault")]
+const USER_COPY_FAULT_FUTEX_UNMAP: u32 = 0xEFA0_17ED;
 
 /// SYS_FUTEX_WAKE(uaddr, count) → number of threads woken (PRESERVED — the
 /// rwlock's writer→reader fallback consumes it).
@@ -7390,14 +7563,10 @@ fn sys_test_float_probe_impl(out: *mut u8, len: usize) -> i64 {
         return e;
     }
     let words = syscall_float_probe();
-    // SAFETY: `validate_user_buf` confirmed [out, out+bytes) is in the user
-    // half; the copy is bytewise, so `out` needs no alignment.
-    unsafe {
-        super::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(words.as_ptr().cast::<u8>(), out, bytes);
-        });
+    match user_copy(out, words.as_ptr().cast::<u8>(), bytes) {
+        Ok(()) => 0,
+        Err(e) => e,
     }
-    0
 }
 
 /// SYS_THREAD_CREATE(entry, arg, stack_size, guard) → tid | errno.
@@ -7443,11 +7612,10 @@ fn sys_test_tls_impl(op: u64, out: u64) -> i64 {
         let (fs_base, msr) = crate::sched::scheduler::current_fs_base_and_msr();
         (cpu, fs_base, msr)
     });
-    // SAFETY: validated user range of 24 bytes; SMAP opened for the write.
-    with_user_access(|| unsafe {
-        core::ptr::write_unaligned(out as *mut [u64; 3], [cpu, fs_base, msr])
-    });
-    0
+    match write_user(out as *mut [u64; 3], [cpu, fs_base, msr]) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 /// SYS_TEST_KERNEL_SPIN(ms) → 0. See [`SYS_TEST_KERNEL_SPIN`].
@@ -7472,7 +7640,8 @@ fn sys_test_kernel_spin_impl(ms: u64) -> i64 {
 /// SYS_TEST_THREAD_CREATE_ON(entry, arg, stack_size, cpu) → tid | errno.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 fn sys_test_thread_create_on_impl(entry: u64, arg: u64, stack_size: usize, cpu: u64) -> i64 {
     if let Err(e) = browser_runtime_thread_cap_check() {
@@ -7529,12 +7698,45 @@ fn sys_handle_info_impl(idx: u64, out: u64, len: usize) -> i64 {
     };
     let record = encode(handle.handle_info());
     drop(handle);
-    // SAFETY: validated user range of exactly RECORD_LEN bytes; SMAP opened
-    // for the copy.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, RECORD_LEN)
-    });
-    0
+    match user_copy(out as *mut u8, record.as_ptr(), RECORD_LEN) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// L7.1: SYS_BOOT_TIMES(out, 80) → 0 | errno.
+#[cfg(feature = "boot-time")]
+fn sys_boot_times_impl(out: u64, len: usize) -> i64 {
+    use crate::boot_time_logic::{BOOT_TIMES_V1_LEN, encode};
+    if len != BOOT_TIMES_V1_LEN {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(out, BOOT_TIMES_V1_LEN) {
+        return e;
+    }
+    let record = encode(&crate::boot_time::snapshot());
+    // The copy goes through the caller's page tables under the pmap lock
+    // (`Pmap::write_user_bytes`), never through the user mapping from ring 0:
+    // an unmapped, read-only or half-mapped buffer (including one another
+    // thread unmaps mid-call) is EFAULT with nothing written, never a
+    // kernel-mode page fault.
+    let proc = match current_process_for_syscall() {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let Some(pmap) = proc.pmap.as_ref() else {
+        return EFAULT;
+    };
+    match pmap.write_user_bytes(out, &record) {
+        Ok(()) => 0,
+        Err(_) => EFAULT,
+    }
+}
+
+/// The test harness's view of `SYS_BOOT_TIMES`, through its own checks.
+#[cfg(all(feature = "boot-time", feature = "neo-test"))]
+pub fn debug_sys_boot_times_for_test(out: u64, len: usize) -> i64 {
+    sys_boot_times_impl(out, len)
 }
 
 /// OT-61 C2.2: SYS_MEM_INFO(out, 32) → 0 | errno. The caller's memory
@@ -7575,12 +7777,10 @@ fn sys_mem_info_impl(out: u64, len: usize) -> i64 {
         account.limit(),
         crate::mm::frames_in_use(),
     );
-    // SAFETY: validated user range of exactly MEM_INFO_V1_LEN bytes; SMAP
-    // opened for the copy.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, MEM_INFO_V1_LEN)
-    });
-    0
+    match user_copy(out as *mut u8, record.as_ptr(), MEM_INFO_V1_LEN) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 /// OT-61 C2.2b: `SYS_MEM_INFO` with a 48-byte buffer: the v2 record, which
@@ -7615,12 +7815,10 @@ fn sys_mem_info_v2_impl(out: u64) -> i64 {
         account.obj_used(),
         account.obj_limit(),
     );
-    // SAFETY: validated user range of exactly MEM_INFO_V2_LEN bytes; SMAP
-    // opened for the copy.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::copy_nonoverlapping(record.as_ptr(), out as *mut u8, MEM_INFO_V2_LEN)
-    });
-    0
+    match user_copy(out as *mut u8, record.as_ptr(), MEM_INFO_V2_LEN) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 /// SYS_THREAD_SET_TLS(base) → 0 | errno. Sets the calling thread's FS.base to
@@ -7659,7 +7857,16 @@ fn sys_thread_join_impl(tid: u64, exit_out: *mut i32) -> i64 {
     {
         return e;
     }
-    let ret = crate::sched::process::thread_join_for_current(tid);
+    // CP-99: the status is written while the join still holds the exit
+    // record, before collecting it; a write that faults is EFAULT and leaves
+    // the thread joinable (`thread_join_for_current`).
+    let ret = crate::sched::process::thread_join_for_current(tid, |code| {
+        if exit_out.is_null() {
+            Ok(())
+        } else {
+            write_user(exit_out, code)
+        }
+    });
     if ret < 0 {
         return ret;
     }
@@ -7667,11 +7874,6 @@ fn sys_thread_join_impl(tid: u64, exit_out: *mut i32) -> i64 {
         // A woken join always carries the tag; anything else is a kernel
         // logic error surfaced as an errno, never a bogus success.
         return EINVAL;
-    }
-    let code = (ret & 0xFFFF_FFFF) as u32 as i32;
-    if !exit_out.is_null() {
-        // SAFETY: validated 4-byte user pointer; SMAP opened for the write.
-        with_user_access(|| unsafe { core::ptr::write_volatile(exit_out, code) });
     }
     0
 }
@@ -7739,10 +7941,10 @@ fn sys_thread_get_info_impl(tid: u64, out: *mut ThreadInfoV1, out_len: usize) ->
         guard_low: bounds.guard_low,
         guard_len: bounds.guard_len,
     };
-    // SAFETY: validated user range of exactly `info_len` bytes; SMAP opened
-    // for the write window.
-    with_user_access(|| unsafe { core::ptr::write_unaligned(out, info) });
-    0
+    match write_user(out, info) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 /// SYS_KILL — terminate the process named by `Handle::Process { target }`
@@ -7828,7 +8030,7 @@ fn sys_inspect_impl(h: u32, out: *mut ProcessSnapshotV1, out_len: usize) -> i64 
     let name_bytes = snapshot.name.as_bytes();
     let name_len = min(name_bytes.len(), PROCESS_SNAPSHOT_NAME_LEN);
     name[..name_len].copy_from_slice(&name_bytes[..name_len]);
-    copy_process_snapshot_to_user(
+    match copy_process_snapshot_to_user(
         out,
         ProcessSnapshotV1 {
             version: PROCESS_SNAPSHOT_V1_VERSION,
@@ -7842,8 +8044,10 @@ fn sys_inspect_impl(h: u32, out: *mut ProcessSnapshotV1, out_len: usize) -> i64 
             name_len: name_len as u32,
             name,
         },
-    );
-    0
+    ) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 #[cfg(feature = "kernel-sysstat")]
@@ -7862,7 +8066,7 @@ fn sys_sysstat_impl(out: *mut SysStatV1, out_len: usize) -> i64 {
     let frames_used = crate::mm::frames_in_use();
     let cores_online = min(super::smp::reported_cpu_count(), u32::MAX as usize) as u32;
     let uptime_ticks = super::timer::TICKS.load(Ordering::Relaxed);
-    copy_sysstat_to_user(
+    match copy_sysstat_to_user(
         out,
         SysStatV1 {
             version: SYSSTAT_V1_VERSION,
@@ -7874,8 +8078,10 @@ fn sys_sysstat_impl(out: *mut SysStatV1, out_len: usize) -> i64 {
             _pad1: 0,
             uptime_ticks,
         },
-    );
-    0
+    ) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
 }
 
 #[cfg(not(feature = "kernel-sysstat"))]
@@ -7937,7 +8143,9 @@ fn sys_observe_impl(out: *mut KernelObservabilityV1, out_len: usize) -> i64 {
         return e;
     }
 
-    copy_observability_to_user(out, crate::observability::snapshot());
+    if let Err(e) = copy_observability_to_user(out, crate::observability::snapshot()) {
+        return e;
+    }
     0
 }
 
@@ -8283,14 +8491,10 @@ fn sys_buffer_query_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
         Err(e) => return e,
     };
     let bytes = logic::encode_desc(&buffer.desc());
-    // SAFETY: `out` validated for exactly BUFFER_DESC_V1_LEN bytes in the
-    // user half; with_user_access opens the SMAP window for the copy.
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
-        });
+    match copy_kernel_bytes_to_user(out, &bytes) {
+        Ok(()) => 0,
+        Err(e) => e,
     }
-    0
 }
 
 /// SYS_BUFFER_COMMIT — mark the client's pixel writes ready for the next
@@ -8325,10 +8529,8 @@ fn sys_buffer_commit_damage_impl(h: u32, rect: *const u8, rect_len: usize) -> i6
         return e;
     }
     let mut bytes = [0u8; logic::DAMAGE_RECT_V1_LEN];
-    unsafe {
-        crate::arch::x86_64::with_user_access(|| {
-            core::ptr::copy_nonoverlapping(rect, bytes.as_mut_ptr(), bytes.len());
-        });
+    if let Err(e) = user_copy(bytes.as_mut_ptr(), rect, bytes.len()) {
+        return e;
     }
     let Some(damage) = logic::decode_damage(&bytes) else {
         return EINVAL;
@@ -8657,18 +8859,10 @@ fn sys_present_fence_wait_impl(
     };
     match buffer.fence_wait(epoch, timeout_ticks) {
         Ok(result) => {
-            // SAFETY: `out` validated for exactly PRESENT_RESULT_V1_LEN
-            // bytes in the user half; write_unaligned imposes no ABI
-            // alignment on the caller's buffer.
-            unsafe {
-                crate::arch::x86_64::with_user_access(|| {
-                    core::ptr::write_unaligned(
-                        out.cast::<crate::atrium::buffer::PresentResultV1>(),
-                        result,
-                    );
-                });
+            match write_user(out.cast::<crate::atrium::buffer::PresentResultV1>(), result) {
+                Ok(()) => 0,
+                Err(e) => e,
             }
-            0
         }
         Err(e) => e,
     }
@@ -8842,6 +9036,14 @@ fn sys_input_focus_recv_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
     if let Err(e) = validate_user_buf(out as u64, out_len) {
         return e;
     }
+    // CP-99: an event popped from the route can't be put back (Super+L's
+    // re-check has to follow the pop, so the copy can't go first), so check
+    // the output first (page tables, no write). A sibling's unmap after the
+    // check still loses that event: input-focus receive is outside the
+    // no-partial-state guarantee.
+    if let Err(e) = check_user_writable(out, out_len) {
+        return e;
+    }
     #[cfg(all(feature = "usb-hid", feature = "atrium-input-routing"))]
     hid_keyboard::pump_routed_events();
     #[cfg(all(feature = "ps2-keyboard", feature = "atrium-input-routing"))]
@@ -8876,7 +9078,9 @@ fn sys_input_focus_recv_impl(h: u32, out: *mut u8, out_len: usize) -> i64 {
     #[cfg(feature = "freeze-watchdog")]
     crate::watchdog::note_key_received(&event);
     let bytes = encode_event(event);
-    copy_kernel_bytes_to_user(out, &bytes);
+    if let Err(e) = copy_kernel_bytes_to_user(out, &bytes) {
+        return e;
+    }
     0
 }
 
@@ -8955,15 +9159,14 @@ fn sys_install_list_impl(out: u64, len: usize) -> i64 {
     let rows = crate::installer_ui::list();
     let fit = rows.len().min(len / ROW_BYTES);
     for (i, row) in rows.iter().take(fit).enumerate() {
-        // SAFETY: `validate_user_buf` checked `out..out + len` is in the user
-        // half, and record `i` ends within it; SMAP is opened for the copy.
-        crate::arch::x86_64::with_user_access(|| unsafe {
-            core::ptr::copy_nonoverlapping(
-                row.as_ptr(),
-                (out as *mut u8).add(i * ROW_BYTES),
-                ROW_BYTES,
-            )
-        });
+        // Record `i` ends within the validated `out..out + len`.
+        if let Err(e) = user_copy(
+            (out as *mut u8).wrapping_add(i * ROW_BYTES),
+            row.as_ptr(),
+            ROW_BYTES,
+        ) {
+            return e;
+        }
     }
     rows.len() as i64
 }

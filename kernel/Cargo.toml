@@ -34,6 +34,10 @@ uart_16550 = "0.3"
 
 # Logging facade
 log = "0.4"
+# L3a-2: rafalh/rust-fatfs, vendored (MIT; third_party/fatfs/VENDORED.md), for
+# FAT12/16/32 read-only mounts behind `fat-fs`. no_std: alloc + LFN + Unicode
+# case folding; no `std`, no `chrono` (a read-only mount stamps nothing).
+fatfs = { path = "../third_party/fatfs", default-features = false, features = ["alloc", "lfn", "unicode"], optional = true }
 
 # Heap allocator backing the kernel's `#[global_allocator]`. Phase 1.1 wires
 # it up against a 4 MiB virtual range we map ourselves.
@@ -74,7 +78,13 @@ p256 = { version = "0.13", default-features = false, optional = true, features =
 hkdf = { version = "0.12", default-features = false, optional = true }
 
 [features]
-default = ["kernel-diagnostic", "accel-sim", "inference-preemptible"]
+default = ["kernel-diagnostic", "accel-sim", "inference-preemptible", "user-copy-fixup"]
+# A syscall's copy to or from user memory survives a fault on the user page
+# (unmapped, read-only, or unmapped by another thread mid-copy) and returns
+# EFAULT: the page-fault shim recognises the copy's one faulting instruction
+# by RIP (`arch::x86_64::user_copy`). Off: the shim doesn't look, and the
+# fault halts the kernel, as before.
+user-copy-fixup = []
 kernel-diagnostic = []
 accel-sim = []
 virtio-accel = []
@@ -197,6 +207,12 @@ i2c-hid-bar-assign = ["i2c-hid-touchpad"]
 # log on a target with no serial port). Enabled by `xtask iso --with-model`
 # and bare-metal bundles; feature-off ⇒ not compiled (byte-identical).
 fb-progress-console = []
+# L7.1: the boot-time numbers. The kernel stamps the TSC at entry and at
+# desktop start, reads the firmware's boot timestamps (FPDT/FBPT), prints
+# one `[ boot ] time:` line as the boot console's last, and serves them
+# through `SYS_BOOT_TIMES` (0x55). The rate comes from the LAPIC timer's
+# calibration. Off: none of it is compiled, `SYS_BOOT_TIMES` is ENOSYS.
+boot-time = ["lapic-timer"]
 # Zenbook bring-up evidence holds (kill-switch): before the desktop takes the
 # framebuffer, wait 5 s for a USB keyboard or mouse to bind and hold the USB
 # summary up to 30 s (or run a 6 s input check), and run the touchpad's 6 s
@@ -239,6 +255,10 @@ desktop = [
 # SYS_NET_DIAL. OFF by default leaves the original three-argument ambient dial
 # implementation compiled unchanged (the Rule-1 kill-switch).
 net-dial-cap = []
+# OT-61 rung 5b: a NetDial cap without the NON_PUBLIC right reaches only public
+# addresses (checked after the kernel's own resolution). Root caps carry the
+# right, so every existing holder dials as with plain net-dial-cap.
+net-dial-public-only = ["net-dial-cap"]
 ai-generate = []
 # OT-40: re-enable interrupts around long in-kernel inference compute windows.
 # OFF restores the previous syscall-body IF=0 behavior for the kill switch.
@@ -413,6 +433,11 @@ kernel-observability = []
 model-boot-module = []
 framebuffer-console = []
 usb-hid = ["usb-host"]
+# L3u-2 (THINK-2026-10-31-l3u-usb-mass-storage): a USB mass-storage device
+# (Bulk-Only Transport, SCSI transparent) becomes a read-only block device;
+# FAT on it mounts as `deviceN` or `deviceN:pM` (L3a). Off: the device
+# enumerates and stays unclaimed, as before (the kill-switch).
+usb-storage = ["usb-host"]
 # OT (Milestone-A input): the USB HID boot-protocol MOUSE (the GUI pointer),
 # mirroring the keyboard on the same xHCI arena-fenced stack. Independent
 # kill-switch: off ⇒ hid_mouse + its init are absent ⇒ keyboard-only, bit-for-bit.
@@ -453,6 +478,9 @@ neo-test-std-sealed-ambient = ["neo-test", "browser-runtime"]
 # xsave-fpu (AVX advertised, YMM saved: memchr takes AVX2).
 neo-test-servo-closure-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 neo-test-servo-closure-smoke-avx = ["neo-test-servo-closure-smoke", "xsave-fpu"]
+# OT-61 C2.4: upstream Stylo styles an html5ever document on-target.
+# kernel-rng: any std HashMap's RandomState seeds from getrandom.
+neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is
@@ -596,6 +624,14 @@ neo-test-compat-mode-unreachable = ["neo-test", "browser-runtime"]
 # default-off — the kill-switch is the feature gate (off ⇒ bit-for-bit today).
 neo-test-ai-latency-oracle = ["neo-test", "accel-sim"]
 neo-test-xsave-ymm-context-switch = ["neo-test", "xsave-fpu"]
+# The preview's WHPX #GP (2026-11-02): CPUID.(0DH,0):EBX answers 576
+# (x87|SSE) while XCR0 holds x87|SSE|AVX, as QEMU under WHPX did. The XSAVE
+# area must still be sized for AVX (from the per-component leaves), or every
+# xsave overruns it. Runs `xsave_ymm_context_switch`'s legs under that CPUID.
+neo-test-xsave-ebx-understated = ["neo-test-xsave-ymm-context-switch"]
+# Revert-check: size the area from EBX alone, as before. Expected to fail
+# (the first timer tick's iretq takes a #GP, or YMM state is corrupted).
+neo-test-xsave-ebx-understated-control = ["neo-test-xsave-ebx-understated"]
 # Regression for interrupt-entry state: a test-only vector (swapgs_irq_entry)
 # and the timer stub, entered with AC=1/DF=1 and a hostile MXCSR, must
 # preserve the interrupted xmm0-15/flags/MXCSR and run their bodies with DF=0
@@ -695,6 +731,13 @@ neo-test-net-tick-retransmit = ["neo-test", "net-tick"]
 neo-test-tcp-listen-bounds = ["neo-test"]
 # OT-91: an exit code is kept only while someone can claim it.
 neo-test-exit-codes-bounded = ["neo-test"]
+# user-copy-fixup: a syscall whose user buffer is unmapped, read-only or
+# crosses into an unmapped page returns EFAULT, and the kernel keeps running
+# (neo-init's legs). `browser-runtime` for SYS_VM_MAP/UNMAP/PROTECT and
+# SYS_HANDLE_INFO. Control: the shim's recovery disabled, so the first leg's
+# fault halts the kernel (an unexpected trap).
+neo-test-user-copy-fault = ["neo-test", "browser-runtime"]
+neo-test-user-copy-fault-control = ["neo-test-user-copy-fault"]
 # Revert-checks for #171: a sys_wait takes no claim (step 5 gets ESRCH), and a
 # table dropped undrained releases no exit-code claim (the kernel leg fails).
 neo-test-wait-claim-pin-control = ["neo-test-exit-codes-bounded"]
@@ -1287,6 +1330,15 @@ model-from-neofs = ["boot-model-preload"]
 # volume that fits), and the NeoFS mount probes such partitions before whole
 # devices. Off: the guard and the mount are bit-for-bit today's.
 neofs-partition = []
+# L3a (G7, THINK-2026-10-31-l3a-fat-readonly §6a): a FAT mount's source may
+# name an MBR partition, `deviceN:pM` (primary entries, FAT types, checked
+# against the device). Off: such a source is Invalid, as before.
+mbr-partitions = []
+# L3a-2 (THINK-2026-10-31-l3a-fat-readonly §5): FAT mounts (fs_type 3) go
+# through the vendored rust-fatfs: FAT12/16/32, files streamed, read-only (its
+# I/O adapter refuses every write). Off: the native FAT32 driver, as before,
+# and no rust-fatfs code is linked (the kill-switch).
+fat-fs = ["dep:fatfs"]
 # NFS-W1: kernel NeoFS writes a file of any size (to the 2 GiB format limit)
 # in one piece: data and pointer blocks in contiguous runs straight to the
 # device (through the guard, or the installer's claim), the single, double and
@@ -1567,6 +1619,8 @@ neo-test-phase3-neofs-create-small-file = ["neo-test"]
 neo-test-phase3-neofs-write-readback-same-boot = ["neo-test"]
 neo-test-phase3-neofs-cache-evict = ["neo-test", "neofs-cache-evict", "neofs-large-write"]
 neo-test-phase3-neofs-cache-evict-off = ["neo-test", "neofs-large-write"]
+# L7.1: the kernel half of the boot-time numbers (`boot_time`).
+neo-test-boot-time = ["neo-test", "boot-time"]
 neo-test-phase3-neofs-allocator-reuse-guard = ["neo-test"]
 neo-test-phase3-neofs-reboot-persistence-small-file = ["neo-test"]
 # Phase 3 BUILD-2 sub-commit 2D: NeoFS CoW/recovery/fsync scenarios.
@@ -1772,15 +1826,30 @@ neo-test-mounts-drop-under-lock-control = ["neo-test-phase3-umount-drop-outside-
 neo-test-phase3-mount-request-validation = ["neo-test-phase3-mount-table"]
 # Phase 3 BUILD-4C: FAT32 read-only foreign filesystem scenarios.
 neo-test-phase3-fat32 = ["neo-test-phase3-mount-table"]
-neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32", "fat-fs"]
+# L3a (G7): `device1:p1` on an MBR disk reads back; `-off` is the kill-switch.
+neo-test-phase3-fat32-mbr-mount-read = ["neo-test-phase3-fat32", "mbr-partitions", "fat-fs"]
+neo-test-phase3-fat32-mbr-off = ["neo-test-phase3-fat32"]
+# L3a-2: the nine scenarios above run on rust-fatfs (`fat-fs`); these run
+# what it adds: a FAT16 volume (the native driver refuses FAT16), the
+# no-write proof on a dirty-marked FAT32 volume, and the kill-switch control
+# (the native driver, no `fat-fs`, reads the fixture as before).
+neo-test-phase3-fat32-fat16-read = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-readonly-no-write = ["neo-test-phase3-fat32", "fat-fs"]
+# Chad's #18 review: a volume whose file chain (A -> B -> A) and directory
+# chain (a cluster pointing at itself) loop. Reading the file and listing
+# the directory each fail with an error; neither returns revisited data or
+# walks forever.
+neo-test-phase3-fat32-loop-chain = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-native-control = ["neo-test-phase3-fat32"]
 # Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
 neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
 neo-test-phase3-ext4-mount-readonly = ["neo-test-phase3-ext4"]
@@ -1836,6 +1905,13 @@ neo-test-interface-cap-derive-revoke = ["neo-test", "interface-identity", "file-
 # named "gets an IP" gate CB-1 lacked.
 neo-test-dhcp-rx-real-lease = ["neo-test"]
 neo-test-phase4-https-fetch = ["neo-test", "net-dial-cap"]
+# OT-61 rung 5b: phase4's checks on a net-dial-public-only kernel, plus a cap
+# narrowed without NON_PUBLIC that must not reach the loopback fixture.
+neo-test-net-dial-public-only = ["neo-test", "net-dial-public-only"]
+# OT-61 rung 5c: the fetch broker serves a content process over a channel:
+# HTTPS through a user-space TLS session, policy refusals, and a name that
+# resolves to loopback refused by the kernel through the broker's narrowed cap.
+neo-test-fetch-broker = ["neo-test", "net-dial-public-only", "browser-runtime"]
 # Equality gate: deliberately does NOT enable net-dial-cap and proves the
 # original ambient HTTPS path still succeeds.
 neo-test-net-dial-cap-kill-switch = ["neo-test"]
@@ -1944,6 +2020,14 @@ neo-test-tick-sleep-control = ["neo-test-usb-hotplug"]
 neo-test-tick-sleep-early-control = ["neo-test-usb-hotplug"]
 neo-test-tick-sleep-no-wake-control = ["neo-test-usb-hotplug"]
 neo-test-usb-enumerate = ["neo-test", "usb-host"]
+# L3u-2: a QEMU usb-storage stick holding the FAT32 fixture binds, mounts and
+# reads back; `-off` (no `usb-storage`) is the kill-switch.
+neo-test-usb-storage-read = ["neo-test-phase3-fat32", "usb-storage"]
+neo-test-usb-storage-off = ["neo-test", "usb-host"]
+# #30: a stick hot-plugged, bound and read, then pulled while a reader runs:
+# the driver is told, the block device leaves the registry, and every read
+# after (and the one in flight) fails NoDevice.
+neo-test-usb-storage-unplug = ["neo-test", "usb-storage", "usb-hotplug", "tick-sleep"]
 neo-test-usb-storm = ["neo-test", "usb-host", "accel-sim"]
 neo-test-usb-baremetal-probe = ["neo-test", "usb-host"]
 neo-test-usb-ethernet = ["neo-test", "usb-host"]
@@ -2024,6 +2108,15 @@ neo-test-ot90-stuck-sink-no-close = ["power-clean"]
 # STOP IPI, so the NMI parks it.
 neo-test-ot90-stop-cpus = ["neo-test", "power-stop-cpus"]
 neo-test-ot90-stop-holdout = ["neo-test", "power-stop-cpus"]
+# Review #6 item 1 (CP-64): one kernel thread per AP sends TLB shootdowns
+# (interrupts off, every other CPU targeted) in a loop while K4 runs; K4 must
+# drain them and park every AP by the STOP IPI, with no shootdown timeout.
+neo-test-ot90-stop-shootdown = ["neo-test", "power-stop-cpus"]
+# Review #6 item 2: the highest AP takes neither the STOP IPI nor the NMI and
+# sits in its NMI handler holding the UART lock, and K4's PM timer reads as
+# frozen. K4 must end on its poll count, report the holdout, skip K5 and
+# still reach S5.
+neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
 # OT-90 P3b-2: power-off with K6 on a NeoFS disk written this boot.
 neo-test-ot90-quiesce = ["neo-test", "power-quiesce"]
 # OT-90 P4: SYS_POWER's refusals, then a power-off through it.

@@ -498,6 +498,35 @@ impl TcpSocket {
         Ok(())
     }
 
+    /// `recv_stream`, handing up to `max` queued bytes to `deliver` BEFORE
+    /// they leave the queue, under the socket lock: they are dequeued only
+    /// if `deliver` succeeds, else its error comes back as the inner `Err`
+    /// and the queue is as it was. `SYS_SOCKET_RECV` delivers to the user
+    /// buffer here (CP-99), so a copy that faults consumes nothing. `deliver`
+    /// must not block or take this socket's lock.
+    pub fn recv_stream_with<E>(
+        &self,
+        max: usize,
+        deliver: impl FnOnce(&[u8]) -> Result<(), E>,
+    ) -> Result<Result<usize, E>, TcpError> {
+        if max == 0 {
+            return Err(TcpError::Invalid);
+        }
+        let mut inner = self.inner.lock();
+        if inner.rx_queue.is_empty() {
+            return Err(TcpError::WouldBlock);
+        }
+        let n = core::cmp::min(max, inner.rx_queue.len());
+        let (head, tail) = inner.rx_queue.as_slices();
+        let mut bytes = alloc::vec::Vec::with_capacity(n);
+        bytes.extend(head.iter().chain(tail.iter()).take(n));
+        if let Err(e) = deliver(&bytes) {
+            return Ok(Err(e));
+        }
+        inner.rx_queue.drain(..n);
+        Ok(Ok(n))
+    }
+
     pub fn recv_stream(&self, out: &mut [u8]) -> Result<usize, TcpError> {
         if out.is_empty() {
             return Err(TcpError::Invalid);

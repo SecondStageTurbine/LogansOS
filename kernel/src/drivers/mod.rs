@@ -30,6 +30,11 @@ pub mod i2c_hid;
 /// Compiled out by default (the kill-switch); `vtd` turns it on.
 #[cfg(feature = "vtd")]
 pub mod iommu;
+#[cfg(any(feature = "ps2-keyboard", feature = "usb-host"))]
+pub mod key_locks;
+#[cfg(any(feature = "ps2-keyboard", feature = "usb-host"))]
+#[allow(dead_code)] // `printable` is read by test scenarios and userland
+pub mod keymap_us_logic;
 pub mod net;
 pub mod pci;
 /// The i8042 (PS/2) keyboard. Compiled out by default (the kill-switch);

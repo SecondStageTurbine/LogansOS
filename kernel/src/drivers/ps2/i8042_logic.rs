@@ -18,7 +18,8 @@
 //! technical reference and OSDev's "8042 PS/2 Controller" and "PS/2 Keyboard"
 //! pages for the command set and scancode tables; the USB HID Usage Tables
 //! (Keyboard/Keypad page 0x07) for the output codes; Linux's `i8042` and
-//! `atkbd` drivers for the field traps (see the FINDINGS note).
+//! `atkbd` drivers for the field traps
+//! (`docs/RESEARCH-2026-11-02-i8042-atkbd-traps-FINDINGS.md`).
 
 /// Data port (read: output buffer; write: input buffer to the device).
 pub const DATA_PORT: u16 = 0x60;

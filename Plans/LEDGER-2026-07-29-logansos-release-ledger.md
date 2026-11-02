@@ -1717,3 +1717,29 @@ None bounces. Notes kept for the merge reports and follow-ups:
   GitHub-hosted runners, and `qemu-trial.yml` removed.
 - **J.c.:** keep the ACPI coverage reports (provenance and checksums, no raw tables or serials); push the public
   snapshot once batch 43 merges. It goes out as one root commit authored with his GitHub no-reply address.
+
+### 2026-10-31 ~17:50 EDT: work moves to the public repo
+
+- **The always-on relay box works:** a self-test sends one prompt to each engine; Codex and DeepSeek both answered.
+  DeepSeek had been exiting silently because its CLI starts only under Node 24 (`import.meta.main`); the box moved
+  to Node 24 LTS. Its relay runners now poll this repo's queue; relay 226 (Dexter, Lane 2a) is the first queued here.
+- **Public CI:** shards 2-4 and every host job green on the hosted runners; shard 1 ran out of time on
+  `desktop_home_cycle`, now on the 300 s desktop timeout (`76a1f03`), with a gate dispatched on main.
+- **Open PRs carried over** (J.c. approved publishing): private #266, #261, #260, #249, #272, #255, #256, #257 are
+  public #1-#8, each one squashed commit of the net change, scanned for personal details. Ten more need a rebase by
+  their seats; the list and each seat's next steps are in `Plans/DISPATCH-2026-10-31-seats-resume-on-public.md`.
+- **Seats A-D restart as fresh cloud sessions on this repo**; the old sessions (stuck on the rename) are left as they
+  were, with their work already pushed to the archive.
+- **J.c.: at least one seat on the browser at all times** (seat D, OT-61; it never idles or moves to other lanes).
+
+### 2026-11-01 ~16:55 EDT: an escaped defect found by the preview image; merges since the move
+
+- **Escaped defect, fixed:** the product image panicked at boot (CSPRNG init) because `rdrand_u64` treated RDRAND's
+  carry flag backwards. Every gated kernel is `neo-test`, which seeds the DRBG with a fixed seed, so no gate reached
+  `Csprng::init`. Found by Seat G's boot check of the preview VM image (#44), the first CI boot of a product kernel.
+  Fixed in #43 (Chad's cross-family review PASS, with an independent carry harness); the `rng-seed-boot` job is the
+  promoted scenario. CLAUDE.md's hermeticity note is corrected.
+- **Merged since the move to the public repo (2026-10-31 evening):** #19, #1, #37 (Dexter's Lane 2), #34, #38, #39,
+  #12, #9, #20, #31, #5, #32, #13 (user-copy-fixup, CP-99), #43, and #30 (USB mass storage, carrying #23).
+- **Process:** every kernel PR gets a cross-family review on the relay box before merge; merge-ready PRs are gated
+  together in a PM batch (`claude/pm-batch-N`) so one merge doesn't invalidate the others' gates.

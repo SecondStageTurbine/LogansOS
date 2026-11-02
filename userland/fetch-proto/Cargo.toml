@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "fetch-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "OT-61 rung 5: the fetch broker's wire format, request policy and chunked decoder, with no I/O"
+
+[dependencies]
