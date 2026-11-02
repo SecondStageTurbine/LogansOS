@@ -72,6 +72,8 @@ mod install_bundle_logic;
 mod vendor_verify;
 
 #[cfg(test)]
+mod batch_scripts_tests;
+#[cfg(test)]
 mod build_id_tests;
 #[cfg(test)]
 mod ci_memory_floor_tests;
