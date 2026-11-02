@@ -58,6 +58,7 @@ members = [
     "tools/boot-eth0-logic-tests",
     "tools/rtl8125-logic-tests",
     "tools/rtc-logic-tests",
+    "tools/boot-time-logic-tests",
     "tools/ntls-logic-tests",
     "tools/handle-info-logic-tests",
     "tools/install-ui-abi-tests",
