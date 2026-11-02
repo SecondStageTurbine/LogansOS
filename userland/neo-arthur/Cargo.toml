@@ -96,6 +96,11 @@ atrium-apps-arthur-flood = ["atrium-apps-probe"]
 # one commit and never receives its reply; the WM ends him alone, the probe app
 # keeps its turns, and the session goes back to Home once it exits.
 atrium-apps-arthur-hang = ["atrium-apps-probe"]
+# PR #15 re-check 2 boot test: once the probe app is open, Arthur yields
+# (OP_YIELD_FOCUS) and never receives the reply; the WM's settle of that reply
+# must keep serving the pointer and the SAK chords (a Super+Tab is taken
+# before the reply's deadline), then end Arthur alone.
+atrium-apps-arthur-yield-hang = ["atrium-apps-probe"]
 # Chad DS-1c F1 boot test: ask for the Lens again after a refused bloom (the
 # WM's `desktop-lens-fault-test` fails the first two).
 desktop-lens-fault-test = ["desktop-lens"]

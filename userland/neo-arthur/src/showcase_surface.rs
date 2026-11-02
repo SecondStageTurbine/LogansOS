@@ -668,6 +668,31 @@ impl ArthurSurface {
         }
     }
 
+    /// PR #15 re-check 2 boot test: hand the keyboard back (`OP_YIELD_FOCUS`)
+    /// and never receive the reply, then never take another message. The WM
+    /// settles the owed reply for up to its deadline, serving the other
+    /// clients and its own input (the pointer, the SAK chords) meanwhile.
+    #[cfg(feature = "atrium-apps-arthur-yield-hang")]
+    pub fn yield_and_hang(&mut self) -> ! {
+        let request_id = self.next_request_id();
+        let sent = send_request(
+            self.surface,
+            request_id,
+            Request::Yield(libneo::atrium_protocol::YieldFocus {
+                identity: self.identity,
+                yield_serial: self.client_serial.max(1),
+            }),
+        );
+        crate::stage_b_log_line(if sent {
+            b"DESKTOP arthur hanging yield=never-received"
+        } else {
+            b"DESKTOP arthur hanging send=failed"
+        });
+        loop {
+            libneo::sys_sched_yield();
+        }
+    }
+
     /// Boot-test probe (desktop_resize_boot): one request the WM must refuse
     /// for each of its session loop's client-error arms, each answered in
     /// its reply's status while the session goes on. None of them changes

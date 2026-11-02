@@ -223,6 +223,8 @@ const DESKTOP_APPS_FLOOD_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_
 const DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_grab_boot.ppm";
 const DESKTOP_APPS_ARTHUR_HANG_BOOT_CAPTURE_REL: &str =
     "target/neo-test/desktop_apps_arthur_hang_boot.ppm";
+const DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_apps_arthur_yield_hang_boot.ppm";
 const DESKTOP_CLOCK_BOOT_MID_REL: &str = "target/neo-test/desktop_clock_boot_mid.ppm";
 const V1_CONSOLE_LIVENESS_CAPTURE_REL: &str = "target/neo-test/v1_console_liveness.ppm";
 
@@ -682,6 +684,23 @@ const DESKTOP_APPS_ARTHUR_HANG_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     ),
     step(b"DESKTOP apps arthur failed code=24", b"a"),
 ];
+/// PR #15 re-check 2: while the WM settles a reply Arthur never takes (his
+/// Yield, `atrium-apps-arthur-yield-hang`), its own input is still served: a
+/// Super+Tab typed then switches the front before the reply's deadline ends
+/// him. Then the probe app is in front again, gets its key and exits 7.
+const DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(
+        b"DESKTOP arthur hanging yield=never-received",
+        &[HMP_SUPER_TAB],
+    ),
+    step(b"DESKTOP apps arthur failed code=24", b"a"),
+];
 /// DI-1b resize: desktop_pointer_boot's script, then (after the clamped
 /// grab, the cursor at 332,462) to the moved frame's bottom-right corner
 /// handle: 7 × `mouse_move 124 0`, 3 × `mouse_move 0 124`, `mouse_move 6 0`
@@ -809,7 +828,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 35] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -969,6 +988,13 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 35] = [
         "desktop_apps_arthur_hang_boot",
         DESKTOP_APPS_ARTHUR_HANG_BOOT_HID_STEPS,
         DESKTOP_APPS_ARTHUR_HANG_BOOT_CAPTURE_REL,
+        b"a",
+    ),
+    // PR #15 re-check 2: input served while his reply is settled.
+    desktop(
+        "desktop_apps_arthur_yield_hang_boot",
+        DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_HID_STEPS,
+        DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_CAPTURE_REL,
         b"a",
     ),
     // DS-1c: captured once the answer (and the Lens) is composited.
@@ -3396,6 +3422,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_apps_arthur_hang_boot",
         feature: "neo-test-desktop-apps-arthur-hang-boot",
         user_feature: Some("desktop-apps-arthur-hang-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 re-check 2: Arthur never receives his Yield's reply; while
+        // the WM settles it, Super+Tab is still served (the pointer and the
+        // lock too); then he alone is ended.
+        name: "desktop_apps_arthur_yield_hang_boot",
+        feature: "neo-test-desktop-apps-arthur-yield-hang-boot",
+        user_feature: Some("desktop-apps-arthur-yield-hang-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -7262,6 +7298,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-reuse-boot-test")
         | Some("desktop-apps-flood-boot-test")
         | Some("desktop-apps-arthur-hang-boot-test")
+        | Some("desktop-apps-arthur-yield-hang-boot-test")
         | Some("desktop-apps-grab-boot-test") => {
             vec!["atrium-apps", "desktop-home-boot-test"]
         }
@@ -7408,7 +7445,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-apps-handoff-death-boot-test") => vec!["probe-app-die-on-discard"],
         Some("desktop-apps-reuse-boot-test")
         | Some("desktop-apps-grab-boot-test")
-        | Some("desktop-apps-arthur-hang-boot-test") => vec!["probe-app-exit-after-key"],
+        | Some("desktop-apps-arthur-hang-boot-test")
+        | Some("desktop-apps-arthur-yield-hang-boot-test") => vec!["probe-app-exit-after-key"],
         Some("desktop-apps-flood-boot-test") => vec!["probe-app"],
         // DS-1c: the worker is the Lens (and, with no handles, DS-1b's probe).
         Some("desktop-lens")
@@ -7568,6 +7606,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-arthur-hang",
+        ],
+        Some("desktop-apps-arthur-yield-hang-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-arthur-yield-hang",
         ],
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
@@ -17659,6 +17702,32 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             observed,
             "DESKTOP apps client unreaped",
             "PR #15 re-check item 3: the probe app ended by itself, not with Arthur",
+        )?;
+    }
+    // PR #15 re-check 2: the WM's input is served while it settles a reply
+    // Arthur never takes: Super+Tab switches the front before his deadline.
+    if scenario.name == "desktop_apps_arthur_yield_hang_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP arthur hanging yield=never-received",
+                // Taken during the settle (without the WM's input service
+                // there, the chord would wait until after he is ended).
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP apps client hung client=0",
+                "[ kernel ] proc: kill of pid=",
+                "DESKTOP apps arthur failed code=24 wait=",
+                "DESKTOP apps front client=1 via=arthur-failed",
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps released client=1 closed=6 failed=0",
+                "DESKTOP apps client ended client=1 value=7",
+                "DESKTOP session end client=arthur contained=24",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "PR #15 re-check 2: the WM's input is served while Arthur's reply is settled",
         )?;
     }
     // PR #15 review item 4: a grab follows the front, not its press.

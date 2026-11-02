@@ -2183,7 +2183,16 @@ fn arthur_session_turns(
                 }
                 // His reply is delivered before he is reaped.
                 #[cfg(feature = "atrium-apps")]
-                match apps::settle_arthur(scene, &mut apps, activator, client) {
+                match apps::settle_arthur(
+                    scene,
+                    &mut apps,
+                    activator,
+                    client,
+                    apps::Input {
+                        home_focus,
+                        escaped: &mut escaped,
+                    },
+                ) {
                     Ok(true) => {}
                     Ok(false) => break 'serve Some(24),
                     Err(code) => return code,
@@ -2225,7 +2234,16 @@ fn arthur_session_turns(
                 // step of it is a try, and the other clients keep their turns
                 // meanwhile.
                 #[cfg(feature = "atrium-apps")]
-                match apps::settle_arthur(scene, &mut apps, activator, client) {
+                match apps::settle_arthur(
+                    scene,
+                    &mut apps,
+                    activator,
+                    client,
+                    apps::Input {
+                        home_focus,
+                        escaped: &mut escaped,
+                    },
+                ) {
                     Ok(true) => {}
                     Ok(false) => break 'serve Some(24),
                     Err(code) => return code,
@@ -2238,6 +2256,10 @@ fn arthur_session_turns(
                     client,
                     surface,
                     permission::lent(&answer),
+                    apps::Input {
+                        home_focus,
+                        escaped: &mut escaped,
+                    },
                 ) {
                     Ok(true) => {}
                     Ok(false) => break 'serve Some(35),
@@ -2326,7 +2348,16 @@ fn arthur_session_turns(
                 // Home's loop doesn't retry his reply, and its resume
                 // follows the reply on his session: deliver it first.
                 #[cfg(feature = "atrium-apps")]
-                match apps::settle_arthur(scene, &mut apps, activator, client) {
+                match apps::settle_arthur(
+                    scene,
+                    &mut apps,
+                    activator,
+                    client,
+                    apps::Input {
+                        home_focus,
+                        escaped: &mut escaped,
+                    },
+                ) {
                     Ok(true) => {}
                     Ok(false) => break 'serve Some(24),
                     Err(code) => return code,
@@ -2413,15 +2444,11 @@ fn arthur_session_turns(
             return code;
         }
         while apps.live() {
-            #[cfg(feature = "login")]
-            if let Err(code) = lock::service(scene) {
-                return code;
-            }
             if let Err(code) = apps::turns(scene, &mut apps, activator, client) {
                 return code;
             }
-            let front_activator = apps.front_activator(activator);
-            if let Err(code) = scene.pointer_tick(front_activator, home_focus, &mut escaped) {
+            if let Err(code) = apps::serve_input(scene, &apps, activator, home_focus, &mut escaped)
+            {
                 return code;
             }
             libneo::sys_sched_yield();
@@ -3099,7 +3126,12 @@ mod apps {
         apps: &mut Apps,
         arthur_activator: Handle,
         arthur_pixels: &SharedPixels,
+        input: Input,
     ) -> Result<bool, i32> {
+        let Input {
+            home_focus,
+            escaped,
+        } = input;
         while arthur_owed() {
             if let Err(why) = flush_arthur() {
                 log_client(why, ARTHUR, 0);
@@ -3109,9 +3141,35 @@ mod apps {
                 break;
             }
             turns(scene, apps, arthur_activator, arthur_pixels)?;
+            serve_input(scene, apps, arthur_activator, home_focus, escaped)?;
             libneo::sys_sched_yield();
         }
         Ok(true)
+    }
+
+    /// The WM's own input, for a wait that spans loop turns: the lock and
+    /// the pointer (with the SAK chords) for the client in front.
+    pub struct Input<'a> {
+        pub home_focus: &'a home::HomeFocus,
+        pub escaped: &'a mut bool,
+    }
+
+    /// PR #15 re-check 2: one pass of the WM's own input service, as the
+    /// session loop runs it every turn: the lock (Super+L, the idle lock),
+    /// then the pointer and the SAK latch for the client in front. Waits
+    /// that retry a client (a settle, a lend, the others' session after
+    /// Arthur failed) run it between retries, so no wait on a client pauses
+    /// the pointer or the lock.
+    pub fn serve_input(
+        scene: &mut Scene,
+        apps: &Apps,
+        arthur_activator: Handle,
+        home_focus: &home::HomeFocus,
+        escaped: &mut bool,
+    ) -> Result<(), i32> {
+        #[cfg(feature = "login")]
+        super::lock::service(scene)?;
+        scene.pointer_tick(apps.front_activator(arthur_activator), home_focus, escaped)
     }
 
     /// The lend of a permission's cap on Arthur's `surface` channel (PR #15
@@ -3128,7 +3186,12 @@ mod apps {
         arthur_pixels: &SharedPixels,
         surface: Handle,
         lent: Option<(Handle, libneo::CapRights)>,
+        input: Input,
     ) -> Result<bool, i32> {
+        let Input {
+            home_focus,
+            escaped,
+        } = input;
         use libneo::atrium_lend::{LendError, LendIo, Try, lend};
         struct Io {
             channel: Handle,
@@ -3171,6 +3234,7 @@ mod apps {
         let deadline = monotonic_ns().saturating_add(REPLY_NS);
         match lend(&mut io, deadline, monotonic_ns, || {
             turns(scene, apps, arthur_activator, arthur_pixels)?;
+            serve_input(scene, apps, arthur_activator, home_focus, escaped)?;
             libneo::sys_sched_yield();
             Ok(())
         }) {
