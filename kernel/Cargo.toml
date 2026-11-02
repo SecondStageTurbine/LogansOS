@@ -245,6 +245,9 @@ desktop = [
     "desktop-session",
     "usb-hotplug",
     "rtc-epoch",
+    # F10 (J.c., 2026-11-02): held keys repeat, in every desktop kernel the
+    # gate boots as in the product image.
+    "key-autorepeat",
     "kernel-sysstat",
     "phase9-real-quant",
     "threaded-matmul",
