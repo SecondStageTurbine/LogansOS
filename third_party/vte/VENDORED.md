@@ -17,7 +17,7 @@ cursor, the modes); `vte` is its byte-level parser. Both build with `std` off (`
   only in `publish = false`, dropped `include`/`exclude`/`keywords`/`categories`/`homepage`/`documentation`/docs.rs
   metadata, `vt100`'s dropped `[dev-dependencies]` (its `tests/` aren't vendored), and `vt100`'s `vte` dependency
   pointing at `../vte` instead of crates.io.
-- **Source:** `src/` is upstream's, byte for byte, plus one first line per file (`// SPDX-License-Identifier: MIT`
+- **Source:** `src/` is upstream's, byte for byte (except the one `vt100` patch below), plus one first line per file (`// SPDX-License-Identifier: MIT`
   in `vt100`, `// SPDX-License-Identifier: Apache-2.0 OR MIT` in `vte`) for LogansOS's SPDX close-gate. Both
   directories are excluded from the LogansOS workspace, so first-party fmt and clippy settings don't apply.
 - **rustfmt:** each `rustfmt.toml` is upstream's formatting config plus an SPDX line (`vt100`'s is upstream's
@@ -53,4 +53,18 @@ done
 cmp third_party/vte/Cargo.toml.upstream /tmp/vte/Cargo.toml
 ```
 
-No patches beyond the one SPDX line per source file.
+**One patch** besides the SPDX lines, in `third_party/vt100/src/perform.rs` (`csi_dispatch`, the `Some(b' ')` arm
+for any final but `q`): upstream calls `unhandled_csi` with no intermediates there, so `CSI 6 SP n` looked like DSR
+6n to a callback. The patch passes `Some(b' ')` and the second intermediate instead, so the terminal's answerback
+filter sees and refuses it (Jarvis's #42 review, item 1; KAT `a_space_intermediate_is_not_dsr` in
+`userland/neo-term-core/src/term.rs`). The base check above therefore reports `perform.rs` as differing; the
+difference is exactly:
+
+```
+-                        None,
+-                        None,
++                        Some(b' '),
++                        intermediates.get(1).copied(),
+```
+
+`vte` has no patches beyond the one SPDX line per source file.

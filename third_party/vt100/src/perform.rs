@@ -149,8 +149,8 @@ impl<CB: crate::Callbacks> vte::Perform for crate::screen::WrappedScreen<CB> {
                 _ => {
                     self.callbacks.unhandled_csi(
                         &mut self.screen,
-                        None,
-                        None,
+                        Some(b' '),
+                        intermediates.get(1).copied(),
                         &params.iter().collect::<Vec<_>>(),
                         c,
                     );

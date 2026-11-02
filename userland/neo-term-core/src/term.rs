@@ -4,10 +4,12 @@
 //! ([`crate::answer`]) and the bell. OSC 52 clipboard reads and writes,
 //! title and icon setting, and resize requests stay `vt100`'s no-ops.
 //!
-//! One `vt100` quirk the filter can't see: for `CSI SP <final>` with any
-//! final but `q`, `vt100` drops the space before calling back, so a
-//! malformed `CSI 6 SP n` is answered as DSR 6n. The answer goes only to the
-//! child's own stdin, so this is harmless.
+//! The sequences `vt100` acts on are exactly THINK §5.1's list (revision 5),
+//! each with a KAT here. One local patch to the vendored copy
+//! (`third_party/vt100/VENDORED.md`): `CSI <params> SP <final>` with any
+//! final but `q` now reaches `unhandled_csi` with its space intermediate, so
+//! the answerback filter refuses it (upstream passed no intermediates, and a
+//! malformed `CSI 6 SP n` was answered as DSR 6n).
 
 use crate::answer::answer;
 use alloc::vec::Vec;
@@ -77,8 +79,9 @@ pub struct Output {
 
 /// The reset every child starts from (§3.4), without clearing what the last
 /// child printed: the main screen, DECCKM off, keypad numeric, bracketed
-/// paste off, autowrap on, the cursor shown.
-pub const CHILD_RESET: &[u8] = b"\x1b[?1049l\x1b[?1l\x1b>\x1b[?2004l\x1b[?7h\x1b[?25h";
+/// paste off, the cursor shown. (Autowrap is always on: `vt100` has no
+/// `?7`, THINK §5.1.)
+pub const CHILD_RESET: &[u8] = b"\x1b[?1049l\x1b[?1l\x1b>\x1b[?2004l\x1b[?25h";
 
 pub struct Term {
     parser: vt100::Parser<Hooks>,
@@ -399,8 +402,122 @@ mod tests {
         assert!(!t.screen().alternate_screen());
         // The main screen's text is still there.
         assert_eq!(rows(&t)[0], "kept______");
-        // Autowrap is back on.
+        // Autowrap stayed on: `?7l` is not in the subset and is ignored.
         t.process(b"\r0123456789A");
         assert_eq!(rows(&t)[1], "A_________");
+    }
+
+    // THINK §5.1 revision 5: what vt100 also acts on, each pinned.
+
+    #[test]
+    fn hpa_is_cha() {
+        check(b"\x1b[4`x", ["___x______", BLANK, BLANK], (0, 4));
+    }
+
+    #[test]
+    fn rep_repeats_the_last_printed_character() {
+        check(b"a\x1b[3b", ["aaaa______", BLANK, BLANK], (0, 4));
+        // Nothing printed yet: nothing to repeat.
+        check(b"\x1b[3b", [BLANK, BLANK, BLANK], (0, 0));
+        // A huge count is bounded by the screen: 1 + 65535 = 65536 = 6553
+        // full rows of 10 and 6 more, so the last screenful is two full rows
+        // and 6 cells.
+        check(
+            b"z\x1b[65535b",
+            ["zzzzzzzzzz", "zzzzzzzzzz", "zzzzzz____"],
+            (2, 6),
+        );
+    }
+
+    #[test]
+    fn vt_and_ff_are_line_feeds() {
+        check(
+            b"a\x0bb\x0cc",
+            ["a_________", "_b________", "__c_______"],
+            (2, 3),
+        );
+    }
+
+    #[test]
+    fn decscusr_sets_only_the_cursor_style() {
+        let mut t = term();
+        assert_eq!(t.process(b"\x1b[4 q"), Output::default());
+        assert_eq!(
+            t.screen().cursor_style(),
+            vt100::CursorStyle::SteadyUnderline
+        );
+        assert_eq!(rows(&t), [BLANK, BLANK, BLANK].map(String::from));
+    }
+
+    #[test]
+    fn decsed_and_decsel_erase_like_ed_and_el() {
+        check(b"abc\x1b[2D\x1b[?K", ["a_________", BLANK, BLANK], (0, 1));
+        check(b"ab\x1b[?2J", [BLANK, BLANK, BLANK], (0, 2));
+    }
+
+    #[test]
+    fn esc_g_is_the_visual_bell() {
+        assert!(term().process(b"\x1bg").bell);
+    }
+
+    #[test]
+    fn mouse_modes_are_state_only() {
+        let mut t = term();
+        for seq in [
+            &b"\x1b[?1000h"[..],
+            b"\x1b[?1002h",
+            b"\x1b[?1003h",
+            b"\x1b[?1006h",
+            b"\x1b[?9h",
+        ] {
+            assert_eq!(t.process(seq), Output::default(), "{seq:02x?}");
+        }
+        assert_ne!(
+            t.screen().mouse_protocol_mode(),
+            vt100::MouseProtocolMode::None
+        );
+        t.reset_for_child();
+        assert_eq!(rows(&t), [BLANK, BLANK, BLANK].map(String::from));
+    }
+
+    #[test]
+    fn origin_mode_and_mode_47() {
+        // ?6: CUP is relative to the scroll region.
+        check(
+            b"\x1b[2;3r\x1b[?6h\x1b[1;1Hx",
+            [BLANK, "x_________", BLANK],
+            (1, 1),
+        );
+        // ?47: the alternate screen without saving the cursor. vt100 keeps
+        // a cursor per screen, so leaving it restores the main screen's
+        // cursor (xterm shares one cursor; THINK §5.1 records the
+        // divergence; kibi uses 1049).
+        let t = check(
+            b"ab\x1b[?47hcd\x1b[?47l",
+            ["ab________", BLANK, BLANK],
+            (0, 2),
+        );
+        assert!(!t.screen().alternate_screen());
+    }
+
+    #[test]
+    fn autowrap_cannot_be_turned_off() {
+        check(
+            b"\x1b[?7l0123456789A",
+            ["0123456789", "A_________", BLANK],
+            (1, 1),
+        );
+    }
+
+    /// Jarvis #42 item 1: `CSI 6 SP n` is not DSR 6n (the vendored patch).
+    #[test]
+    fn a_space_intermediate_is_not_dsr() {
+        let mut t = term();
+        assert_eq!(t.process(b"ab\x1b[6 n"), Output::default());
+        assert_eq!(t.process(b"\x1b[5 n"), Output::default());
+        assert_eq!(t.process(b"\x1b[ c"), Output::default());
+        assert_eq!(rows(&t), ["ab________", BLANK, BLANK].map(String::from));
+        // The real DSR still answers.
+        assert_eq!(t.process(b"\x1b[6n").answers, b"\x1b[1;3R");
     }
 }

@@ -305,14 +305,21 @@ source: CUP, CUU/CUD/CUF/CUB, EL, `?25`, `?1049`, SGR 7 and 38;5, DSR 6n) plus t
 
 | Class | Sequences |
 |---|---|
-| C0 | BEL, BS, HT (8-column stops), LF, CR, ESC |
-| ESC | `ESC 7` / `ESC 8` (save, restore cursor), `ESC M` (reverse index), `ESC c` (reset), `ESC =` / `ESC >` (keypad) |
-| CSI cursor | CUU `A`, CUD `B`, CUF `C`, CUB `D`, CNL `E`, CPL `F`, CHA `G`, CUP `H`, HVP `f`, VPA `d` |
-| CSI erase and edit | ED `J` (0, 1, 2), EL `K` (0, 1, 2), ICH `@`, DCH `P`, IL `L`, DL `M`, ECH `X` |
+| C0 | BEL, BS, HT (8-column stops), LF, VT and FF (both as LF), CR, ESC |
+| ESC | `ESC 7` / `ESC 8` (save, restore cursor), `ESC M` (reverse index), `ESC c` (reset), `ESC =` / `ESC >` (keypad), `ESC g` (visual bell) |
+| CSI cursor | CUU `A`, CUD `B`, CUF `C`, CUB `D`, CNL `E`, CPL `F`, CHA `G`, HPA `` ` `` (as CHA), CUP `H`, HVP `f`, VPA `d` |
+| CSI erase and edit | ED `J` (0, 1, 2), EL `K` (0, 1, 2), DECSED `? J` and DECSEL `? K` (as ED and EL), ICH `@`, DCH `P`, IL `L`, DL `M`, ECH `X`, REP `b` (repeat the last printed character; the count is at most 65535 and the screen bounds what it leaves) |
+| CSI other | DECSCUSR `SP q` (cursor style 0-6; the renderer may draw one style for all); `CSI 8 ; r ; c t` (a resize request: a no-op callback, the WM owns the size) |
 | CSI scroll | SU `S`, SD `T`, DECSTBM `r` |
 | SGR `m` | 0, 1, 2, 3, 4, 7, 22, 23, 24, 27, 30-37, 39, 40-47, 49, 90-97, 100-107, `38;5;n`, `48;5;n`, `38;2;r;g;b`, `48;2;r;g;b` |
-| Private modes `?h` / `?l` | 1 (DECCKM), 7 (autowrap), 25 (cursor shown), 1049 (alternate screen, save cursor), 2004 (bracketed paste: the mode is tracked and used by paste, §6.1) |
+| Private modes `?h` / `?l` | 1 (DECCKM), 6 (origin mode), 25 (cursor shown), 47 (alternate screen), 1049 (alternate screen, save cursor), 2004 (bracketed paste: the mode is tracked and used by paste, §6.1), and the mouse modes 9, 1000, 1002, 1003, 1005, 1006 (state only: L1a encodes no mouse events, so nothing reaches the child) |
 | Reports (§5.4) | DSR `5n`, DSR `6n`, DA1 `c` |
+
+**Revision 5 (Jarvis's #42 review, item 1):** the list above is now exactly what the vendored `vt100` acts on, each
+row with a KAT in `neo-term-core` `term.rs`; anything else is ignored. Two differences from xterm, both pinned by KAT:
+autowrap is always on (`vt100` has no `?7`, so `?7l` is ignored; revision 4 had listed `?7`, which `vt100` never
+implemented), and `?47` keeps a separate cursor per screen (xterm shares one; kibi uses `1049`, which saves and
+restores the cursor either way).
 
 ### 5.2 Two oracles
 
