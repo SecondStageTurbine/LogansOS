@@ -5092,6 +5092,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L3a (G7): the FAT32 volume as MBR partition 1, mounted as
+    // `device1:p1`; `-off` is the kill-switch (no `mbr-partitions`: the
+    // source is refused, as before).
+    TestScenario {
+        name: "phase3_fat32_mbr_mount_read",
+        feature: "neo-test-phase3-fat32-mbr-mount-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_mbr_off",
+        feature: "neo-test-phase3-fat32-mbr-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // Phase 3 BUILD-4D: ext4 read-only foreign filesystem.
     TestScenario {
         name: "phase3_ext4_mount_readonly",
@@ -14442,7 +14459,12 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         let device0 = output_dir.join(format!("{scenario_name}.device0.raw"));
         let device1 = output_dir.join(format!("{scenario_name}.fat32.raw"));
         let device0 = prepare_raw_storage_disk(&device0)?;
-        let device1 = prepare_fat32_storage_disk(&device1)?;
+        // L3a (G7): the same volume inside an MBR partition at LBA 2048.
+        let device1 = if scenario_uses_fat32_mbr_disk(scenario_name) {
+            prepare_fat32_mbr_storage_disk(&device1)?
+        } else {
+            prepare_fat32_storage_disk(&device1)?
+        };
         return Ok(vec![device0, device1]);
     }
 
@@ -16301,6 +16323,41 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
     )?;
     run_mtools("mcopy", &["-i", &image, &weights_path, "::/weights.neom"])?;
 
+    Ok(path.to_path_buf())
+}
+
+/// L3a (G7): the `phase3_fat32_mbr_*` scenarios' device1 is an MBR disk.
+fn scenario_uses_fat32_mbr_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_fat32_mbr_")
+}
+
+/// The first LBA of the FAT32 partition on the L3a (G7) MBR disk: 1 MiB in,
+/// where every current partitioning tool puts it.
+const FAT32_MBR_FIRST_LBA: u32 = 2048;
+
+/// L3a (G7): the FAT32 fixture volume ([`prepare_fat32_storage_disk`]) as
+/// partition 1 of an MBR disk. Sector 0 is an MBR laid out here by hand:
+/// zero boot code, one FAT32-LBA (`0x0C`) entry at LBA 2048 covering the
+/// volume, `55 AA`. The 1 MiB gap before the volume is zero.
+fn prepare_fat32_mbr_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    let volume_path = path.with_extension("volume.raw");
+    prepare_fat32_storage_disk(&volume_path)?;
+    let volume = fs::read(&volume_path)
+        .map_err(|e| format!("read FAT32 volume {}: {e}", volume_path.display()))?;
+    let sectors = u32::try_from(volume.len() / 512)
+        .map_err(|_| format!("FAT32 volume {} too large for MBR", volume_path.display()))?;
+    let mut mbr = [0u8; 512];
+    let entry = &mut mbr[446..462];
+    entry[4] = 0x0c;
+    entry[8..12].copy_from_slice(&FAT32_MBR_FIRST_LBA.to_le_bytes());
+    entry[12..16].copy_from_slice(&sectors.to_le_bytes());
+    mbr[510] = 0x55;
+    mbr[511] = 0xaa;
+    let mut disk = vec![0u8; FAT32_MBR_FIRST_LBA as usize * 512];
+    disk[..512].copy_from_slice(&mbr);
+    disk.extend_from_slice(&volume);
+    fs::write(path, &disk).map_err(|e| format!("write MBR disk {}: {e}", path.display()))?;
+    let _ = fs::remove_file(&volume_path);
     Ok(path.to_path_buf())
 }
 

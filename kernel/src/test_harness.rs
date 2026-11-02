@@ -803,6 +803,10 @@ const SCENARIO: &str = "phase3_fat32_exec_blocked_by_default";
 const SCENARIO: &str = "phase3_fat32_exec_with_opt_in";
 #[cfg(feature = "neo-test-phase3-fat32-type-import-is-regular")]
 const SCENARIO: &str = "phase3_fat32_type_import_is_regular";
+#[cfg(feature = "neo-test-phase3-fat32-mbr-mount-read")]
+const SCENARIO: &str = "phase3_fat32_mbr_mount_read";
+#[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
+const SCENARIO: &str = "phase3_fat32_mbr_off";
 #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
 const SCENARIO: &str = "phase3_ext4_mount_readonly";
 #[cfg(feature = "neo-test-phase3-ext4-readdir-root")]
@@ -1502,6 +1506,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-fat32-exec-blocked-by-default",
     feature = "neo-test-phase3-fat32-exec-with-opt-in",
     feature = "neo-test-phase3-fat32-type-import-is-regular",
+    feature = "neo-test-phase3-fat32-mbr-mount-read",
+    feature = "neo-test-phase3-fat32-mbr-off",
     feature = "neo-test-phase3-ext4-mount-readonly",
     feature = "neo-test-phase3-ext4-readdir-root",
     feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -1849,6 +1855,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-phase3-fat32-exec-blocked-by-default",
         feature = "neo-test-phase3-fat32-exec-with-opt-in",
         feature = "neo-test-phase3-fat32-type-import-is-regular",
+        feature = "neo-test-phase3-fat32-mbr-mount-read",
+        feature = "neo-test-phase3-fat32-mbr-off",
         feature = "neo-test-phase3-ext4-mount-readonly",
         feature = "neo-test-phase3-ext4-readdir-root",
         feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -5274,6 +5282,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-phase3-fat32-type-import-is-regular")]
     run_phase3_fat32_type_import_is_regular();
+
+    #[cfg(any(
+        feature = "neo-test-phase3-fat32-mbr-mount-read",
+        feature = "neo-test-phase3-fat32-mbr-off"
+    ))]
+    run_phase3_fat32_mbr();
 
     #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
     run_phase3_ext4_mount_readonly();
@@ -37480,6 +37494,74 @@ fn run_phase3_fat32_type_import_is_regular() -> ! {
         entries.len()
     );
     debug_exit(EXIT_SUCCESS);
+}
+
+/// L3a (G7): device1 is an MBR disk whose partition 1 (type `0x0C`, LBA
+/// 2048) holds the FAT32 fixture volume. With `mbr-partitions`: the whole
+/// device does not mount (sector 0 is a table, not a boot sector), the empty
+/// slot `p2` is ENOENT, a malformed `p5` is EINVAL, and `device1:p1` mounts
+/// and reads back byte-exact, subdirectory and LFN included. Without it (the
+/// kill-switch, `-off`): `device1:p1` is EINVAL, as before L3a.
+#[cfg(any(
+    feature = "neo-test-phase3-fat32-mbr-mount-read",
+    feature = "neo-test-phase3-fat32-mbr-off"
+))]
+fn run_phase3_fat32_mbr() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    if crate::drivers::block::get_device(1).is_none() {
+        fail("reason=fat32_mbr_device1_missing");
+    }
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let mount = |source: &str| {
+        let req = mount4b_build_request_v1(3, source, "fat32");
+        crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0)
+    };
+
+    #[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
+    {
+        let rc = mount("device1:p1");
+        if rc != crate::errno::EINVAL {
+            fail_with_hex("reason=fat32_mbr_off_p1_not_einval rc", rc as u64);
+        }
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} mbr_partitions=off source=device1:p1 errno={}",
+            SCENARIO,
+            rc
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
+
+    #[cfg(feature = "neo-test-phase3-fat32-mbr-mount-read")]
+    {
+        let whole = mount("device1");
+        if whole == 0 {
+            fail("reason=fat32_mbr_whole_device_mounted");
+        }
+        let p2 = mount("device1:p2");
+        if p2 != crate::errno::ENOENT {
+            fail_with_hex("reason=fat32_mbr_p2_not_enoent rc", p2 as u64);
+        }
+        let p5 = mount("device1:p5");
+        if p5 != crate::errno::EINVAL {
+            fail_with_hex("reason=fat32_mbr_p5_not_einval rc", p5 as u64);
+        }
+        let rc = mount("device1:p1");
+        if rc != 0 {
+            fail_with_hex("reason=fat32_mbr_p1_mount_rc", rc as u64);
+        }
+        fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+        fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+        fat32_expect_file_bytes("/fat32/long filename with spaces.txt", b"LFN test\n");
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} mbr_partitions=on source=device1:p1 first_lba=2048 whole_rc={} p2_errno={} p5_errno={} hello=match nested=match lfn=match",
+            SCENARIO,
+            whole,
+            p2,
+            p5
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
 }
 
 // === BUILD-4D ext4 read-only foreign filesystem scenarios ==============
