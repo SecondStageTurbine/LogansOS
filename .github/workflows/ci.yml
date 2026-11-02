@@ -766,7 +766,8 @@ jobs:
             -p neo-init \
             -p neo-worker \
             -p neo-shell \
-            -p vault-core
+            -p vault-core \
+            -p fetch-proto
 
       - name: cargo clippy kernel (blocking)
         run: |
@@ -1073,7 +1074,7 @@ jobs:
           - name: atrium-ai
             features: atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
           - name: misc
-            features: browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
+            features: browser-runtime,net-dial-cap,net-dial-public-only,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
           - name: boot-eth0
             features: boot-eth0
           - name: desktop
