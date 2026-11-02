@@ -150,6 +150,7 @@ pub fn service_ports() {
                 DETACHED.fetch_add(1, Ordering::Relaxed);
                 ADDRESSED.lock().remove_subtree(port, 0);
                 retire_hubs_on(port);
+                super::super::detach_subtree(port, 0);
                 false
             }
             PortAction::Nothing | PortAction::GaveUp => false,
@@ -244,6 +245,7 @@ fn service_hubs(op: VirtAddr) {
                 ADDRESSED
                     .lock()
                     .remove_subtree(info.route.root_port, child_route);
+                super::super::detach_subtree(info.route.root_port, child_route);
             }
             let ok = action == PortAction::Enumerate
                 && {
