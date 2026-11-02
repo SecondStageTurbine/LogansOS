@@ -24,5 +24,5 @@ after the tiered-gate stack lands.
 **J.c. (2026-11-02 midday):** he'll test F4/F8 (time zone), F10 (key repeat) and F9 (password message) together:
 the PM tells him once all three are on `main` **and** in a published preview. No interim updates on these.
 
-| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282), then a Claude seat builds | Design queued |
+| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64), then Seat I builds | Design in review (Jarvis, relay 284); J.c. answered: hide single-option pages, every Try boot, Install via restart for now |
 
