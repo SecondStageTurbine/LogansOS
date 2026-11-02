@@ -502,15 +502,47 @@ impl Scene {
             self.sprite_at = Some(at);
             self.sprite_shape = shape;
         }
-        if outline != self.outline {
-            for edge in [self.outline, outline].into_iter().flatten() {
-                damage = damage.union(&edge);
+        // F7 (drag smoothness): a drag frame recomposes only the old and
+        // the new outline's edges, each presented on its own, not the
+        // bounding box of the two frames (two whole windows' area per
+        // pointer report). Control (`drag-union-damage-control`): the old
+        // bounding-box damage.
+        let mut edges = [Rect::default(); 8];
+        let drag_frame = outline != self.outline;
+        if drag_frame {
+            if cfg!(feature = "drag-union-damage-control") {
+                for frame in [self.outline, outline].into_iter().flatten() {
+                    damage = damage.union(&frame);
+                }
+            } else {
+                for (i, frame) in [self.outline, outline].into_iter().enumerate() {
+                    if let Some(frame) = frame {
+                        edges[i * 4..i * 4 + 4].copy_from_slice(&pointer::outline_edges(frame));
+                    }
+                }
             }
             self.outline = outline;
         }
+        #[cfg(feature = "desktop-session-boot-test")]
+        let started = drag_perf::now();
+        let mut presented = 0u64;
         if !damage.is_empty() {
+            presented += damage.w as u64 * damage.h as u64;
             self.present(true, damage).map_err(|c| 100 + c)?;
         }
+        for edge in edges {
+            let edge = edge.intersect(&screen);
+            if !edge.is_empty() {
+                presented += edge.w as u64 * edge.h as u64;
+                self.present(true, edge).map_err(|c| 100 + c)?;
+            }
+        }
+        #[cfg(feature = "desktop-session-boot-test")]
+        if drag_frame {
+            drag_perf::frame(started, presented);
+        }
+        #[cfg(not(feature = "desktop-session-boot-test"))]
+        let _ = presented;
         let action = press.or_else(|| pointer::take_sak(!*escaped)).or_else(|| {
             if *escaped {
                 pointer::escaped_keys(wm_focus.events)
@@ -534,6 +566,8 @@ impl Scene {
     /// both with the drag outline erased.
     #[cfg(feature = "desktop-pointer")]
     fn move_window(&mut self, dx: i32, dy: i32) -> Result<(), i32> {
+        #[cfg(feature = "desktop-session-boot-test")]
+        let started = drag_perf::now();
         let l = self.chrome.layout;
         let (x, y) = l.clamp_frame(l.frame.x as i64 + dx as i64, l.frame.y as i64 + dy as i64);
         let old = self.reach();
@@ -546,6 +580,8 @@ impl Scene {
         if !damage.is_empty() {
             self.present(true, damage).map_err(|c| 100 + c)?;
         }
+        #[cfg(feature = "desktop-session-boot-test")]
+        drag_perf::released(started);
         // After the present: the witness reads what was shown.
         if moved {
             glass::log_move(self, (l.frame.x, l.frame.y), old);
@@ -3155,6 +3191,61 @@ mod perf {
     }
 }
 
+/// F7 (drag smoothness) measurement, boot tests only: per title-band drag,
+/// how many drag frames the WM presented, how long each took (the outline's
+/// recompose and present, from the pointer report's poll), how many pixels
+/// each recomposed, and how long the release's move took. One line per
+/// completed drag, at its release.
+#[cfg(all(feature = "desktop-pointer", feature = "desktop-session-boot-test"))]
+mod drag_perf {
+    use super::Line;
+    use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
+
+    static FRAMES: AtomicU64 = AtomicU64::new(0);
+    static TOTAL_NS: AtomicU64 = AtomicU64::new(0);
+    static MAX_NS: AtomicU64 = AtomicU64::new(0);
+    static PIXELS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn now() -> u64 {
+        libneo::sys_clock_gettime(libneo::CLOCK_MONOTONIC).unwrap_or(0)
+    }
+
+    /// One drag frame, started at `started`, recomposed `pixels`.
+    pub fn frame(started: u64, pixels: u64) {
+        let ns = now().saturating_sub(started);
+        FRAMES.fetch_add(1, Relaxed);
+        TOTAL_NS.fetch_add(ns, Relaxed);
+        MAX_NS.fetch_max(ns, Relaxed);
+        PIXELS.fetch_add(pixels, Relaxed);
+    }
+
+    /// The drag ended in a move that started at `started`: log and reset.
+    pub fn released(started: u64) {
+        let move_ns = now().saturating_sub(started);
+        let frames = FRAMES.swap(0, Relaxed);
+        let total = TOTAL_NS.swap(0, Relaxed);
+        let max = MAX_NS.swap(0, Relaxed);
+        let pixels = PIXELS.swap(0, Relaxed);
+        Line::new()
+            .s(b"DESKTOP drag perf frames=")
+            .n(frames)
+            .s(b" frame_us_mean=")
+            .n(total.checked_div(frames).unwrap_or(0) / 1000)
+            .s(b" frame_us_max=")
+            .n(max / 1000)
+            .s(b" frame_px_mean=")
+            .n(pixels.checked_div(frames).unwrap_or(0))
+            .s(b" release_move_us=")
+            .n(move_ns / 1000)
+            .s(if cfg!(feature = "drag-union-damage-control") {
+                b" damage=union\n"
+            } else {
+                b" damage=edges\n"
+            })
+            .emit();
+    }
+}
+
 /// DM-1 motion: every view, Lens and focus-light change of the window
 /// manager plays as a short transition over its own damage rects
 /// (`neo_atrium::motion`, spec v1.7), ending on the change's ordinary
@@ -5063,7 +5154,20 @@ mod pointer {
     /// DI-1b: the drag outline (where the frame would land), only inside
     /// `clip`.
     pub fn draw_outline(out: &mut [u32], stride: usize, frame: Rect, clip: Rect) {
-        let edges = [
+        for edge in outline_edges(frame) {
+            let r = edge.intersect(&clip);
+            for y in r.y..r.y + r.h {
+                for x in r.x..r.x + r.w {
+                    out[y * stride + x] = DRAG_OUTLINE;
+                }
+            }
+        }
+    }
+
+    /// The outline's four edges (top, bottom, left, right): the only pixels
+    /// it covers, so the only ones a drag frame must recompose (F7).
+    pub fn outline_edges(frame: Rect) -> [Rect; 4] {
+        [
             Rect::new(frame.x, frame.y, frame.w, DRAG_OUTLINE_W),
             Rect::new(
                 frame.x,
@@ -5078,15 +5182,7 @@ mod pointer {
                 DRAG_OUTLINE_W,
                 frame.h,
             ),
-        ];
-        for edge in edges {
-            let r = edge.intersect(&clip);
-            for y in r.y..r.y + r.h {
-                for x in r.x..r.x + r.w {
-                    out[y * stride + x] = DRAG_OUTLINE;
-                }
-            }
-        }
+        ]
     }
 
     /// Apply an escape or refocus: the keyboard moves between Arthur and

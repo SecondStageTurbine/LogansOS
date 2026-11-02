@@ -546,6 +546,10 @@ const SCENARIO: &str = "desktop_lens_fault_boot";
 /// end view; the sprite is hidden whenever Home is shown).
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const SCENARIO: &str = "desktop_pointer_boot";
+#[cfg(feature = "neo-test-desktop-drag-perf-boot")]
+const SCENARIO: &str = "desktop_drag_perf_boot";
+#[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
+const SCENARIO: &str = "desktop_drag_perf_control_boot";
 /// DL-1: every desktop feature on — the Lens docked to a window that moves
 /// and resizes (same oracle, same Home end view).
 #[cfg(feature = "neo-test-desktop-full-boot")]
@@ -591,6 +595,10 @@ const DESKTOP_PASS: &str = "desktop_icons_boot=ok view=home scene=independent_or
 const DESKTOP_PASS: &str = "desktop_home_cycle=ok view=home scene=independent_oracle_digest labels=ink arthur_rounds_past_pin_cap=ok";
 #[cfg(feature = "neo-test-desktop-arthur-scope")]
 const DESKTOP_PASS: &str = "desktop_arthur_scope=ok view=home scene=independent_oracle_digest labels=ink arthur_scopes_only=ok";
+#[cfg(feature = "neo-test-desktop-drag-perf-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_perf_boot=ok view=home drag=measured damage=edges";
+#[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_perf_control_boot=ok view=home drag=measured damage=union";
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const DESKTOP_PASS: &str = "desktop_pointer_boot=ok view=home scene=independent_oracle_digest sprite=hidden_on_home pointer=b_ref_forward sak=escape click=refocus_then_forward";
 #[cfg(feature = "neo-test-desktop-lens-fault-boot")]
