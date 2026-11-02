@@ -721,6 +721,20 @@ fn home_keys_decode_hid_usages() {
         decode([1, 1, 0x33, 0, 0x00, 0, 1, 0]),
         Some(Key::Char(b';'))
     );
+    // Keypad: Num Lock on (y bit 1 clear) types digits, keypad Enter is
+    // Enter; Num Lock off (y = 2) turns keypad 8/2 into Up/Down and keypad 5
+    // into nothing; the operators type in both states.
+    assert_eq!(decode([1, 1, 0x60, 0, 0, 0, 0, 0]), Some(Key::Char(b'8')));
+    assert_eq!(decode([1, 1, 0x58, 0, 0, 0, 0, 0]), Some(Key::Enter));
+    assert_eq!(decode([1, 1, 0x60, 0, 0, 0, 2, 0]), Some(Key::Up));
+    assert_eq!(decode([1, 1, 0x5a, 0, 0, 0, 2, 0]), Some(Key::Down));
+    assert_eq!(decode([1, 1, 0x5d, 0, 0, 0, 2, 0]), None);
+    assert_eq!(decode([1, 1, 0x57, 0, 0, 0, 2, 0]), Some(Key::Char(b'+')));
+    assert_eq!(
+        decode([1, 1, 0x60, 0, 0x02, 0, 0, 0]),
+        Some(Key::Up),
+        "Shift inverts"
+    );
     assert_eq!(decode([2, 1, 4, 0, 0, 0, 0, 0]), None, "not a key event");
     let mut line = crate::keys::Line::<4>::default();
     for k in [
