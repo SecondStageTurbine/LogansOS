@@ -194,14 +194,22 @@ The same five still fail: `mio`, `socket2`, `libz-sys` (`off_t` is still missing
 and `surfman`. Everything above them still waits, so L0's next step is those five stubs or cfg edges. Only after
 them does the probe reach `tokio`, `ipc-channel` and the `servo-*` crates.
 
-**Third pass**, adding local probe patches for `servo-allocator` (std's allocator on our target) and `libz-sys` (a
-64-bit `z_off_t`): both then build. `fontsan`'s C++ (the OTS sanitizer) **compiles** for our target, and only its
-Rust side fails, on `libc::{c_int, size_t, off_t}`. That is the pattern behind three of the failures
-(`libz-sys`, `servo-allocator`, `fontsan`): **the `libc` crate has no arm for `target_os = "neoplutarch"`**, so
-the C types every `-sys` crate names don't exist. One fix covers all three: a types-only `libc` arm (`c_int`,
-`size_t`, `off_t` and the rest, matching neo-crt's musl ABI from #2). It declares no functions, so it adds no
-syscall surface (A4 unchanged), and it beats patching each `-sys` crate. What still fails after that:
-`mio`, `socket2` and `surfman`.
+**Third and fourth passes.** Local probe patches: `servo-allocator` gets an arm for our target using std's allocator,
+and the `libc` crate gets a **types-only** arm for `target_os = "neoplutarch"`. The `libc` arm has the C types
+(`c_int`, `size_t`, `off_t`, ...), modelled on its existing types-only `xous` arm, and **no functions**, so it adds
+no syscall surface (A4 unchanged). With those two:
+- `libz-sys` builds **unpatched**, and `fontsan` builds too. Its C++ (the OTS sanitizer) compiled from the third
+  pass on; only its Rust side had failed, on `libc::{c_int, size_t, off_t}`. The missing `libc` arm was the shared
+  cause of both failures.
+- `servo-allocator` is different: it needs functions, not only types (`malloc`, `free`, `realloc`,
+  `malloc_usable_size`). Those are neo-crt's C symbols (#2), so the choice is a function arm in `libc` linked
+  against neo-crt, or the std-allocator arm the probe used. The std arm reports 0 for usable size, so Servo's
+  memory reports would undercount.
+- `ipc-channel` (in-process backend) builds.
+
+**What still fails:** `mio`, `socket2` and `surfman`, the three the first pass already showed came in only
+through types crates. Those three are L0's remaining work before the probe reaches `tokio` and the `servo-*`
+traits crates.
 
 `harfbuzz-sys` (C++) built for our target unchanged. `freetype-sys` and `fontsan` sit behind `libz-sys`, and
 `tokio`, `ipc-channel` and the `servo-*` traits crates sit behind `mio`/`socket2`/`getrandom`, so they are the
