@@ -2429,6 +2429,18 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    TestScenario {
+        // The preview's WHPX boot #GP: CPUID.(0DH,0):EBX understates the
+        // XSAVE area (576 with AVX enabled). The area must be sized from the
+        // per-component leaves. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ebx-understated-control
+        // (EBX trusted, as before: the first tick's iretq takes a #GP).
+        name: "xsave_ebx_understated",
+        feature: "neo-test-xsave-ebx-understated",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // A stub-level x87/SSE save in `swapgs_irq_entry`: a test-only vector whose
     // body clobbers xmm0-15 must leave the interrupted context's registers intact.
     // The same rounds also go through the timer stub; both bodies must see DF=0,
@@ -12505,6 +12517,7 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "arthur_memory_delegation"
             | "arthur_memory_forgetting"
             | "xsave_ymm_context_switch"
+            | "xsave_ebx_understated"
             // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
             // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
             | "irq_xmm_preserve"
