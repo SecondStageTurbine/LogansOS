@@ -6907,6 +6907,7 @@ fn sys_close_impl(fd: u32) -> i64 {
     if fd == STDIN_FD {
         return EBADF;
     }
+    #[cfg(not(feature = "net-dial-public-only"))]
     if fd == STDOUT_FD {
         return EBADF;
     }
@@ -6914,6 +6915,17 @@ fn sys_close_impl(fd: u32) -> i64 {
         Ok(proc) => proc,
         Err(e) => return e,
     };
+    // Index 1 is also stdout, which `SYS_WRITE` serves without the handle
+    // table, so a close of it is refused (EBADF) as before, unless the slot
+    // holds a NetDial cap: the fetch broker's root is spawned into handle 1
+    // (#29 item 4). Stdout itself is unaffected by that close.
+    #[cfg(feature = "net-dial-public-only")]
+    if fd == STDOUT_FD {
+        return match process::close_handle(&proc, fd, |h| matches!(h, Handle::NetDial { .. })) {
+            Ok(_) => 0,
+            Err(e) => e,
+        };
+    }
     // OT-61 rung 5 (#29 item 4): on a `net-dial-public-only` kernel a NetDial
     // cap can be closed too, so a holder can drop a GRANT-bearing dial cap once
     // it has derived the GRANT-less one it keeps (the fetch broker's root).
