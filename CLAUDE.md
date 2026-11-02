@@ -529,7 +529,9 @@ from running *part* of the ritual. The script (and therefore the ritual) does fo
 **Two hard rules the ritual enforces — these are what actually gets "baked in":**
 
 - **"Green" without a CI URL is not done.** A RETURN MUST paste the **green CI run URL** — the push CI, and for
-  any kernel-touching build the **`workflow_dispatch` QEMU run** (all 4 shards + host + SPDX). A local
+  any kernel-touching build the **`workflow_dispatch` QEMU run** (all 4 shards + host + SPDX). *(Superseded on
+  GitHub-hosted runs by the tiered gate below: a kernel-touching PR cites its own PR run, the smoke tier for a
+  non-core path or the 4 shards for a `full-alone` one, and its merge evidence is the batch run.)* A local
   `cargo`/`neo-test` pass is not the gate; the *CI run* is. (CSPRNG 10.1 was reported "Green. Pushed" while the
   branch CI was red — this rule is the fix.)
 - **The PM inspects the commit's OWN `git show --stat` before merge, always.** A "GREEN, ready" report is not
@@ -551,7 +553,8 @@ moves the catch upstream so the branch arrives clean.
 **Merging the CODE and claiming the FEATURE WORKS are two different gates.** Conflating them left good branches
 rotting on the vine, accumulating rebase tax and going stale against a `main` that moves daily.
 
-- **Merge bar (for landing code on `main`):** rebase-fresh + **4-shard gate green on the exact SHA** + PM
+- **Merge bar (for landing code on `main`):** rebase-fresh + **4-shard gate green on the exact SHA** (on
+  GitHub-hosted runs: the batch run's "Merge evidence: yes"; see the tiered gate below) + PM
   verify-before-merge (independent CI re-verify + own `git show --stat`) + **AAG clean** + no regression.
   A branch that clears this is *strictly better than `main`* and should land.
 - **Acceptance bar (for claiming a capability works):** the **bare-metal proof** — a real lease, a real
@@ -615,12 +618,15 @@ evidence: yes" for the batch tree. The merge report names:
 - the run URL;
 - the batch AAG (below).
 
-The PM's own `git show --stat` stays **per PR**.
+The PM's own `git show --stat` stays **per PR**, and the rest of the merge bar is unchanged: PM verify-before-merge
+(independent re-verify of the batch run, own `git show --stat`), AAG clean, no regression.
 
 **Landing.**
 - **Before pushing**, the PM re-runs `scripts/batch-assemble.sh <base> <heads…>` locally and checks it prints the
   report's tree. The assembly is deterministic (fixed author, committer and date), so it gives the same commit too.
-- The PM then lands that commit, or the same merges in the same order, in **one push**.
+- The PM then lands **that assembled commit** in **one push**: its merges carry the `OT-58 batch` author and the
+  `batch: member N <sha>` subjects that `scripts/revert-batch.sh` finds. Merges recreated by hand don't, and the
+  revert would not find them.
 - If `main` moved past the base:
   - by docs only, the landing is fine when `git diff --quiet <batch tree> <landed main> -- . ':!Plans' ':!docs' ':!*.md'`
     holds;

@@ -315,7 +315,7 @@ job instances, and as jobs running at the same time:
 | What is running | Job instances | At once | Jobs |
 |---|---|---|---|
 | One seat's quick tier | 4 | 3 | plan; then `host-checks`, `build-checks`, the smoke shard |
-| A full tier: a dispatch, a full-alone PR's own run, or a batch (K = 4 today) | 8 + K = 12 | 4 + K = 8 | plan; then `host-checks`, `build-checks`, the RNG seed boot, decoder fuzz (one job), K shards; then `batch-report` for a batch (about 1 min, after the shards) |
+| A full tier: a dispatch, a full-alone PR's own run, or a batch (K = 4 today) | 1 + 4 + K = 9, or 10 with `batch-report` | 4 + K = 8 | plan; then `host-checks`, `build-checks`, the RNG seed boot, decoder fuzz (one job), K shards; then `batch-report` for a batch (about 1 min, after the shards) |
 | `main`'s post-landing push run | 3 | 2 | plan (seconds: no checkout on a push); then `host-checks`, `build-checks`. No QEMU, no RNG boot, no fuzz: the batch ran them (section 4). |
 
 `build-checks` is the product build, the 13 feature-gated clippy configurations (one job, one target dir), SPDX and
@@ -367,7 +367,7 @@ jobs before S2a. The RNG seed boot (#43) and the fuzz job run only in the full t
 | S0 | **Done** (#32; gated on run 41287591876) | Per-scenario timings that survive log truncation; `--keep-going`; the failure dump shows only failing logs; the end-of-log table. | Host tests; full gate |
 | S1 | Next, after the PM's read | xtask:<br>- `SMOKE_SCENARIOS` and the full-tier-only table;<br>- the checked-in timing table, with its host tests;<br>- `--tier quick` with the changed-scenario budget;<br>- `gate-plan`: the core/non-core classification over all of `kernel/src`, the build configuration, the scenario-only exception if the PM says yes, and the fail-safe;<br>- `--keep-going` recording build failures. | Host only (push-CI) |
 | S2 | After S1 | Workflow:<br>- quick-tier jobs (`gate-plan` as a step, no `needs`, the smoke budget check);<br>- the batch inputs and `batch-plan` (the quick-green predicate);<br>- assembly with the tree-hash check, `batch-report`;<br>- the folded feature matrix; `main`'s push run folded to 2 jobs;<br>- `scripts/revert-batch.sh` and the local re-assembly script the PM runs before landing. | Defaults reproduce today's gate. A dispatched quick run, a 2-PR batch, and a prefix run, all on the branch. |
-| S3 | After S0's data (done) | `scenario_shard_weight` from the measured table; K = 6 default | `shard-coverage`; one full run |
+| S3 | After S0's data (done) | `scenario_shard_weight` from the measured table; K = 6 default; `batch-report`'s verdict takes K from the plan (it checks `k -eq 4` today; relay 283 note 1) | `shard-coverage`; one full run |
 | S4 | With S2 | CLAUDE.md and the runbook, the rule changes in section 6 | Docs only |
 
 ## 6. What changes in the standing rules (stated, F24-F28)
@@ -460,3 +460,7 @@ Commits and licenses were read from shallow clones (`git log -1`, the license fi
 | 2.7 a failed plan hides behind `tee` | The step runs under `bash -o pipefail` and writes the plan to a file first. |
 | 2.8 token scope | A top-level `permissions: contents: read`; only the plan job adds reads. |
 | Section 6 rows in CLAUDE.md | "At most 4 quick tiers" now matches section 3; the invariant is stated; a full-alone PR's merge evidence is its batch-of-one run. |
+
+Relay 283 (Dexter's re-check at `0f6ac193`): all four items PASS. Its notes 2-5 (THINK §3's instance count, the
+older close-gate and merge-bar lines in CLAUDE.md, landing the assembled commit so the revert finds it) are fixed
+in docs; note 1 (the verdict's K) is S3's, above.
