@@ -10,12 +10,21 @@ name = "layout-smoke"
 version = "0.0.1"
 edition = "2024"
 license = "MPL-2.0"
-description = "OT-61 L0 gate: patched servo-layout over neo-layout-dom builds for x86_64-unknown-neoplutarch"
+description = "OT-61 L0/L1 gate: Servo layout without script builds for LogansOS, and its font backend reads the bundled font as hand-read tables say"
 
-[lib]
-path = "src/lib.rs"
+[[bin]]
+name = "layout-smoke"
+path = "src/main.rs"
+test = false
+bench = false
 
 [dependencies]
+neo-std-pal = { path = "../neo-std-pal" }
+app_units = "=0.7.8"
+fonts = { package = "servo-fonts", version = "=0.7.0" }
+fonts_traits = { package = "servo-fonts-traits", version = "=0.7.0" }
+style = { package = "stylo", version = "=0.22.0" }
+url = "=2.5.8"
 layout = { package = "servo-layout", version = "=0.7.0" }
 neo-layout-dom = { path = "../neo-layout-dom" }
 # servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
@@ -23,6 +32,8 @@ neo-layout-dom = { path = "../neo-layout-dom" }
 zeroize = { version = "1", features = ["derive"] }
 # Cross-process channels in-process: there is one process's worth of layout here.
 ipc-channel = { version = "=0.23.1", features = ["force-inprocess"] }
+# zlib for fontsan, built from libz-sys's bundled source (there is no system zlib).
+libz-sys = { version = "1", features = ["static"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
 
 [patch.crates-io]
@@ -39,5 +50,5 @@ servo-paint-api = { path = "../../third_party/ot61-browser/patched/servo-paint-a
 stylo = { path = "../../third_party/ot61-browser/patched/stylo-0.22.0" }
 hyper-util = { path = "../../third_party/ot61-browser/stubs/hyper-util-0.1.21" }
 windows-sys = { path = "../../third_party/ot61-browser/stubs/windows-sys-0.61.2" }
-# WIP: #25's patched copy (third_party/ot61-swgl), not on this branch's base yet.
-wr_glyph_rasterizer = { path = "/tmp/claude-0/-home-user-LogansOS/e4e66893-c338-5f46-aade-d9cf409d43ce/scratchpad/l0-probe/wrg/patched/wr_glyph_rasterizer-0.70.1" }
+# #25's patched copy (byte-identical, same path as on #25).
+wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
