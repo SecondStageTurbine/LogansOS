@@ -29,6 +29,8 @@ pub mod cpufreq;
 pub mod cpufreq_logic;
 #[cfg(feature = "xsave-fpu")]
 pub mod fpu;
+#[cfg(feature = "xsave-fpu")]
+pub mod fpu_logic;
 pub mod gdt;
 pub mod idt;
 /// i8042 lane: one I/O APIC redirection entry for an ISA IRQ (IRQ1).
@@ -208,14 +210,22 @@ pub unsafe fn enable_sse() {
 
     #[cfg(feature = "xsave-fpu")]
     crate::serial_println!(
-        "[ kernel ] cpu: FPU save={} area={} mask=0x{:x}",
+        "[ kernel ] cpu: FPU save={} area={} mask=0x{:x} cpuid_0d_ebx={}{}",
         if fpu::xsave_active() {
             "xsave"
         } else {
             "fxsave"
         },
         fpu::save_area_size(),
-        fpu::xstate_mask()
+        fpu::xstate_mask(),
+        fpu::ebx_report().0,
+        // CPUID.(0DH,0):EBX smaller than the enabled components need: the
+        // area is sized from the components instead (`fpu_logic`).
+        if fpu::ebx_report().1 {
+            " (understated; sized from the components)"
+        } else {
+            ""
+        }
     );
 
     crate::serial_println!(

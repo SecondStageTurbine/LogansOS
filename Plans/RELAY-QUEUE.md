@@ -89,3 +89,5 @@ RELAY 268 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-02-relays-268-270
 RELAY 269 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-02-relays-268-270.md | Section 269 (#53 + #54 keyboard review; RETURN `Plans/RETURN-2026-11-02-pr53-pr54-keyboard-review-jarvis.md`)
 RELAY 270 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-268-270.md | Section 270 (#51 time-zone THINK; RETURN `Plans/RETURN-2026-11-02-pr51-tz-review-dexter.md`)
 RELAY 271 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-271.md | Section "Relay 271" (#45 re-check + #47 review; RETURN `Plans/RETURN-2026-11-02-pr45-pr47-review-dexter.md`)
+RELAY 272 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-02-relays-272-273.md | Section 272 (#42 item 1 re-check; RETURN `Plans/RETURN-2026-11-02-pr42-recheck-jarvis.md`)
+RELAY 273 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-272-273.md | Section 273 (#56 pipe step 2 design; RETURN `Plans/RETURN-2026-11-02-pr56-pipe2-review-dexter.md`)
