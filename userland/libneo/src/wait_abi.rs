@@ -11,6 +11,9 @@ pub const WAIT_KIND_CHANNEL: u32 = 1;
 pub const WAIT_KIND_INPUT: u32 = 2;
 /// A pending SAK chord (input-system authority; the handle is ignored).
 pub const WAIT_KIND_SAK: u32 = 3;
+/// L1a.1 step 2a: a pipe end (kernel feature `pipe`). A read end is ready
+/// with bytes or at EOF, a write end with room or at EPIPE.
+pub const WAIT_KIND_PIPE: u32 = 4;
 
 /// One `sys_wait_any` item: 8 bytes, `handle` then `kind`, little-endian.
 #[repr(C)]

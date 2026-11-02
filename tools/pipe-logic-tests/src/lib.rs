@@ -212,6 +212,19 @@ mod tests {
         assert_eq!(p.readers(), 2);
     }
 
+    /// The kernel's shape: counts start at 0 and each handle install adds
+    /// one; the ends are open until a count drops back to 0.
+    #[test]
+    fn an_unattached_pipe_attaches_then_closes() {
+        let mut p = Pipe::new_unattached(8).unwrap();
+        assert_eq!((p.readers(), p.writers()), (0, 0));
+        p.add_endpoint(End::Read).unwrap();
+        p.add_endpoint(End::Write).unwrap();
+        assert_eq!((p.readers(), p.writers()), (1, 1));
+        p.close_endpoint(End::Write).unwrap();
+        assert_eq!(p.add_endpoint(End::Write), Err(PipeError::EndClosed));
+    }
+
     /// Dexter #46 note 2: the count bound.
     #[test]
     fn endpoint_counts_cannot_overflow() {

@@ -92,6 +92,9 @@ pub struct Pipe {
     len: usize,
     readers: u32,
     writers: u32,
+    /// An end's count has dropped to 0: it is closed for good.
+    read_closed: bool,
+    write_closed: bool,
 }
 
 impl Pipe {
@@ -106,6 +109,8 @@ impl Pipe {
             len: 0,
             readers: 1,
             writers: 1,
+            read_closed: false,
+            write_closed: false,
         })
     }
 
@@ -141,6 +146,20 @@ impl Pipe {
         self.len < self.capacity || self.readers == 0
     }
 
+    /// A new pipe with no endpoints yet, for a caller whose handle installs
+    /// each count one (the kernel's `HandleTable` retains on install). Its
+    /// ends are open, not closed: the first `add_endpoint` on each succeeds.
+    pub const fn new_unattached(capacity: usize) -> Result<Self, PipeError> {
+        match Self::new(capacity) {
+            Ok(mut p) => {
+                p.readers = 0;
+                p.writers = 0;
+                Ok(p)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// A pipe with given endpoint counts, for the host KATs of the count
     /// bounds (`TooManyEndpoints`, `EndClosed`); the kernel uses [`Pipe::new`].
     #[doc(hidden)]
@@ -159,14 +178,14 @@ impl Pipe {
         }
     }
 
-    /// One more handle on `end` (a grant or a duplicate). An end already
-    /// closed (count 0) can't be reopened.
+    /// One more handle on `end` (a grant or a duplicate). An end whose
+    /// count has dropped to 0 can't be reopened.
     pub fn add_endpoint(&mut self, end: End) -> Result<(), PipeError> {
-        let count = match end {
-            End::Read => &mut self.readers,
-            End::Write => &mut self.writers,
+        let (count, closed) = match end {
+            End::Read => (&mut self.readers, self.read_closed),
+            End::Write => (&mut self.writers, self.write_closed),
         };
-        if *count == 0 {
+        if closed {
             return Err(PipeError::EndClosed);
         }
         *count = count.checked_add(1).ok_or(PipeError::TooManyEndpoints)?;
@@ -182,6 +201,12 @@ impl Pipe {
         };
         *count = count.checked_sub(1).ok_or(PipeError::NoSuchEndpoint)?;
         let last = *count == 0;
+        if last {
+            match end {
+                End::Read => self.read_closed = true,
+                End::Write => self.write_closed = true,
+            }
+        }
         Ok(match end {
             // The last reader: writers get EPIPE. The buffer is now
             // unreachable, so drop it (its bytes can never be read).

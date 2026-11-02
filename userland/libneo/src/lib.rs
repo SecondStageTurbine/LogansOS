@@ -309,7 +309,20 @@ pub const SYS_TRY_RECV: u64 = 0x1B4;
 pub const SYS_WAIT_ANY: u64 = 0x1B5;
 /// Chad #177 item 4: unmap a borrowed buffer mapping (`sys_buffer_unmap`).
 pub const SYS_BUFFER_UNMAP: u64 = 0x1B6;
-pub use wait_abi::{WAIT_ITEMS_MAX, WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_SAK, WaitItem};
+/// L1a.1 step 2a (kernel `pipe`; ENOSYS elsewhere): a byte pipe. See
+/// [`sys_pipe_create`], [`sys_pipe_read`], [`sys_pipe_write`].
+pub const SYS_PIPE_CREATE: u64 = 0x1BA;
+pub const SYS_PIPE_READ: u64 = 0x1BB;
+pub const SYS_PIPE_WRITE: u64 = 0x1BC;
+/// `sys_pipe_read` / `sys_pipe_write` flag: don't park (`EAGAIN` instead).
+pub const PIPE_NONBLOCK: u64 = 1;
+/// Pipe sizes the terminal uses (THINK L1a §3.3), and the largest allowed.
+pub const PIPE_STDIN_CAPACITY: u64 = 4 * 1024;
+pub const PIPE_STDOUT_CAPACITY: u64 = 64 * 1024;
+pub const PIPE_MAX_CAPACITY: u64 = 64 * 1024;
+pub use wait_abi::{
+    WAIT_ITEMS_MAX, WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_PIPE, WAIT_KIND_SAK, WaitItem,
+};
 
 pub const INPUT_EVENT_V1_LEN: usize = 8;
 /// Input event kinds (ADR-074 + the DI-1a amendment).
@@ -3117,6 +3130,54 @@ pub fn sys_wait_any(items: &[WaitItem], deadline_ns: u64) -> i64 {
             items.as_ptr() as u64,
             items.len() as u64,
             deadline_ns,
+        )
+    }
+}
+
+/// L1a.1 step 2a: a new byte pipe of `capacity` bytes; `(read_end,
+/// write_end)`, or a negative errno.
+#[inline]
+pub fn sys_pipe_create(capacity: u64) -> Result<(Handle, Handle), i64> {
+    // SAFETY: one integer argument.
+    let r = unsafe { raw3(SYS_PIPE_CREATE, capacity, 0, 0) };
+    if r < 0 {
+        Err(r)
+    } else {
+        Ok((Handle(r as u32), Handle((r as u64 >> 32) as u32)))
+    }
+}
+
+/// L1a.1 step 2a: read up to `buf.len()` bytes from a pipe's read end.
+/// Returns the count (0 at EOF) or a negative errno. Parks for the first
+/// byte unless `flags & PIPE_NONBLOCK` (`EAGAIN`).
+#[inline]
+pub fn sys_pipe_read(h: Handle, buf: &mut [u8], flags: u64) -> i64 {
+    // SAFETY: `buf` is a valid mutable slice; the kernel validates the range.
+    unsafe {
+        raw4(
+            SYS_PIPE_READ,
+            h.0 as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            flags,
+        )
+    }
+}
+
+/// L1a.1 step 2a: write `buf` to a pipe's write end. Parks until all of it is
+/// written (at most 512 bytes go in atomically) unless `flags &
+/// PIPE_NONBLOCK`. Returns the count or a negative errno (`EPIPE` once no
+/// reader is left).
+#[inline]
+pub fn sys_pipe_write(h: Handle, buf: &[u8], flags: u64) -> i64 {
+    // SAFETY: `buf` is a valid slice; the kernel validates the range.
+    unsafe {
+        raw4(
+            SYS_PIPE_WRITE,
+            h.0 as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+            flags,
         )
     }
 }

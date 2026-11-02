@@ -1697,6 +1697,45 @@ pub fn with_channel_anchor<R>(
     ret
 }
 
+/// CP-67 for the pipe (L1a.1 step 2a): run a blocking pipe operation with
+/// `pipe` owned by the running thread rather than the caller's frame, as
+/// [`with_channel_anchor`] does for a channel. A thread force-killed while
+/// parked in the pipe is reaped with its stack freed raw; owned by the
+/// `Thread`, the `Arc` is dropped by `Thread::free` instead.
+#[cfg(all(feature = "pipe", not(feature = "neo-test-pipe-park-kill-control")))]
+pub fn with_pipe_anchor<R>(
+    pipe: alloc::sync::Arc<crate::ipc::pipe::PipeObject>,
+    op: impl FnOnce(&alloc::sync::Arc<crate::ipc::pipe::PipeObject>) -> R,
+) -> R {
+    let anchor: *const alloc::sync::Arc<crate::ipc::pipe::PipeObject> = without_interrupts(|| {
+        let mut s = current_scheduler().inner.lock();
+        debug_assert!(
+            s.current.pipe_anchor.is_none(),
+            "with_pipe_anchor: nested pipe anchor"
+        );
+        s.current.pipe_anchor.insert(pipe) as *const _
+    });
+    // SAFETY: as in `with_channel_anchor`: the slot is a field of the running
+    // thread's boxed `Thread`, which doesn't move while the thread parks,
+    // migrates and resumes; only this thread writes it until it is a reaped
+    // zombie, and `Thread::free` can't run while this frame can still run.
+    let ret = op(unsafe { &*anchor });
+    let anchor = without_interrupts(|| current_scheduler().inner.lock().current.pipe_anchor.take());
+    // Dropped outside the scheduler lock: it may be the pipe's last count.
+    drop(anchor);
+    ret
+}
+
+/// `pipe_park_kill_control`: the pre-fix shape, the pipe owned by the
+/// syscall frame across the park (the per-kill leak counter must catch it).
+#[cfg(all(feature = "pipe", feature = "neo-test-pipe-park-kill-control"))]
+pub fn with_pipe_anchor<R>(
+    pipe: alloc::sync::Arc<crate::ipc::pipe::PipeObject>,
+    op: impl FnOnce(&alloc::sync::Arc<crate::ipc::pipe::PipeObject>) -> R,
+) -> R {
+    op(&pipe)
+}
+
 /// `ipc_park_kill_control`: the pre-fix shape, the channel owned by the
 /// syscall frame across the park.
 #[cfg(feature = "neo-test-ipc-park-kill-control")]

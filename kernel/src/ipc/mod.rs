@@ -30,6 +30,12 @@
 //! publication against a peer completing the rendezvous on another CPU.
 
 extern crate alloc;
+/// L1a.1: the byte pipe (step 1's state machine and step 2a's object).
+#[cfg(feature = "pipe")]
+pub mod pipe;
+#[cfg(feature = "pipe")]
+pub mod pipe_logic;
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cmp::min;

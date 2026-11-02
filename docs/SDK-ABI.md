@@ -333,6 +333,9 @@ by the Atrium runtime switch: with the switch off they return `ENOSYS`.
 | 436 | 0x1B4 | `SYS_TRY_RECV` | `h: u32, buf: ptr, max_len` | bytes received, or `EAGAIN` | `EAGAIN` (no sender), `EINVAL`, `EFAULT`, `EBADF`, `EPERM` | `atrium-pointer-forward` | yes | `sys_try_recv` |
 | 437 | 0x1B5 | `SYS_WAIT_ANY` | `items: ptr, n, deadline_ns: u64` | ready mask (bit `i`), or `ETIMEDOUT` | `EPIPE`, `EAGAIN`, `EINVAL`, `EFAULT`, `EBADF`, `EPERM`, `ETIMEDOUT` | `wait-multiplex` | **no** | `sys_wait_any` |
 | 438 | 0x1B6 | `SYS_BUFFER_UNMAP` | `va: u64` (a `SYS_BUFFER_MAP` base) | 0 | `EINVAL` (no mapping at `va`) | `atrium-compositor-g1` | rt | `sys_buffer_unmap` |
+| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (1..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
+| 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty), `EFAULT`, `EBADF`, `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
+| 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room), `EFAULT`, `EBADF`, `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
 
 Notes:
 - `BufferDescV1` = `{ width, height, stride, format: u32, bytes: u64 }` (24 bytes);

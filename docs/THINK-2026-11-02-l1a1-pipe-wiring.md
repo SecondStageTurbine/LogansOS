@@ -41,7 +41,7 @@ and the wait item):
 - **Endpoint counts:** `retain_pipe` on install calls `add_endpoint(end)`; `release_pipe` (in `Detached::release`,
   process.rs 1772-1797) calls `close_endpoint(end)` and fires the returned wakes. An end at count 0 can't be revived:
   `add_endpoint` refuses it (Dexter 1b; a step-1 follow-up in `pipe_logic.rs`, with a KAT).
-- **Syscalls** in the free range `0x1B7`-`0x1BF` (all `cfg(feature = "pipe")`, each with an SDK-ABI row):
+- **Syscalls** at `0x1BA`-`0x1BC` (`0x1B7`-`0x1B9` are taken by #15's A0k calls; no branch uses `0x1BA`-`0x1BF`) (all `cfg(feature = "pipe")`, each with an SDK-ABI row):
   - `SYS_PIPE_CREATE(capacity) -> rd | wr << 32`, two installs with the `sys_chan_create` rollback
     (syscall.rs 2112-2155); capacity 1..=64 KiB, else `EINVAL`.
   - `SYS_PIPE_READ(h, buf, len, deadline_ns) -> n`, and `SYS_PIPE_WRITE(h, buf, len, flags) -> n`. `deadline_ns`

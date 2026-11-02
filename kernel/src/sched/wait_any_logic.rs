@@ -13,6 +13,9 @@ pub const WAIT_KIND_CHANNEL: u32 = 1;
 pub const WAIT_KIND_INPUT: u32 = 2;
 /// A pending SAK chord (the handle is ignored).
 pub const WAIT_KIND_SAK: u32 = 3;
+/// L1a.1 step 2a: a pipe end. A read end is ready with bytes buffered or at
+/// EOF; a write end with room or at EPIPE (feature `pipe`).
+pub const WAIT_KIND_PIPE: u32 = 4;
 /// Nanoseconds per timer tick (100 Hz).
 pub const NS_PER_TICK: u64 = 10_000_000;
 
