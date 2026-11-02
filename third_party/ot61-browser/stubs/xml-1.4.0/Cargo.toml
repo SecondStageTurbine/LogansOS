@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "xml"
+version = "1.4.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/kornelski/xml-rs"
+description = "LogansOS empty stand-in for xml 1.4.0 (never compiled for LogansOS)"
+
+[lib]
+name = "xml"
+path = "src/lib.rs"
+
+[features]

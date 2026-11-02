@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "arbitrary"
+version = "1.5.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rust-fuzz/arbitrary/"
+description = "LogansOS empty stand-in for arbitrary 1.5.0 (never compiled for LogansOS)"
+
+[lib]
+name = "arbitrary"
+path = "src/lib.rs"
+
+[features]
+"derive" = []
+"derive_arbitrary" = []

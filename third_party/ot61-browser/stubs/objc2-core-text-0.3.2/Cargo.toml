@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Zlib OR Apache-2.0 OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "objc2-core-text"
+version = "0.3.2"
+edition = "2021"
+license = "Zlib OR Apache-2.0 OR MIT"
+repository = "https://github.com/madsmtm/objc2"
+description = "LogansOS empty stand-in for objc2-core-text 0.3.2 (never compiled for LogansOS)"
+
+[lib]
+name = "objc2_core_text"
+path = "src/lib.rs"
+
+[features]
+"CTDefines" = []
+"CTFont" = ["bitflags"]
+"CTFontCollection" = ["bitflags"]
+"CTFontDescriptor" = []
+"CTFontManager" = []
+"CTFontManagerErrors" = []
+"CTFontTraits" = ["bitflags"]
+"CTFrame" = []
+"CTFramesetter" = []
+"CTGlyphInfo" = []
+"CTLine" = ["bitflags"]
+"CTParagraphStyle" = []
+"CTRubyAnnotation" = []
+"CTRun" = ["bitflags"]
+"CTRunDelegate" = []
+"CTStringAttributes" = ["bitflags"]
+"CTTextTab" = []
+"CTTypesetter" = []
+"SFNTLayoutTypes" = []
+"SFNTTypes" = []
+"alloc" = []
+"bitflags" = []
+"block2" = []
+"default" = ["std", "CTDefines", "CTFont", "CTFontCollection", "CTFontDescriptor", "CTFontManager", "CTFontManagerErrors", "CTFontTraits", "CTFrame", "CTFramesetter", "CTGlyphInfo", "CTLine", "CTParagraphStyle", "CTRubyAnnotation", "CTRun", "CTRunDelegate", "CTStringAttributes", "CTTextTab", "CTTypesetter", "SFNTLayoutTypes", "SFNTTypes", "bitflags", "block2", "libc", "objc2", "objc2-core-graphics"]
+"libc" = []
+"objc2" = []
+"objc2-core-graphics" = []
+"std" = ["alloc"]
+"unstable-darwin-objc" = []
