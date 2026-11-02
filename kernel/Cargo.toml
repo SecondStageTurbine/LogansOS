@@ -2121,6 +2121,9 @@ neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
 neo-test-ot90-quiesce = ["neo-test", "power-quiesce"]
 # OT-90 P4: SYS_POWER's refusals, then a power-off through it.
 neo-test-ot90-cap = ["neo-test", "power-cap"]
+# OT-90 P5: the intro desktop with `power-cap`; `shut down` typed at Home,
+# confirmed, powers off (neo-init `power-menu`).
+neo-test-ot90-power-menu = ["neo-test-desktop-intro-boot", "power-cap"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]

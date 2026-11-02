@@ -3352,3 +3352,61 @@ fn set_mode_live_equals_a_scene_built_in_that_mode() {
         assert!(paint(&moved) == paint(&placed), "{from:?} -> {to:?} moved");
     }
 }
+
+/// OT-90 P5: which lines ask to shut down or restart, and the confirm card.
+mod power {
+    use crate::power::*;
+
+    #[test]
+    fn the_typed_commands_are_recognised() {
+        for line in [
+            &b"shut down"[..],
+            b"Shut Down",
+            b"  shut   down  ",
+            b"shutdown",
+            b"POWER OFF",
+            b"turn off",
+        ] {
+            assert_eq!(
+                power_command(line),
+                Some(PowerCommand::ShutDown),
+                "{line:?}"
+            );
+        }
+        for line in [&b"restart"[..], b"Reboot", b" restart "] {
+            assert_eq!(power_command(line), Some(PowerCommand::Restart), "{line:?}");
+        }
+        for line in [
+            &b""[..],
+            b"shut",
+            b"shut down now",
+            b"please restart",
+            b"restart the router",
+            b"help",
+            b"shut-down",
+        ] {
+            assert_eq!(power_command(line), None, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn the_actions_are_the_abi_numbers() {
+        assert_eq!(PowerCommand::ShutDown.action(), 1);
+        assert_eq!(PowerCommand::Restart.action(), 2);
+    }
+
+    #[test]
+    fn the_confirm_card_ends_in_its_buttons() {
+        for (cmd, go) in [
+            (PowerCommand::ShutDown, "[ Shut down ]"),
+            (PowerCommand::Restart, "[ Restart ]"),
+        ] {
+            let rows = confirm_lines(cmd);
+            assert_eq!(rows.len(), CONFIRM_BUTTON_ROW + 1);
+            assert!(rows[CONFIRM_BUTTON_ROW].starts_with(go), "{rows:?}");
+            assert!(rows[CONFIRM_BUTTON_ROW].ends_with("[ Back ]"), "{rows:?}");
+        }
+        assert!(refused_lines(-16)[0].contains("already"));
+        assert!(refused_lines(-38)[0].contains("can't"));
+    }
+}

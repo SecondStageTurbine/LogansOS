@@ -179,6 +179,12 @@ login-boot-test = ["login", "desktop-session-boot-test", "cap-rooted-open"]
 # `BOOT-TIME` (`SYS_BOOT_TIMES` on a `boot-time` kernel). Off: no rows, as
 # before.
 boot-time = ["desktop-intro"]
+# OT-90 P5 (L1.4): `shut down` or `restart` typed at Home opens a confirm
+# card (the WM's, as `help`); going ahead calls SYS_POWER, which the
+# kernel's `power-cap` allows neo-init alone. Off: those lines go to Arthur,
+# as before.
+power-menu = ["desktop-intro"]
+power-menu-boot-test = ["power-menu", "desktop-intro-boot-test"]
 # OT-88 S1: the settings store (`.system/settings.a`/`.b`, NEOSET1), with the
 # WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
 # time come from it and are set live by OP_SETTING. Off => the presence

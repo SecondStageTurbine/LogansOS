@@ -203,6 +203,7 @@ pub mod layout;
 pub mod material;
 pub mod motion;
 pub mod pointer_grab;
+pub mod power;
 pub mod scene;
 pub mod shape;
 pub mod wide;

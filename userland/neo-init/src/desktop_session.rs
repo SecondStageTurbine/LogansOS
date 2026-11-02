@@ -3795,6 +3795,17 @@ mod home {
                 super::installer_view::run(scene, focus.events)?;
                 continue;
             }
+            // OT-90 P5: `shut down` and `restart` are the WM's too.
+            #[cfg(feature = "power-menu")]
+            if key == Key::Enter
+                && let Some(cmd) = neo_atrium::power::power_command(home.line.as_bytes())
+            {
+                home.line.clear();
+                scene.repaint_chrome(field);
+                scene.present(false, field).map_err(|c| 100 + c)?;
+                super::power_view::run(scene, focus.events, cmd)?;
+                continue;
+            }
             // `desktop-intro`: `help` is the WM's, never Arthur's.
             #[cfg(feature = "desktop-intro")]
             if key == Key::Enter && neo_atrium::intro::is_help(home.line.as_bytes()) {
@@ -4132,6 +4143,11 @@ mod home {
 #[cfg(all(feature = "installer", feature = "desktop-intro"))]
 #[path = "installer_view.rs"]
 mod installer_view;
+
+/// OT-90 P5: Shut down and Restart, behind a confirm.
+#[cfg(feature = "power-menu")]
+#[path = "power_view.rs"]
+mod power_view;
 
 /// Arthur's first-boot introduction and the help card (`desktop-intro`,
 /// NOTE-2026-10-20 as the PL approved it). The words and the show rule are
