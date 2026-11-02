@@ -225,6 +225,7 @@ Notes:
 | 82 | 0x52 | `SYS_SPAWN_BUDGETED` | `name, name_len, handles, n, budget_bytes: u64` | packed pid \| `ProcessHandle` | `EINVAL`, `ENOMEM`, plus `SYS_SPAWN`'s (`ENOENT`, `EAGAIN`, `EPERM`, `EBADF`) | `mem-quota` | **no** | `sys_spawn_budgeted` |
 | 83 | 0x53 | `SYS_MEM_INFO` | `out: ptr, len` (32 = v1, 48 = v2) | 0, fills the account record | `EINVAL` (size), `EFAULT` | `mem-quota` | **no** | `sys_mem_info`, `sys_mem_info_v2` |
 | 84 | 0x54 | `SYS_SPAWN_BUDGETED2` | `name, name_len, handles, n, frame_bytes, obj_bytes` | packed pid \| `ProcessHandle` | `EINVAL` (`obj_bytes` 0), `EAGAIN` (object quota), `ENOMEM`, plus `SYS_SPAWN`'s | `obj-quota` | **no** | `sys_spawn_budgeted2` |
+| 85 | 0x55 | `SYS_BOOT_TIMES` | `out: ptr, len` (80 = v1) | 0, fills the boot-time record (flags: bit 0 firmware times present, bit 1 estimated TSC rate) | `EINVAL` (len), `EFAULT` (`out`) | `boot-time` | **no** (only `iso --boot-time`) | `sys_boot_times` |
 
 Notes:
 - `SYS_VM_MAP` enforces W^X: `PROT_WRITE|PROT_EXEC` is `EINVAL`. `guard != 0` leaves an unmapped page
@@ -455,7 +456,8 @@ Nested structs (no independent version, inherit the parent's versioning):
 | 24 | Base extension: whole-file replace | Populated under `neofs-file-replace` |
 | 0x25–0x3F | Reserved for base extensions | Empty |
 | 0x40–0x54 | Browser host runtime: VM, clock, futex/threads, per-process accounts | Populated under `browser-runtime` / quotas |
-| 0x55–0xFF | Reserved | Empty |
+| 0x55 | Boot-time record (L7.1) | Populated under `boot-time` |
+| 0x56–0xFF | Reserved | Empty |
 | 0x100–0x17F | AI: tensors, models, inference (Bible Article 6.1) | **Formally reserved**; 0x100–0x123 populated |
 | 0x180–0x190 | Network: sockets, TCP, DNS, TLS, CSPRNG | Populated |
 | 0x1A0–0x1B9 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |

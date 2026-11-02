@@ -606,6 +606,19 @@ fn run() -> i32 {
         let footer = backend.footer_model(model_ready);
         log_footer_model(&footer);
         showcase.set_footer(footer);
+        // L7.1: the boot summary, the first line of the transcript.
+        #[cfg(feature = "arthur-boot-time")]
+        if let Some(line) = libneo::boot_summary_line(if model_ready {
+            "Arthur ready"
+        } else {
+            "Arthur up (no model)"
+        }) {
+            let _ = libneo::sys_write(1, b"BOOT-TIME ".as_ptr(), 10);
+            let _ = libneo::sys_write(1, line.as_ptr(), line.len());
+            let _ = libneo::sys_write(1, b"\n".as_ptr(), 1);
+            showcase.write_text(line.as_bytes());
+            showcase.write_text(b"\n\n");
+        }
         let code = run_desktop_session(
             &mut showcase,
             &mut input,

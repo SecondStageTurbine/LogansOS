@@ -198,6 +198,13 @@ pub const SYS_MEM_INFO: u64 = 0x53;
 /// there is silently ignored today.
 #[cfg(feature = "obj-quota")]
 pub const SYS_SPAWN_BUDGETED2: u64 = 0x54;
+/// L7.1: `SYS_BOOT_TIMES(out, 80)` writes the boot-time record
+/// (`boot_time_logic`, version 1): the TSC rate, the kernel-entry and
+/// desktop-start TSC stamps and the firmware's boot timestamps. Reads only;
+/// any process may ask (they are timings, not secrets, and the TSC is
+/// readable from ring 3 anyway).
+#[cfg(feature = "boot-time")]
+pub const SYS_BOOT_TIMES: u64 = 0x55;
 // C1.1 test-only: queue-length probe (borrows 0x4E from C1.2 reserved slot).
 // Must NOT ship in production — test-only discriminator for the threads_futex barrier.
 #[cfg(all(feature = "browser-runtime", feature = "neo-test"))]
@@ -1114,6 +1121,8 @@ extern "C" fn syscall_dispatch(
         ),
         #[cfg(feature = "mem-quota")]
         SYS_MEM_INFO => sys_mem_info_impl(a0, a1 as usize),
+        #[cfg(feature = "boot-time")]
+        SYS_BOOT_TIMES => sys_boot_times_impl(a0, a1 as usize),
         #[cfg(all(feature = "browser-runtime", feature = "neo-test"))]
         SYS_FUTEX_QUEUE_LEN => sys_futex_queue_len_impl(a0),
         #[cfg(feature = "neo-test-syscall-mxcsr-entry")]
@@ -7800,6 +7809,41 @@ fn sys_handle_info_impl(idx: u64, out: u64, len: usize) -> i64 {
         Ok(()) => 0,
         Err(e) => e,
     }
+}
+
+/// L7.1: SYS_BOOT_TIMES(out, 80) → 0 | errno.
+#[cfg(feature = "boot-time")]
+fn sys_boot_times_impl(out: u64, len: usize) -> i64 {
+    use crate::boot_time_logic::{BOOT_TIMES_V1_LEN, encode};
+    if len != BOOT_TIMES_V1_LEN {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(out, BOOT_TIMES_V1_LEN) {
+        return e;
+    }
+    let record = encode(&crate::boot_time::snapshot());
+    // The copy goes through the caller's page tables under the pmap lock
+    // (`Pmap::write_user_bytes`), never through the user mapping from ring 0:
+    // an unmapped, read-only or half-mapped buffer (including one another
+    // thread unmaps mid-call) is EFAULT with nothing written, never a
+    // kernel-mode page fault.
+    let proc = match current_process_for_syscall() {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    let Some(pmap) = proc.pmap.as_ref() else {
+        return EFAULT;
+    };
+    match pmap.write_user_bytes(out, &record) {
+        Ok(()) => 0,
+        Err(_) => EFAULT,
+    }
+}
+
+/// The test harness's view of `SYS_BOOT_TIMES`, through its own checks.
+#[cfg(all(feature = "boot-time", feature = "neo-test"))]
+pub fn debug_sys_boot_times_for_test(out: u64, len: usize) -> i64 {
+    sys_boot_times_impl(out, len)
 }
 
 /// OT-61 C2.2: SYS_MEM_INFO(out, 32) → 0 | errno. The caller's memory

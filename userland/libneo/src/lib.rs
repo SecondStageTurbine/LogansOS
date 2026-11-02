@@ -52,6 +52,11 @@ pub mod atrium_launch;
 pub mod atrium_lend;
 pub mod atrium_protocol;
 pub mod atrium_wm;
+/// L7.1: the `SYS_BOOT_TIMES` record and the boot-time lines, one source
+/// with the kernel's encoder.
+#[path = "../../../kernel/src/boot_time_logic.rs"]
+#[allow(dead_code)]
+pub mod boot_time_logic;
 /// OT-85: epoch → civil date/time, and its text (pure).
 pub mod civil;
 pub mod grant_store;
@@ -191,6 +196,9 @@ pub const SYS_SPAWN_BUDGETED: u64 = 0x52;
 pub const SYS_MEM_INFO: u64 = 0x53;
 /// OT-61 C2.2b: `SYS_SPAWN_BUDGETED` with an object budget too.
 pub const SYS_SPAWN_BUDGETED2: u64 = 0x54;
+/// L7.1: `SYS_BOOT_TIMES(out, 80)` writes the [`boot_time_logic`] record
+/// (`boot-time` kernels; ENOSYS otherwise).
+pub const SYS_BOOT_TIMES: u64 = 0x55;
 /// C1.2 test-only: `SYS_TEST_TLS(op, out)` — op 0 probes `{cpu, recorded
 /// FS.base, live IA32_FS_BASE}`, op 1 parks the caller, op 2 wakes the parked
 /// thread onto the caller's CPU (`threads_tls` kernels only). Must NOT ship.
@@ -1423,6 +1431,41 @@ pub fn sys_mem_info_v2() -> Result<mem_info::MemInfoV2, i64> {
         return Err(r);
     }
     mem_info::decode_v2(&rec).ok_or(EINVAL)
+}
+
+/// L7.1: the kernel's boot-time record. A `boot-time` kernel only.
+pub fn sys_boot_times() -> Result<boot_time_logic::BootTimes, i64> {
+    let mut rec = [0u8; boot_time_logic::BOOT_TIMES_V1_LEN];
+    // SAFETY: `rec` is a writable buffer of exactly the record length.
+    let r = unsafe { raw3(SYS_BOOT_TIMES, rec.as_mut_ptr() as u64, rec.len() as u64, 0) };
+    if r < 0 {
+        return Err(r);
+    }
+    boot_time_logic::decode(&rec).ok_or(EINVAL)
+}
+
+/// L7.1: `what`'s boot-time line now, e.g. `Sign-in 9.87 s after power-on
+/// (firmware 4.12 s).`, or `None` when the kernel has no `boot-time`.
+pub fn boot_milestone_line(what: &str) -> Option<alloc::string::String> {
+    let times = sys_boot_times().ok()?;
+    // SAFETY: RDTSC is unprivileged (CR4.TSD is clear) and has no side
+    // effects.
+    let now = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut line = alloc::string::String::new();
+    boot_time_logic::write_milestone(&mut line, what, &times, now).ok()?;
+    Some(line)
+}
+
+/// L7.1: the boot summary ending with `what` now, e.g. `From power-on:
+/// firmware 4.12 s, desktop 7.95 s, Arthur ready 21.70 s.`, or `None` when
+/// the kernel has no `boot-time`.
+pub fn boot_summary_line(what: &str) -> Option<alloc::string::String> {
+    let times = sys_boot_times().ok()?;
+    // SAFETY: as in `boot_milestone_line`.
+    let now = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut line = alloc::string::String::new();
+    boot_time_logic::write_summary(&mut line, what, &times, now).ok()?;
+    Some(line)
 }
 
 /// OT-61 C2.2: the caller's memory account. A `mem-quota` kernel only.
