@@ -658,6 +658,11 @@ runs** by the 20-job limit. A quick tier is 3 jobs at once and a K = 4 batch is 
 while at most 4 quick tiers are running (4 × 3 + 8 = 20; THINK section 3). The stagger still applies if
 `QEMU_RUNNER_LABELS` points the QEMU jobs back at self-hosted runners.
 
+**A PR that adds a file under `kernel/` classifies it in the same PR** (CORE_PATHS or NON_CORE_PATHS in
+`tools/xtask/src/main.rs`). An unclassified file is full-alone at run time (fail-safe), and
+`gate_plan_classifies_every_kernel_file` fails every later full-alone run until someone classifies it: #16's
+`boot_time*.rs` reddened the stack's first window batch (run 41524650534) this way.
+
 **Tree identity** (a docs-only rebase keeps a gate): compare everything **except** `Plans/`, `docs/` and `*.md`, not
 only `kernel`/`userland`/`tools`/`Cargo.*`.
 
