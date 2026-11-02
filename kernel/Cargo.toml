@@ -34,6 +34,10 @@ uart_16550 = "0.3"
 
 # Logging facade
 log = "0.4"
+# L3a-2: rafalh/rust-fatfs, vendored (MIT; third_party/fatfs/VENDORED.md), for
+# FAT12/16/32 read-only mounts behind `fat-fs`. no_std: alloc + LFN + Unicode
+# case folding; no `std`, no `chrono` (a read-only mount stamps nothing).
+fatfs = { path = "../third_party/fatfs", default-features = false, features = ["alloc", "lfn", "unicode"], optional = true }
 
 # Heap allocator backing the kernel's `#[global_allocator]`. Phase 1.1 wires
 # it up against a 4 MiB virtual range we map ourselves.
@@ -203,6 +207,12 @@ i2c-hid-bar-assign = ["i2c-hid-touchpad"]
 # log on a target with no serial port). Enabled by `xtask iso --with-model`
 # and bare-metal bundles; feature-off ⇒ not compiled (byte-identical).
 fb-progress-console = []
+# L7.1: the boot-time numbers. The kernel stamps the TSC at entry and at
+# desktop start, reads the firmware's boot timestamps (FPDT/FBPT), prints
+# one `[ boot ] time:` line as the boot console's last, and serves them
+# through `SYS_BOOT_TIMES` (0x55). The rate comes from the LAPIC timer's
+# calibration. Off: none of it is compiled, `SYS_BOOT_TIMES` is ENOSYS.
+boot-time = ["lapic-timer"]
 # Zenbook bring-up evidence holds (kill-switch): before the desktop takes the
 # framebuffer, wait 5 s for a USB keyboard or mouse to bind and hold the USB
 # summary up to 30 s (or run a 6 s input check), and run the touchpad's 6 s
@@ -395,6 +405,12 @@ power-control = []
 # restarts anyway. Off => nothing of it is compiled: P2 exactly (the
 # kill-switch).
 power-clean = ["power-control"]
+# OT-90 P3b (K4, K5): before power-off or restart, the shutdown stops every
+# other CPU (a STOP IPI, vector 0xfb; an NMI for any that hasn't parked in
+# 100 ms), then stops its own LAPIC tick and masks every I/O APIC entry.
+# After K4 the kernel prints to the UART only. Off: P3a's sequence, the
+# other CPUs live at K7, as before.
+power-stop-cpus = ["power-clean"]
 # Aggregate-only kernel status syscall for neo-shell `status`. OFF by default;
 # when disabled SYS_SYSSTAT returns ENOSYS and exposes no observability surface.
 kernel-sysstat = []
@@ -599,6 +615,14 @@ neo-test-compat-mode-unreachable = ["neo-test", "browser-runtime"]
 # default-off — the kill-switch is the feature gate (off ⇒ bit-for-bit today).
 neo-test-ai-latency-oracle = ["neo-test", "accel-sim"]
 neo-test-xsave-ymm-context-switch = ["neo-test", "xsave-fpu"]
+# The preview's WHPX #GP (2026-11-02): CPUID.(0DH,0):EBX answers 576
+# (x87|SSE) while XCR0 holds x87|SSE|AVX, as QEMU under WHPX did. The XSAVE
+# area must still be sized for AVX (from the per-component leaves), or every
+# xsave overruns it. Runs `xsave_ymm_context_switch`'s legs under that CPUID.
+neo-test-xsave-ebx-understated = ["neo-test-xsave-ymm-context-switch"]
+# Revert-check: size the area from EBX alone, as before. Expected to fail
+# (the first timer tick's iretq takes a #GP, or YMM state is corrupted).
+neo-test-xsave-ebx-understated-control = ["neo-test-xsave-ebx-understated"]
 # Regression for interrupt-entry state: a test-only vector (swapgs_irq_entry)
 # and the timer stub, entered with AC=1/DF=1 and a hostile MXCSR, must
 # preserve the interrupted xmm0-15/flags/MXCSR and run their bodies with DF=0
@@ -1297,6 +1321,15 @@ model-from-neofs = ["boot-model-preload"]
 # volume that fits), and the NeoFS mount probes such partitions before whole
 # devices. Off: the guard and the mount are bit-for-bit today's.
 neofs-partition = []
+# L3a (G7, THINK-2026-10-31-l3a-fat-readonly §6a): a FAT mount's source may
+# name an MBR partition, `deviceN:pM` (primary entries, FAT types, checked
+# against the device). Off: such a source is Invalid, as before.
+mbr-partitions = []
+# L3a-2 (THINK-2026-10-31-l3a-fat-readonly §5): FAT mounts (fs_type 3) go
+# through the vendored rust-fatfs: FAT12/16/32, files streamed, read-only (its
+# I/O adapter refuses every write). Off: the native FAT32 driver, as before,
+# and no rust-fatfs code is linked (the kill-switch).
+fat-fs = ["dep:fatfs"]
 # NFS-W1: kernel NeoFS writes a file of any size (to the 2 GiB format limit)
 # in one piece: data and pointer blocks in contiguous runs straight to the
 # device (through the guard, or the installer's claim), the single, double and
@@ -1577,6 +1610,8 @@ neo-test-phase3-neofs-create-small-file = ["neo-test"]
 neo-test-phase3-neofs-write-readback-same-boot = ["neo-test"]
 neo-test-phase3-neofs-cache-evict = ["neo-test", "neofs-cache-evict", "neofs-large-write"]
 neo-test-phase3-neofs-cache-evict-off = ["neo-test", "neofs-large-write"]
+# L7.1: the kernel half of the boot-time numbers (`boot_time`).
+neo-test-boot-time = ["neo-test", "boot-time"]
 neo-test-phase3-neofs-allocator-reuse-guard = ["neo-test"]
 neo-test-phase3-neofs-reboot-persistence-small-file = ["neo-test"]
 # Phase 3 BUILD-2 sub-commit 2D: NeoFS CoW/recovery/fsync scenarios.
@@ -1782,15 +1817,30 @@ neo-test-mounts-drop-under-lock-control = ["neo-test-phase3-umount-drop-outside-
 neo-test-phase3-mount-request-validation = ["neo-test-phase3-mount-table"]
 # Phase 3 BUILD-4C: FAT32 read-only foreign filesystem scenarios.
 neo-test-phase3-fat32 = ["neo-test-phase3-mount-table"]
-neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32"]
-neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32"]
+neo-test-phase3-fat32-mount-readonly = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-readdir-root = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-open-read-regular-file = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-lfn-lookup = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-subdir-walk = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32", "fat-fs"]
+# L3a (G7): `device1:p1` on an MBR disk reads back; `-off` is the kill-switch.
+neo-test-phase3-fat32-mbr-mount-read = ["neo-test-phase3-fat32", "mbr-partitions", "fat-fs"]
+neo-test-phase3-fat32-mbr-off = ["neo-test-phase3-fat32"]
+# L3a-2: the nine scenarios above run on rust-fatfs (`fat-fs`); these run
+# what it adds: a FAT16 volume (the native driver refuses FAT16), the
+# no-write proof on a dirty-marked FAT32 volume, and the kill-switch control
+# (the native driver, no `fat-fs`, reads the fixture as before).
+neo-test-phase3-fat32-fat16-read = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-readonly-no-write = ["neo-test-phase3-fat32", "fat-fs"]
+# Chad's #18 review: a volume whose file chain (A -> B -> A) and directory
+# chain (a cluster pointing at itself) loop. Reading the file and listing
+# the directory each fail with an error; neither returns revisited data or
+# walks forever.
+neo-test-phase3-fat32-loop-chain = ["neo-test-phase3-fat32", "fat-fs"]
+neo-test-phase3-fat32-native-control = ["neo-test-phase3-fat32"]
 # Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
 neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
 neo-test-phase3-ext4-mount-readonly = ["neo-test-phase3-ext4"]
@@ -2042,6 +2092,20 @@ neo-test-ot90-stuck-disk-no-deadline = ["neo-test-ot90-stuck-disk"]
 neo-test-ot90-stuck-sink-off = ["neo-test", "power-clean"]
 neo-test-ot90-stuck-sink-restart = ["neo-test", "power-clean"]
 neo-test-ot90-stuck-sink-no-close = ["power-clean"]
+# OT-90 P3b: power-off with the other CPUs stopped (K4) and the interrupt
+# sources masked (K5), at NEO_SMP=4; and the same with one AP ignoring the
+# STOP IPI, so the NMI parks it.
+neo-test-ot90-stop-cpus = ["neo-test", "power-stop-cpus"]
+neo-test-ot90-stop-holdout = ["neo-test", "power-stop-cpus"]
+# Review #6 item 1 (CP-64): one kernel thread per AP sends TLB shootdowns
+# (interrupts off, every other CPU targeted) in a loop while K4 runs; K4 must
+# drain them and park every AP by the STOP IPI, with no shootdown timeout.
+neo-test-ot90-stop-shootdown = ["neo-test", "power-stop-cpus"]
+# Review #6 item 2: the highest AP takes neither the STOP IPI nor the NMI and
+# sits in its NMI handler holding the UART lock, and K4's PM timer reads as
+# frozen. K4 must end on its poll count, report the holdout, skip K5 and
+# still reach S5.
+neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]

@@ -443,7 +443,10 @@ fn bring_up(p: &mut Probe, rsdp_phys: u64) -> bool {
 }
 
 /// Decode what the ring holds into `emit`, under the pump lock.
-fn decode_ring(state: &mut State, mut emit: impl FnMut(&mut State, u8, u8, bool)) {
+fn decode_ring(
+    state: &mut State,
+    mut emit: impl FnMut(&mut State, crate::atrium::input_logic::InputEventV1),
+) {
     loop {
         let tail = TAIL.load(Ordering::Relaxed);
         if tail == HEAD.load(Ordering::Acquire) {
@@ -469,7 +472,16 @@ fn decode_ring(state: &mut State, mut emit: impl FnMut(&mut State, u8, u8, bool)
         }
         KEYS.fetch_add(1, Ordering::Relaxed);
         let modifiers = state.modifiers;
-        emit(state, event.usage, modifiers, event.pressed);
+        let locks = crate::drivers::key_locks::on_key(event.usage, event.pressed);
+        emit(
+            state,
+            crate::atrium::input_logic::InputEventV1::key_locked(
+                event.usage,
+                modifiers,
+                locks,
+                event.pressed,
+            ),
+        );
     }
     #[cfg(feature = "key-autorepeat")]
     crate::atrium::key_repeat::note_typematic(state.decoder.take_typematic() as u64);
@@ -505,11 +517,10 @@ pub fn pump_routed_events() {
         let routing = crate::atrium::input_routing_enabled();
         #[cfg(feature = "key-autorepeat")]
         let now_ns = crate::atrium::key_repeat::now_ns();
-        decode_ring(state, |state, usage, modifiers, pressed| {
+        decode_ring(state, |state, event| {
             if !routing {
                 return;
             }
-            let event = crate::atrium::input_logic::InputEventV1::key(usage, modifiers, pressed);
             if cfg!(feature = "atrium-sak") {
                 use crate::atrium::sak_logic::SakVerdict;
                 match state.sak.filter(event) {
@@ -562,11 +573,7 @@ pub fn drain_events(out: &mut alloc::vec::Vec<crate::atrium::input_logic::InputE
         let Some(state) = guard.as_mut() else {
             return;
         };
-        decode_ring(state, |_, usage, modifiers, pressed| {
-            out.push(crate::atrium::input_logic::InputEventV1::key(
-                usage, modifiers, pressed,
-            ));
-        });
+        decode_ring(state, |_, event| out.push(event));
     }
     note_progress(keys_before);
 }
@@ -586,8 +593,7 @@ pub fn drain_events_stamped(
         let Some(state) = guard.as_mut() else {
             return;
         };
-        decode_ring(state, |state, usage, modifiers, pressed| {
-            let event = crate::atrium::input_logic::InputEventV1::key(usage, modifiers, pressed);
+        decode_ring(state, |state, event| {
             crate::atrium::key_repeat::on_event(&mut state.repeat, event, now_ns);
             out.push((event, now_ns));
         });
