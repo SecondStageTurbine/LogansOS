@@ -11,13 +11,16 @@ members = [
     "userland/neo-atrium",
     "userland/neo-text",
     "userland/neo-edit-core",
+    "userland/neo-term-core",
     "userland/vault-core",
     "userland/login-core",
+    "userland/fetch-proto",
     "userland/settings-core",
     "userland/action-log-core",
     "userland/template-app",
     "userland/fault-probe",
     "userland/neo-std-pal",
+    "userland/neo-image-decode",
     "userland/std-pal-smoke",
     "tools/neofs-mkfs",
     "tools/neo-extract-log",
@@ -25,6 +28,7 @@ members = [
     "tools/tensor-logic-tests",
     "tools/ai-ops-tests",
     "tools/neo-shell-logic-tests",
+    "tools/fat-logic-tests",
     "tools/action-logic-tests",
     "tools/arthur-logic-tests",
     "tools/arthur-grant-logic-tests",
@@ -33,12 +37,16 @@ members = [
     "tools/module-reclaim-logic-tests",
     "tools/install-claim-logic-tests",
     "tools/block-guard-logic-tests",
+    # L3u-1: USB mass storage (BOT + SCSI) logic, host KATs.
+    "tools/usb-msc-logic-tests",
     "tools/install-bundle-logic-tests",
     "tools/neofs-tree-logic-tests",
     "tools/install-state-logic-tests",
     "tools/neofs-commit-logic-tests",
     "tools/fb-progress-logic-tests",
     "tools/apic-logic-tests",
+    "tools/fpu-logic-tests",
+    "tools/pipe-logic-tests",
     "tools/lapic-timer-logic-tests",
     "tools/acpi-timer-logic-tests",
     "tools/acpi-power-logic-tests",
@@ -51,10 +59,14 @@ members = [
     "tools/boot-eth0-logic-tests",
     "tools/rtl8125-logic-tests",
     "tools/rtc-logic-tests",
+    "tools/boot-time-logic-tests",
     "tools/ntls-logic-tests",
     "tools/handle-info-logic-tests",
     "tools/install-ui-abi-tests",
     "tools/limine-file-logic-tests",
+    "tools/miniz-oxide-logic-tests",
+    "tools/image-decode-logic-tests",
+    "tools/image-decode-fuzz",
     "tools/cap-graph-logic-tests",
     "tools/mem-account-logic-tests",
     "tools/net-rx-logic-tests",
@@ -83,6 +95,25 @@ exclude = [
     # dependency of tools/xtask only (the host ESP-template builder); the
     # kernel never links it.
     "third_party/fatfs",
+    # Lane 2a: vendored Frommi/miniz_oxide (MIT OR Zlib OR Apache-2.0; used
+    # under MIT) at 7fc2dd45. A path dependency of tools/miniz-oxide-logic-tests
+    # only (the host KATs); the kernel does not link it yet.
+    "third_party/miniz_oxide",
+    # Lane 2b: vendored image-rs/image-png (MIT OR Apache-2.0; used under MIT)
+    # at b2f10c6a, and etemesi254/zune-image's zune-jpeg (MIT OR Apache-2.0 OR
+    # Zlib; used under MIT) plus its zune-core dependency at 2f9086b0. Path
+    # dependencies of libneo's host-only `image-decode` feature,
+    # tools/image-decode-logic-tests and tools/image-decode-fuzz; the kernel and
+    # OS userland never link them.
+    "third_party/png",
+    "third_party/zune-core",
+    "third_party/zune-jpeg",
+    # Lane 1 L1a.2: vendored doy/vt100-rust (MIT) at fb0f54ec and its
+    # alacritty/vte dependency (Apache-2.0 OR MIT) at 89c9c22f, both with
+    # `std` off. Path dependencies of userland/neo-term-core only; the kernel
+    # never links them.
+    "third_party/vt100",
+    "third_party/vte",
     # Reserved for future phases:
     # "services/neo-inference",
     # "services/neo-models",

@@ -4195,10 +4195,30 @@ mod intro {
         /// OT-87 R4.4b: a press on the Install chip, for Home's loop.
         #[cfg(feature = "installer")]
         pub install_press: bool,
+        /// L7.1 (`boot-time`): the boot summary, read once as Home first
+        /// shows, so the minute's re-wording keeps it.
+        #[cfg(feature = "boot-time")]
+        boot_row: Option<alloc::string::String>,
+    }
+
+    /// L7.1: the boot summary for Home, logged as `BOOT-TIME`.
+    #[cfg(feature = "boot-time")]
+    fn boot_row() -> Option<alloc::string::String> {
+        let line = libneo::boot_summary_line("Home")?;
+        Line::new()
+            .s(b"BOOT-TIME ")
+            .s(line.as_bytes())
+            .s(b"\n")
+            .emit();
+        Some(line)
     }
 
     /// Before Home is first shown: the slot, and the intro when it is due.
     pub fn start(scene: &mut Scene) {
+        #[cfg(feature = "boot-time")]
+        {
+            scene.intro.boot_row = boot_row();
+        }
         scene.chrome.set_intro(true);
         let persistent = match sys_open(
             MEMORY_DIR,
@@ -4232,6 +4252,8 @@ mod intro {
             shown,
             #[cfg(feature = "installer")]
             install_press: false,
+            #[cfg(feature = "boot-time")]
+            boot_row: scene.intro.boot_row.take(),
         };
     }
 
@@ -4240,11 +4262,34 @@ mod intro {
     /// the kernel has an epoch); else NOTE-2026-10-20's "Good day".
     fn intro_rows(scene: &Scene, usb_only: bool) -> alloc::vec::Vec<alloc::string::String> {
         #[cfg(feature = "desktop-clock")]
-        if let Some(now) = scene.clock.now_words() {
-            return words::intro_lines_now(ModelState::Ready, usb_only, &now.as_now());
-        }
+        let rows = match scene.clock.now_words() {
+            Some(now) => words::intro_lines_now(ModelState::Ready, usb_only, &now.as_now()),
+            None => words::intro_lines(ModelState::Ready, usb_only),
+        };
+        #[cfg(not(feature = "desktop-clock"))]
+        let rows = words::intro_lines(ModelState::Ready, usb_only);
+        #[cfg(feature = "boot-time")]
+        let rows = with_boot_row(rows, scene.intro.boot_row.as_deref());
         let _ = scene;
-        words::intro_lines(ModelState::Ready, usb_only)
+        rows
+    }
+
+    /// L7.1 (the `--boot-time` evidence image): the boot summary as the
+    /// card's second row. The card holds `CARD_MAX_ROWS`, so the rows before
+    /// the last (the way out) give way to it.
+    #[cfg(feature = "boot-time")]
+    fn with_boot_row(
+        mut rows: alloc::vec::Vec<alloc::string::String>,
+        boot: Option<&str>,
+    ) -> alloc::vec::Vec<alloc::string::String> {
+        let Some(boot) = boot else {
+            return rows;
+        };
+        rows.insert(rows.len().min(1), alloc::string::String::from(boot));
+        while rows.len() > neo_atrium::layout::CARD_MAX_ROWS && rows.len() >= 2 {
+            rows.remove(rows.len() - 2);
+        }
+        rows
     }
 
     /// OT-85: a new minute re-words the intro while it shows (the greeting

@@ -25,7 +25,10 @@ pub mod nvme;
 // The NVMe events the install claim needs (Muse's R4.1 review, item 4).
 #[cfg(feature = "installer")]
 pub mod nvme_event_logic;
-#[cfg(feature = "neofs-partition")]
+// L3a (G7): the read-only MBR reader (`deviceN:pM` mount sources).
+#[cfg(feature = "mbr-partitions")]
+pub mod mbr_logic;
+#[cfg(any(feature = "neofs-partition", feature = "mbr-partitions"))]
 pub mod partition;
 pub mod virtio_barrier;
 pub mod virtio_blk;
@@ -40,6 +43,28 @@ use crate::serial_println;
 use crate::sync::SwitchMutex;
 
 pub use dma::DmaBuffer;
+
+/// L3a (THINK §5, "Read-only, decided"): a block device that can only be
+/// read. The field is private and the type has no write method, so code
+/// holding one (the FAT mount's `BlockIo`) cannot reach `write_block`: the
+/// compiler refuses it.
+#[cfg(feature = "fat-fs")]
+pub struct ReadOnlyDevice(Arc<dyn BlockDevice>);
+
+#[cfg(feature = "fat-fs")]
+impl ReadOnlyDevice {
+    pub fn new(device: Arc<dyn BlockDevice>) -> Self {
+        Self(device)
+    }
+
+    pub fn geometry(&self) -> BlockGeometry {
+        self.0.geometry()
+    }
+
+    pub fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        self.0.read_block(lba, buffers)
+    }
+}
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum BlockOp {
@@ -723,6 +748,63 @@ pub(crate) fn guard_allows_raw_write(ident: &BlockDeviceIdentity, lba: u64, len:
     guard.is_some_and(|g| g.write_range_allowed(lba, len))
 }
 
+/// What a registry slot holds after its device was unplugged (#30): the
+/// old name, and every request answered `NoDevice`.
+#[cfg(all(feature = "usb-storage", feature = "usb-hotplug"))]
+struct DetachedDevice {
+    identity: BlockDeviceIdentity,
+}
+
+#[cfg(all(feature = "usb-storage", feature = "usb-hotplug"))]
+impl BlockDevice for DetachedDevice {
+    fn identity(&self) -> &BlockDeviceIdentity {
+        &self.identity
+    }
+
+    fn geometry(&self) -> BlockGeometry {
+        BlockGeometry {
+            logical_block_size: 512,
+            physical_block_size: 512,
+            block_count: 0,
+        }
+    }
+
+    fn read_block(&self, _lba: u64, _buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        Err(BlockError::NoDevice)
+    }
+
+    fn write_block(&self, _lba: u64, _buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        Err(BlockError::NoDevice)
+    }
+}
+
+/// #30: the device registered at `index` is gone (a USB stick pulled). Its
+/// slot keeps its index (other indices don't move) but now holds a
+/// [`DetachedDevice`] named `detached`, so a lookup by driver no longer
+/// finds it and a new lookup by index gets `NoDevice`. Holders of the old
+/// device object are failed by the driver itself (`MscDisk`'s gone flag).
+#[cfg(all(feature = "usb-storage", feature = "usb-hotplug"))]
+pub fn unregister_device(index: usize) -> bool {
+    let mut registry = REGISTRY.lock();
+    let Some(slot) = registry.devices.get_mut(index) else {
+        return false;
+    };
+    let name = slot.identity().name;
+    *slot = Arc::new(DetachedDevice {
+        identity: BlockDeviceIdentity {
+            driver: "detached",
+            name,
+            pci_bdf: None,
+        },
+    });
+    serial_println!(
+        "[ kernel ] block: unregistered device index={} name={} (detached)",
+        index,
+        name
+    );
+    true
+}
+
 #[allow(dead_code)]
 pub fn get_device(index: usize) -> Option<Arc<dyn BlockDevice>> {
     REGISTRY.lock().devices.get(index).cloned()
@@ -758,6 +840,89 @@ pub fn read_count(index: usize) -> Option<u64> {
 #[cfg(feature = "neofs-partition")]
 pub fn read_gpt(device: &dyn BlockDevice) -> Option<gpt_logic::Gpt> {
     gpt_logic::read(&GuardReader(device))
+}
+
+/// L3a (G7): MBR partition `index` (1..=4) of `device`, as a
+/// [`partition::PartitionDevice`] over it (the registered, guarded device),
+/// when sector 0 is an MBR whose entry `index` is a believed FAT partition
+/// ([`mbr_logic::partition`]). A rejected entry is logged with its reason.
+#[cfg(feature = "mbr-partitions")]
+pub fn mbr_partition(
+    device: Arc<dyn BlockDevice>,
+    index: u32,
+) -> Option<partition::PartitionDevice> {
+    use write_guard_logic::Disk;
+    let geometry = device.geometry();
+    let block = geometry.logical_block_size as usize;
+    if block < 512 {
+        return None;
+    }
+    let mut sector = alloc::vec![0u8; block];
+    if !GuardReader(device.as_ref()).read(0, &mut sector) {
+        return None;
+    }
+    // Every extended container's logical partitions count as claimed space
+    // (Chad's #17 review): walk each chain, bounded, through the same reader.
+    let mut logical = alloc::vec::Vec::new();
+    for slot in 0..mbr_logic::PRIMARY_ENTRIES {
+        let Some(ext) = mbr_logic::entry(&sector, slot) else {
+            continue;
+        };
+        if !mbr_logic::EXTENDED_TYPES.contains(&ext.part_type) || ext.lba_count == 0 {
+            continue;
+        }
+        let mut found = [(0u64, 0u64); mbr_logic::MAX_LOGICAL];
+        let mut read = |lba: u64| {
+            let mut ebr = alloc::vec![0u8; block];
+            if lba >= geometry.block_count || !GuardReader(device.as_ref()).read(lba, &mut ebr) {
+                return None;
+            }
+            let mut out = [0u8; 512];
+            out.copy_from_slice(&ebr[..512]);
+            Some(out)
+        };
+        let (n, error) =
+            mbr_logic::extended_chain((ext.first_lba, ext.lba_count), &mut read, &mut found);
+        if let Some(why) = error {
+            serial_println!(
+                "[ kernel ] block: MBR extended chain in partition={} stopped after {} logical: {:?}",
+                ext.index,
+                n,
+                why
+            );
+        }
+        logical.extend_from_slice(&found[..n]);
+    }
+    match mbr_logic::classify_with(&sector, geometry.block_count, &logical) {
+        mbr_logic::Sector0::Table(slots) => match slots.get(index.checked_sub(1)? as usize)? {
+            Some(Ok(entry)) => partition::PartitionDevice::from_mbr(device.clone(), entry),
+            Some(Err((entry, why))) => {
+                serial_println!(
+                    "[ kernel ] block: MBR partition rejected partition={} type={:#04x} first_lba={} lba_count={} reason={:?}",
+                    entry.index,
+                    entry.part_type,
+                    entry.first_lba,
+                    entry.lba_count,
+                    why
+                );
+                None
+            }
+            None => None,
+        },
+        other => {
+            serial_println!(
+                "[ kernel ] block: no MBR partition {} (sector 0 is {})",
+                index,
+                match other {
+                    mbr_logic::Sector0::Blank => "blank",
+                    mbr_logic::Sector0::Superfloppy => "a FAT boot sector",
+                    mbr_logic::Sector0::Protective => "a protective MBR",
+                    mbr_logic::Sector0::Table(_) => "a table",
+                }
+            );
+            None
+        }
+    }
 }
 
 /// The guard-off marker (`write_guard_logic::GUARD_OFF_MARKER`), in the

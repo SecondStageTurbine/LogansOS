@@ -381,6 +381,30 @@ jobs:
             neo \
             cargo neo-test --shard ${{ matrix.shard }}/4
 
+      # OT-58 S0: per-scenario timings (wall, QEMU, build) on the job's summary
+      # page and as an artifact, pass or fail. The job-log API returns only the
+      # last 5,000 lines of a shard's ~33k-line log, so this is where the
+      # numbers survive. Diagnostics only: never a test verdict.
+      - name: neo-test timing summary
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f target/neo-test/timings-summary.md ]; then
+            cat target/neo-test/timings-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload neo-test timings
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-test-timings-shard-${{ matrix.shard }}
+          path: |
+            target/neo-test/timings.tsv
+            target/neo-test/timings-summary.md
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Dump neo-test serial logs on failure
         if: failure()
         run: |
@@ -391,11 +415,20 @@ jobs:
             exit 0
           fi
 
+          # Only the logs that never reached `event=PASS` (OT-58 S0): dumping
+          # all ~230 pushed the failure out of the 5,000-line tail the job-log
+          # API returns. Every log is still in the artifact below.
+          shown=0
           for log in "${logs[@]}"; do
+            if grep -q 'NEO_TEST/1 event=PASS' "${log}"; then
+              continue
+            fi
+            shown=$((shown + 1))
             echo "::group::${log}"
             tail -n 240 "${log}"
             echo "::endgroup::"
           done
+          echo "dumped ${shown} of ${#logs[@]} serial log(s): those without event=PASS"
 
       # An artifact/storage-upload failure is infra, never a test verdict: a
       # full GitHub artifact-storage quota must NOT flip a shard whose tests
@@ -414,6 +447,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+      # OT-58 S0: the failures and the timing table again, last, so they sit in
+      # the tail of the job log even after the dump above.
+      - name: neo-test failures and timings (end of log)
+        if: always()
+        continue-on-error: true
+        run: |
+          tsv=target/neo-test/timings.tsv
+          if [ ! -f "$tsv" ]; then
+            echo "no $tsv"
+            exit 0
+          fi
+          echo "--- failed scenarios ---"
+          awk -F'\t' 'NR > 1 && $6 != "pass"' "$tsv"
+          echo "--- all scenarios, slowest first (scenario wall_s qemu_s build_s qemu_runs result) ---"
+          tail -n +2 "$tsv" | sort -t$'\t' -k2,2 -rn
+
       - name: Probe disk usage (after QEMU tests)
         if: always()
         run: |
@@ -421,6 +470,99 @@ jobs:
           df -h
           du -sh "${{ github.workspace }}/target" 2>/dev/null || true
 
+
+  # Escaped-defect contract item 4 (#43): the production CSPRNG seed path,
+  # booted. `neo-test` seeds the DRBG with a fixed seed, so no scenario reaches
+  # `Csprng::init`; an inverted RDRAND carry check there panicked every
+  # non-test `kernel-rng` kernel (the product image) at boot while the gate
+  # stayed green. scripts/ci/rng-seed-boot.sh boots a non-test `kernel-rng`
+  # kernel under `-cpu max` and needs the DRBG seeded with no panic. Hermetic
+  # (no model, no network); same trigger as the QEMU shards.
+  rng-seed-boot:
+    name: Production RNG seed boot (no neo-test)
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 90
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - name: Free disk space (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare container cache directories
+        run: mkdir -p .docker .home .rustup-home .cargo-home
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Restore-only: the QEMU shards own this cache entry's save.
+      - name: Restore Docker layers
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Build dev container (with buildx cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+
+      - name: Restore cargo registry, git, and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.rustup-home
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            ${{ github.workspace }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-rng-seed-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Bootstrap pinned Rust toolchain on cache miss
+        run: |
+          TOOLCHAIN=nightly-2026-04-16-x86_64-unknown-linux-gnu
+          if [ ! -x ".rustup-home/toolchains/${TOOLCHAIN}/bin/cargo" ]; then
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview,rustfmt,clippy \
+                --target x86_64-unknown-none,aarch64-unknown-none
+          fi
+
+      - name: Boot a non-test kernel-rng kernel to a seeded DRBG
+        run: |
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e LIMINE_DIR=/opt/limine \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            neo \
+            bash scripts/ci/rng-seed-boot.sh
 
   spdx-lint:
     name: SPDX License Headers
@@ -602,6 +744,12 @@ jobs:
       - name: neo-test shard coverage (4-way partition is complete + disjoint)
         run: cargo run -p xtask -- shard-coverage 4
 
+      # OT-61: crates vendored by `cargo vendor` (third_party/*/vendor) are
+      # reached through [patch] paths, which Cargo never checksums. Every file
+      # must still match its .cargo-checksum.json; patches go in patched/.
+      - name: vendored crates match crates.io (xtask vendor-verify)
+        run: cargo run -p xtask -- vendor-verify
+
       - name: cargo clippy --workspace --all-targets (blocking)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -618,7 +766,8 @@ jobs:
             -p neo-init \
             -p neo-worker \
             -p neo-shell \
-            -p vault-core
+            -p vault-core \
+            -p fetch-proto
 
       - name: cargo clippy kernel (blocking)
         run: |
@@ -656,6 +805,61 @@ jobs:
             --features neo-test,neo-test-arthur-agentic-actions \
             -- -D warnings -A dead_code 2>&1
           echo "::endgroup::"
+
+  # Lane 2c: the decoder fuzz guardrail (docs/THINK-2026-10-31-lived-in-os-lanes.md
+  # §4 item 3). Four arms, one per target, each with a fixed 60 s budget.
+  # GitHub-hosted on purpose: the dispatch asks for hosted runners and the arms
+  # are short; this job must not compete for the QEMU shard pool.
+  #
+  # `timeout(1)` is the backstop for a decoder that never returns. The harness
+  # stops itself at --seconds; a SIGKILL from timeout means a hang and fails the
+  # job. A panic aborts (the workspace builds panic = "abort"), and the harness's
+  # panic hook writes the exact input to target/image-decode-fuzz/crashes, which
+  # the failure artifact step uploads.
+  decoder-fuzz:
+    name: Decoder Fuzz (${{ matrix.target }})
+    needs: nightly-skip
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [inflate-zlib, inflate-raw, png, jpeg]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none,aarch64-unknown-none
+
+      - name: Build the fuzz harness
+        run: cargo build -p image-decode-fuzz
+
+      - name: Fuzz ${{ matrix.target }} (60 s)
+        run: |
+          budget=60
+          # +60 s of slack over the harness's own budget; if timeout(1) fires,
+          # the decoder hung and the arm fails with SIGKILL.
+          timeout --signal=KILL $((budget + 60)) \
+            ./target/debug/image-decode-fuzz \
+              --target '${{ matrix.target }}' \
+              --seconds "$budget" \
+              --seed 234
+
+      - name: Upload crash inputs on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoder-fuzz-crash-${{ matrix.target }}
+          path: target/image-decode-fuzz/crashes/
+          if-no-files-found: ignore
+          retention-days: 7
 
   # OT-78: the feature set that ships must be a blocking build, not an
   # operator-only command. Keep this separate from the deliberately
@@ -870,7 +1074,7 @@ jobs:
           - name: atrium-ai
             features: atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
           - name: misc
-            features: browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
+            features: browser-runtime,net-dial-cap,net-dial-public-only,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
           - name: boot-eth0
             features: boot-eth0
           - name: desktop

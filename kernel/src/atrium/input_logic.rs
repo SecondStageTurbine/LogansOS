@@ -22,12 +22,19 @@ pub struct InputEventV1 {
 
 impl InputEventV1 {
     pub const fn key(keycode: u8, modifiers: u8, pressed: bool) -> Self {
+        Self::key_locked(keycode, modifiers, 0, pressed)
+    }
+
+    /// A key event with the keyboard lock state in `y`
+    /// (`drivers::keymap_us_logic::LOCK_*`; 0 is the default state, so a
+    /// client that ignores `y` sees what it always saw).
+    pub const fn key_locked(keycode: u8, modifiers: u8, locks: u8, pressed: bool) -> Self {
         Self {
             kind: INPUT_EVENT_KEY,
             flags: if pressed { KEY_PRESSED } else { 0 },
             code: keycode as u16,
             x: modifiers as i16,
-            y: 0,
+            y: locks as i16,
         }
     }
 

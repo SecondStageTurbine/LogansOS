@@ -53,3 +53,13 @@ Two future rungs introduce **new cross-cutting invariants**; they are reserved h
 ## 6. Kill-switch / ledger
 
 The whole ladder is **additive and opt-in** (a new target + browser-bundle crates); the default kernel/toolchain build stays bit-for-bit unchanged, and no web-facing surface reaches the kernel/user ABI (libneo capabilities only). C0 added **no** new cross-cutting invariant (I-1…I-16 unchanged); A1/A2 are the two future ones, budgeted above. The A4 manifest gate is the standing structural guard that keeps this true as the ladder climbs.
+
+## Amendment, 2026-11-02 (J.c.): a type-only layout seam for the first static page
+
+`servo-layout` 0.7.0 hard-depends on `servo-script` (and SpiderMonkey) for its DOM wrapper types. To draw a static
+page before C3, J.c. chose option A of `docs/THINK-2026-11-01-ot61-first-page-layout.md`: `servo-layout`'s
+`script::layout_dom` imports go through a crate-local alias (or a generic over the DOM bundle). §2.1's "never fork
+layout" still holds for layout *semantics*; this seam is allowed only under the three conditions in
+`Plans/DECISION-2026-11-02-ot61-first-page-option-a.md` (types only, byte-identical elsewhere; converges back after
+C3 and is offered upstream; cross-family review of the patch line by line).
+

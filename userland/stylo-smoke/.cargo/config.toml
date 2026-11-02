@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C2.4: the same real-std build as userland/std-real-smoke (std from
+# the overlaid rust-src copy xtask prepares; static; panic=abort). Third-party
+# crates resolve to third_party/ot61-browser through Cargo.toml's [patch].
+[build]
+target = "../x86_64-unknown-neoplutarch.json"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-neoplutarch]
+rustflags = [
+    # The vendored crates come in through [patch] as path dependencies, which
+    # cargo treats as local, so their own `#![deny(...)]` lints stay errors
+    # (crates.io dependencies get --cap-lints automatically). serde_core denies
+    # unused_imports, and its OsStr/OsString impls are cfg'd to unix/windows,
+    # so on this target its imports are unused. Lints in third-party code
+    # warn here instead of failing the build; nothing is patched upstream.
+    "--cap-lints", "warn",
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]
