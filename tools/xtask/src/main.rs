@@ -23999,7 +23999,11 @@ mod tests {
         let product_start = workflow
             .find("\n  build-checks:\n")
             .expect("blocking build-checks job");
-        let product = &workflow[product_start..];
+        // The job ends at the next job (`batch-report` once S2b lands) or EOF.
+        let product_end = workflow[product_start + 1..]
+            .find("\n  batch-report:\n")
+            .map_or(workflow.len(), |offset| product_start + 1 + offset);
+        let product = &workflow[product_start..product_end];
         assert!(product.contains("--features product"));
         assert!(product.contains("--bin kernel --no-default-features\n"));
         assert!(product.contains("every feature-gated configuration"));
