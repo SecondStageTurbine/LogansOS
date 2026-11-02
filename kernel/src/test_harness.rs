@@ -242,8 +242,13 @@ const SCENARIO: &str = "irqsafe_mutex_if_restore";
 const SCENARIO: &str = "irqsafe_mutex_bench";
 #[cfg(feature = "neo-test-ai-latency-oracle")]
 const SCENARIO: &str = "ai_latency_oracle";
-#[cfg(feature = "neo-test-xsave-ymm-context-switch")]
+#[cfg(all(
+    feature = "neo-test-xsave-ymm-context-switch",
+    not(feature = "neo-test-xsave-ebx-understated")
+))]
 const SCENARIO: &str = "xsave_ymm_context_switch";
+#[cfg(feature = "neo-test-xsave-ebx-understated")]
+const SCENARIO: &str = "xsave_ebx_understated";
 #[cfg(all(
     feature = "neo-test-irq-xmm-preserve",
     not(feature = "neo-test-irq-xmm-preserve-fxsave")
@@ -6352,6 +6357,25 @@ fn run_xsave_ymm_context_switch() -> ! {
     }
 
     crate::sched::reap();
+    // `xsave_ebx_understated`: CPUID.(0DH,0):EBX answered 576 (x87|SSE),
+    // as under WHPX, while XCR0 holds x87|SSE|AVX. The area must still be
+    // sized for AVX (its component ends at 576 + 256 = 832), and the timer
+    // ticks and context switches above must have survived it.
+    #[cfg(feature = "neo-test-xsave-ebx-understated")]
+    {
+        let (ebx, understated) = crate::arch::x86_64::fpu::ebx_report();
+        let area = crate::arch::x86_64::fpu::save_area_size();
+        if ebx != 576 || !understated || area < 832 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ebx_understated_not_handled ebx={} understated={} area={}",
+                SCENARIO,
+                ebx,
+                understated,
+                area
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fpu=xsave area={} mask=0x{:x} ymm=preserved xmm=preserved x87=preserved",
         SCENARIO,
