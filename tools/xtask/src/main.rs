@@ -1940,6 +1940,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C2.4: upstream Stylo (the vendored closure) styles an
+        // html5ever document on-target, checked against hand-derived values.
+        name: "stylo_smoke",
+        feature: "neo-test-stylo-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C2.3b: upstream html5ever + selectors (the vendored closure,
         // third_party/ot61-browser) parse and match on-target, the vendored
         // parking_lot_core parker under contention, and memchr on yielding
@@ -4312,6 +4321,26 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 5b: phase4's HTTPS fetch on a net-dial-public-only
+        // kernel, plus a cap narrowed without NON_PUBLIC that must not reach
+        // the loopback fixture after the kernel's own resolution.
+        name: "net_dial_public_only",
+        feature: "neo-test-net-dial-public-only",
+        user_feature: Some("net-dial-public-only"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 5c: the fetch broker serves neo-init (as content) over a
+        // channel: HTTPS with TLS in user space, policy refusals, and a
+        // loopback-resolving name refused by the kernel (rung 5b).
+        name: "fetch_broker",
+        feature: "neo-test-fetch-broker",
+        user_feature: Some("fetch-broker"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "net_dial_cap_kill_switch",
         feature: "neo-test-net-dial-cap-kill-switch",
         user_feature: Some("net-dial-cap-kill-switch"),
@@ -6506,6 +6535,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "std_sealed" | "std_sealed_ambient" => &["std-real-sealed"],
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
+        "stylo_smoke" => &[STYLO_SMOKE_BIN],
         _ => &[],
     }
 }
@@ -6540,6 +6570,35 @@ const LOGIN_CUT_SCENARIO: &str = "login_cut_steps";
 static STAGE_LOGIN_CUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The step module's bytes as staged; each boot rewrites the four digits.
 const LOGIN_CUT_MODULE: &[u8] = b"LOGINCUT step=0000\n";
+
+/// OT-61 rung 5c: the fetch broker, built with its fixture allowance and
+/// staged as `/modules/neo-fetch-broker`, only for `fetch_broker`.
+static STAGE_FETCH_BROKER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+const FETCH_BROKER_SCENARIO: &str = "fetch_broker";
+const FETCH_BROKER_DIR: &str = "userland/fetch-broker";
+
+fn stage_fetch_broker() -> bool {
+    STAGE_FETCH_BROKER.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn fetch_broker_path() -> PathBuf {
+    fetch_broker_bin_path("fetch-broker")
+}
+
+/// The scenario's content process (#29 review item 1), from the same crate.
+fn fetch_content_path() -> PathBuf {
+    fetch_broker_bin_path("fetch-content")
+}
+
+fn fetch_broker_bin_path(bin: &str) -> PathBuf {
+    workspace_root()
+        .join(FETCH_BROKER_DIR)
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(bin)
+}
 
 fn set_fault_probe_stage(bin: Option<&'static str>) {
     *FAULT_PROBE_STAGE.lock().expect("fault probe stage lock") = bin;
@@ -6780,6 +6839,10 @@ fn build_user_for_scenario(scenario: TestScenario) -> Result<(), String> {
     // Build the real-std ELFs + apply the overlay ONLY for their scenarios.
     set_stage_std_real_smoke(std_real_bins_for(scenario.name));
     set_fault_probe_stage(fault_probe_for(scenario.name));
+    STAGE_FETCH_BROKER.store(
+        scenario.name == FETCH_BROKER_SCENARIO,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     STAGE_LOGIN_CUT.store(
         scenario.name == LOGIN_CUT_SCENARIO
             || scenario.name == login_scenarios::SETTINGS_CUT_SCENARIO,
@@ -7007,6 +7070,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-66 L1 (Dexter #186 item 4): the no-cap record probe.
         Some("login-record-guard-test") => vec!["record-guard-probe"],
         Some("net-dial-cap-kill-switch") => vec!["phase4-https-fetch"],
+        // OT-61 rung 5b/5c: the same HTTPS fixture server.
+        Some("net-dial-public-only") => vec!["phase4-https-fetch"],
+        // #29 review item 5: only this scenario's worker gets libneo's
+        // pipelined-request TLS server.
+        Some("fetch-broker") => vec!["fetch-broker-fixture"],
         // OT-61 C1.1 (blocker D): the cap-compose scenario's no-cap child is the
         // guard-fault worker's prober role (thread_create → EPERM → exit 41);
         // neo-worker has no `threads-cap-compose` feature of its own.
@@ -7354,6 +7422,26 @@ fn build_user_members(
     // a 6.5 MB build-std=std test ELF; the default build is genuinely untouched.
     // OT-83: the ring-3 fault probe + the second-process probe, only for their
     // scenario.
+    if stage_fetch_broker() {
+        build_member(
+            "userspace fetch-broker",
+            "fetch-broker",
+            "fetch-broker",
+            FETCH_BROKER_DIR,
+            USER_TARGET,
+            &["fixture-loopback"],
+            false,
+        )?;
+        build_member(
+            "userspace fetch-content",
+            "fetch-broker",
+            "fetch-content",
+            FETCH_BROKER_DIR,
+            USER_TARGET,
+            &["fixture-loopback"],
+            false,
+        )?;
+    }
     if let Some(bin) = fault_probe_stage() {
         for b in [bin, "fault-probe-ok"] {
             build_member(
@@ -7427,6 +7515,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SERVO_CLOSURE_BIN) {
             build_servo_closure_smoke()?;
         }
+        if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
+            build_closure_smoke(STYLO_SMOKE_BIN, STYLO_SMOKE_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7436,25 +7527,38 @@ fn build_user_members(
 /// third-party closure; it links the same overlay-built std.
 const SERVO_CLOSURE_BIN: &str = "servo-closure-smoke";
 const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
+/// OT-61 C2.4: upstream Stylo over the same vendored tree, its own crate.
+const STYLO_SMOKE_BIN: &str = "stylo-smoke";
+const STYLO_SMOKE_DIR: &str = "userland/stylo-smoke";
 
-/// Build the closure smoke (the overlay must already be applied) and run the
+/// The std crates with their own target dir (the vendored-closure smokes),
+/// each built as a known target (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`).
+fn is_closure_smoke_dir(subdir: &str) -> bool {
+    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR
+}
+
+fn build_servo_closure_smoke() -> Result<(), String> {
+    build_closure_smoke(SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR)
+}
+
+/// Build a closure smoke (the overlay must already be applied) and run the
 /// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
 /// read of their own.
-fn build_servo_closure_smoke() -> Result<(), String> {
+fn build_closure_smoke(bin: &str, dir: &str) -> Result<(), String> {
     invalidate_stale_overlay_std_in(
-        &workspace_root().join(SERVO_CLOSURE_DIR).join("target"),
+        &workspace_root().join(dir).join("target"),
         "RUSTC_BOOTSTRAP_SYNTHETIC_TARGET=1",
     )?;
     build_member(
-        &format!("userspace {SERVO_CLOSURE_BIN}"),
-        SERVO_CLOSURE_BIN,
-        SERVO_CLOSURE_BIN,
-        SERVO_CLOSURE_DIR,
+        &format!("userspace {bin}"),
+        bin,
+        bin,
+        dir,
         "x86_64-unknown-neoplutarch",
         &[],
         false,
     )?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    let elf = std_real_bin_path(bin);
     verify_std_real_syscall_sites(&elf)?;
     verify_std_real_tcb_reads(&elf)
 }
@@ -7464,13 +7568,17 @@ fn build_servo_closure_smoke() -> Result<(), String> {
 /// builds the vendored closure (J.c., 2026-10-29: its build scripts and proc
 /// macros run on the CI runners).
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: cargo xtask ot61-closure-build".to_string());
-    }
+    // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
+    // Python, allowed by J.c. 2026-10-31 with no network fetch).
+    let (bin, dir) = match args {
+        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
+        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+    };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_servo_closure_smoke()?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    build_closure_smoke(bin, dir)?;
+    let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
         .len();
@@ -7895,9 +8003,14 @@ fn std_real_smoke_path() -> PathBuf {
 /// The built ELF of a staged std bin: the closure smoke from its own crate,
 /// every other one from `userland/std-real-smoke`.
 fn std_real_bin_path(bin: &str) -> PathBuf {
-    if bin == SERVO_CLOSURE_BIN {
+    if bin == SERVO_CLOSURE_BIN || bin == STYLO_SMOKE_BIN {
+        let dir = if bin == STYLO_SMOKE_BIN {
+            STYLO_SMOKE_DIR
+        } else {
+            SERVO_CLOSURE_DIR
+        };
         workspace_root()
-            .join(SERVO_CLOSURE_DIR)
+            .join(dir)
             .join("target/x86_64-unknown-neoplutarch/debug")
             .join(bin)
     } else {
@@ -7976,11 +8089,11 @@ fn build_member_at_opt_level(
         eprintln!("[xtask] building {label} with dev opt-level=2");
         cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "2");
     }
-    if subdir == "userland/std-real-smoke" || subdir == SERVO_CLOSURE_DIR {
+    if subdir == "userland/std-real-smoke" || is_closure_smoke_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if subdir == SERVO_CLOSURE_DIR {
+    if is_closure_smoke_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
         // list (JSON targets included), and then every crate that uses std
         // needs `#![feature(restricted_std)]`: the vendored closure would need
@@ -8488,6 +8601,16 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
         copy_user_elf_into(
             &dir.join("fault-probe-ok"),
             &staging_modules.join("neo-fault-probe-ok"),
+        )?;
+    }
+    if stage_fetch_broker() {
+        copy_user_elf_into(
+            &fetch_broker_path(),
+            &staging_modules.join("neo-fetch-broker"),
+        )?;
+        copy_user_elf_into(
+            &fetch_content_path(),
+            &staging_modules.join("neo-fetch-content"),
         )?;
     }
     // OT-27a: stage the vendor firmware blob as /modules/mt7601u-fw iff present.
@@ -12966,6 +13089,8 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
         scenario_name,
         "kernel_rng_selftest"
             | "phase4_https_fetch"
+            | "net_dial_public_only"
+            | "fetch_broker"
             | "net_dial_cap_kill_switch"
             | "arthur_memory_encrypted"
             | "arthur_memory_delegation"
@@ -13002,6 +13127,9 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
             | "servo_closure_smoke"
             | "servo_closure_smoke_avx"
+            // OT-61 C2.4: std's RandomState (any std HashMap in the closure)
+            // seeds from the kernel CSPRNG, as std_entropy.
+            | "stylo_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -17164,6 +17292,21 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    if scenario.name == "stylo_smoke" {
+        for needle in [
+            "[ stylo ] ok: Stylo built no thread pool (num_cpus is 1 here)",
+            "[ stylo ] ok: the traversal styled <html>",
+            "[ stylo ] ok: the style thread ran to the end",
+            "[ stylo ] pass",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Stylo must style the document sequentially and match every hand-derived value",
+            )?;
+        }
+    }
     if scenario.name == "swapgs_irq_ring3" {
         for needle in [
             "shootdown_lock_probe=ok waiter_cpu=0 if0_contention=ok if_preserved=true ipi_ack=ok eoi_progress=ok",
@@ -19332,6 +19475,69 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "cap-routed HTTPS must prove NetDialCap authority and close every legacy egress root",
         )?;
     }
+    if scenario.name == "net_dial_public_only" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdialcap no_cap=denied in_scope=ok out_of_scope=denied post_revoke=denied legacy_connect_tcp=denied legacy_sendto=denied legacy_egress=closed",
+            "the public-only kernel must keep every phase4 NetDialCap property",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdial public_only narrowed_to_loopback=denied",
+            "a NetDial cap without NON_PUBLIC must not reach a loopback-resolving name",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "net_dial denied reason=non_public",
+            "the refusal must come from the kernel's public-only dial",
+        )?;
+    }
+    if scenario.name == FETCH_BROKER_SCENARIO {
+        require_serial_contains(
+            scenario,
+            observed,
+            "fetch_broker private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok",
+            "the fetch broker must serve the fixture and refuse private, cleartext and loopback-resolving URLs",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-content ] direct_dial=refused private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok",
+            "the content process must hold no dial capability (its own dials refused) and still fetch through the broker",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "net_dial denied reason=non_public",
+            "the loopback-resolving name must be refused by the kernel's dial, not only by the broker",
+        )?;
+        // #29 item 4: the broker drops its GRANT-bearing root, so no dial cap
+        // it holds can leave it; and (the re-check's new item) each request's
+        // scope is revoked when the request ends. Request 3's refused dial
+        // revokes its scope before the broker answers, so that line always
+        // precedes the content process's exit.
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] root dial cap closed: derive_from_root=refused grant_request_cap=refused",
+            "the broker must close its GRANT-bearing root and keep only a cap it can't hand on",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] request scope revoked",
+            "a request's scope must be revoked when the request ends",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "revoke of a request scope failed",
+            "every request scope revoke must succeed (REVOKE kept on the request root)",
+        )?;
+    }
     if scenario.name == "net_dial_cap_kill_switch" {
         require_serial_contains(
             scenario,
@@ -20579,6 +20785,10 @@ fn write_limine_conf(
         conf = inject_module_line(&conf, "/modules/login-cut")?;
     }
     // OT-83: the ring-3 fault probes, only for their scenario.
+    if stage_fetch_broker() {
+        conf = inject_module_line(&conf, "/modules/neo-fetch-broker")?;
+        conf = inject_module_line(&conf, "/modules/neo-fetch-content")?;
+    }
     if fault_probe_stage().is_some() {
         conf = inject_module_line(&conf, "/modules/neo-fault-probe")?;
         conf = inject_module_line(&conf, "/modules/neo-fault-probe-ok")?;

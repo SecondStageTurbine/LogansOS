@@ -943,7 +943,8 @@ jobs:
             -p neo-init \
             -p neo-worker \
             -p neo-shell \
-            -p vault-core
+            -p vault-core \
+            -p fetch-proto
 
       - name: cargo clippy kernel (blocking)
         run: |
@@ -1301,7 +1302,7 @@ jobs:
             "wifi-usb|mt7601u,wpa3-sae"
             "gpu-iommu|accel-intel,vtd"
             "atrium-ai|atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config"
-            "misc|browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module"
+            "misc|browser-runtime,net-dial-cap,net-dial-public-only,virtio-accel,framebuffer-console,kernel-rng,model-boot-module"
             "boot-eth0|boot-eth0"
             "desktop|desktop"
             "product-real-lm|desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick"

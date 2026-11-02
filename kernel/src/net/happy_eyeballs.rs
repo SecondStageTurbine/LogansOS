@@ -19,6 +19,9 @@ pub enum DialError {
     Resolve,
     NoCandidates,
     AllFailed,
+    /// OT-61 rung 5b: every resolved address is non-public and the cap may
+    /// reach only public ones.
+    NonPublic,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
@@ -86,6 +89,36 @@ pub fn dial_name(owner: ProcessId, name: &str, port: u16) -> Result<Arc<TcpSocke
     }
     let candidates = dns::resolve(name, FamilyHint::Any).map_err(|_| DialError::Resolve)?;
     dial_candidates(owner, &candidates, port, DialDelays::default())
+}
+
+/// OT-61 rung 5b: [`dial_name`] for a cap that may reach only public
+/// addresses. The resolved candidates are filtered here, after resolution and
+/// before any connection attempt, so the check sees the address that is
+/// actually dialed.
+#[cfg(feature = "net-dial-public-only")]
+pub fn dial_name_public(
+    owner: ProcessId,
+    name: &str,
+    port: u16,
+) -> Result<Arc<TcpSocket>, DialError> {
+    use crate::sched::net_dial_cap_logic::{v4_public, v6_public};
+    if port == 0 {
+        return Err(DialError::Invalid);
+    }
+    let candidates = dns::resolve(name, FamilyHint::Any).map_err(|_| DialError::Resolve)?;
+    let public: alloc::vec::Vec<NetCandidate> = candidates
+        .iter()
+        .copied()
+        .filter(|c| match c.family as u32 {
+            crate::net::socket::AF_INET => v4_public([c.addr[0], c.addr[1], c.addr[2], c.addr[3]]),
+            AF_INET6 => v6_public(c.addr),
+            _ => false,
+        })
+        .collect();
+    if public.is_empty() {
+        return Err(DialError::NonPublic);
+    }
+    dial_candidates(owner, &public, port, DialDelays::default())
 }
 
 pub fn dial_candidates(

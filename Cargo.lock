@@ -659,6 +659,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fetch-proto"
+version = "0.0.1"
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1186,6 +1190,7 @@ name = "neo-init"
 version = "0.0.1"
 dependencies = [
  "action-log-core",
+ "fetch-proto",
  "libneo",
  "login-core",
  "neo-atrium",
@@ -1426,6 +1431,10 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
+
+[[package]]
+name = "pipe-logic-tests"
+version = "0.0.1"
 
 [[package]]
 name = "pkcs1"
