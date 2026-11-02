@@ -578,11 +578,46 @@ impl FatTrait for Fat32 {
     }
 }
 
+/// LogansOS patch (L3a-2, Chad's #18 review): Brent's cycle detection over a
+/// cluster chain, in O(1) state. `step` returns true when the chain has come
+/// back to a cluster it already visited (a corrupt FAT: `A -> B -> A`), which
+/// it is guaranteed to notice within a small multiple of the cycle's length.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CycleGuard {
+    tortoise: Option<u32>,
+    power: u32,
+    lam: u32,
+}
+
+impl CycleGuard {
+    pub(crate) fn new(start: Option<u32>) -> Self {
+        Self {
+            tortoise: start,
+            power: 1,
+            lam: 0,
+        }
+    }
+
+    pub(crate) fn step(&mut self, next: u32) -> bool {
+        if self.tortoise == Some(next) {
+            return true;
+        }
+        self.lam += 1;
+        if self.lam == self.power {
+            self.tortoise = Some(next);
+            self.power = self.power.saturating_mul(2);
+            self.lam = 0;
+        }
+        false
+    }
+}
+
 pub(crate) struct ClusterIterator<B, E, S = B> {
     fat: B,
     fat_type: FatType,
     cluster: Option<u32>,
     err: bool,
+    guard: CycleGuard,
     // phantom is needed to add type bounds on the storage type
     phantom_s: PhantomData<S>,
     phantom_e: PhantomData<E>,
@@ -601,6 +636,7 @@ where
             fat_type,
             cluster: Some(cluster),
             err: false,
+            guard: CycleGuard::new(Some(cluster)),
             phantom_s: PhantomData,
             phantom_e: PhantomData,
         }
@@ -649,6 +685,14 @@ where
                 Err(err) => {
                     self.err = true;
                     return Some(Err(err));
+                }
+            };
+            // LogansOS patch: a chain that loops is corruption, not data.
+            if let Some(next) = self.cluster {
+                if self.guard.step(next) {
+                    self.err = true;
+                    self.cluster = None;
+                    return Some(Err(Error::CorruptedFileSystem));
                 }
             }
         }

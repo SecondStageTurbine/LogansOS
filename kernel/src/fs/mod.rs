@@ -10,7 +10,14 @@
 extern crate alloc;
 
 pub mod ext4;
+// L3a-2: FAT12/16/32 read-only through the vendored rust-fatfs. Off (the
+// kill-switch): the native FAT32 driver, as before, and no rust-fatfs code.
+#[cfg(feature = "fat-fs")]
+pub mod fat;
+#[cfg(not(feature = "fat-fs"))]
 pub mod fat32;
+#[cfg(feature = "fat-fs")]
+pub mod fat_logic;
 pub mod neofs;
 
 use alloc::string::{String, ToString};
@@ -1241,6 +1248,41 @@ fn parse_block_device_source(source: &str) -> Result<usize, VfsError> {
     Ok(index)
 }
 
+/// The block device a FAT mount's `source` names: `"deviceN"` (the whole
+/// device, as before) or, with `mbr-partitions` (L3a, G7), `"deviceN:pM"`,
+/// MBR partition M of device N. Without the feature a `:pM` source is
+/// `Invalid`, as before (the kill-switch).
+fn fat_source_device(
+    source: &str,
+) -> Result<Arc<dyn crate::drivers::block::BlockDevice>, VfsError> {
+    #[cfg(feature = "mbr-partitions")]
+    {
+        let (device_index, part) =
+            crate::drivers::block::mbr_logic::parse_source(source).ok_or(VfsError::Invalid)?;
+        let device = crate::drivers::block::get_device(device_index).ok_or(VfsError::NotFound)?;
+        match part {
+            None => Ok(device),
+            Some(index) => {
+                let part = crate::drivers::block::mbr_partition(device, index)
+                    .ok_or(VfsError::NotFound)?;
+                serial_println!(
+                    "[ kernel ] fs: FAT source device_index={} mbr_partition={} first_lba={} lba_count={}",
+                    device_index,
+                    part.entry_index(),
+                    part.first_lba(),
+                    part.lba_count()
+                );
+                Ok(Arc::new(part))
+            }
+        }
+    }
+    #[cfg(not(feature = "mbr-partitions"))]
+    {
+        let device_index = parse_block_device_source(source)?;
+        crate::drivers::block::get_device(device_index).ok_or(VfsError::NotFound)
+    }
+}
+
 fn parse_block_device_source_or_default(
     source: &str,
     default_index: usize,
@@ -1284,11 +1326,13 @@ fn vfs_mount_at_parent(
             (fs, Some(typed), FileRights::KNOWN_BUILD4B)
         }
         3 => {
-            let device_index = parse_block_device_source(source)?;
-            let device =
-                crate::drivers::block::get_device(device_index).ok_or(VfsError::NotFound)?;
-            let fat32 = fat32::Fat32::mount_readonly(device).map_err(|_| VfsError::NotFound)?;
-            let fs: Arc<dyn MountedFs> = Arc::new(fat32);
+            let device = fat_source_device(source)?;
+            #[cfg(feature = "fat-fs")]
+            let fs: Arc<dyn MountedFs> =
+                Arc::new(fat::Fat::mount_readonly(device).map_err(|_| VfsError::NotFound)?);
+            #[cfg(not(feature = "fat-fs"))]
+            let fs: Arc<dyn MountedFs> =
+                Arc::new(fat32::Fat32::mount_readonly(device).map_err(|_| VfsError::NotFound)?);
             let denied = if flags.0 & MOUNT_FLAG_EXEC_ALLOWED != 0 {
                 FileRights::WRITE
             } else {

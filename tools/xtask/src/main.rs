@@ -80,6 +80,8 @@ mod ci_memory_floor_tests;
 #[cfg(test)]
 mod i8042_tests;
 #[cfg(test)]
+mod keymap_tests;
+#[cfg(test)]
 mod ot61_c05_tests;
 mod ot61_tls_gate;
 #[cfg(test)]
@@ -1093,7 +1095,27 @@ const DESKTOP_FULL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
 /// Must match the kernel's `run_ps2_keyboard` EXPECTED list.
 const PS2_KEYBOARD_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
     prompt: b"PS2KBD ready",
-    command: b"a1\x82\x83\x84\x85\n",
+    command: &[
+        b'a',
+        b'1',
+        0x82,
+        0x83,
+        0x84,
+        0x85,
+        b'\n',
+        b':',
+        HMP_RSHIFT_QUOTE,
+        HMP_CAPS_LOCK,
+        b'a',
+        HMP_CAPS_LOCK,
+        HMP_KP_7,
+        HMP_KP_MULTIPLY,
+        HMP_KP_DIVIDE,
+        HMP_KP_ENTER,
+        HMP_NUM_LOCK,
+        HMP_KP_8,
+        HMP_NUM_LOCK,
+    ],
 }];
 /// Key auto-repeat: Backspace held 1.5 s, then Escape held 1.5 s, then 'x'
 /// (the end marker), 2 s apart (`HMP_PAUSE_1S`) so no two holds overlap:
@@ -2385,6 +2407,18 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "xsave_ymm_context_switch",
         feature: "neo-test-xsave-ymm-context-switch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The preview's WHPX boot #GP: CPUID.(0DH,0):EBX understates the
+        // XSAVE area (576 with AVX enabled). The area must be sized from the
+        // per-component leaves. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ebx-understated-control
+        // (EBX trusted, as before: the first tick's iretq takes a #GP).
+        name: "xsave_ebx_understated",
+        feature: "neo-test-xsave-ebx-understated",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -5082,6 +5116,55 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L3a (G7): the FAT32 volume as MBR partition 1, mounted as
+    // `device1:p1`; `-off` is the kill-switch (no `mbr-partitions`: the
+    // source is refused, as before).
+    TestScenario {
+        name: "phase3_fat32_mbr_mount_read",
+        feature: "neo-test-phase3-fat32-mbr-mount-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_mbr_off",
+        feature: "neo-test-phase3-fat32-mbr-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L3a-2: what rust-fatfs (`fat-fs`) adds over the native driver (a FAT16
+    // volume), the T4/T5 no-write proof on a dirty volume, and the
+    // kill-switch control (the native driver reads the fixture, as before).
+    TestScenario {
+        name: "phase3_fat32_fat16_read",
+        feature: "neo-test-phase3-fat32-fat16-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_readonly_no_write",
+        feature: "neo-test-phase3-fat32-readonly-no-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Chad's #18 review: looping file and directory chains are errors.
+    TestScenario {
+        name: "phase3_fat32_loop_chain",
+        feature: "neo-test-phase3-fat32-loop-chain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_native_control",
+        feature: "neo-test-phase3-fat32-native-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // Phase 3 BUILD-4D: ext4 read-only foreign filesystem.
     TestScenario {
         name: "phase3_ext4_mount_readonly",
@@ -5467,6 +5550,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "phase3_neofs_cache_evict_off",
         feature: "neo-test-phase3-neofs-cache-evict-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L7.1: the boot-time stamps, QEMU's no-FPDT path, the record, and
+    // SYS_BOOT_TIMES's checks.
+    TestScenario {
+        name: "boot_time",
+        feature: "neo-test-boot-time",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -5892,6 +5984,39 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "ot90_stuck_sink_restart",
         feature: "neo-test-ot90-stuck-sink-restart",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-90 P3b: K4 parks every AP (STOP IPI; `-holdout`: one by NMI) and
+    // K5 masks the interrupt sources, before S5. Needs NEO_SMP >= 2.
+    TestScenario {
+        name: "ot90_stop_cpus",
+        feature: "neo-test-ot90-stop-cpus",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_holdout",
+        feature: "neo-test-ot90-stop-holdout",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Review #6: K4 while every AP storms TLB shootdowns (CP-64); and a
+    // wedged AP (no STOP, no NMI, holding the UART lock) with a frozen PM
+    // timer, which K4 reports as a holdout before S5.
+    TestScenario {
+        name: "ot90_stop_shootdown",
+        feature: "neo-test-ot90-stop-shootdown",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_wedged",
+        feature: "neo-test-ot90-stop-wedged",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -6343,10 +6468,13 @@ fn product_image_ub_checks_on() -> bool {
 }
 
 fn build_product_image_kernel() -> Result<(), String> {
-    let kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
+    let mut kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
         .iter()
         .map(|f| f.to_string())
         .collect();
+    if boot_time_image() {
+        kernel_features.push("boot-time".to_string());
+    }
     let ub_checks_on = product_image_ub_checks_on();
     eprintln!(
         "[xtask] product image kernel: opt-level={} ub-checks={} ({}=on keeps them)",
@@ -6370,11 +6498,27 @@ fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     build_product_image_kernel()
 }
 
-/// The product-image flags: the old `--hwp-performance` and `--perf-probes`,
-/// both no-ops now (each feature is in image A).
+/// L7.1: `--boot-time` builds image A with the boot-time numbers: the
+/// kernel's `boot-time`, the sign-in card's row (neo-init `boot-time`) and
+/// Arthur's summary line (`arthur-boot-time`), for a Zenbook run's evidence
+/// (`docs/runbook-baremetal-zenbook-s14.md`). Image A without it is unchanged.
+const BOOT_TIME_FLAG: &str = "--boot-time";
+static BOOT_TIME_IMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn boot_time_image() -> bool {
+    BOOT_TIME_IMAGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The product-image flags: `--boot-time` (L7.1), and the old
+/// `--hwp-performance` and `--perf-probes`, both no-ops now (each feature is
+/// in image A).
 fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
+    BOOT_TIME_IMAGE.store(false, std::sync::atomic::Ordering::Relaxed);
     for arg in args {
-        if arg == HWP_PERFORMANCE_FLAG {
+        if arg == BOOT_TIME_FLAG {
+            BOOT_TIME_IMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[xtask] {command}: {BOOT_TIME_FLAG}: image A with the boot-time numbers");
+        } else if arg == HWP_PERFORMANCE_FLAG {
             eprintln!(
                 "[xtask] {command}: {HWP_PERFORMANCE_FLAG} is the default now (hwp-performance is in image A)"
             );
@@ -6384,7 +6528,7 @@ fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
             );
         } else {
             return Err(format!(
-                "{command} takes no options (got {args:?}); it builds the product image"
+                "{command} takes only {BOOT_TIME_FLAG} (got {args:?}); it builds the product image"
             ));
         }
     }
@@ -7350,6 +7494,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
     if extra_features_include("cap-rooted-open") {
         init_features.push("cap-rooted-open");
         shell_features.push("cap-rooted-open");
+    }
+    // L7.1: `iso --with-model --boot-time`.
+    let mut arthur_features = arthur_features;
+    if boot_time_image() && feature == Some("desktop-with-model") {
+        init_features.push("boot-time");
+        arthur_features.push("arthur-boot-time");
     }
     build_user_members(
         init_features.as_slice(),
@@ -10128,6 +10278,10 @@ const NON_CORE_PATHS: &[&str] = &[
     "kernel/src/scenario/",
     "kernel/src/boot_model_logic.rs",
     "kernel/src/boot_modules.rs",
+    // #16 (L7.1): write-once TSC stamps and firmware-table reads; no lock,
+    // scheduler or per-CPU state.
+    "kernel/src/boot_time.rs",
+    "kernel/src/boot_time_logic.rs",
     "kernel/src/errno.rs",
     "kernel/src/install_bundle_logic.rs",
     "kernel/src/install_ui_logic.rs",
@@ -10864,7 +11018,11 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_s5_durability"
         | "ot90_straggler_forced"
         | "ot90_stuck_disk"
-        | "ot90_stuck_sink_off" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stuck_sink_off"
+        | "ot90_stop_cpus"
+        | "ot90_stop_holdout"
+        | "ot90_stop_shootdown"
+        | "ot90_stop_wedged" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -10966,10 +11124,157 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             ));
         }
     }
+    // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
+    // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
+    if scenario.name == "ot90_stop_cpus"
+        || scenario.name == "ot90_stop_holdout"
+        || scenario.name == "ot90_stop_shootdown"
+    {
+        let mut want = vec!["[ power ] K3 log flushed"];
+        if scenario.name == "ot90_stop_shootdown" {
+            want.insert(0, "stage=storm_ready ap=");
+        }
+        want.push("[ power ] K4 start");
+        if scenario.name == "ot90_stop_shootdown" {
+            want.push("[ power ] test: storm sent=");
+        }
+        want.extend([
+            "[ power ] K4 targets=",
+            "[ power ] K5 lapic_timer=",
+            "power: S5 PM1a=",
+        ]);
+        ot90_require_in_order(scenario.name, &serial, &want)?;
+        ot90_check_k5(&serial).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+        if serial.contains("tlb_shootdown_timeout") {
+            return Err(format!(
+                "`{}`: a TLB shootdown timed out; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(scenario.name == "ot90_stop_holdout", k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
+    if scenario.name == "ot90_stop_wedged" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 start",
+                "[ power ] K4 targets=",
+                "[ power ] K5 skipped: holdouts=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_wedged(k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
     eprintln!(
         "[xtask] neo-test: `{}` PASS on QMP {:?}",
         scenario.name, events
     );
+    Ok(())
+}
+
+/// Review #6 item 3: K5's line shows the PCI pass ran and left no function
+/// with MSI enabled or MSI-X unmasked, and names the I/O APIC result.
+fn ot90_check_k5(serial: &str) -> Result<(), String> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K5 lapic_timer="))
+        .ok_or("no K5 line")?;
+    let field = |key: &str| -> Option<u64> {
+        let at = line.find(key)? + key.len();
+        line[at..].split_whitespace().next()?.parse().ok()
+    };
+    if field("pci_functions=").unwrap_or(0) == 0 {
+        return Err(format!("K5 found no PCI function: {line}"));
+    }
+    if field("msi_left_on=") != Some(0) {
+        return Err(format!("K5 left MSI/MSI-X open: {line}"));
+    }
+    if !line.contains("ioapic=masked=") {
+        return Err(format!("K5 masked no I/O APIC (QEMU has a MADT): {line}"));
+    }
+    Ok(())
+}
+
+/// Review #6 item 2 `ot90_stop_wedged`: the highest AP is the one holdout,
+/// the rest parked by the STOP IPI, K5 skipped, and S5 still reached.
+fn ot90_check_wedged([targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets.count_ones() < 2 {
+        return Err("needs at least two APs (NEO_SMP >= 3)".into());
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    if holdouts != highest || ipi != targets & !highest || nmi != 0 {
+        return Err(format!(
+            "K4 ipi={ipi:#x} nmi={nmi:#x} holdouts={holdouts:#x}; expected ipi={:#x} nmi=0 holdouts={highest:#x}",
+            targets & !highest
+        ));
+    }
+    Ok(())
+}
+
+/// OT-90 P3b: K4's line, `targets parked_by_ipi parked_by_nmi holdouts`.
+fn ot90_k4_report(serial: &str) -> Option<[u64; 4]> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K4 targets="))?;
+    let mut out = [0u64; 4];
+    for (slot, key) in
+        out.iter_mut()
+            .zip(["targets=", "parked_by_ipi=", "parked_by_nmi=", "holdouts="])
+    {
+        let at = line.find(key)? + key.len();
+        let hex = line[at..]
+            .split_whitespace()
+            .next()?
+            .trim_start_matches("0x");
+        *slot = u64::from_str_radix(hex, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// OT-90 P3b: every AP parked, none held out. `holdout`: the highest AP by
+/// NMI, the rest by the STOP IPI; else all by the STOP IPI.
+fn ot90_check_k4(holdout: bool, [targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets == 0 {
+        return Err("K4 had no AP to stop (run with NEO_SMP >= 2)".into());
+    }
+    if holdouts != 0 {
+        return Err(format!("K4 left CPUs {holdouts:#x} running"));
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    let (want_ipi, want_nmi) = if holdout {
+        (targets & !highest, highest)
+    } else {
+        (targets, 0)
+    };
+    if ipi != want_ipi || nmi != want_nmi {
+        return Err(format!(
+            "K4 parked by IPI {ipi:#x} and by NMI {nmi:#x}; expected {want_ipi:#x} and {want_nmi:#x} of {targets:#x}"
+        ));
+    }
     Ok(())
 }
 
@@ -13231,6 +13536,7 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "arthur_memory_delegation"
             | "arthur_memory_forgetting"
             | "xsave_ymm_context_switch"
+            | "xsave_ebx_understated"
             // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
             // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
             | "irq_xmm_preserve"
@@ -14422,6 +14728,18 @@ const HMP_SUPER_ESCAPE: u8 = 0x9F;
 /// OT-66 L2: a screendump to `cap<N>.ppm` in [`HMP_CAPTURE_DIR`], N =
 /// byte - [`HMP_CAPTURE_0`] (0 to 4).
 const HMP_CAPTURE_0: u8 = 0x97;
+/// `ps2_keyboard`: press and release Caps Lock.
+const HMP_CAPS_LOCK: u8 = 0xA2;
+/// `ps2_keyboard`: `"` typed with the right Shift.
+const HMP_RSHIFT_QUOTE: u8 = 0xA3;
+/// `ps2_keyboard`, the keypad: keypad 7, `*` (0x37), `/` (`E0 35`), Enter
+/// (`E0 1C`), Num Lock (0x45), keypad 8.
+const HMP_KP_7: u8 = 0xA4;
+const HMP_KP_MULTIPLY: u8 = 0xA5;
+const HMP_KP_DIVIDE: u8 = 0xA6;
+const HMP_KP_ENTER: u8 = 0xA7;
+const HMP_NUM_LOCK: u8 = 0xA8;
+const HMP_KP_8: u8 = 0xA9;
 const HMP_CAPTURES: u8 = 5;
 /// Where the script's numbered captures go (the scenario sets it per boot).
 static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -14518,6 +14836,14 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         0x83 => Some("sendkey up\n"),
         0x84 => Some("sendkey ctrl_r-c\n"),
         0x85 => Some("sendkey pause\n"),
+        HMP_CAPS_LOCK => Some("sendkey caps_lock\n"),
+        HMP_RSHIFT_QUOTE => Some("sendkey shift_r-apostrophe\n"),
+        HMP_KP_7 => Some("sendkey kp_7\n"),
+        HMP_KP_MULTIPLY => Some("sendkey kp_multiply\n"),
+        HMP_KP_DIVIDE => Some("sendkey kp_divide\n"),
+        HMP_KP_ENTER => Some("sendkey kp_enter\n"),
+        HMP_NUM_LOCK => Some("sendkey num_lock\n"),
+        HMP_KP_8 => Some("sendkey kp_8\n"),
         HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
         HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
         HMP_PGUP => Some("sendkey pgup\n"),
@@ -14620,6 +14946,38 @@ fn hmp_key_for_byte(byte: u8) -> Option<&'static str> {
         b'[' => Some("bracket_left"),
         b']' => Some("bracket_right"),
         b'\\' => Some("backslash"),
+        b'`' => Some("grave_accent"),
+        // Shifted keys: QEMU presses Shift, the key, then releases both.
+        b'A'..=b'Z' => {
+            const KEYS: [&str; 26] = [
+                "shift-a", "shift-b", "shift-c", "shift-d", "shift-e", "shift-f", "shift-g",
+                "shift-h", "shift-i", "shift-j", "shift-k", "shift-l", "shift-m", "shift-n",
+                "shift-o", "shift-p", "shift-q", "shift-r", "shift-s", "shift-t", "shift-u",
+                "shift-v", "shift-w", "shift-x", "shift-y", "shift-z",
+            ];
+            Some(KEYS[(byte - b'A') as usize])
+        }
+        b'!' => Some("shift-1"),
+        b'@' => Some("shift-2"),
+        b'#' => Some("shift-3"),
+        b'$' => Some("shift-4"),
+        b'%' => Some("shift-5"),
+        b'^' => Some("shift-6"),
+        b'&' => Some("shift-7"),
+        b'*' => Some("shift-8"),
+        b'(' => Some("shift-9"),
+        b')' => Some("shift-0"),
+        b'_' => Some("shift-minus"),
+        b'+' => Some("shift-equal"),
+        b'{' => Some("shift-bracket_left"),
+        b'}' => Some("shift-bracket_right"),
+        b'|' => Some("shift-backslash"),
+        b':' => Some("shift-semicolon"),
+        b'"' => Some("shift-apostrophe"),
+        b'~' => Some("shift-grave_accent"),
+        b'<' => Some("shift-comma"),
+        b'>' => Some("shift-dot"),
+        b'?' => Some("shift-slash"),
         _ => None,
     }
 }
@@ -15039,7 +15397,21 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         let device0 = output_dir.join(format!("{scenario_name}.device0.raw"));
         let device1 = output_dir.join(format!("{scenario_name}.fat32.raw"));
         let device0 = prepare_raw_storage_disk(&device0)?;
-        let device1 = prepare_fat32_storage_disk(&device1)?;
+        // L3a (G7): the same volume inside an MBR partition at LBA 2048.
+        let device1 = if scenario_uses_fat32_mbr_disk(scenario_name) {
+            prepare_fat32_mbr_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_fat16_read" {
+            // L3a-2: the same fixture on a FAT16 volume.
+            prepare_fat16_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_readonly_no_write" {
+            // L3a-2 (T4/T5): the FAT32 fixture, marked dirty.
+            prepare_fat32_dirty_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_loop_chain" {
+            // Chad's #18 review: looping chains.
+            prepare_fat32_loop_storage_disk(&device1)?
+        } else {
+            prepare_fat32_storage_disk(&device1)?
+        };
         return Ok(vec![device0, device1]);
     }
 
@@ -16847,6 +17219,67 @@ fn model_vocab_sidecar(
 }
 
 fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, FAT32_DISK_SIZE, &["-F", "-v", "NEOFAT32"])
+}
+
+/// L3a-2: the fixture on a 32 MiB volume `mformat` makes FAT16 (one-sector
+/// clusters, 65020 of them, under FAT16's 65525). The native driver refuses
+/// it; rust-fatfs reads it.
+fn prepare_fat16_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, 32 * 1024 * 1024, &["-v", "NEOFAT16"])?;
+    let mut boot = [0u8; 62];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut boot))
+        .map_err(|e| format!("read FAT16 boot sector {}: {e}", path.display()))?;
+    if &boot[54..62] != b"FAT16   " {
+        return Err(format!(
+            "mformat did not make FAT16 for {} (type field {:?})",
+            path.display(),
+            String::from_utf8_lossy(&boot[54..62])
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// L3a-2 (traps T4/T5): the FAT32 fixture, left as a stick pulled without
+/// unmounting: the BPB's status byte (0x41 on FAT32) has its dirty bit set,
+/// and FSInfo's free-cluster count (sector 1, byte 488) is out of range, so
+/// the mount's FSInfo check runs. A read-only mount must change neither.
+fn prepare_fat32_dirty_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("open FAT32 disk {}: {e}", path.display()))?;
+    let mut lead = [0u8; 4];
+    file.seek(SeekFrom::Start(512))
+        .and_then(|_| file.read_exact(&mut lead))
+        .map_err(|e| format!("read FSInfo {}: {e}", path.display()))?;
+    if &lead != b"RRaA" {
+        return Err(format!("{}: FSInfo is not at sector 1", path.display()));
+    }
+    let mut flags = [0u8; 1];
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.read_exact(&mut flags))
+        .map_err(|e| format!("read FAT32 status byte {}: {e}", path.display()))?;
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.write_all(&[flags[0] | 1]))
+        .and_then(|_| file.seek(SeekFrom::Start(512 + 488)))
+        .and_then(|_| file.write_all(&0xffff_fff0u32.to_le_bytes()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("mark FAT32 disk dirty {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// A blank `size`-byte image formatted by `mformat <format_args>`, holding
+/// the FAT fixture tree (hello, readme, subdir/nested, an LFN file, a
+/// `.neom` that must import as Regular).
+fn prepare_fat_fixture_disk(
+    path: &Path,
+    size: u64,
+    format_args: &[&str],
+) -> Result<PathBuf, String> {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -16855,14 +17288,17 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
 
     let file =
         fs::File::create(path).map_err(|e| format!("create FAT32 disk {}: {e}", path.display()))?;
-    file.set_len(FAT32_DISK_SIZE)
+    file.set_len(size)
         .map_err(|e| format!("size FAT32 disk {}: {e}", path.display()))?;
     file.sync_all()
         .map_err(|e| format!("sync empty FAT32 disk {}: {e}", path.display()))?;
     drop(file);
 
     let image = path.display().to_string();
-    run_mtools("mformat", &["-i", &image, "-F", "-v", "NEOFAT32", "::"])?;
+    let mut args = vec!["-i", image.as_str()];
+    args.extend_from_slice(format_args);
+    args.push("::");
+    run_mtools("mformat", &args)?;
 
     let fixture_dir = workspace_root()
         .join(TEST_OUTPUT_REL)
@@ -16898,6 +17334,141 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
     )?;
     run_mtools("mcopy", &["-i", &image, &weights_path, "::/weights.neom"])?;
 
+    Ok(path.to_path_buf())
+}
+
+/// Chad's #18 review: the FAT32 fixture plus `loop.bin` (three clusters) and
+/// `loopdir` (its first cluster filled with 8.3 entries, so it has no end
+/// marker), then both chains patched by hand in every FAT copy: the file's
+/// second cluster points back at its first (`A -> B -> A`), the directory's
+/// first cluster at itself.
+fn prepare_fat32_loop_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let image = path.display().to_string();
+    let mut img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let bps = u16_at(&img, 11);
+    let cluster = bps * img[13] as usize;
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("fat32-fixtures");
+    let loop_file = fixture_dir.join("loop.bin");
+    fs::write(&loop_file, vec![0x5au8; cluster * 3])
+        .map_err(|e| format!("write {}: {e}", loop_file.display()))?;
+    run_mtools(
+        "mcopy",
+        &[
+            "-i",
+            &image,
+            &loop_file.display().to_string(),
+            "::/LOOP.BIN",
+        ],
+    )?;
+    run_mtools("mmd", &["-i", &image, "::/LOOPDIR"])?;
+    let tiny = write_fat32_fixture(&fixture_dir, "tiny.txt", b"x")?;
+    for i in 0..cluster / 32 - 2 {
+        run_mtools(
+            "mcopy",
+            &[
+                "-i",
+                &image,
+                &tiny.display().to_string(),
+                &format!("::/LOOPDIR/F{i:04}.TXT"),
+            ],
+        )?;
+    }
+    img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let reserved = u16_at(&img, 14);
+    let fats = img[16] as usize;
+    let per_fat = u32_at(&img, 36) as usize;
+    let root_cluster = u32_at(&img, 44);
+    let fat_at = |c: u32| reserved * bps + c as usize * 4;
+    let data_at = |c: u32| (reserved + fats * per_fat) * bps + (c as usize - 2) * cluster;
+    let next = |img: &[u8], c: u32| u32_at(img, fat_at(c)) & 0x0fff_ffff;
+    // Find a short entry in the root directory (following its chain, bounded).
+    let find = |img: &[u8], name: &[u8; 11]| -> Result<u32, String> {
+        let mut c = root_cluster;
+        for _ in 0..64 {
+            let base = data_at(c);
+            for i in 0..cluster / 32 {
+                let e = &img[base + i * 32..base + i * 32 + 32];
+                if &e[0..11] == name {
+                    return Ok(((u16_at(e, 20) as u32) << 16) | u16_at(e, 26) as u32);
+                }
+            }
+            c = next(img, c);
+            if c >= 0x0fff_fff8 {
+                break;
+            }
+        }
+        Err(format!(
+            "{}: no {:?} in the root",
+            path.display(),
+            String::from_utf8_lossy(name)
+        ))
+    };
+    let file_first = find(&img, b"LOOP    BIN")?;
+    let dir_first = find(&img, b"LOOPDIR    ")?;
+    let file_second = next(&img, file_first);
+    if !(2..0x0fff_fff7).contains(&file_second) {
+        return Err(format!(
+            "{}: loop.bin has no second cluster",
+            path.display()
+        ));
+    }
+    for f in 0..fats {
+        let off = f * per_fat * bps;
+        let put = |img: &mut Vec<u8>, c: u32, v: u32| {
+            let at = off + fat_at(c);
+            img[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        put(&mut img, file_second, file_first);
+        put(&mut img, dir_first, dir_first);
+    }
+    let dir_base = data_at(dir_first);
+    if (0..cluster / 32).any(|i| img[dir_base + i * 32] == 0) {
+        return Err(format!(
+            "{}: loopdir's first cluster is not full",
+            path.display()
+        ));
+    }
+    fs::write(path, &img).map_err(|e| format!("write FAT32 disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// L3a (G7): the `phase3_fat32_mbr_*` scenarios' device1 is an MBR disk.
+fn scenario_uses_fat32_mbr_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_fat32_mbr_")
+}
+
+/// The first LBA of the FAT32 partition on the L3a (G7) MBR disk: 1 MiB in,
+/// where every current partitioning tool puts it.
+const FAT32_MBR_FIRST_LBA: u32 = 2048;
+
+/// L3a (G7): the FAT32 fixture volume ([`prepare_fat32_storage_disk`]) as
+/// partition 1 of an MBR disk. Sector 0 is an MBR laid out here by hand:
+/// zero boot code, one FAT32-LBA (`0x0C`) entry at LBA 2048 covering the
+/// volume, `55 AA`. The 1 MiB gap before the volume is zero.
+fn prepare_fat32_mbr_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    let volume_path = path.with_extension("volume.raw");
+    prepare_fat32_storage_disk(&volume_path)?;
+    let volume = fs::read(&volume_path)
+        .map_err(|e| format!("read FAT32 volume {}: {e}", volume_path.display()))?;
+    let sectors = u32::try_from(volume.len() / 512)
+        .map_err(|_| format!("FAT32 volume {} too large for MBR", volume_path.display()))?;
+    let mut mbr = [0u8; 512];
+    let entry = &mut mbr[446..462];
+    entry[4] = 0x0c;
+    entry[8..12].copy_from_slice(&FAT32_MBR_FIRST_LBA.to_le_bytes());
+    entry[12..16].copy_from_slice(&sectors.to_le_bytes());
+    mbr[510] = 0x55;
+    mbr[511] = 0xaa;
+    let mut disk = vec![0u8; FAT32_MBR_FIRST_LBA as usize * 512];
+    disk[..512].copy_from_slice(&mbr);
+    disk.extend_from_slice(&volume);
+    fs::write(path, &disk).map_err(|e| format!("write MBR disk {}: {e}", path.display()))?;
+    let _ = fs::remove_file(&volume_path);
     Ok(path.to_path_buf())
 }
 
