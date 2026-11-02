@@ -638,6 +638,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fat-logic-tests"
+version = "0.0.1"
+dependencies = [
+ "fatfs",
+]
+
+[[package]]
 name = "fatfs"
 version = "0.4.0"
 dependencies = [
@@ -1282,6 +1289,7 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305",
  "cmac",
+ "fatfs",
  "hkdf",
  "hmac",
  "limine",
