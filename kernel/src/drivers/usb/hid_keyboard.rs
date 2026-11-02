@@ -278,9 +278,11 @@ impl Inner {
                     #[cfg(feature = "key-autorepeat")]
                     self.repeat.on_modifiers(report[0]);
                     for event in &events[..n] {
-                        let event = crate::atrium::input_logic::InputEventV1::key(
+                        let locks = crate::drivers::key_locks::on_key(event.keycode, event.pressed);
+                        let event = crate::atrium::input_logic::InputEventV1::key_locked(
                             event.keycode,
                             event.modifiers,
+                            locks,
                             event.pressed,
                         );
                         // DI-1 SAK (`atrium-sak`): a chord goes to the

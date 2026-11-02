@@ -46,6 +46,20 @@ fn wire_oracle_backspace_repeat_with_left_shift() {
     assert_eq!(bytes[1] & 0x01, 0x01);
 }
 
+/// A repeat carries its press's lock state (`y`), so a letter held under
+/// Caps Lock keeps typing capitals.
+#[test]
+fn wire_oracle_repeat_carries_the_press_lock_state() {
+    let mut r = held(0x04, 0);
+    r.on_press_locks(1);
+    let event = r.poll(T0 + 500 * MS, EPOCH).expect("due at 500 ms");
+    // kind 1, flags 0x03, code 0x0004 LE, x = 0, y = 0x0001 LE (Caps Lock).
+    assert_eq!(
+        encode_event(event),
+        [0x01, 0x03, 0x04, 0x00, 0x00, 0x00, 0x01, 0x00]
+    );
+}
+
 #[test]
 fn first_repeat_at_500_ms_then_every_33_ms() {
     let mut r = held(BACKSPACE, 0);
