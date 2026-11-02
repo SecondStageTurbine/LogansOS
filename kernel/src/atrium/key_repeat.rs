@@ -42,6 +42,9 @@ pub fn on_event(repeat: &mut KeyRepeat, event: InputEventV1, now_ns: u64) {
         now_ns,
         super::focus::activation_epoch(),
     );
+    if event.flags & KEY_PRESSED != 0 {
+        repeat.on_press_locks(event.y);
+    }
 }
 
 /// The repeat due at `now_ns`, if any.

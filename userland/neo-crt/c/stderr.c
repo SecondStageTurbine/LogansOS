@@ -8,7 +8,7 @@
  * streams unlocked until pthread_create turns locking on, which neo-crt
  * doesn't compile; any std thread can call into C, so two threads writing
  * at once could overrun the static buffer in __fwritex. With the lock on,
- * every FLOCK takes neo-crt's __lockfile (src/lib.rs). CP-100.
+ * every FLOCK takes neo-crt's __lockfile (src/lib.rs). CP-106.
  */
 #include "stdio_impl.h"
 

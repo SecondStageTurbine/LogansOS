@@ -262,7 +262,7 @@ fn thread_token() -> usize {
 /// holds it (a nested stdio call; musl's own contract). musl's version keeps
 /// the owner's tid in `f->lock` and parks on its futex, both pthread
 /// internals neo-crt doesn't have; this keeps the owner here instead. Only
-/// streams with `lock >= 0` come here: neo-crt's stdout and stderr (CP-100).
+/// streams with `lock >= 0` come here: neo-crt's stdout and stderr (CP-106).
 #[unsafe(no_mangle)]
 pub extern "C" fn __lockfile(f: *mut c_void) -> c_int {
     let (key, me) = (f as usize, thread_token());

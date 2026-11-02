@@ -11,6 +11,13 @@
 //! delivery, physical destination, to the BSP's local APIC. The 8259's own
 //! IRQ line for the same source stays masked (`pic::init` masks all), so the
 //! interrupt is never delivered twice.
+//!
+//! OT-90 P3b adds [`MaskPlan`]: K5 masks every entry before power-off.
+// A `power-stop-cpus` kernel without an input lane uses the mask plan alone.
+#![cfg_attr(
+    not(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad")),
+    allow(dead_code)
+)]
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -80,6 +87,48 @@ unsafe fn write(base: *mut u32, index: u32, value: u32) {
     unsafe {
         core::ptr::write_volatile(base.byte_add(logic::IOREGSEL), index);
         core::ptr::write_volatile(base.byte_add(logic::IOWIN), value);
+    }
+}
+
+/// OT-90 P3b, K5: every I/O APIC's register block and entry count, read and
+/// mapped before K4 (after it, nothing may map a page: a mapping can need a
+/// TLB shootdown the parked CPUs would never acknowledge).
+#[cfg(feature = "power-stop-cpus")]
+#[derive(Clone, Copy, Default)]
+pub struct MaskPlan {
+    blocks: [(usize, u32); madt_logic::MAX_IOAPICS],
+    count: usize,
+}
+
+#[cfg(feature = "power-stop-cpus")]
+impl MaskPlan {
+    pub fn new(madt: &Madt) -> Self {
+        let mut plan = Self::default();
+        for io in madt.ioapics.iter().take(madt.ioapic_count) {
+            let base = reg_base(io.address);
+            // SAFETY: just mapped; the version register has no side effect.
+            let entries = logic::entries_from_version(unsafe { read(base, logic::REG_VERSION) });
+            plan.blocks[plan.count] = (base as usize, entries);
+            plan.count += 1;
+        }
+        plan
+    }
+
+    /// Mask every redirection entry (bit 16 of each low dword), keeping the
+    /// rest of it. After K4: no other CPU runs, so the IOREGSEL/IOWIN pairs
+    /// can't interleave. Returns how many entries were masked.
+    pub fn mask_all(&self) -> u32 {
+        let mut masked = 0;
+        for &(base, entries) in &self.blocks[..self.count] {
+            let base = base as *mut u32;
+            for pin in 0..entries {
+                let index = logic::redir_low_index(pin);
+                // SAFETY: a register block `new` mapped; one CPU runs.
+                unsafe { write(base, index, read(base, index) | (1 << 16)) };
+                masked += 1;
+            }
+        }
+        masked
     }
 }
 

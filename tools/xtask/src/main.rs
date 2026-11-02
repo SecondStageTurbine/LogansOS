@@ -78,6 +78,8 @@ mod ci_memory_floor_tests;
 #[cfg(test)]
 mod i8042_tests;
 #[cfg(test)]
+mod keymap_tests;
+#[cfg(test)]
 mod ot61_c05_tests;
 mod ot61_tls_gate;
 #[cfg(test)]
@@ -1091,7 +1093,27 @@ const DESKTOP_FULL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
 /// Must match the kernel's `run_ps2_keyboard` EXPECTED list.
 const PS2_KEYBOARD_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
     prompt: b"PS2KBD ready",
-    command: b"a1\x82\x83\x84\x85\n",
+    command: &[
+        b'a',
+        b'1',
+        0x82,
+        0x83,
+        0x84,
+        0x85,
+        b'\n',
+        b':',
+        HMP_RSHIFT_QUOTE,
+        HMP_CAPS_LOCK,
+        b'a',
+        HMP_CAPS_LOCK,
+        HMP_KP_7,
+        HMP_KP_MULTIPLY,
+        HMP_KP_DIVIDE,
+        HMP_KP_ENTER,
+        HMP_NUM_LOCK,
+        HMP_KP_8,
+        HMP_NUM_LOCK,
+    ],
 }];
 /// Key auto-repeat: Backspace held 1.5 s, then Escape held 1.5 s, then 'x'
 /// (the end marker), 2 s apart (`HMP_PAUSE_1S`) so no two holds overlap:
@@ -1940,6 +1962,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C2.4: upstream Stylo (the vendored closure) styles an
+        // html5ever document on-target, checked against hand-derived values.
+        name: "stylo_smoke",
+        feature: "neo-test-stylo-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C2.3b: upstream html5ever + selectors (the vendored closure,
         // third_party/ot61-browser) parse and match on-target, the vendored
         // parking_lot_core parker under contention, and memchr on yielding
@@ -2383,6 +2414,18 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "xsave_ymm_context_switch",
         feature: "neo-test-xsave-ymm-context-switch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The preview's WHPX boot #GP: CPUID.(0DH,0):EBX understates the
+        // XSAVE area (576 with AVX enabled). The area must be sized from the
+        // per-component leaves. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ebx-understated-control
+        // (EBX trusted, as before: the first tick's iretq takes a #GP).
+        name: "xsave_ebx_understated",
+        feature: "neo-test-xsave-ebx-understated",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -4321,6 +4364,26 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 5b: phase4's HTTPS fetch on a net-dial-public-only
+        // kernel, plus a cap narrowed without NON_PUBLIC that must not reach
+        // the loopback fixture after the kernel's own resolution.
+        name: "net_dial_public_only",
+        feature: "neo-test-net-dial-public-only",
+        user_feature: Some("net-dial-public-only"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 5c: the fetch broker serves neo-init (as content) over a
+        // channel: HTTPS with TLS in user space, policy refusals, and a
+        // loopback-resolving name refused by the kernel (rung 5b).
+        name: "fetch_broker",
+        feature: "neo-test-fetch-broker",
+        user_feature: Some("fetch-broker"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "net_dial_cap_kill_switch",
         feature: "neo-test-net-dial-cap-kill-switch",
         user_feature: Some("net-dial-cap-kill-switch"),
@@ -5056,6 +5119,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "phase3_fat32_type_import_is_regular",
         feature: "neo-test-phase3-fat32-type-import-is-regular",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L3a (G7): the FAT32 volume as MBR partition 1, mounted as
+    // `device1:p1`; `-off` is the kill-switch (no `mbr-partitions`: the
+    // source is refused, as before).
+    TestScenario {
+        name: "phase3_fat32_mbr_mount_read",
+        feature: "neo-test-phase3-fat32-mbr-mount-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_mbr_off",
+        feature: "neo-test-phase3-fat32-mbr-off",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -5874,6 +5954,39 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P3b: K4 parks every AP (STOP IPI; `-holdout`: one by NMI) and
+    // K5 masks the interrupt sources, before S5. Needs NEO_SMP >= 2.
+    TestScenario {
+        name: "ot90_stop_cpus",
+        feature: "neo-test-ot90-stop-cpus",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_holdout",
+        feature: "neo-test-ot90-stop-holdout",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Review #6: K4 while every AP storms TLB shootdowns (CP-64); and a
+    // wedged AP (no STOP, no NMI, holding the UART lock) with a frozen PM
+    // timer, which K4 reports as a holdout before S5.
+    TestScenario {
+        name: "ot90_stop_shootdown",
+        feature: "neo-test-ot90-stop-shootdown",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_wedged",
+        feature: "neo-test-ot90-stop-wedged",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -6518,6 +6631,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "std_sealed" | "std_sealed_ambient" => &["std-real-sealed"],
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
+        "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         _ => &[],
     }
@@ -6553,6 +6667,35 @@ const LOGIN_CUT_SCENARIO: &str = "login_cut_steps";
 static STAGE_LOGIN_CUT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// The step module's bytes as staged; each boot rewrites the four digits.
 const LOGIN_CUT_MODULE: &[u8] = b"LOGINCUT step=0000\n";
+
+/// OT-61 rung 5c: the fetch broker, built with its fixture allowance and
+/// staged as `/modules/neo-fetch-broker`, only for `fetch_broker`.
+static STAGE_FETCH_BROKER: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+const FETCH_BROKER_SCENARIO: &str = "fetch_broker";
+const FETCH_BROKER_DIR: &str = "userland/fetch-broker";
+
+fn stage_fetch_broker() -> bool {
+    STAGE_FETCH_BROKER.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn fetch_broker_path() -> PathBuf {
+    fetch_broker_bin_path("fetch-broker")
+}
+
+/// The scenario's content process (#29 review item 1), from the same crate.
+fn fetch_content_path() -> PathBuf {
+    fetch_broker_bin_path("fetch-content")
+}
+
+fn fetch_broker_bin_path(bin: &str) -> PathBuf {
+    workspace_root()
+        .join(FETCH_BROKER_DIR)
+        .join("target")
+        .join(USER_TARGET)
+        .join("debug")
+        .join(bin)
+}
 
 fn set_fault_probe_stage(bin: Option<&'static str>) {
     *FAULT_PROBE_STAGE.lock().expect("fault probe stage lock") = bin;
@@ -6793,6 +6936,10 @@ fn build_user_for_scenario(scenario: TestScenario) -> Result<(), String> {
     // Build the real-std ELFs + apply the overlay ONLY for their scenarios.
     set_stage_std_real_smoke(std_real_bins_for(scenario.name));
     set_fault_probe_stage(fault_probe_for(scenario.name));
+    STAGE_FETCH_BROKER.store(
+        scenario.name == FETCH_BROKER_SCENARIO,
+        std::sync::atomic::Ordering::SeqCst,
+    );
     STAGE_LOGIN_CUT.store(
         scenario.name == LOGIN_CUT_SCENARIO
             || scenario.name == login_scenarios::SETTINGS_CUT_SCENARIO,
@@ -7020,6 +7167,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-66 L1 (Dexter #186 item 4): the no-cap record probe.
         Some("login-record-guard-test") => vec!["record-guard-probe"],
         Some("net-dial-cap-kill-switch") => vec!["phase4-https-fetch"],
+        // OT-61 rung 5b/5c: the same HTTPS fixture server.
+        Some("net-dial-public-only") => vec!["phase4-https-fetch"],
+        // #29 review item 5: only this scenario's worker gets libneo's
+        // pipelined-request TLS server.
+        Some("fetch-broker") => vec!["fetch-broker-fixture"],
         // OT-61 C1.1 (blocker D): the cap-compose scenario's no-cap child is the
         // guard-fault worker's prober role (thread_create → EPERM → exit 41);
         // neo-worker has no `threads-cap-compose` feature of its own.
@@ -7367,6 +7519,26 @@ fn build_user_members(
     // a 6.5 MB build-std=std test ELF; the default build is genuinely untouched.
     // OT-83: the ring-3 fault probe + the second-process probe, only for their
     // scenario.
+    if stage_fetch_broker() {
+        build_member(
+            "userspace fetch-broker",
+            "fetch-broker",
+            "fetch-broker",
+            FETCH_BROKER_DIR,
+            USER_TARGET,
+            &["fixture-loopback"],
+            false,
+        )?;
+        build_member(
+            "userspace fetch-content",
+            "fetch-broker",
+            "fetch-content",
+            FETCH_BROKER_DIR,
+            USER_TARGET,
+            &["fixture-loopback"],
+            false,
+        )?;
+    }
     if let Some(bin) = fault_probe_stage() {
         for b in [bin, "fault-probe-ok"] {
             build_member(
@@ -7440,6 +7612,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SERVO_CLOSURE_BIN) {
             build_servo_closure_smoke()?;
         }
+        if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
+            build_standalone_std_smoke(STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR)?;
+        }
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
             build_cxx_runtime_smoke()?;
         }
@@ -7452,10 +7627,34 @@ fn build_user_members(
 /// third-party closure; it links the same overlay-built std.
 const SERVO_CLOSURE_BIN: &str = "servo-closure-smoke";
 const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
+/// OT-61 C2.4: upstream Stylo over the same vendored tree, its own crate.
+const STYLO_SMOKE_BIN: &str = "stylo-smoke";
+const STYLO_SMOKE_DIR: &str = "userland/stylo-smoke";
+/// OT-61 C3a: the private C/C++ runtime smoke (`userland/neo-crt` under
+/// `userland/cxx-runtime-smoke`). Its own crate and target dir for the same
+/// reason as the closure smokes: only its scenario compiles the C runtime
+/// (and needs clang).
+const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
+const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
+/// Its hardening twin, in the same crate (`src/trap.rs`).
+const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 
-/// Build the closure smoke (the overlay must already be applied) and run the
-/// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
-/// read of their own.
+/// The std crates with their own target dir that build std as a known target
+/// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
+/// vendored-closure smokes and the C/C++ runtime smoke.
+fn standalone_std_dir(bin: &str) -> Option<&'static str> {
+    match bin {
+        SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
+        STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
+        CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
+        _ => None,
+    }
+}
+
+fn is_standalone_std_dir(subdir: &str) -> bool {
+    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR || subdir == CXX_RUNTIME_DIR
+}
+
 fn build_servo_closure_smoke() -> Result<(), String> {
     build_standalone_std_smoke(SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR)
 }
@@ -7468,32 +7667,9 @@ fn build_cxx_runtime_smoke() -> Result<(), String> {
     )
 }
 
-/// OT-61 C3a: the private C/C++ runtime smoke (`userland/neo-crt` under
-/// `userland/cxx-runtime-smoke`). Its own crate and target dir for the same
-/// reason as the closure smoke: only its scenario compiles the C runtime
-/// (and needs clang).
-const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
-const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
-/// Its hardening twin, in the same crate (`src/trap.rs`).
-const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
-
-/// The std crates with their own target dir that build std as a known target
-/// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`).
-fn standalone_std_dir(bin: &str) -> Option<&'static str> {
-    match bin {
-        SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
-        CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
-        _ => None,
-    }
-}
-
-fn is_standalone_std_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == CXX_RUNTIME_DIR
-}
-
 /// Build one standalone std smoke (the overlay must already be applied) and
-/// run the A4 checks on it: nothing it links may add a `syscall` site or a
-/// TCB read of its own.
+/// run the A4 checks on it: nothing it links (the vendored crates, the C
+/// runtime) may add a `syscall` site or a TCB read of its own.
 fn build_standalone_std_smoke(package: &str, bins: &[&str], dir: &str) -> Result<(), String> {
     invalidate_stale_overlay_std_in(
         &workspace_root().join(dir).join("target"),
@@ -7542,13 +7718,17 @@ fn cmd_ot61_crt_build(args: &[String]) -> Result<(), String> {
 /// builds the vendored closure (J.c., 2026-10-29: its build scripts and proc
 /// macros run on the CI runners).
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: cargo xtask ot61-closure-build".to_string());
-    }
+    // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
+    // Python, allowed by J.c. 2026-10-31 with no network fetch).
+    let (bin, dir) = match args {
+        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
+        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+    };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_servo_closure_smoke()?;
-    let elf = std_real_bin_path(SERVO_CLOSURE_BIN);
+    build_standalone_std_smoke(bin, &[bin], dir)?;
+    let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
         .len();
@@ -8566,6 +8746,16 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
         copy_user_elf_into(
             &dir.join("fault-probe-ok"),
             &staging_modules.join("neo-fault-probe-ok"),
+        )?;
+    }
+    if stage_fetch_broker() {
+        copy_user_elf_into(
+            &fetch_broker_path(),
+            &staging_modules.join("neo-fetch-broker"),
+        )?;
+        copy_user_elf_into(
+            &fetch_content_path(),
+            &staging_modules.join("neo-fetch-content"),
         )?;
     }
     // OT-27a: stage the vendor firmware blob as /modules/mt7601u-fw iff present.
@@ -10026,7 +10216,11 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_s5_durability"
         | "ot90_straggler_forced"
         | "ot90_stuck_disk"
-        | "ot90_stuck_sink_off" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stuck_sink_off"
+        | "ot90_stop_cpus"
+        | "ot90_stop_holdout"
+        | "ot90_stop_shootdown"
+        | "ot90_stop_wedged" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -10128,10 +10322,157 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             ));
         }
     }
+    // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
+    // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
+    if scenario.name == "ot90_stop_cpus"
+        || scenario.name == "ot90_stop_holdout"
+        || scenario.name == "ot90_stop_shootdown"
+    {
+        let mut want = vec!["[ power ] K3 log flushed"];
+        if scenario.name == "ot90_stop_shootdown" {
+            want.insert(0, "stage=storm_ready ap=");
+        }
+        want.push("[ power ] K4 start");
+        if scenario.name == "ot90_stop_shootdown" {
+            want.push("[ power ] test: storm sent=");
+        }
+        want.extend([
+            "[ power ] K4 targets=",
+            "[ power ] K5 lapic_timer=",
+            "power: S5 PM1a=",
+        ]);
+        ot90_require_in_order(scenario.name, &serial, &want)?;
+        ot90_check_k5(&serial).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+        if serial.contains("tlb_shootdown_timeout") {
+            return Err(format!(
+                "`{}`: a TLB shootdown timed out; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(scenario.name == "ot90_stop_holdout", k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
+    if scenario.name == "ot90_stop_wedged" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 start",
+                "[ power ] K4 targets=",
+                "[ power ] K5 skipped: holdouts=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_wedged(k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
     eprintln!(
         "[xtask] neo-test: `{}` PASS on QMP {:?}",
         scenario.name, events
     );
+    Ok(())
+}
+
+/// Review #6 item 3: K5's line shows the PCI pass ran and left no function
+/// with MSI enabled or MSI-X unmasked, and names the I/O APIC result.
+fn ot90_check_k5(serial: &str) -> Result<(), String> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K5 lapic_timer="))
+        .ok_or("no K5 line")?;
+    let field = |key: &str| -> Option<u64> {
+        let at = line.find(key)? + key.len();
+        line[at..].split_whitespace().next()?.parse().ok()
+    };
+    if field("pci_functions=").unwrap_or(0) == 0 {
+        return Err(format!("K5 found no PCI function: {line}"));
+    }
+    if field("msi_left_on=") != Some(0) {
+        return Err(format!("K5 left MSI/MSI-X open: {line}"));
+    }
+    if !line.contains("ioapic=masked=") {
+        return Err(format!("K5 masked no I/O APIC (QEMU has a MADT): {line}"));
+    }
+    Ok(())
+}
+
+/// Review #6 item 2 `ot90_stop_wedged`: the highest AP is the one holdout,
+/// the rest parked by the STOP IPI, K5 skipped, and S5 still reached.
+fn ot90_check_wedged([targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets.count_ones() < 2 {
+        return Err("needs at least two APs (NEO_SMP >= 3)".into());
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    if holdouts != highest || ipi != targets & !highest || nmi != 0 {
+        return Err(format!(
+            "K4 ipi={ipi:#x} nmi={nmi:#x} holdouts={holdouts:#x}; expected ipi={:#x} nmi=0 holdouts={highest:#x}",
+            targets & !highest
+        ));
+    }
+    Ok(())
+}
+
+/// OT-90 P3b: K4's line, `targets parked_by_ipi parked_by_nmi holdouts`.
+fn ot90_k4_report(serial: &str) -> Option<[u64; 4]> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K4 targets="))?;
+    let mut out = [0u64; 4];
+    for (slot, key) in
+        out.iter_mut()
+            .zip(["targets=", "parked_by_ipi=", "parked_by_nmi=", "holdouts="])
+    {
+        let at = line.find(key)? + key.len();
+        let hex = line[at..]
+            .split_whitespace()
+            .next()?
+            .trim_start_matches("0x");
+        *slot = u64::from_str_radix(hex, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// OT-90 P3b: every AP parked, none held out. `holdout`: the highest AP by
+/// NMI, the rest by the STOP IPI; else all by the STOP IPI.
+fn ot90_check_k4(holdout: bool, [targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets == 0 {
+        return Err("K4 had no AP to stop (run with NEO_SMP >= 2)".into());
+    }
+    if holdouts != 0 {
+        return Err(format!("K4 left CPUs {holdouts:#x} running"));
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    let (want_ipi, want_nmi) = if holdout {
+        (targets & !highest, highest)
+    } else {
+        (targets, 0)
+    };
+    if ipi != want_ipi || nmi != want_nmi {
+        return Err(format!(
+            "K4 parked by IPI {ipi:#x} and by NMI {nmi:#x}; expected {want_ipi:#x} and {want_nmi:#x} of {targets:#x}"
+        ));
+    }
     Ok(())
 }
 
@@ -12386,11 +12727,14 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
         scenario_name,
         "kernel_rng_selftest"
             | "phase4_https_fetch"
+            | "net_dial_public_only"
+            | "fetch_broker"
             | "net_dial_cap_kill_switch"
             | "arthur_memory_encrypted"
             | "arthur_memory_delegation"
             | "arthur_memory_forgetting"
             | "xsave_ymm_context_switch"
+            | "xsave_ebx_understated"
             // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
             // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
             | "irq_xmm_preserve"
@@ -12422,6 +12766,9 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
             | "servo_closure_smoke"
             | "servo_closure_smoke_avx"
+            // OT-61 C2.4: std's RandomState (any std HashMap in the closure)
+            // seeds from the kernel CSPRNG, as std_entropy.
+            | "stylo_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -13579,6 +13926,18 @@ const HMP_SUPER_ESCAPE: u8 = 0x9F;
 /// OT-66 L2: a screendump to `cap<N>.ppm` in [`HMP_CAPTURE_DIR`], N =
 /// byte - [`HMP_CAPTURE_0`] (0 to 4).
 const HMP_CAPTURE_0: u8 = 0x97;
+/// `ps2_keyboard`: press and release Caps Lock.
+const HMP_CAPS_LOCK: u8 = 0xA2;
+/// `ps2_keyboard`: `"` typed with the right Shift.
+const HMP_RSHIFT_QUOTE: u8 = 0xA3;
+/// `ps2_keyboard`, the keypad: keypad 7, `*` (0x37), `/` (`E0 35`), Enter
+/// (`E0 1C`), Num Lock (0x45), keypad 8.
+const HMP_KP_7: u8 = 0xA4;
+const HMP_KP_MULTIPLY: u8 = 0xA5;
+const HMP_KP_DIVIDE: u8 = 0xA6;
+const HMP_KP_ENTER: u8 = 0xA7;
+const HMP_NUM_LOCK: u8 = 0xA8;
+const HMP_KP_8: u8 = 0xA9;
 const HMP_CAPTURES: u8 = 5;
 /// Where the script's numbered captures go (the scenario sets it per boot).
 static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -13675,6 +14034,14 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         0x83 => Some("sendkey up\n"),
         0x84 => Some("sendkey ctrl_r-c\n"),
         0x85 => Some("sendkey pause\n"),
+        HMP_CAPS_LOCK => Some("sendkey caps_lock\n"),
+        HMP_RSHIFT_QUOTE => Some("sendkey shift_r-apostrophe\n"),
+        HMP_KP_7 => Some("sendkey kp_7\n"),
+        HMP_KP_MULTIPLY => Some("sendkey kp_multiply\n"),
+        HMP_KP_DIVIDE => Some("sendkey kp_divide\n"),
+        HMP_KP_ENTER => Some("sendkey kp_enter\n"),
+        HMP_NUM_LOCK => Some("sendkey num_lock\n"),
+        HMP_KP_8 => Some("sendkey kp_8\n"),
         HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
         HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
         HMP_PGUP => Some("sendkey pgup\n"),
@@ -13777,6 +14144,38 @@ fn hmp_key_for_byte(byte: u8) -> Option<&'static str> {
         b'[' => Some("bracket_left"),
         b']' => Some("bracket_right"),
         b'\\' => Some("backslash"),
+        b'`' => Some("grave_accent"),
+        // Shifted keys: QEMU presses Shift, the key, then releases both.
+        b'A'..=b'Z' => {
+            const KEYS: [&str; 26] = [
+                "shift-a", "shift-b", "shift-c", "shift-d", "shift-e", "shift-f", "shift-g",
+                "shift-h", "shift-i", "shift-j", "shift-k", "shift-l", "shift-m", "shift-n",
+                "shift-o", "shift-p", "shift-q", "shift-r", "shift-s", "shift-t", "shift-u",
+                "shift-v", "shift-w", "shift-x", "shift-y", "shift-z",
+            ];
+            Some(KEYS[(byte - b'A') as usize])
+        }
+        b'!' => Some("shift-1"),
+        b'@' => Some("shift-2"),
+        b'#' => Some("shift-3"),
+        b'$' => Some("shift-4"),
+        b'%' => Some("shift-5"),
+        b'^' => Some("shift-6"),
+        b'&' => Some("shift-7"),
+        b'*' => Some("shift-8"),
+        b'(' => Some("shift-9"),
+        b')' => Some("shift-0"),
+        b'_' => Some("shift-minus"),
+        b'+' => Some("shift-equal"),
+        b'{' => Some("shift-bracket_left"),
+        b'}' => Some("shift-bracket_right"),
+        b'|' => Some("shift-backslash"),
+        b':' => Some("shift-semicolon"),
+        b'"' => Some("shift-apostrophe"),
+        b'~' => Some("shift-grave_accent"),
+        b'<' => Some("shift-comma"),
+        b'>' => Some("shift-dot"),
+        b'?' => Some("shift-slash"),
         _ => None,
     }
 }
@@ -14196,7 +14595,12 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         let device0 = output_dir.join(format!("{scenario_name}.device0.raw"));
         let device1 = output_dir.join(format!("{scenario_name}.fat32.raw"));
         let device0 = prepare_raw_storage_disk(&device0)?;
-        let device1 = prepare_fat32_storage_disk(&device1)?;
+        // L3a (G7): the same volume inside an MBR partition at LBA 2048.
+        let device1 = if scenario_uses_fat32_mbr_disk(scenario_name) {
+            prepare_fat32_mbr_storage_disk(&device1)?
+        } else {
+            prepare_fat32_storage_disk(&device1)?
+        };
         return Ok(vec![device0, device1]);
     }
 
@@ -16058,6 +16462,41 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
+/// L3a (G7): the `phase3_fat32_mbr_*` scenarios' device1 is an MBR disk.
+fn scenario_uses_fat32_mbr_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_fat32_mbr_")
+}
+
+/// The first LBA of the FAT32 partition on the L3a (G7) MBR disk: 1 MiB in,
+/// where every current partitioning tool puts it.
+const FAT32_MBR_FIRST_LBA: u32 = 2048;
+
+/// L3a (G7): the FAT32 fixture volume ([`prepare_fat32_storage_disk`]) as
+/// partition 1 of an MBR disk. Sector 0 is an MBR laid out here by hand:
+/// zero boot code, one FAT32-LBA (`0x0C`) entry at LBA 2048 covering the
+/// volume, `55 AA`. The 1 MiB gap before the volume is zero.
+fn prepare_fat32_mbr_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    let volume_path = path.with_extension("volume.raw");
+    prepare_fat32_storage_disk(&volume_path)?;
+    let volume = fs::read(&volume_path)
+        .map_err(|e| format!("read FAT32 volume {}: {e}", volume_path.display()))?;
+    let sectors = u32::try_from(volume.len() / 512)
+        .map_err(|_| format!("FAT32 volume {} too large for MBR", volume_path.display()))?;
+    let mut mbr = [0u8; 512];
+    let entry = &mut mbr[446..462];
+    entry[4] = 0x0c;
+    entry[8..12].copy_from_slice(&FAT32_MBR_FIRST_LBA.to_le_bytes());
+    entry[12..16].copy_from_slice(&sectors.to_le_bytes());
+    mbr[510] = 0x55;
+    mbr[511] = 0xaa;
+    let mut disk = vec![0u8; FAT32_MBR_FIRST_LBA as usize * 512];
+    disk[..512].copy_from_slice(&mbr);
+    disk.extend_from_slice(&volume);
+    fs::write(path, &disk).map_err(|e| format!("write MBR disk {}: {e}", path.display()))?;
+    let _ = fs::remove_file(&volume_path);
+    Ok(path.to_path_buf())
+}
+
 fn write_fat32_fixture(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     let path = dir.join(name);
     fs::write(&path, bytes).map_err(|e| format!("write FAT32 fixture {}: {e}", path.display()))?;
@@ -16581,6 +17020,21 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "the real-std smoke must print to stdout+stderr and the panic arm must abort LOUDLY (message, then exit 134)",
+            )?;
+        }
+    }
+    if scenario.name == "stylo_smoke" {
+        for needle in [
+            "[ stylo ] ok: Stylo built no thread pool (num_cpus is 1 here)",
+            "[ stylo ] ok: the traversal styled <html>",
+            "[ stylo ] ok: the style thread ran to the end",
+            "[ stylo ] pass",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Stylo must style the document sequentially and match every hand-derived value",
             )?;
         }
     }
@@ -18773,6 +19227,69 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "cap-routed HTTPS must prove NetDialCap authority and close every legacy egress root",
         )?;
     }
+    if scenario.name == "net_dial_public_only" {
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdialcap no_cap=denied in_scope=ok out_of_scope=denied post_revoke=denied legacy_connect_tcp=denied legacy_sendto=denied legacy_egress=closed",
+            "the public-only kernel must keep every phase4 NetDialCap property",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "netdial public_only narrowed_to_loopback=denied",
+            "a NetDial cap without NON_PUBLIC must not reach a loopback-resolving name",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "net_dial denied reason=non_public",
+            "the refusal must come from the kernel's public-only dial",
+        )?;
+    }
+    if scenario.name == FETCH_BROKER_SCENARIO {
+        require_serial_contains(
+            scenario,
+            observed,
+            "fetch_broker private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok",
+            "the fetch broker must serve the fixture and refuse private, cleartext and loopback-resolving URLs",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-content ] direct_dial=refused private_literal=refused cleartext=refused loopback_name=kernel_refused https_body=ok",
+            "the content process must hold no dial capability (its own dials refused) and still fetch through the broker",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "net_dial denied reason=non_public",
+            "the loopback-resolving name must be refused by the kernel's dial, not only by the broker",
+        )?;
+        // #29 item 4: the broker drops its GRANT-bearing root, so no dial cap
+        // it holds can leave it; and (the re-check's new item) each request's
+        // scope is revoked when the request ends. Request 3's refused dial
+        // revokes its scope before the broker answers, so that line always
+        // precedes the content process's exit.
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] root dial cap closed: derive_from_root=refused grant_request_cap=refused",
+            "the broker must close its GRANT-bearing root and keep only a cap it can't hand on",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "[ fetch-broker ] request scope revoked",
+            "a request's scope must be revoked when the request ends",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "revoke of a request scope failed",
+            "every request scope revoke must succeed (REVOKE kept on the request root)",
+        )?;
+    }
     if scenario.name == "net_dial_cap_kill_switch" {
         require_serial_contains(
             scenario,
@@ -20020,6 +20537,10 @@ fn write_limine_conf(
         conf = inject_module_line(&conf, "/modules/login-cut")?;
     }
     // OT-83: the ring-3 fault probes, only for their scenario.
+    if stage_fetch_broker() {
+        conf = inject_module_line(&conf, "/modules/neo-fetch-broker")?;
+        conf = inject_module_line(&conf, "/modules/neo-fetch-content")?;
+    }
     if fault_probe_stage().is_some() {
         conf = inject_module_line(&conf, "/modules/neo-fault-probe")?;
         conf = inject_module_line(&conf, "/modules/neo-fault-probe-ok")?;

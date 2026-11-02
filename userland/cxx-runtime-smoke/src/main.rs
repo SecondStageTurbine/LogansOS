@@ -49,7 +49,7 @@ unsafe extern "C" {
     fn crt_stdout_marker() -> i32;
     fn crt_stdio_hammer(id: i32) -> i32;
     fn crt_stdio_end_runs();
-    // musl's stdout, and neo-crt's stream lock (CP-100).
+    // musl's stdout, and neo-crt's stream lock (CP-106).
     static stdout: *mut c_void;
     fn __lockfile(f: *mut c_void) -> i32;
     fn __unlockfile(f: *mut c_void);
@@ -82,7 +82,7 @@ fn on_threads(probe: unsafe extern "C" fn(i32) -> i32) -> bool {
     handles.into_iter().all(|h| h.join().unwrap_or(false))
 }
 
-/// CP-100: while this thread holds stdout's lock, a second thread's `fputs`
+/// CP-106: while this thread holds stdout's lock, a second thread's `fputs`
 /// to stdout must wait, and must finish once the lock is let go; and the
 /// holder taking it again is the nested case (0, nothing to release).
 fn stdout_lock_excludes() -> bool {

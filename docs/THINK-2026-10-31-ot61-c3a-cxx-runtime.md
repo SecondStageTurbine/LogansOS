@@ -65,7 +65,7 @@ moves with the toolchain's clang (§7, decision 1).
   - `locale_impl.h` is copied verbatim beside the override, because a quoted include finds its sibling first. That
     was a real escape, caught while building: files reaching it through `locale_impl.h` got the real header.
   - An override `pthread_arch.h` is a hard `#error`, so any future route to the real header fails the build.
-- **stdout and stderr are always locked (CP-100).** neo-crt's `c/stdout.c`/`c/stderr.c` are musl's with
+- **stdout and stderr are always locked (CP-106).** neo-crt's `c/stdout.c`/`c/stderr.c` are musl's with
   `lock = 0`, and `__lockfile`/`__unlockfile` are Rust, so two threads in `printf` can't share `__fwritex`'s buffer
   unlocked. The on-stack FILEs of `vsnprintf`/`vsscanf` keep `lock = -1` (one thread each). There is no `fopen`.
   musl's futex `__wake` is reached only by its own lock and pthread code, neither compiled, so it aborts with a
@@ -115,7 +115,7 @@ cross-cutting: no syscall, no kernel invariant.
 | Spin vs park | `__lock`/`__unlock` (musl internals: `random()` state, not on any hot path) **spin with `yield_now`** | Short sections, rare contention. Recorded here; replace with a futex word if a profile ever shows it |
 | Per-thread state | `errno` is a std `thread_local!` (C1.2 keys), pointer stable for the thread's life | 6 threads interleave `errno` writes (`ok(8)`) |
 | Allocator under SMP | malloc family on std's global allocator (the PAL heap) | 6 threads, 4000 alloc/free steps each, contents checked (`ok(9)`) |
-| Stdio streams under SMP (CP-100) | **guards**: stdout/stderr locked always (`c/stdout.c`, `c/stderr.c`, `.lock = 0`), `__lockfile` on a std `Mutex`/`Condvar` | A second thread's `fputs` waits while the first holds the lock (`ok(16)`); 6 threads print 600-byte runs at once (`ok(17)`); control: musl's `lock = -1` stream, `FAIL(16)` |
+| Stdio streams under SMP (CP-106) | **guards**: stdout/stderr locked always (`c/stdout.c`, `c/stderr.c`, `.lock = 0`), `__lockfile` on a std `Mutex`/`Condvar` | A second thread's `fputs` waits while the first holds the lock (`ok(16)`); 6 threads print 600-byte runs at once (`ok(17)`); control: musl's `lock = -1` stream, `FAIL(16)` |
 | Recursive static init | **left open**: a constructor that needs its own static waits forever (libc++abi aborts instead) | Not reachable in SWGL; noted for the SpiderMonkey rung |
 
 No kernel concurrency code changes.
@@ -127,7 +127,7 @@ No kernel concurrency code changes.
    synchronised, and `std::thread`/`mutex`/`condition_variable` are absent. So C++ code may run on one thread
    only: a C++ object shared between std threads, or C++ entered from two threads at once, is undefined
    behaviour here, even when it compiles. (C is different: the C library's own state is per thread or locked,
-   `errno` and the stdio streams included, CP-100.) SpiderMonkey threads through its own POSIX port
+   `errno` and the stdio streams included, CP-106.) SpiderMonkey threads through its own POSIX port
    (`js/src/threading/posix`). C3b adds a pthread subset on the C1 primitives std already uses (one
    implementation for std and C++, per ADR-078 A3), then rebuilds libc++ with `_LIBCPP_HAS_THREAD_API_PTHREAD`.
    That rebuild is an ABI change inside the bundle only, and it lifts this rule.

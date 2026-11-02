@@ -98,7 +98,7 @@ off_t __stdio_seek(FILE *f, off_t off, int whence)
 }
 
 /* stdout and stderr are locked always (c/stdout.c, c/stderr.c: lock = 0),
- * and their __lockfile/__unlockfile are Rust (src/lib.rs, CP-100). The
+ * and their __lockfile/__unlockfile are Rust (src/lib.rs, CP-106). The
  * on-stack FILEs of vsnprintf and vsscanf keep lock = -1; there is no
  * fopen/fdopen. musl's futex wake is used only by its own __lockfile and
  * pthread code, neither compiled here, so reaching it is a bug to stop on. */

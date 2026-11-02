@@ -273,7 +273,7 @@ int crt_check_stdout(void)
 	return 0;
 }
 
-/* CP-100: called from a second thread while the first holds stdout's lock
+/* CP-106: called from a second thread while the first holds stdout's lock
  * (from Rust, through neo-crt's __lockfile); it must not return before the
  * lock is released. */
 int crt_stdout_marker(void)
@@ -283,7 +283,7 @@ int crt_stdout_marker(void)
 	return r >= 0;
 }
 
-/* CP-100, the bounce's repro: several threads print 600-byte runs with no
+/* CP-106, the bounce's repro: several threads print 600-byte runs with no
  * newline at once, so every printf goes through __fwritex's static buffer.
  * Each run is one letter per thread. */
 int crt_stdio_hammer(int id)
