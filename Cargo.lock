@@ -659,6 +659,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fetch-proto"
+version = "0.0.1"
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1186,6 +1190,7 @@ name = "neo-init"
 version = "0.0.1"
 dependencies = [
  "action-log-core",
+ "fetch-proto",
  "libneo",
  "login-core",
  "neo-atrium",
