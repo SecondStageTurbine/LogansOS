@@ -88,3 +88,4 @@ RELAY 267 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-02-relays-265-268.
 RELAY 268 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-02-relays-268-270.md | Section 268 (#52 WHPX/XSAVE review; RETURN `Plans/RETURN-2026-11-02-pr52-whpx-review-chad.md`)
 RELAY 269 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-02-relays-268-270.md | Section 269 (#53 + #54 keyboard review; RETURN `Plans/RETURN-2026-11-02-pr53-pr54-keyboard-review-jarvis.md`)
 RELAY 270 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-268-270.md | Section 270 (#51 time-zone THINK; RETURN `Plans/RETURN-2026-11-02-pr51-tz-review-dexter.md`)
+RELAY 271 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-271.md | Section "Relay 271" (#45 re-check + #47 review; RETURN `Plans/RETURN-2026-11-02-pr45-pr47-review-dexter.md`)
