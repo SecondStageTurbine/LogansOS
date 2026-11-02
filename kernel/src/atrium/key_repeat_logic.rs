@@ -76,6 +76,9 @@ pub struct KeyRepeat {
     /// The repeating key, 0 = none.
     key: u8,
     modifiers: u8,
+    /// The press's lock state (`y`): a repeat types what the press typed.
+    /// A lock key's press ends the run first, so it cannot change mid-run.
+    locks: i16,
     /// The focus activation epoch the key was pressed under.
     epoch: u64,
     pressed_ns: u64,
@@ -87,6 +90,7 @@ impl KeyRepeat {
         Self {
             key: 0,
             modifiers: 0,
+            locks: 0,
             epoch: 0,
             pressed_ns: 0,
             next_ns: 0,
@@ -110,6 +114,11 @@ impl KeyRepeat {
         } else if usage == self.key {
             self.key = 0;
         }
+    }
+
+    /// The lock state the last press carried (call it after [`Self::on_key`]).
+    pub fn on_press_locks(&mut self, locks: i16) {
+        self.locks = locks;
     }
 
     /// The keyboard's current modifier byte. A change ends the repeat.
@@ -141,7 +150,7 @@ impl KeyRepeat {
             flags: KEY_PRESSED | KEY_REPEAT,
             code: self.key as u16,
             x: self.modifiers as i16,
-            y: 0,
+            y: self.locks,
         })
     }
 }

@@ -5,6 +5,7 @@ use crate::dir_entry::{DirEntryEditor, FileAttributes};
 use crate::error::Error;
 use crate::fs::{FileSystem, ReadWriteSeek};
 use crate::io::{IoBase, Read, Seek, SeekFrom, Write};
+use crate::table::CycleGuard;
 use crate::time::{Date, DateTime, TimeProvider};
 
 const MAX_FILE_SIZE: u32 = u32::MAX;
@@ -23,6 +24,12 @@ pub struct File<'a, IO: ReadWriteSeek, TP, OCC> {
     entry: Option<DirEntryEditor>,
     // file-system reference
     fs: &'a FileSystem<IO, TP, OCC>,
+    // LogansOS patch: cycle detection across reads (each read steps one
+    // cluster with a fresh iterator, so the guard lives here).
+    guard: CycleGuard,
+    // LogansOS patch: the whole chain was walked once (bounded, with the cycle
+    // guard) before the first read returned data.
+    chain_checked: bool,
 }
 
 /// An extent containing a file's data on disk.
@@ -48,6 +55,8 @@ impl<'a, IO: ReadWriteSeek, TP, OCC> File<'a, IO, TP, OCC> {
             fs,
             current_cluster: None, // cluster before first one
             offset: 0,
+            guard: CycleGuard::new(first_cluster),
+            chain_checked: false,
         }
     }
 
@@ -270,6 +279,8 @@ impl<IO: ReadWriteSeek, TP, OCC> Clone for File<'_, IO, TP, OCC> {
             offset: self.offset,
             entry: self.entry.clone(),
             fs: self.fs,
+            guard: self.guard,
+            chain_checked: self.chain_checked,
         }
     }
 }
@@ -281,6 +292,31 @@ impl<IO: ReadWriteSeek, TP, OCC> IoBase for File<'_, IO, TP, OCC> {
 impl<IO: ReadWriteSeek, TP: TimeProvider, OCC> Read for File<'_, IO, TP, OCC> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Self::Error> {
         trace!("File::read");
+        // LogansOS patch: a file's size can end a read before a loop in its
+        // chain shows (A -> B -> A over a three-cluster file reads A, B, A),
+        // so the whole chain is walked once, before any data is returned:
+        // at most `total_clusters + 2` steps, the cycle guard in the
+        // iterator failing a repeat with `CorruptedFileSystem`.
+        if !self.chain_checked {
+            if let Some(first) = self.first_cluster {
+                let mut iter = self.fs.cluster_iter(first);
+                let mut ended = false;
+                for _ in 0..u64::from(self.fs.total_clusters_bound()) + 2 {
+                    match iter.next() {
+                        None => {
+                            ended = true;
+                            break;
+                        }
+                        Some(Err(err)) => return Err(err),
+                        Some(Ok(_)) => {}
+                    }
+                }
+                if !ended {
+                    return Err(Error::CorruptedFileSystem);
+                }
+            }
+            self.chain_checked = true;
+        }
         let cluster_size = self.fs.cluster_size();
         let current_cluster_opt = if self.offset % cluster_size == 0 {
             // next cluster
@@ -290,6 +326,8 @@ impl<IO: ReadWriteSeek, TP: TimeProvider, OCC> Read for File<'_, IO, TP, OCC> {
                     let r = self.fs.cluster_iter(n).next();
                     match r {
                         Some(Err(err)) => return Err(err),
+                        // LogansOS patch: a chain that loops is corruption.
+                        Some(Ok(n)) if self.guard.step(n) => return Err(Error::CorruptedFileSystem.into()),
                         Some(Ok(n)) => Some(n),
                         None => None,
                     }
@@ -364,6 +402,8 @@ impl<IO: ReadWriteSeek, TP: TimeProvider, OCC> Write for File<'_, IO, TP, OCC> {
                     let r = self.fs.cluster_iter(n).next();
                     match r {
                         Some(Err(err)) => return Err(err),
+                        // LogansOS patch: a chain that loops is corruption.
+                        Some(Ok(n)) if self.guard.step(n) => return Err(Error::CorruptedFileSystem.into()),
                         Some(Ok(n)) => Some(n),
                         None => None,
                     }
@@ -486,6 +526,8 @@ impl<IO: ReadWriteSeek, TP, OCC> Seek for File<'_, IO, TP, OCC> {
         };
         self.offset = new_offset;
         self.current_cluster = new_cluster;
+        // LogansOS patch: the walk restarts from here.
+        self.guard = CycleGuard::new(new_cluster.or(self.first_cluster));
         Ok(u64::from(self.offset))
     }
 }

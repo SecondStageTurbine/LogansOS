@@ -12,8 +12,13 @@ mod write_guard_logic;
 #[path = "../../../kernel/src/drivers/block/gpt_logic.rs"]
 mod gpt_logic;
 mod gpt_oracle;
+// L3a (G7): the read-only MBR reader and its hand-laid oracle.
 #[cfg(test)]
 mod gpt_tests;
+#[path = "../../../kernel/src/drivers/block/mbr_logic.rs"]
+mod mbr_logic;
+#[cfg(test)]
+mod mbr_tests;
 #[cfg(test)]
 mod partition_guard_tests;
 // OT-87 R3: the guard as it was on main before the parser move, frozen, for

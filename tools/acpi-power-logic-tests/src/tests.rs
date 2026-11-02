@@ -5,7 +5,7 @@ use crate::power_logic::{
     StatusEnable, TMR_VAL_EXT, WalkFault, acpi_enable_command, cf9_values, decode_s5,
     decode_s5_report, io_range_ok, parse_fadt, pci_config_ok, phys_ok, plan_power_off,
     pm_timer_elapsed, pm_timer_ticks, pm_wait, pm1_sleep_values, reset_chain, sleep_control_value,
-    split_block,
+    split_block, step_uses_shared_ports,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1316,4 +1316,33 @@ fn hw_reduced_sleep_registers_need_their_acpi_geometry() {
             value: 0x3c
         }
     );
+}
+
+/// Janus's #6 re-check, item 2: with a K4 holdout, K7 skips a FADT reset
+/// register in PCI configuration space (the CF8/CFC pair), and only that.
+#[test]
+fn a_pci_config_reset_register_uses_shared_ports() {
+    use ResetStep::{Cf9, FadtRegister, Keyboard, TripleFault};
+    let reg = |space| Gas {
+        space,
+        bit_width: 8,
+        bit_offset: 0,
+        access_size: 1,
+        address: 0x0000_001f_0000_0044,
+    };
+    assert!(step_uses_shared_ports(&FadtRegister {
+        reg: reg(SPACE_PCI_CONFIG),
+        value: 6
+    }));
+    assert!(!step_uses_shared_ports(&FadtRegister {
+        reg: reg(SPACE_SYSTEM_IO),
+        value: 6
+    }));
+    assert!(!step_uses_shared_ports(&FadtRegister {
+        reg: reg(SPACE_SYSTEM_MEMORY),
+        value: 6
+    }));
+    for step in [Keyboard, Cf9, TripleFault] {
+        assert!(!step_uses_shared_ports(&step));
+    }
 }

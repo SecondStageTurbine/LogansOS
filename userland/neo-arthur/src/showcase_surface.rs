@@ -352,9 +352,9 @@ impl ArthurSurface {
             .map_err(|_| 46)
     }
 
-    /// A9-D: show the WM's busy emblem right of the caret until the next
-    /// commit: reserve its rect (scrolling a line if it must), commit what
-    /// that and the text before it drew, then send `OP_BUSY`. A WM that
+    /// A9-D: show the WM's busy emblem in the header until the next commit:
+    /// put the quiet "…" on the reply line, commit it and the text before
+    /// it, then send `OP_BUSY` for the header's emblem rect. A WM that
     /// refuses the rect shows no emblem; the generation goes on without one.
     #[cfg(feature = "arthur-busy-emblem")]
     pub fn show_busy(&mut self) -> Result<(), i32> {
@@ -986,7 +986,7 @@ pub const LOCK_PROBE_COLORS: [u32; 3] = [0x00ff_00ff, 0x0000_ffff, 0x00ff_ff00];
 impl ArthurSurface {
     /// The `n`-th picture: commit it, then `OP_BUSY`.
     pub fn lock_probe(&mut self, n: usize) -> Result<(), i32> {
-        let busy = self.text.reserve_busy(self.pixels);
+        let busy = self.text.busy_rect();
         let color = LOCK_PROBE_COLORS[n % LOCK_PROBE_COLORS.len()];
         for y in 0..self.height {
             self.pixels[y * BUFFER_WIDTH..y * BUFFER_WIDTH + self.width].fill(color);

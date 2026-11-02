@@ -77,6 +77,8 @@ pub fn init(rsdp_phys: u64) {
     if CACHE.lock().is_some() {
         return;
     }
+    #[cfg(feature = "power-stop-cpus")]
+    RSDP.store(rsdp_phys, core::sync::atomic::Ordering::Release);
     let Some(fadt) = super::fadt(rsdp_phys).and_then(power_logic::parse_fadt) else {
         crate::serial_println!("[ kernel ] power: no FADT; power-off and restart unavailable");
         return;
@@ -125,7 +127,73 @@ pub fn init(rsdp_phys: u64) {
     *CACHE.lock() = Some(Cached { fadt, plan, chain });
 }
 
+/// OT-90 P3b: the RSDP, for K5's MADT read.
+#[cfg(feature = "power-stop-cpus")]
+static RSDP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// OT-90 P3b: the RSDP `init` was given (0 if none).
+#[cfg(feature = "power-stop-cpus")]
+pub fn rsdp() -> u64 {
+    RSDP.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// OT-90 P3b: K4's wait, with interrupts off and no lock taken: poll `done`
+/// for up to `us` microseconds on the ACPI PM timer (port 0x80 writes
+/// without one). `fadt` is read before K4 ([`stop_timer`]).
+#[cfg(feature = "power-stop-cpus")]
+pub fn spin_us(fadt: Option<&FadtPower>, us: u64, done: &mut dyn FnMut() -> bool) -> bool {
+    match fadt {
+        Some(fadt) => poll_us(fadt, us, done),
+        None => {
+            for _ in 0..us {
+                if done() {
+                    return true;
+                }
+                outb(0x80, 0);
+            }
+            done()
+        }
+    }
+}
+
+/// OT-90 P3b: the power plan, copied before K4 (review #6 item 5: K7 took
+/// `CACHE`'s lock after K4, which a parked CPU could hold). `SNAPSHOT_SET`
+/// is published after `SNAPSHOT`, by the one shutdown CPU.
+#[cfg(feature = "power-stop-cpus")]
+static mut SNAPSHOT: Option<Cached> = None;
+#[cfg(feature = "power-stop-cpus")]
+static SNAPSHOT_SET: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// OT-90 P3b (Janus's #6 re-check, item 2): K4 left CPUs running; K7 then
+/// skips any step that needs the shared PCI configuration ports.
+#[cfg(feature = "power-stop-cpus")]
+static HOLDOUTS: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// OT-90 P3b: K4's outcome for K7 (set once, by the shutdown CPU).
+#[cfg(feature = "power-stop-cpus")]
+pub fn note_holdouts() {
+    HOLDOUTS.store(true, core::sync::atomic::Ordering::Release);
+}
+
+/// OT-90 P3b: copy the power plan before K4, and return the FADT timer
+/// fields [`spin_us`] uses. From then on [`cached`] reads the copy and takes
+/// no lock.
+#[cfg(feature = "power-stop-cpus")]
+pub fn stop_timer() -> Option<FadtPower> {
+    let c = *CACHE.lock();
+    // SAFETY: written once, here, by the shutdown CPU before K4 and before
+    // `SNAPSHOT_SET` is published; read only after it is.
+    unsafe { *core::ptr::addr_of_mut!(SNAPSHOT) = c };
+    SNAPSHOT_SET.store(true, core::sync::atomic::Ordering::Release);
+    c.map(|c| c.fadt)
+}
+
 fn cached() -> Option<Cached> {
+    #[cfg(feature = "power-stop-cpus")]
+    if SNAPSHOT_SET.load(core::sync::atomic::Ordering::Acquire) {
+        // SAFETY: published by `stop_timer`, never written again.
+        return unsafe { *core::ptr::addr_of!(SNAPSHOT) };
+    }
     *CACHE.lock()
 }
 
@@ -270,6 +338,16 @@ fn run_reset_chain(neutral_fadt_register: bool) -> ! {
     interrupts::disable();
     for (n, step) in c.chain.steps().iter().enumerate() {
         let n = n + 1;
+        #[cfg(feature = "power-stop-cpus")]
+        if HOLDOUTS.load(core::sync::atomic::Ordering::Acquire)
+            && power_logic::step_uses_shared_ports(step)
+        {
+            crate::serial_println_isr!(
+                "[ kernel ] power: reset step={} skipped: PCI config with K4 holdouts running",
+                n
+            );
+            continue;
+        }
         match *step {
             ResetStep::FadtRegister { reg, value } => {
                 #[cfg(feature = "neo-test")]
@@ -430,6 +508,14 @@ fn gas_write8(reg: Gas, value: u8) {
             }
             // SAFETY: the FADT names this register; `init` mapped its page.
             unsafe { core::ptr::write_volatile(virt.as_mut_ptr::<u8>(), value) };
+        }
+        #[cfg(feature = "power-stop-cpus")]
+        SPACE_PCI_CONFIG if HOLDOUTS.load(core::sync::atomic::Ordering::Acquire) => {
+            // The CF8/CFC pair with another CPU still running: never.
+            crate::serial_println_isr!(
+                "[ kernel ] power: PCI config write {:#x} skipped: K4 holdouts running",
+                reg.address
+            );
         }
         SPACE_PCI_CONFIG => {
             let device = (reg.address >> 32) & 0x1f;

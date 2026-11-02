@@ -32,7 +32,11 @@ pub mod dmar_logic;
 pub mod timers_logic;
 
 /// i8042 lane: the MADT's I/O APICs and ISA interrupt source overrides.
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 #[path = "madt_logic.rs"]
 pub mod madt_logic;
 
@@ -56,7 +60,11 @@ const SIG_DMAR: &[u8; 4] = b"DMAR";
     feature = "power-control"
 ))]
 const SIG_FADT: &[u8; 4] = b"FACP";
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 const SIG_MADT: &[u8; 4] = b"APIC";
 #[cfg(feature = "lapic-timer")]
 const SIG_HPET: &[u8; 4] = b"HPET";
@@ -135,10 +143,29 @@ fn locate_root_table(rsdp_phys: u64) -> Option<(u64, bool)> {
 /// Walk the XSDT/RSDT entries, returning the physical address of the table
 /// whose signature matches `sig`, if present and checksum-valid.
 fn find_table(root_phys: u64, is_xsdt: bool, sig: &[u8; 4]) -> Option<u64> {
+    find_table_in(root_phys, is_xsdt, sig, &|_, _| true)
+}
+
+/// The largest root table (XSDT/RSDT) read: 1 MiB, as for any table
+/// (`read_table`). A real XSDT is a few hundred bytes; the cap keeps a
+/// damaged length from asking for gigabytes before the checksum is seen.
+const MAX_ROOT_LEN: usize = 1 << 20;
+
+/// [`find_table`], reading a physical range only after `readable(phys, len)`
+/// accepts it (L7.1's firmware-memory check; `find_table` accepts all).
+fn find_table_in(
+    root_phys: u64,
+    is_xsdt: bool,
+    sig: &[u8; 4],
+    readable: &dyn Fn(u64, usize) -> bool,
+) -> Option<u64> {
+    if !readable(root_phys, 36) {
+        return None;
+    }
     // SDT header is 36 bytes; the length field is at offset 4.
     let header = unsafe { phys_slice(root_phys, 36) };
     let length = rd_u32(header, 4)? as usize;
-    if length < 36 {
+    if !(36..=MAX_ROOT_LEN).contains(&length) || !readable(root_phys, length) {
         return None;
     }
     // Validate the root table's own signature matches the kind the RSDP claimed.
@@ -161,6 +188,9 @@ fn find_table(root_phys: u64, is_xsdt: bool, sig: &[u8; 4]) -> Option<u64> {
         } else {
             rd_u32(table, off)? as u64
         };
+        if !readable(entry_phys, 4) {
+            continue;
+        }
         // Read just the 4-byte signature of the pointed-to table.
         let sub = unsafe { phys_slice(entry_phys, 4) };
         if sub == sig {
@@ -264,11 +294,24 @@ pub struct TimerHardware {
     feature = "power-control"
 ))]
 fn read_table(root_phys: u64, is_xsdt: bool, sig: &[u8; 4]) -> Option<&'static [u8]> {
-    let phys = find_table(root_phys, is_xsdt, sig)?;
+    read_table_in(root_phys, is_xsdt, sig, &|_, _| true)
+}
+
+/// [`read_table`] with [`find_table_in`]'s `readable` check on every range.
+fn read_table_in(
+    root_phys: u64,
+    is_xsdt: bool,
+    sig: &[u8; 4],
+    readable: &dyn Fn(u64, usize) -> bool,
+) -> Option<&'static [u8]> {
+    let phys = find_table_in(root_phys, is_xsdt, sig, readable)?;
+    if !readable(phys, 36) {
+        return None;
+    }
     // SAFETY: an ACPI table the root table points at (HHDM-readable).
     let header = unsafe { phys_slice(phys, 36) };
     let length = rd_u32(header, 4)? as usize;
-    if !(36..=1 << 20).contains(&length) {
+    if !(36..=1 << 20).contains(&length) || !readable(phys, length) {
         return None;
     }
     // SAFETY: as above, for the length the header declares.
@@ -298,7 +341,11 @@ pub fn timer_hardware(rsdp_phys: u64) -> TimerHardware {
 }
 
 /// i8042 lane: the MADT's I/O APICs and ISA overrides (`None` without one).
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 pub fn madt(rsdp_phys: u64) -> Option<madt_logic::Madt> {
     if rsdp_phys == 0 {
         return None;
@@ -431,6 +478,48 @@ pub fn definition_blocks(rsdp_phys: u64) -> Option<alloc::vec::Vec<&'static [u8]
         blocks.push(table);
     }
     Some(blocks)
+}
+
+/// L7.1: the firmware's boot timestamps, FPDT → FBPT → its boot record
+/// (`boot_time_logic`). The FBPT is firmware memory the HHDM may not map;
+/// `phys_slice` maps what it touches. Its length is checked (at most
+/// `FBPT_MAX_LEN`) before the whole of it is read.
+#[cfg(feature = "boot-time")]
+pub fn firmware_boot_times(
+    rsdp_phys: u64,
+) -> Result<crate::boot_time_logic::FirmwareBoot, crate::boot_time_logic::FpdtError> {
+    use crate::boot_time_logic::{FBPT_HEADER_LEN, FpdtError, fbpt_address, fbpt_len, parse_fbpt};
+    if rsdp_phys == 0 {
+        return Err(FpdtError::NoFpdt);
+    }
+    // Every range below is read only when it lies wholly inside one ACPI
+    // reclaim or ACPI NVS region of the raw UEFI memory map, the only types
+    // that say the OS may read them (`boot_time_logic::efi_is_firmware_ram`):
+    // a damaged pointer into a hole, MMIO, reserved memory or the kernel's RAM
+    // is refused before any byte of it is touched. No UEFI map (a BIOS boot),
+    // or tables kept in reserved memory: the firmware time is unavailable.
+    let regions = crate::boot_time::firmware_regions();
+    let readable = |phys: u64, len: usize| {
+        crate::boot_time_logic::in_firmware_memory(phys, len as u64, regions)
+    };
+    let (root_phys, is_xsdt) = locate_root_table(rsdp_phys).ok_or(FpdtError::NoFpdt)?;
+    let fpdt = read_table_in(root_phys, is_xsdt, b"FPDT", &readable).ok_or(FpdtError::NoFpdt)?;
+    // CPUID 0x8000_0008 EAX[7:0]: the physical address width.
+    let phys_bits = core::arch::x86_64::__cpuid(0x8000_0008).eax & 0xff;
+    // The FBPT's whole largest extent is inside the CPU's physical width.
+    let fbpt = fbpt_address(fpdt, phys_bits)?;
+    if !readable(fbpt, FBPT_HEADER_LEN) {
+        return Err(FpdtError::NotFirmwareMemory);
+    }
+    // SAFETY: an address the firmware named, inside the CPU's physical
+    // width and inside firmware-owned memory; only read.
+    let len = fbpt_len(unsafe { phys_slice(fbpt, FBPT_HEADER_LEN) })?;
+    if !readable(fbpt, len) {
+        return Err(FpdtError::NotFirmwareMemory);
+    }
+    // SAFETY: as above, for the length the header declares (at most
+    // `FBPT_MAX_LEN`), checked against the same region.
+    parse_fbpt(unsafe { phys_slice(fbpt, len) })
 }
 
 /// OT-90: the FADT, whole and checksum-valid.

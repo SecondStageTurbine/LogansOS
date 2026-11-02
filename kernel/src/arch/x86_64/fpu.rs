@@ -191,12 +191,61 @@ pub fn finish_xsave_init(requested: bool) {
         return;
     }
 
-    let leaf = cpuid_count(0xD, 0);
-    let size = align_up((leaf.ebx as usize).max(FXSAVE_SIZE), XSAVE_ALIGN);
+    let size = xsave_area_size_for(REQUIRED_XSTATE_MASK);
     FPU_SAVE_AREA_SIZE.store(size as u64, Ordering::Relaxed);
     FPU_XSTATE_MASK_LO.store(REQUIRED_XSTATE_MASK as u32, Ordering::Relaxed);
     FPU_XSTATE_MASK_HI.store((REQUIRED_XSTATE_MASK >> 32) as u32, Ordering::Relaxed);
     FPU_XSAVE_ENABLED.store(1, Ordering::Release);
+}
+
+/// Whether CPUID.(0DH,0):EBX understated the XSAVE area (seen at init).
+static EBX_UNDERSTATED: AtomicU8 = AtomicU8::new(0);
+
+/// CPUID.(0DH,0):EBX as this boot read it, for the boot log.
+static EBX_SEEN: AtomicU32 = AtomicU32::new(0);
+
+/// The XSAVE area size for `mask` (already in XCR0): see `fpu_logic`. Not
+/// CPUID.(0DH,0):EBX alone, which a hypervisor can get wrong (WHPX reported
+/// x87|SSE's 576 with AVX enabled); every enabled component's offset plus
+/// size bounds it from below.
+fn xsave_area_size_for(mask: u64) -> usize {
+    use super::fpu_logic::{Component, ebx_understated};
+
+    // `xsave_ebx_understated` test: answer EBX the way WHPX did, x87|SSE's
+    // size, whatever XCR0 holds.
+    #[cfg(not(feature = "neo-test-xsave-ebx-understated"))]
+    let ebx = cpuid_count(0xD, 0).ebx;
+    #[cfg(feature = "neo-test-xsave-ebx-understated")]
+    let ebx = super::fpu_logic::XSAVE_LEGACY_AND_HEADER as u32;
+    let components = (2..63u32).filter(|&i| mask & (1u64 << i) != 0).map(|i| {
+        let leaf = cpuid_count(0xD, i);
+        Component {
+            size: leaf.eax,
+            offset: leaf.ebx,
+        }
+    });
+    #[cfg(not(feature = "neo-test-xsave-ebx-understated-control"))]
+    let size = super::fpu_logic::xsave_area_size(ebx, components);
+    // The revert-check: size the area from EBX alone, as before.
+    #[cfg(feature = "neo-test-xsave-ebx-understated-control")]
+    let size = {
+        drop(components);
+        align_up((ebx as usize).max(FXSAVE_SIZE), XSAVE_ALIGN)
+    };
+    EBX_SEEN.store(ebx, Ordering::Relaxed);
+    if ebx_understated(ebx, size) {
+        EBX_UNDERSTATED.store(1, Ordering::Relaxed);
+    }
+    size
+}
+
+/// CPUID.(0DH,0):EBX as read at init, and whether it understated the area
+/// the enabled components need (the size used is then larger than EBX).
+pub fn ebx_report() -> (u32, bool) {
+    (
+        EBX_SEEN.load(Ordering::Relaxed),
+        EBX_UNDERSTATED.load(Ordering::Relaxed) != 0,
+    )
 }
 
 fn xsave_plan_supported() -> bool {
