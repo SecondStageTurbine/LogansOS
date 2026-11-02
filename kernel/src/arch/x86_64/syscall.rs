@@ -372,6 +372,13 @@ pub const SYS_INSTALL_LIST: u64 = 0x1C0;
 /// `Installer` cap; ENOSYS without `installer`.
 #[cfg(feature = "installer")]
 pub const SYS_INSTALL_RUN: u64 = 0x1C1;
+/// `rtc-offset` (THINK-2026-11-02-time-zones §2.1):
+/// `SYS_CLOCK_CONFIRM_REALTIME(offset_s)`: the session confirms realtime as
+/// UTC, once (input-system authority).
+pub const SYS_CLOCK_CONFIRM_REALTIME: u64 = 0x1C8;
+/// `rtc-offset`: `SYS_CLOCK_REALTIME_STATUS() -> 0 | 1` (unconfirmed /
+/// confirmed UTC).
+pub const SYS_CLOCK_REALTIME_STATUS: u64 = 0x1C9;
 #[cfg(feature = "wait-multiplex")]
 pub(crate) use crate::sched::wait_any_logic::{WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_SAK};
 /// CP-43 test-only: return with a kernel address in both `rcx` and `r11`, so
@@ -1324,6 +1331,8 @@ extern "C" fn syscall_dispatch(
         SYS_INSTALL_LIST => sys_install_list_impl(a0, a1 as usize),
         #[cfg(feature = "installer")]
         SYS_INSTALL_RUN => sys_install_run_impl(a0, a1, a2),
+        SYS_CLOCK_CONFIRM_REALTIME => sys_clock_confirm_realtime_impl(a0 as i64),
+        SYS_CLOCK_REALTIME_STATUS => sys_clock_realtime_status_impl(),
         #[cfg(any(feature = "neo-test-desktop-idle", feature = "neo-test-login-cut"))]
         n @ (SYS_TEST_IDLE_TICKS | SYS_TEST_BLOCK_CUT) => test_idle_or_block_cut(n, a0),
         #[cfg(feature = "neo-test-threads-tls")]
@@ -7402,6 +7411,45 @@ fn sys_clock_gettime_impl(clock_id: u64) -> i64 {
         return monotonic.saturating_add(crate::arch::x86_64::rtc::realtime_base_ns()) as i64;
     }
     monotonic as i64
+}
+
+/// `SYS_CLOCK_CONFIRM_REALTIME(offset_s) -> 0 | errno`: `EPERM` without the
+/// input-system authority, `EINVAL` for an offset past ±24 h, `EALREADY`
+/// once confirmed, `EAGAIN` when there is no RTC epoch (boot-relative
+/// realtime), `ENOSYS` without `rtc-offset` (the kill-switch: realtime is
+/// OT-85's, bit for bit).
+fn sys_clock_confirm_realtime_impl(offset_s: i64) -> i64 {
+    #[cfg(all(feature = "rtc-offset", feature = "atrium-compositor-g1"))]
+    {
+        use crate::arch::x86_64::rtc::{self, ConfirmError};
+        if let Err(e) = caller_holds_input_system() {
+            return e;
+        }
+        match rtc::confirm(offset_s) {
+            Ok(()) => 0,
+            Err(ConfirmError::NotSeeded) => EAGAIN,
+            Err(ConfirmError::Already) => crate::errno::EALREADY,
+            Err(ConfirmError::Range) => EINVAL,
+        }
+    }
+    #[cfg(not(all(feature = "rtc-offset", feature = "atrium-compositor-g1")))]
+    {
+        let _ = offset_s;
+        ENOSYS
+    }
+}
+
+/// `SYS_CLOCK_REALTIME_STATUS() -> 0 | 1`: whether realtime is confirmed
+/// UTC; `ENOSYS` without `rtc-offset`.
+fn sys_clock_realtime_status_impl() -> i64 {
+    #[cfg(feature = "rtc-offset")]
+    {
+        i64::from(crate::arch::x86_64::rtc::confirmed())
+    }
+    #[cfg(not(feature = "rtc-offset"))]
+    {
+        ENOSYS
+    }
 }
 
 // ── OT-61 C1.1 host-runtime primitives (futex + threads) ──────────────────

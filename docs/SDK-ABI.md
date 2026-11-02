@@ -361,6 +361,18 @@ inherited only by the shell.
 
 ---
 
+### Clock (0x1C8–0x1C9)
+
+| # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
+|---|-----|------|------|---------|--------|------|---|--------|
+| 456 | 0x1C8 | `SYS_CLOCK_CONFIRM_REALTIME` | `offset_s: i64` (the RTC's offset from UTC, seconds east) | 0 | `EPERM` (not input-system holder), `EINVAL` (past ±24 h), `EALREADY` (confirmed once), `EAGAIN` (no RTC epoch), `ENOSYS` (no `rtc-offset`) | `rtc-offset` | **no** | `sys_clock_confirm_realtime` |
+| 457 | 0x1C9 | `SYS_CLOCK_REALTIME_STATUS` | — | 1 confirmed UTC, 0 unconfirmed | `ENOSYS` (no `rtc-offset`) | `rtc-offset` | yes | `sys_clock_realtime_status` |
+
+`rtc-offset` (`docs/THINK-2026-11-02-time-zones.md` §2.1): `CLOCK_REALTIME` is UTC. The RTC epoch starts
+unconfirmed; the session (the WM, which has the zone) confirms it once with the RTC's offset from UTC (0 when the RTC
+holds UTC), which moves realtime by that offset. Read the status before the clock: a `1` means the realtime read after
+it is UTC.
+
 ## Test-only syscalls (not SDK)
 
 These are compiled only for their scenario and are **not** part of the SDK surface. They are excluded

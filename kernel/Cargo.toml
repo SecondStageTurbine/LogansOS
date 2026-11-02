@@ -245,6 +245,7 @@ desktop = [
     "desktop-session",
     "usb-hotplug",
     "rtc-epoch",
+    "rtc-offset",
     "kernel-sysstat",
     "phase9-real-quant",
     "threaded-matmul",
@@ -501,6 +502,13 @@ browser-runtime = []
 # shipping `desktop` set. Off (the kill-switch): realtime is boot-relative,
 # exactly C1.0, and neither the RTC nor the FADT is read.
 rtc-epoch = []
+# THINK-2026-11-02-time-zones §2.1 (the PM's option 3): CLOCK_REALTIME is UTC.
+# The session confirms the RTC's offset from UTC once
+# (SYS_CLOCK_CONFIRM_REALTIME, write-once, input-system authority); until
+# then realtime is the RTC's reading, marked unconfirmed
+# (SYS_CLOCK_REALTIME_STATUS). Off: both calls are ENOSYS and realtime is
+# OT-85's, bit for bit.
+rtc-offset = ["rtc-epoch"]
 # OT-85 test hook: every CMOS register reads 0xFF (a floating bus), so the real
 # validator refuses the clock and the seed takes the fallback.
 rtc-epoch-force-invalid = ["rtc-epoch"]

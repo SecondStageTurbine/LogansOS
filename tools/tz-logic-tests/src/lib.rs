@@ -239,4 +239,73 @@ mod tests {
         // Inside the range nothing changed: the 2026 KAT instants hold.
         assert_eq!(utc_to_local(1793512800, ny).1.abbr, "EST");
     }
+
+    /// The session's reading of the RTC (THINK §2.1/§2.3).
+    #[test]
+    fn rtc_reading_as_utc() {
+        use super::tz::rtc_reading_utc;
+        let ny = id("America/New_York");
+        // J.c.'s Zenbook: the RTC holds 2026-11-02 01:29 EST (day 20759,
+        // + 5340 s); the instant is 06:29 UTC (+ 23340 s).
+        let wall = 20759 * 86400 + 5340;
+        assert_eq!(rtc_reading_utc(wall, ny, true), Some(20759 * 86400 + 23340));
+        // An RTC that holds UTC: the reading is the instant, whatever the zone.
+        assert_eq!(rtc_reading_utc(wall, ny, false), Some(wall));
+        assert_eq!(rtc_reading_utc(wall, tz::UTC, false), Some(wall));
+        // Local RTC, no zone: unknown ("zone not set").
+        assert_eq!(rtc_reading_utc(wall, tz::UTC, true), None);
+        // The repeated hour takes the earlier instant (EDT): 1 Nov 01:30.
+        assert_eq!(
+            rtc_reading_utc(20758 * 86400 + 5400, ny, true),
+            Some(1793511000)
+        );
+        // The spring gap takes the offset after it: 8 Mar 02:30 -> 06:30 UTC.
+        assert_eq!(
+            rtc_reading_utc(20520 * 86400 + 9000, ny, true),
+            Some(1772951400)
+        );
+    }
+
+    #[test]
+    fn home_verbs_parse() {
+        use super::tz::{ClockVerb, parse_verb};
+        assert_eq!(parse_verb(b"timezone"), Some(ClockVerb::Show));
+        assert_eq!(parse_verb(b"  TimeZone  "), Some(ClockVerb::Show));
+        assert_eq!(
+            parse_verb(b"timezone America/New_York"),
+            Some(ClockVerb::Zone(b"America/New_York"))
+        );
+        assert_eq!(
+            parse_verb(b"timezone  new york "),
+            Some(ClockVerb::Zone(b"new york"))
+        );
+        assert_eq!(parse_verb(b"rtc local"), Some(ClockVerb::Rtc(true)));
+        assert_eq!(parse_verb(b"RTC UTC"), Some(ClockVerb::Rtc(false)));
+        // Not verbs: they go to Arthur.
+        assert_eq!(parse_verb(b"rtc"), None);
+        assert_eq!(parse_verb(b"rtc please"), None);
+        assert_eq!(parse_verb(b"what timezone am i in"), None);
+        assert_eq!(parse_verb(b"timezones"), None);
+        assert_eq!(parse_verb(b""), None);
+    }
+
+    #[test]
+    fn typed_zone_names_resolve() {
+        use super::tz::find_zone;
+        let ny = id("America/New_York");
+        assert_eq!(find_zone(b"America/New_York"), Ok(ny));
+        assert_eq!(find_zone(b"america/new_york"), Ok(ny));
+        assert_eq!(find_zone(b"America/New York"), Ok(ny));
+        assert_eq!(find_zone(b"us/eastern"), Ok(ny));
+        assert_eq!(find_zone(b"new york"), Ok(ny));
+        assert_eq!(find_zone(b"New_York"), Ok(ny));
+        assert_eq!(find_zone(b"sydney"), Ok(id("Australia/Sydney")));
+        assert_eq!(find_zone(b"utc"), Ok(0));
+        // Nothing exact: up to three zones containing it, in id order.
+        let Err(near) = find_zone(b"york") else {
+            panic!("york is not a zone name");
+        };
+        assert_eq!(near[0], Some(ny));
+        assert_eq!(find_zone(b"atlantis"), Err([None, None, None]));
+    }
 }

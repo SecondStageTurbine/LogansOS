@@ -262,3 +262,126 @@ pub fn local_to_utc(local: i64, id: ZoneId) -> LocalResult {
         }
     }
 }
+
+/// The true UTC instant of an RTC reading `wall` (seconds since 1970, the
+/// wall time counted as if UTC), by the session's settings
+/// (THINK-2026-11-02-time-zones §2.1, §2.3):
+///
+/// * an RTC that holds UTC (`rtc_local` false): the reading is UTC;
+/// * an RTC that holds local time in `zone`: the local reading as UTC; an
+///   ambiguous one (a boot in the repeated autumn hour) takes the earlier
+///   instant, as Windows does; one in the spring gap (which a correct RTC
+///   can't hold) takes the offset in force after the gap;
+/// * an RTC that holds local time with no zone set ([`UTC`], id 0): unknown.
+pub fn rtc_reading_utc(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> {
+    if !rtc_local {
+        return Some(wall);
+    }
+    if zone == UTC {
+        return None;
+    }
+    Some(match local_to_utc(wall, zone) {
+        LocalResult::Single(u) => u,
+        LocalResult::Ambiguous(earlier, _) => earlier,
+        LocalResult::Gap { offset_after, .. } => offset_after,
+    })
+}
+
+/// A Home verb about the clock (THINK-2026-11-02-time-zones §2.5). The WM
+/// answers these itself; they never reach Arthur.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClockVerb<'a> {
+    /// `timezone`: show the zone, its offset and the RTC mode.
+    Show,
+    /// `timezone <name>`: the name as typed (see [`find_zone`]).
+    Zone(&'a [u8]),
+    /// `rtc local` (true) / `rtc utc` (false).
+    Rtc(bool),
+}
+
+fn trim(b: &[u8]) -> &[u8] {
+    let start = b.iter().position(|&c| c != b' ').unwrap_or(b.len());
+    let end = b.iter().rposition(|&c| c != b' ').map_or(start, |i| i + 1);
+    &b[start..end]
+}
+
+/// The clock verb an intent-field line is, if any (ASCII case ignored,
+/// surrounding spaces ignored). `rtc` with anything but `local`/`utc` is not
+/// a verb: it goes to Arthur like any other line.
+pub fn parse_verb(line: &[u8]) -> Option<ClockVerb<'_>> {
+    let line = trim(line);
+    let (word, rest) = match line.iter().position(|&c| c == b' ') {
+        Some(i) => (&line[..i], trim(&line[i..])),
+        None => (line, &line[line.len()..]),
+    };
+    if word.eq_ignore_ascii_case(b"timezone") {
+        return Some(if rest.is_empty() {
+            ClockVerb::Show
+        } else {
+            ClockVerb::Zone(rest)
+        });
+    }
+    if word.eq_ignore_ascii_case(b"rtc") {
+        if rest.eq_ignore_ascii_case(b"local") {
+            return Some(ClockVerb::Rtc(true));
+        }
+        if rest.eq_ignore_ascii_case(b"utc") {
+            return Some(ClockVerb::Rtc(false));
+        }
+    }
+    None
+}
+
+/// `a` equals `b` ignoring ASCII case, with a space in `a` matching `_`.
+fn same_name(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(&x, &y)| x.eq_ignore_ascii_case(&y) || (x == b' ' && y == b'_'))
+}
+
+fn contains_name(hay: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty() && hay.windows(needle.len()).any(|w| same_name(needle, w))
+}
+
+/// A zone for what the user typed: an IANA name or alias in any case
+/// (`america/new_york`, `US/Eastern`), spaces for underscores
+/// (`America/New York`), or a city alone when exactly one zone ends in it
+/// (`new york`, `sydney`). `utc` is zone 0. Otherwise `Err` with up to three
+/// zones whose names contain it, for the card's suggestions.
+pub fn find_zone(typed: &[u8]) -> Result<ZoneId, [Option<ZoneId>; 3]> {
+    let typed = trim(typed);
+    if let Some(i) = ZONES
+        .iter()
+        .position(|z| same_name(typed, z.name.as_bytes()))
+    {
+        return Ok(i as ZoneId);
+    }
+    if let Some(&(_, id)) = LINKS
+        .iter()
+        .find(|(alias, _)| same_name(typed, alias.as_bytes()))
+    {
+        return Ok(id);
+    }
+    let city = |z: &Zone| z.name.rsplit('/').next().unwrap_or(z.name);
+    let mut found = None;
+    let mut count = 0;
+    for (i, z) in ZONES.iter().enumerate() {
+        if same_name(typed, city(z).as_bytes()) {
+            found = Some(i as ZoneId);
+            count += 1;
+        }
+    }
+    if count == 1 {
+        return Ok(found.unwrap_or(UTC));
+    }
+    let mut out = [None; 3];
+    let mut n = 0;
+    for (i, z) in ZONES.iter().enumerate() {
+        if n < out.len() && contains_name(z.name.as_bytes(), typed) {
+            out[n] = Some(i as ZoneId);
+            n += 1;
+        }
+    }
+    Err(out)
+}

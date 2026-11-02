@@ -899,7 +899,15 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
     step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
     step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
-    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    // THINK-2026-11-02-time-zones: the zone verb (an alias, so the harness
+    // types no `_`), then the RTC mode, then Esc ends the zone card.
+    step(
+        b"DESKTOP help shown via=click rows=6",
+        b"timezone us/eastern\n",
+    ),
+    step(b"DESKTOP zone set name=America/New_York", b"rtc utc\n"),
+    step(b"DESKTOP zone rtc=utc", b"\x1b"),
+    step(b"DESKTOP zone closed via=esc", b"hello desktop"),
     HOME_TYPED_ENTER,
     ROUND1_ESC,
     HOLD_TAB,
@@ -7030,6 +7038,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             // OT-66 K1b (L1.1): the WM spawns Arthur with his scopes only;
             // with the kernel's `cap-rooted-open`.
             "cap-rooted-open",
+            // THINK-2026-11-02-time-zones: the settings store (OT-88 S1)
+            // keeps the zone and the RTC mode across boots (Home's
+            // `timezone` / `rtc` verbs); with the kernel's `rtc-offset`.
+            "atrium-settings-store",
         ],
         Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
         // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
@@ -18967,6 +18979,20 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP intro closed via=key",
                 "DESKTOP help shown via=typed rows=6",
                 "DESKTOP help shown via=click rows=6",
+                // No settings store here: no zone, an RTC read as local time.
+                // `timezone us/eastern` confirms realtime as UTC: the pinned
+                // RTC's 17:48 is EDT (UTC-4), so the kernel moves it +4 h.
+                "rtc: realtime confirmed as utc offset_s=-14400",
+                "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"5:4",
+                "DESKTOP zone set name=America/New_York id=105",
+                "DESKTOP zone card shown rows=5",
+                // `rtc utc`: the same reading is now UTC, so 13:4x EDT; the
+                // kernel keeps the confirmed base, the WM the difference.
+                "DESKTOP clock utc=wm zone=America/New_York rtc=utc offset_s=0",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"1:4",
+                "DESKTOP zone rtc=utc",
+                "DESKTOP zone closed via=esc",
                 "DESKTOP home intent submitted target=arthur",
                 "DESKTOP view switch=home residue_pixels=0",
                 "DESKTOP home return client=arthur exit=0 focus=wm-home",
@@ -21098,16 +21124,38 @@ fn require_clock_words(scenario: TestScenario, observed: &ObservedTest) -> Resul
     let serial = read_serial(observed)?;
     let mut shown = 0;
     let mut first_hour = None;
-    for line in serial
-        .lines()
-        .filter(|l| l.contains("DESKTOP clock shown ") || l.contains("DESKTOP clock minute "))
-    {
+    for line in serial.lines().filter(|l| {
+        l.contains("DESKTOP clock shown ")
+            || l.contains("DESKTOP clock minute ")
+            || l.contains("DESKTOP clock zone ")
+    }) {
         let s = numeric(line, "realtime_s").unwrap_or(0);
-        let (d, t, hour) = civil_oracle(s);
+        // THINK-2026-11-02-time-zones: the wall time shown. "zone not set" is
+        // the RTC's reading (realtime, unconfirmed); EDT is the WM's UTC
+        // (`utc_s`) less 4 h, worked out by hand for 21 October 2026 (DST in
+        // New York runs 8 March to 1 November).
+        let zone = quoted(line, "zone").unwrap_or_default();
+        let (wall, in_range) = match zone {
+            "zone not set" => (
+                s,
+                (WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&s),
+            ),
+            "EDT" => {
+                let u = numeric(line, "utc_s").unwrap_or(0);
+                // After `timezone`: UTC is the pinned reading + 4 h; after
+                // `rtc utc`: the pinned reading itself.
+                let ok = (WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900)
+                    .contains(&u)
+                    || (WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&u);
+                (u.saturating_sub(14_400), ok)
+            }
+            _ => (s, false),
+        };
+        let (d, t, hour) = civil_oracle(wall);
         if quoted(line, "date") != Some(d.as_str())
             || quoted(line, "time") != Some(t.as_str())
             || d != "Wednesday, October 21, 2026"
-            || !(WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&s)
+            || !in_range
         {
             return Err(format!(
                 "`{}` readout {line:?}: the host oracle says {d:?} {t:?} for {s}",
@@ -23785,6 +23833,29 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// THINK-2026-11-02-time-zones: the product image keeps the zone (the
+    /// WM's settings store) and confirms realtime as UTC (the kernel's
+    /// `rtc-offset`, part of `desktop`).
+    #[test]
+    fn product_image_keeps_the_time_zone() {
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"desktop"));
+        let kernel = include_str!("../../../kernel/Cargo.toml");
+        let desktop = kernel
+            .split("\ndesktop = [")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(desktop.contains("\"rtc-offset\""), "{desktop}");
+        let src = include_str!("main.rs");
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"desktop-clock\""), "{init}");
+        assert!(init.contains("\"atrium-settings-store\""), "{init}");
     }
 
     /// A9-C2: the product image turns the wheel on in the kernel and the WM
