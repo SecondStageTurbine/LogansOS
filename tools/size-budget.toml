@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# L7.2 size budgets: subtraction as a gate.
+#
+# `cargo xtask size-budget` (CI product-build) measures image A and fails when
+# a measured size is over its ceiling. The ceilings are the measured value at
+# the commit that introduced this file plus a small margin; the margin is the
+# noise allowance, not a second budget.
+#
+# Raising a ceiling is allowed, in the SAME PR that grows the image, and the
+# `reason` must say what grew and why it pays for itself.
+
+[kernel_text]
+# Image A's kernel ELF `.text` section (the shipped code, opt-level 3,
+# ub-checks off). Grows when a feature adds code; the budget makes that growth
+# visible and deliberate rather than a silent drift.
+ceiling_bytes = 1516687
+reason = "image A kernel .text: 1,483,919 B measured 2026-10-31 + 32 KiB for codegen/toolchain noise."
+
+[iso]
+# The model-less image A ISO: the product kernel plus the shipped desktop
+# userland, licences and the Limine boot payload. The pinned Qwen2.5-0.5B model
+# (485,489,152 B) and vocab (7,990,862 B) are staged from out-of-git files whose
+# sizes the kernel pins at boot, so they cannot drift and are not in this
+# budget. Grows when the kernel, userland or staged licences grow.
+ceiling_bytes = 154572800
+reason = "image A ISO (model-less): 153,524,224 B measured 2026-10-31 + 1 MiB for ISO metadata/alignment."

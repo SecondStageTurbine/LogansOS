@@ -112,6 +112,9 @@ const ARTHUR_BIN: &str = "neo-arthur";
 
 const ISO_OUTPUT_REL: &str = "boot/neoplutarch.iso";
 const ISO_STAGING_REL: &str = "target/iso-root";
+/// L7.2: the committed size ceilings for image A's kernel `.text` and its
+/// (model-less) ISO. See `cmd_size_budget`.
+const SIZE_BUDGET_REL: &str = "tools/size-budget.toml";
 /// Licence texts staged into every boot image's `/licenses/` (OFL §2 for the
 /// fonts compiled into neo-arthur): (repository path, staged name).
 const LICENSE_FILES: [(&str, &str); 3] = [
@@ -6016,6 +6019,7 @@ fn main() -> ExitCode {
         "neo-test" => cmd_neo_test(&args[1..]),
         "product-elf-check" => cmd_product_elf_check(&args[1..]),
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
+        "size-budget" => cmd_size_budget(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
@@ -6180,6 +6184,9 @@ fn print_help() {
         "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
     );
     println!("    image-kernel-build  build exactly the product image's kernel (CI)");
+    println!(
+        "    size-budget   measure image A's kernel .text and ISO against {SIZE_BUDGET_REL} (CI)"
+    );
     println!("    run           build the ISO and launch QEMU with a local GTK window");
     println!("    run-headless  build the ISO and launch QEMU with serial-only output");
     println!("    run-vnc       build the ISO and launch QEMU with VNC server on :5901");
@@ -6449,6 +6456,246 @@ fn build_product_image_kernel() -> Result<(), String> {
 fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     parse_image_flags(args, "image-kernel-build")?;
     build_product_image_kernel()
+}
+
+/// One measurement (measured vs. ceiling) from `tools/size-budget.toml`.
+struct SizeBudgetEntry {
+    ceiling_bytes: u64,
+    reason: String,
+}
+
+/// `cargo xtask size-budget`: L7.2, subtraction as a gate.
+///
+/// Builds exactly image A (the same userland and kernel `xtask iso
+/// --with-model` ships, minus the out-of-git model/vocab modules) and measures
+/// two numbers against `tools/size-budget.toml`:
+///
+///   1. the kernel ELF's `.text` section (the code that ships), and
+///   2. the assembled ISO's size (the whole payload a user downloads).
+///
+/// A ceiling exists so a feature pays its way: crossing one fails CI with the
+/// instruction to raise the ceiling in the same PR and say why. The ceilings
+/// are the measured values plus a small margin; that margin is the noise
+/// allowance, not a second budget.
+///
+/// `--no-build` measures what is already on disk (a fast re-check after an
+/// edit to the budget file); it still requires the ISO from a previous run.
+fn cmd_size_budget(args: &[String]) -> Result<(), String> {
+    let mut build = true;
+    for arg in args {
+        match arg.as_str() {
+            "--no-build" => build = false,
+            other => return Err(format!("size-budget: unknown option `{other}`")),
+        }
+    }
+    let root = workspace_root();
+    let budget_path = root.join(SIZE_BUDGET_REL);
+    let (kernel_budget, iso_budget) = read_size_budget(&budget_path)?;
+
+    if build {
+        // The shipped userland and kernel, exactly as the product image builds
+        // them. `build_user` variants never stage the model (not in git).
+        build_product_image_userland()?;
+        build_product_image_kernel()?;
+    }
+
+    let kernel_elf = kernel_path();
+    let kernel_text = elf_text_size(&kernel_elf)?;
+    let iso_path = root.join(ISO_OUTPUT_REL);
+    if build {
+        // The ISO is assembled from the kernel just built plus the userland
+        // ELFs; no model stage is set, so this is the model-less image A ISO.
+        // The desktop resolution is what xtask iso --with-model pins for
+        // image A (Desktop S1), so the measurement matches the shipped image.
+        set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
+        let assembled = assemble_iso();
+        set_desktop_resolution(None);
+        assembled?;
+    }
+    let iso_bytes = fs::metadata(&iso_path)
+        .map_err(|e| {
+            format!(
+                "size-budget: {} ({e}); run without --no-build to assemble it",
+                iso_path.display()
+            )
+        })?
+        .len();
+
+    let mut exceeded = Vec::new();
+    for (label, measured, entry) in [
+        ("kernel .text", kernel_text, &kernel_budget),
+        ("ISO", iso_bytes, &iso_budget),
+    ] {
+        let delta = measured as i128 - entry.ceiling_bytes as i128;
+        println!(
+            "[xtask] size-budget {label}: measured {measured} bytes, ceiling {} bytes ({})",
+            entry.ceiling_bytes,
+            if delta > 0 {
+                format!("OVER by {delta}")
+            } else {
+                format!("headroom {} bytes", -delta)
+            }
+        );
+        println!("[xtask] size-budget {label} reason: {}", entry.reason);
+        if delta > 0 {
+            exceeded.push(label);
+        }
+    }
+
+    if exceeded.is_empty() {
+        println!("[xtask] size-budget PASS");
+        Ok(())
+    } else {
+        Err(format!(
+            "size budget exceeded for {}.\n\
+             Raise the ceiling in {SIZE_BUDGET_REL} in the SAME PR and write the reason there: a bigger \
+             image must pay for itself (L7.2). If the growth is a one-off (a new driver, a new \
+             font), name the measured size and the headroom you are granting.",
+            exceeded.join(", ")
+        ))
+    }
+}
+
+/// Parse the small TOML subset `tools/size-budget.toml` uses: `[section]`
+/// headers plus `key = value` lines (strings quoted, byte counts bare). A
+/// separate dependency would be out of proportion to five keys, and a silent
+/// fallback to a default ceiling would defeat the gate.
+fn read_size_budget(path: &Path) -> Result<(SizeBudgetEntry, SizeBudgetEntry), String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let mut kernel = None;
+    let mut iso = None;
+    let mut section = String::new();
+    let mut ceiling: Option<u64> = None;
+    let mut reason: Option<String> = None;
+    let flush = |section: &str,
+                 ceiling: &mut Option<u64>,
+                 reason: &mut Option<String>,
+                 kernel: &mut Option<SizeBudgetEntry>,
+                 iso: &mut Option<SizeBudgetEntry>|
+     -> Result<(), String> {
+        if ceiling.is_none() && reason.is_none() {
+            return Ok(());
+        }
+        let entry = SizeBudgetEntry {
+            ceiling_bytes: ceiling.take().ok_or_else(|| {
+                format!("{SIZE_BUDGET_REL}: [{section}] is missing ceiling_bytes")
+            })?,
+            reason: reason
+                .take()
+                .ok_or_else(|| format!("{SIZE_BUDGET_REL}: [{section}] is missing reason"))?,
+        };
+        match section {
+            "kernel_text" => *kernel = Some(entry),
+            "iso" => *iso = Some(entry),
+            other => return Err(format!("{SIZE_BUDGET_REL}: unknown section [{other}]")),
+        }
+        Ok(())
+    };
+    for (lineno, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(inner) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            flush(&section, &mut ceiling, &mut reason, &mut kernel, &mut iso)?;
+            section = inner.trim().to_string();
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("{SIZE_BUDGET_REL}:{}: expected `key = value`", lineno + 1))?;
+        let key = key.trim();
+        let value = value.trim();
+        match (section.as_str(), key) {
+            (_, "ceiling_bytes") => {
+                ceiling =
+                    Some(value.parse::<u64>().map_err(|e| {
+                        format!("{SIZE_BUDGET_REL}:{}: ceiling_bytes: {e}", lineno + 1)
+                    })?)
+            }
+            (_, "reason") => {
+                let unquoted = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .ok_or_else(|| {
+                        format!(
+                            "{SIZE_BUDGET_REL}:{}: reason must be a quoted string",
+                            lineno + 1
+                        )
+                    })?;
+                reason = Some(unquoted.to_string());
+            }
+            _ => {
+                return Err(format!(
+                    "{SIZE_BUDGET_REL}:{}: unknown key `{key}` in [{section}]",
+                    lineno + 1
+                ));
+            }
+        }
+    }
+    flush(&section, &mut ceiling, &mut reason, &mut kernel, &mut iso)?;
+    let kernel = kernel.ok_or_else(|| format!("{SIZE_BUDGET_REL}: missing [kernel_text]"))?;
+    let iso = iso.ok_or_else(|| format!("{SIZE_BUDGET_REL}: missing [iso]"))?;
+    Ok((kernel, iso))
+}
+
+/// The `.text` section's `sh_size` from a little-endian ELF64 file. Parsing
+/// the section table directly keeps the budget dependency-free and identical
+/// on every host (no `llvm-size`/`readelf` version to pin).
+fn elf_text_size(path: &Path) -> Result<u64, String> {
+    let bytes = fs::read(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let at = |off: usize, len: usize| -> Result<&[u8], String> {
+        bytes
+            .get(off..off.saturating_add(len))
+            .ok_or_else(|| format!("size-budget: {} is truncated at {off}", path.display()))
+    };
+    let u16_at = |off: usize| -> Result<usize, String> {
+        Ok(u16::from_le_bytes(at(off, 2)?.try_into().unwrap()) as usize)
+    };
+    let u32_at = |off: usize| -> Result<usize, String> {
+        Ok(u32::from_le_bytes(at(off, 4)?.try_into().unwrap()) as usize)
+    };
+    let u64_at = |off: usize| -> Result<usize, String> {
+        Ok(u64::from_le_bytes(at(off, 8)?.try_into().unwrap()) as usize)
+    };
+    if at(0, 4)? != b"\x7fELF" {
+        return Err(format!(
+            "size-budget: {} is not an ELF file",
+            path.display()
+        ));
+    }
+    if at(4, 1)?[0] != 2 {
+        return Err(format!("size-budget: {} is not ELF64", path.display()));
+    }
+    let shoff = u64_at(0x28)?;
+    let shentsize = u16_at(0x3a)?;
+    let shnum = u16_at(0x3c)?;
+    let shstrndx = u16_at(0x3e)?;
+    if shentsize < 64 || shnum == 0 || shstrndx >= shnum {
+        return Err(format!(
+            "size-budget: {} has no usable section table",
+            path.display()
+        ));
+    }
+    let str_header = shoff + shstrndx * shentsize;
+    let str_off = u64_at(str_header + 0x18)?;
+    let str_len = u64_at(str_header + 0x20)?;
+    let strtab = at(str_off, str_len)?;
+    let mut text = None;
+    for i in 0..shnum {
+        let header = shoff + i * shentsize;
+        let name_off = u32_at(header)?;
+        let size = u64_at(header + 0x20)? as u64;
+        let name = strtab
+            .get(name_off..)
+            .and_then(|rest| rest.split(|b| *b == 0).next())
+            .unwrap_or(&[]);
+        if name == b".text" {
+            text = Some(size);
+        }
+    }
+    text.ok_or_else(|| format!("size-budget: {} has no .text section", path.display()))
 }
 
 /// The product-image flags: the old `--hwp-performance` and `--perf-probes`,
@@ -8547,6 +8794,13 @@ fn check_pinned_digest(path: &Path, expected: &[u8; 32]) -> Result<(), String> {
     Ok(())
 }
 
+/// The product image's userland: the one WM/Arthur build image A ships.
+/// `cmd_iso_with_model` and `cmd_size_budget` both call this, so the measured
+/// image and the shipped image cannot drift to different WM feature sets.
+fn build_product_image_userland() -> Result<(), String> {
+    build_user_with_feature(Some("desktop-with-model"))
+}
+
 /// B1c: the product image. Kernel `desktop` + `real-lm` + `model-boot-module`
 /// (product pins only), the glass desktop with Arthur reading the model from
 /// its boot module, the model and vocab staged as modules, and the licences.
@@ -8567,7 +8821,7 @@ fn cmd_iso_with_model(neom: &Path, rest: &[String]) -> Result<(), String> {
         binary_vocab: true,
     }));
     let result = (|| {
-        build_user_with_feature(Some("desktop-with-model"))?;
+        build_product_image_userland()?;
         build_product_image_kernel()?;
         set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
         assemble_iso()
@@ -22175,8 +22429,8 @@ mod tests {
     }
 
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A
-    /// builds too (`build_user_with_feature(Some("desktop-with-model"))`),
-    /// draws the Spine chips' icons.
+    /// builds too (through `build_product_image_userland`), draws the Spine
+    /// chips' icons.
     #[test]
     fn product_image_draws_the_app_icons() {
         let src = include_str!("main.rs");
@@ -22188,8 +22442,10 @@ mod tests {
             .unwrap();
         assert!(init.contains("\"atrium-app-icons\""), "{init}");
         // Image A and the product share that one WM build: the only call.
+        // The call lives in `build_product_image_userland`, which the product
+        // ISO and the size-budget measurement both use.
         assert_eq!(
-            src.matches("build_user_with_feature(Some(\"desktop-with-model\"))?")
+            src.matches("build_user_with_feature(Some(\"desktop-with-model\"))")
                 .count(),
             1
         );
