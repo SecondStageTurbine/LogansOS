@@ -1311,6 +1311,8 @@ jobs:
           fi
           echo "all ${#configs[@]} feature-gated configurations clean"
 
+      # The toolchain lives in the workspace here (.rustup-home, .cargo-home),
+      # so the TOML scan skips those directories.
       - name: Check SPDX headers on source files
         if: success() || failure()
         run: |
@@ -1326,7 +1328,7 @@ jobs:
           done
 
           # TOML config files (MPL-2.0)
-          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './target/*' 2>/dev/null); do
+          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './.rustup-home/*' ! -path './target/*' 2>/dev/null); do
             if ! head -3 "$f" | grep -q 'SPDX-License-Identifier'; then
               echo "MISSING: $f"
               missing=$((missing + 1))
