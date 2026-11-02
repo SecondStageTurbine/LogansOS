@@ -5,6 +5,7 @@
 
 //! The interface to the `paint` crate, which helps to break dependency cycles.
 
+#[cfg(not(target_os = "neoplutarch"))]
 use std::collections::HashMap;
 use std::fmt::{Debug, Error, Formatter};
 
@@ -31,7 +32,9 @@ pub mod display_list;
 pub mod rendering_context;
 pub mod viewport_description;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+#[cfg(not(target_os = "neoplutarch"))]
+use std::sync::Mutex;
 
 use bitflags::bitflags;
 use display_list::PaintDisplayListInfo;
