@@ -29,6 +29,12 @@ on:
         description: "Bisect leg: only the first N batch members (0 = the base alone); empty = all"
         type: string
         default: ""
+      # THINK 2.5 (Dexter #47 item 2.4): a bisect leg runs only the batch's
+      # failing scenarios, in one job. `batch-report` prints the list to paste.
+      scenarios:
+        description: "Bisect leg only: the failing scenarios to run (space-separated, from batch-report)"
+        type: string
+        default: ""
   # Nightly schedule REMOVED 2026-10-17 (PL decision): it re-ran CI on an
   # unchanged `main` daily — including through months with no work — and the
   # QEMU half has had no runner since ~2026-10-13. The QEMU gate now runs only
@@ -86,9 +92,17 @@ env:
 # Same event + same ref = same group → newer run cancels older.
 # workflow_dispatch and schedule use distinct event_name so they can't be
 # cancelled by branch pushes and vice-versa.
+# OT-58: a batch and its bisect legs are dispatched on `main`; the batch
+# inputs keep two different batches (or a batch and a leg) from cancelling
+# each other.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.batch }}-${{ inputs.prefix }}
   cancel-in-progress: true
+
+# Every job reads only: a batch runs PR code in a dispatch run, so no job's
+# token can write (Dexter #47 item 2.8). The plan job adds the reads it needs.
+permissions:
+  contents: read
 
 jobs:
   # NIGHTLY SKIP: a scheduled run on a main SHA that already had a green
@@ -131,6 +145,8 @@ jobs:
       full: ${{ steps.tier.outputs.full }}
       # The base SHA the quick tier was planned against (empty otherwise).
       gate_base: ${{ steps.tier.outputs.gate_base }}
+      # quick | full | bisect | host (main's push run).
+      mode: ${{ steps.tier.outputs.mode }}
     steps:
       - id: check
         env:
@@ -170,10 +186,45 @@ jobs:
           BASE: origin/${{ github.base_ref || 'main' }}
           EVENT: ${{ github.event_name }}
           WANT_QUICK: ${{ github.event_name == 'pull_request' || inputs.tier == 'quick' }}
+          TIER: ${{ inputs.tier }}
+          BATCH: ${{ inputs.batch }}
+          PREFIX: ${{ inputs.prefix }}
+          SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -uo pipefail
           full=true
           gate_base=""
+          if [ -n "$BATCH$PREFIX$SCENARIOS" ]; then
+            # OT-58 THINK 2.4/2.5 (Dexter #47 items 2.3, 2.4): a batch is
+            # always the full tier, and a bisect leg is one job running the
+            # named scenarios. Neither can be the quick tier, so a quick run
+            # can never pass itself off as a batch.
+            if [ -z "$BATCH" ]; then
+              echo "::error::prefix/scenarios need a batch"; exit 1
+            fi
+            if [ "$TIER" = quick ]; then
+              echo "::error::a batch is the full tier; dispatch it with tier: full"; exit 1
+            fi
+            if [ -n "$PREFIX" ]; then
+              if ! grep -qx '[0-9]\+' <<<"$PREFIX"; then
+                echo "::error::prefix must be a number, got '$PREFIX'"; exit 1
+              fi
+              if ! grep -qx '[a-z0-9_]\+\( [a-z0-9_]\+\)*' <<<"$SCENARIOS"; then
+                echo "::error::a bisect leg (prefix) runs the batch's failing scenarios: set scenarios to batch-report's list"; exit 1
+              fi
+              echo "mode=bisect" >> "$GITHUB_OUTPUT"
+              echo "full=false" >> "$GITHUB_OUTPUT"
+              echo 'shards=["bisect"]' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ -n "$SCENARIOS" ]; then
+              echo "::error::scenarios applies only to a bisect leg (with prefix)"; exit 1
+            fi
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [ "$EVENT" = push ]; then
             # `main`'s post-landing run is host-only (THINK section 4): the
             # batch run that preceded the landing is its QEMU evidence. No
@@ -199,8 +250,10 @@ jobs:
           echo "gate_base=$gate_base" >> "$GITHUB_OUTPUT"
           # A push never runs the QEMU job; its shards value is unused.
           if [ "$full" = false ] && [ "$EVENT" != push ]; then
+            echo "mode=quick" >> "$GITHUB_OUTPUT"
             echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
           else
+            [ "$EVENT" = push ] && echo "mode=host" >> "$GITHUB_OUTPUT" || echo "mode=full" >> "$GITHUB_OUTPUT"
             echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
           fi
 
@@ -224,10 +277,18 @@ jobs:
           BATCH: ${{ inputs.batch }}
           BASE_SHA: ${{ inputs.base_sha }}
           PREFIX: ${{ inputs.prefix }}
-        run: scripts/batch-plan.sh | tee -a "$GITHUB_OUTPUT"
+        # `shell: bash` runs with -o pipefail, and the plan is written to a
+        # file first: a failed plan fails this step, never a run whose jobs
+        # start with empty outputs (Dexter #47 item 2.7).
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/batch-plan.sh > "$RUNNER_TEMP/batch-plan.out"
+          cat "$RUNNER_TEMP/batch-plan.out"
+          cat "$RUNNER_TEMP/batch-plan.out" >> "$GITHUB_OUTPUT"
 
   neo-test:
-    name: ${{ matrix.shard == 'quick' && 'QEMU smoke (quick tier)' || format('QEMU Integration Tests (shard {0}/4)', matrix.shard) }}
+    name: ${{ matrix.shard == 'quick' && 'QEMU smoke (quick tier)' || matrix.shard == 'bisect' && 'QEMU bisect leg (named scenarios)' || format('QEMU Integration Tests (shard {0}/4)', matrix.shard) }}
     # OT-58 S2: no longer waits for host-checks and product-build. On hosted
     # runners a slot is the scarce thing, not minutes, and the quick tier's
     # critical path is its smoke job alone (THINK 2.1).
@@ -518,7 +579,8 @@ jobs:
             -e CARGO_HTTP_MULTIPLEXING \
             -e CARGO_NET_RETRY \
             -e SHARD="${{ matrix.shard }}" \
-            -e BATCH="${{ inputs.batch }}${{ inputs.prefix }}" \
+            -e BATCH="${{ inputs.batch }}" \
+            -e SCENARIOS="${{ inputs.scenarios }}" \
             -e GATE_BASE="${{ needs.nightly-skip.outputs.gate_base }}" \
             neo \
             bash -c '
@@ -528,8 +590,15 @@ jobs:
                 git config --global --add safe.directory /workspace
                 exec cargo neo-test --tier quick --changed-from "$GATE_BASE" --keep-going
               fi
+              # OT-58 THINK 2.5: a bisect leg runs only the named failing
+              # scenarios (the plan job checked the names). A batch shard runs
+              # every scenario and re-runs each timeout once before anyone
+              # bisects; the timing table classifies what is left.
+              if [ "$SHARD" = bisect ]; then
+                exec cargo neo-test $SCENARIOS --keep-going --rerun-timeouts
+              fi
               if [ -n "$BATCH" ]; then
-                exec cargo neo-test --shard "$SHARD/4" --keep-going
+                exec cargo neo-test --shard "$SHARD/4" --keep-going --rerun-timeouts
               fi
               exec cargo neo-test --shard "$SHARD/4"
             '
@@ -744,7 +813,8 @@ jobs:
   host-checks:
     name: Host Tests, Format & Lint
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # A bisect leg is the one QEMU job (THINK 2.5).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.mode != 'bisect' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
     # RUNNER HISTORY — read both halves before moving this again.
     #   2026-07-22 (d6dc133): self-hosted -> ubuntu-latest, dropping the
@@ -1015,7 +1085,8 @@ jobs:
   build-checks:
     name: Build Checks (product build, feature clippy, SPDX, identity)
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # A bisect leg is the one QEMU job (THINK 2.5).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.mode != 'bisect' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # self-hosted (2026-08-10): free minutes. See the runner-history note on
     # host-checks for the full rationale.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
@@ -1283,3 +1354,131 @@ jobs:
         run: |
           echo "Checking for microkernel-identity drift..."
           bash scripts/check-monolithic-identity.sh
+
+  # OT-58 S2b (THINK 2.4, 2.5): the batch's verdict. It reads every QEMU job's
+  # timing table and classifies what went wrong (Dexter #47 items 2.3-2.5):
+  #   - scenario failures (`FAIL`), build failures (`FAIL-build`: no QEMU run)
+  #     and timeouts that failed their re-run: these are bisected;
+  #   - timeouts that passed their one re-run: not failures; raise the timeout;
+  #   - a QEMU job with no timing table: infra, re-fire it; never bisect it.
+  # It is green only for a full-tier batch (mode full, all K shards present and
+  # green) with every other job green, and only then does it print "merge
+  # evidence: yes". A bisect leg prints its own verdict and is never evidence.
+  batch-report:
+    name: Batch report
+    needs: [nightly-skip, neo-test, host-checks, build-checks, rng-seed-boot, decoder-fuzz]
+    if: always() && inputs.batch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download every QEMU job's timings
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: neo-test-timings-shard-*
+          path: timings
+      - name: Report
+        shell: bash
+        env:
+          BASE: ${{ needs.nightly-skip.outputs.batch_base }}
+          MEMBERS: ${{ needs.nightly-skip.outputs.batch_members }}
+          TREE: ${{ needs.nightly-skip.outputs.batch_tree }}
+          MODE: ${{ needs.nightly-skip.outputs.mode }}
+          FULL: ${{ needs.nightly-skip.outputs.full }}
+          SHARDS: ${{ needs.nightly-skip.outputs.shards }}
+          PREFIX: ${{ inputs.prefix }}
+          PLAN_RESULT: ${{ needs.nightly-skip.result }}
+          QEMU_RESULT: ${{ needs.neo-test.result }}
+          HOST_RESULT: ${{ needs.host-checks.result }}
+          BUILD_RESULT: ${{ needs.build-checks.result }}
+          RNG_RESULT: ${{ needs.rng-seed-boot.result }}
+          FUZZ_RESULT: ${{ needs.decoder-fuzz.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/report.md"
+          k=$(jq 'length' <<<"${SHARDS:-[]}" 2>/dev/null || echo 0)
+          present=$(ls -d timings/*/ 2>/dev/null | wc -l)
+          # Every row of every table, as: shard \t scenario \t result \t wall.
+          rows="$RUNNER_TEMP/rows.tsv"
+          : > "$rows"
+          for tsv in timings/*/timings.tsv; do
+            [ -f "$tsv" ] || continue
+            shard="$(basename "$(dirname "$tsv")")"
+            tail -n +2 "$tsv" | awk -F'\t' -v s="${shard#neo-test-timings-shard-}" '{ print s "\t" $1 "\t" $6 "\t" $2 }' >> "$rows"
+          done
+          # A scenario's final word is its re-run's, if it had one.
+          final="$RUNNER_TEMP/final.tsv"
+          awk -F'\t' '{ k = $1 "\t" $2; r = $3; sub(/^rerun-/, "", r); if (!(k in st) || $3 ~ /^rerun-/) st[k] = r; if ($3 ~ /^rerun-/) rr[k] = 1 }
+                      END { for (k in st) print k "\t" st[k] "\t" ((k in rr) ? "rerun" : "") }' "$rows" | sort > "$final"
+          list() { awk -F'\t' -v want="$1" -v rr="$2" '$3 == want && (rr == "" || $4 == rr) { printf "- `%s` (shard %s)\n", $2, $1 }' "$final"; }
+          scen_fail="$(awk -F'\t' '$3 == "FAIL"' "$final" | wc -l)"
+          build_fail="$(awk -F'\t' '$3 == "FAIL-build"' "$final" | wc -l)"
+          timeout_fail="$(awk -F'\t' '$3 == "FAIL-timeout"' "$final" | wc -l)"
+          timeout_flaky="$(awk -F'\t' '$3 == "pass" && $4 == "rerun"' "$final" | wc -l)"
+          failing="$(awk -F'\t' '$3 ~ /^FAIL/ { print $2 }' "$final" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          missing=$(( k - present ))
+          [ "$missing" -lt 0 ] && missing=0
+
+          green=true
+          [ "$MODE" = full ] && [ "$FULL" = true ] && [ "$k" -eq 4 ] || green=false
+          for r in "$PLAN_RESULT" "$QEMU_RESULT" "$HOST_RESULT" "$BUILD_RESULT" "$RNG_RESULT" "$FUZZ_RESULT"; do
+            [ "$r" = success ] || green=false
+          done
+          [ -z "$failing" ] && [ "$missing" -eq 0 ] || green=false
+
+          {
+            if [ "$MODE" = bisect ]; then
+              echo "### Bisect leg: prefix ${PREFIX}"
+            else
+              echo "### Batch"
+            fi
+            echo
+            echo "- base: \`$BASE\`"
+            echo "- members (PR:head, landing order): \`$MEMBERS\`"
+            echo "- tree: \`$TREE\`"
+            echo "- run: $RUN_URL"
+            echo "- mode: \`$MODE\`, $k QEMU job(s), $present with a timing table"
+            echo "- jobs: plan $PLAN_RESULT, QEMU $QEMU_RESULT, host $HOST_RESULT, build $BUILD_RESULT, RNG boot $RNG_RESULT, fuzz $FUZZ_RESULT"
+            echo
+            echo "#### Scenario failures ($scen_fail): bisect"
+            list FAIL ""
+            echo
+            echo "#### Build failures ($build_fail): a scenario's kernel, userland or image did not build; bisect"
+            list FAIL-build ""
+            echo
+            echo "#### Timeouts that failed their re-run too ($timeout_fail): bisect"
+            list FAIL-timeout ""
+            echo
+            echo "#### Timeouts that passed their one re-run ($timeout_flaky): not failures; raise each timeout"
+            list pass rerun
+            if [ "$missing" -gt 0 ]; then
+              echo
+              echo "**Infra: ${missing} QEMU job(s) left no timing table (runner loss, disk, OOM). Re-fire the run; don't bisect.**"
+            fi
+            if [ -n "$failing" ]; then
+              echo
+              echo "Next bisect leg: dispatch with this batch, \`prefix\`, and \`scenarios\`:"
+              echo
+              echo "    $failing"
+            fi
+            echo
+            if [ "$MODE" = bisect ]; then
+              if [ -z "$failing" ] && [ "$missing" -eq 0 ] && [ "$QEMU_RESULT" = success ]; then
+                echo "**Verdict: prefix ${PREFIX} passes.** A bisect leg is never merge evidence."
+              else
+                echo "**Verdict: prefix ${PREFIX} fails.** A bisect leg is never merge evidence."
+              fi
+            elif [ "$green" = true ]; then
+              echo "**Verdict: GREEN, full tier (4 shards + host, build, RNG boot, fuzz) on tree \`$TREE\`. Merge evidence: yes.**"
+            else
+              echo "**Verdict: NOT GREEN. Merge evidence: no.**"
+            fi
+          } > "$out"
+          cat "$out"
+          cat "$out" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MODE" = bisect ]; then
+            [ -z "$failing" ] && [ "$missing" -eq 0 ] && [ "$QEMU_RESULT" = success ]
+          else
+            [ "$green" = true ]
+          fi
