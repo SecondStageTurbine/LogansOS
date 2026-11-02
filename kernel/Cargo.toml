@@ -599,6 +599,14 @@ neo-test-compat-mode-unreachable = ["neo-test", "browser-runtime"]
 # default-off — the kill-switch is the feature gate (off ⇒ bit-for-bit today).
 neo-test-ai-latency-oracle = ["neo-test", "accel-sim"]
 neo-test-xsave-ymm-context-switch = ["neo-test", "xsave-fpu"]
+# The preview's WHPX #GP (2026-11-02): CPUID.(0DH,0):EBX answers 576
+# (x87|SSE) while XCR0 holds x87|SSE|AVX, as QEMU under WHPX did. The XSAVE
+# area must still be sized for AVX (from the per-component leaves), or every
+# xsave overruns it. Runs `xsave_ymm_context_switch`'s legs under that CPUID.
+neo-test-xsave-ebx-understated = ["neo-test-xsave-ymm-context-switch"]
+# Revert-check: size the area from EBX alone, as before. Expected to fail
+# (the first timer tick's iretq takes a #GP, or YMM state is corrupted).
+neo-test-xsave-ebx-understated-control = ["neo-test-xsave-ebx-understated"]
 # Regression for interrupt-entry state: a test-only vector (swapgs_irq_entry)
 # and the timer stub, entered with AC=1/DF=1 and a hostile MXCSR, must
 # preserve the interrupted xmm0-15/flags/MXCSR and run their bodies with DF=0
