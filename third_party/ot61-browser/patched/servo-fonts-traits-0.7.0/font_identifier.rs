@@ -25,14 +25,7 @@ impl FontIdentifier {
     }
 }
 
-// LogansOS: target_os = "neoplutarch" names a font by path and face index, as
-// on Linux; where the bytes come from is servo-fonts' backend (L1).
-#[cfg(any(
-    target_os = "linux",
-    target_os = "android",
-    target_os = "freebsd",
-    target_os = "neoplutarch"
-))]
+#[cfg(any(target_os = "linux", target_os = "android", target_os = "freebsd"))]
 mod platform {
     use std::fs::File;
     use std::path::{Path, PathBuf};
@@ -94,6 +87,61 @@ mod platform {
         /// for more information.
         pub fn face_index_for_freetype(&self) -> u32 {
             ((self.named_instance_index()) << 16) | self.index()
+        }
+    }
+}
+
+// LogansOS (OT-61 L1): a content process has no ambient file system, so its
+// fonts are compiled in (`neo-font-store`) and named by a path no file system
+// resolves. The fields are Linux's, so code that reads them is unchanged.
+#[cfg(target_os = "neoplutarch")]
+mod platform {
+    use std::path::PathBuf;
+
+    use malloc_size_of_derive::MallocSizeOf;
+    use serde::{Deserialize, Serialize};
+    use style::Atom;
+    use webrender_api::NativeFontHandle;
+
+    use crate::{FontData, FontDataAndIndex};
+
+    /// A bundled font: its `neo-font-store` name and face index.
+    #[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize)]
+    pub struct LocalFontIdentifier {
+        /// The font's `neo-font-store` name.
+        pub path: Atom,
+        /// The face index within the font file.
+        pub face_index: u16,
+        /// The index of the named instance within the font (ignored for
+        /// non-variable fonts).
+        pub named_instance_index: u16,
+    }
+
+    impl LocalFontIdentifier {
+        pub fn index(&self) -> u32 {
+            self.face_index as u32
+        }
+
+        pub fn named_instance_index(&self) -> u32 {
+            self.named_instance_index as u32
+        }
+
+        pub fn native_font_handle(&self) -> NativeFontHandle {
+            NativeFontHandle {
+                path: PathBuf::from(&*self.path),
+                index: self.face_index as u32,
+            }
+        }
+
+        /// The bundled bytes (copied into shared memory, the form the rest of
+        /// Servo's font code passes around), or `None` for a name that isn't
+        /// bundled.
+        pub fn font_data_and_index(&self) -> Option<FontDataAndIndex> {
+            let bytes = neo_font_store::bytes(&self.path)?;
+            Some(FontDataAndIndex {
+                data: FontData::from_bytes(bytes),
+                index: self.face_index as u32,
+            })
         }
     }
 }

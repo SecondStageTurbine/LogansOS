@@ -31,6 +31,7 @@ parking_lot_core = { path = "../../third_party/ot61-browser/patched/parking_lot_
 servo-base = { path = "../../third_party/ot61-browser/patched/servo-base-0.7.0" }
 servo-url = { path = "../../third_party/ot61-browser/patched/servo-url-0.7.0" }
 servo-fonts-traits = { path = "../../third_party/ot61-browser/patched/servo-fonts-traits-0.7.0" }
+servo-fonts = { path = "../../third_party/ot61-browser/patched/servo-fonts-0.7.0" }
 servo-allocator = { path = "../../third_party/ot61-browser/patched/servo-allocator-0.7.0" }
 servo-embedder-traits = { path = "../../third_party/ot61-browser/patched/servo-embedder-traits-0.7.0" }
 servo-layout = { path = "../../third_party/ot61-browser/patched/servo-layout-0.7.0" }
