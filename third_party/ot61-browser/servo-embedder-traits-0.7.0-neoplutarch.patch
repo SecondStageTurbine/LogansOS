@@ -1,0 +1,14 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-embedder-traits-0.7.0/Cargo.toml patched/servo-embedder-traits-0.7.0/Cargo.toml
+--- vendor/servo-embedder-traits-0.7.0/Cargo.toml
++++ patched/servo-embedder-traits-0.7.0/Cargo.toml
+@@ -137,6 +138,10 @@
+ 
+ [dependencies.webdriver]
+ version = "0.54.0"
++# LogansOS: the two webdriver types named here (ErrorStatus, SetPermissionState)
++# need no WebDriver server; its default `server` feature pulls tokio's `net`
++# and warp onto a content process that may never open a socket.
++default-features = false
+ 
+ [dependencies.webrender_api]
+ version = "0.70"

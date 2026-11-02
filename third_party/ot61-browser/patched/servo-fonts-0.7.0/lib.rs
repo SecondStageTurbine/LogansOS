@@ -10,7 +10,8 @@ mod font_context;
 pub mod font_feature_values;
 mod font_store;
 mod glyph;
-#[expect(unsafe_code)]
+// LogansOS: the neoplutarch backend has no unsafe code.
+#[cfg_attr(not(target_os = "neoplutarch"), expect(unsafe_code))]
 pub mod platform; // Public because integration tests need this
 mod shapers;
 mod system_font_service;
