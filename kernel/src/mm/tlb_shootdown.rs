@@ -78,6 +78,21 @@ pub fn quiesce_local_cpu() -> LocalShootdownQuiesce {
     }
 }
 
+/// OT-90 P3b, K4 (review #6 item 1, CP-64): close TLB shootdowns for good
+/// before the shutdown CPU stops servicing IPIs. Taking the sender lock
+/// (interruptibly, as every sender does) waits out any sender in flight, so
+/// this CPU acknowledges its request first; the lock is then never released,
+/// so no sender starts again (a CPU that tries waits with interrupts on and
+/// takes the STOP IPI). Interrupts go off and this CPU leaves the ready set
+/// while no sender can race the change. Returns with IF=0, for good.
+#[cfg(feature = "power-stop-cpus")]
+pub fn close_for_stop() {
+    let barrier = acquire_shootdown_lock();
+    arch_x86_64::disable_interrupts();
+    per_cpu::set_current_tlb_shootdown_ready(false);
+    core::mem::forget(barrier);
+}
+
 #[cfg(feature = "neo-test-swapgs-irq-ring3")]
 static LOCK_PROBE_HELD: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "neo-test-swapgs-irq-ring3")]

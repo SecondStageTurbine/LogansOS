@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): a no_std ring-3 binary for
+# x86_64-neoplutarch-user, built in-dir by xtask for the scenarios that stage it
+# (its .cargo/config selects the target and build-std).
+[workspace]
+
+[package]
+name = "fetch-broker"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 rung 5: the browser's fetch broker, the only browser process holding the dial cap"
+
+[[bin]]
+name = "fetch-broker"
+path = "src/main.rs"
+test = false
+bench = false
+
+# The scenario's content process: only a channel to the broker, no dial cap
+# (#29 review item 1).
+[[bin]]
+name = "fetch-content"
+path = "src/content.rs"
+test = false
+bench = false
+
+[features]
+# Test-only: the HTTPS fixture (`phase4.test`) resolves to loopback, so the
+# fetch_broker scenario lets the broker keep NON_PUBLIC for that one name. A
+# shipped broker has no such allowance.
+fixture-loopback = []
+
+[dependencies]
+libneo = { path = "../libneo" }
+fetch-proto = { path = "../fetch-proto" }
+# The record layer stays in user space (THINK §4): the provider's suites, TLS
+# 1.2 and 1.3; the kernel's offload carries only TLS1.3 ChaCha20-Poly1305.
+rustls = { version = "0.23.34", default-features = false, features = ["custom-provider", "tls12"] }
+rustls-rustcrypto = { version = "0.0.2-alpha", default-features = false, features = ["alloc", "zeroize", "tls12"] }
+
+# The broker's crypto (rustls-rustcrypto) is unusably slow unoptimised, above
+# all under TCG: a handshake must finish within the peer's patience. Optimise
+# every dependency even in the debug build the scenarios use.
+[profile.dev.package."*"]
+opt-level = 3
