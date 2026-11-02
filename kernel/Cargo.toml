@@ -1316,6 +1316,10 @@ model-from-neofs = ["boot-model-preload"]
 # volume that fits), and the NeoFS mount probes such partitions before whole
 # devices. Off: the guard and the mount are bit-for-bit today's.
 neofs-partition = []
+# L3a (G7, THINK-2026-10-31-l3a-fat-readonly §6a): a FAT mount's source may
+# name an MBR partition, `deviceN:pM` (primary entries, FAT types, checked
+# against the device). Off: such a source is Invalid, as before.
+mbr-partitions = []
 # NFS-W1: kernel NeoFS writes a file of any size (to the 2 GiB format limit)
 # in one piece: data and pointer blocks in contiguous runs straight to the
 # device (through the guard, or the installer's claim), the single, double and
@@ -1810,6 +1814,9 @@ neo-test-phase3-fat32-write-is-rejected = ["neo-test-phase3-fat32"]
 neo-test-phase3-fat32-exec-blocked-by-default = ["neo-test-phase3-fat32"]
 neo-test-phase3-fat32-exec-with-opt-in = ["neo-test-phase3-fat32"]
 neo-test-phase3-fat32-type-import-is-regular = ["neo-test-phase3-fat32"]
+# L3a (G7): `device1:p1` on an MBR disk reads back; `-off` is the kill-switch.
+neo-test-phase3-fat32-mbr-mount-read = ["neo-test-phase3-fat32", "mbr-partitions"]
+neo-test-phase3-fat32-mbr-off = ["neo-test-phase3-fat32"]
 # Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
 neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
 neo-test-phase3-ext4-mount-readonly = ["neo-test-phase3-ext4"]
