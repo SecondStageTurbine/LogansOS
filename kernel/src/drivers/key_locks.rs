@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
-//! The keyboard lock state (Caps Lock), one for the machine: every keyboard,
+//! The keyboard lock state (Caps Lock, Num Lock), one for the machine: every keyboard,
 //! PS/2 or USB, toggles and reads the same state, as one person types on
-//! them. Key events carry it in `y` (`keymap_us_logic::LOCK_CAPS`), so a
+//! them. Key events carry it in `y` (`keymap_us_logic::LOCK_*`), so a
 //! client turns usages into text without tracking lock keys itself.
 //!
 //! The keyboards' LEDs are not driven: neither driver sends the PS/2 `0xED`

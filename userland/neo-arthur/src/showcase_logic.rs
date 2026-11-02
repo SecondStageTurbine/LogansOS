@@ -89,7 +89,11 @@ pub fn input_event_to_scroll(event: [u8; 8]) -> Option<ScrollKey> {
     if event[0] != 1 || event[1] & 1 == 0 {
         return None;
     }
-    match u16::from_le_bytes([event[2], event[3]]) {
+    let usage = u8::try_from(u16::from_le_bytes([event[2], event[3]])).ok()?;
+    // A keypad key in navigation mode (Num Lock off) scrolls like its arrow.
+    let modifiers = u16::from_le_bytes([event[4], event[5]]) as u8;
+    let locks = u16::from_le_bytes([event[6], event[7]]) as u8;
+    match keymap::effective_usage(usage, modifiers, locks) {
         0x4b => Some(ScrollKey::PageUp),
         0x4e => Some(ScrollKey::PageDown),
         0x52 => Some(ScrollKey::LineUp),
@@ -118,7 +122,7 @@ mod keymap {
 /// bytes.
 pub fn keycode_to_ascii_locked(keycode: u8, modifiers: u8, locks: u8) -> Option<u8> {
     match keycode {
-        0x28 => Some(b'\n'),
+        0x28 | keymap::USAGE_KP_ENTER => Some(b'\n'),
         // DS-1: Esc hands the keyboard back to Home (ignored elsewhere).
         0x29 => Some(0x1b),
         0x2a => Some(0x08),

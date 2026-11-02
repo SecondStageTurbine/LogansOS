@@ -204,10 +204,11 @@ mod keymap {
 }
 
 /// The legacy (pre-routing) byte path: a key's ASCII byte, Enter, Backspace
-/// and Tab as control bytes. No Caps Lock here: this path keeps no state.
+/// and Tab as control bytes. No lock keys here: this path keeps no state
+/// (Caps Lock off, Num Lock on).
 pub fn keycode_to_ascii(keycode: u8, shifted: bool) -> Option<u8> {
     match keycode {
-        0x28 => Some(b'\n'),
+        0x28 | keymap::USAGE_KP_ENTER => Some(b'\n'),
         0x2a => Some(0x08),
         0x2b => Some(b'\t'),
         _ => keymap::printable(keycode, if shifted { keymap::MOD_SHIFT } else { 0 }, 0),
