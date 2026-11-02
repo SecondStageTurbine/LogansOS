@@ -285,6 +285,13 @@ name = "boot-eth0-logic-tests"
 version = "0.0.1"
 
 [[package]]
+name = "boot-time-logic-tests"
+version = "0.0.1"
+dependencies = [
+ "limine",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -628,6 +635,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1a05365e3b1c6d1650318537c7460c6923f1abdd272ad6842baa2b509957a06"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "fat-logic-tests"
+version = "0.0.1"
+dependencies = [
+ "fatfs",
 ]
 
 [[package]]
@@ -1275,6 +1289,7 @@ dependencies = [
  "chacha20 0.9.1",
  "chacha20poly1305",
  "cmac",
+ "fatfs",
  "hkdf",
  "hmac",
  "limine",
