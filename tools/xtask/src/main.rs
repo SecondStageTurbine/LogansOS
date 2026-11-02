@@ -17621,7 +17621,10 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP arthur hanging reply=never-received",
                 // His owed reply untaken past the deadline: he alone ends.
                 "DESKTOP apps client hung client=0",
-                "DESKTOP apps arthur failed code=24 reaped=yes others=1",
+                // Killed (the kill itself completes at his reap), then the
+                // WM's line with its wait's result.
+                "[ kernel ] proc: kill of pid=",
+                "DESKTOP apps arthur failed code=24 wait=",
                 // The probe app is still served: its key, its exit, its
                 // release.
                 "PROBEAPP key code=4 count=1",
@@ -17631,6 +17634,12 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP home return client=arthur exit=0",
             ],
             "PR #15 re-check item 3: a hung Arthur is ended alone; the probe app and the WM live on",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            " others=1\n",
+            "PR #15 re-check item 3: the probe app was live when Arthur failed",
         )?;
         require_serial_absent(
             scenario,

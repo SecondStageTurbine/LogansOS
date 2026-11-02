@@ -3221,11 +3221,16 @@ mod apps {
         let _ = libneo::sys_kill(process);
         let exit = reap_bounded(process);
         let others = apps.others.iter().filter(|c| c.is_some()).count();
+        // The wait's own result: his exit code, or an errno when the kill
+        // already reaped him (it completes at his last reap).
         Line::new()
             .s(b"DESKTOP apps arthur failed code=")
             .n(code as u64)
-            .s(b" reaped=")
-            .s(if exit.is_ok() { b"yes" } else { b"no" })
+            .s(b" wait=")
+            .i(match exit {
+                Ok(code) => i64::from(code),
+                Err(e) => e,
+            })
             .s(b" others=")
             .n(others as u64)
             .s(b"\n")
