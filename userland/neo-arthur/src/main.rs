@@ -1425,6 +1425,8 @@ fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Ha
             surface.write_text(b"I opened the probe app.");
             #[cfg(feature = "atrium-apps-arthur-flood")]
             arthur_flood(surface);
+            #[cfg(feature = "atrium-apps-arthur-hang")]
+            surface.commit_and_hang();
         }
         Err(_) => {
             stage_b_log_line(b"DESKTOP arthur probe app refused");

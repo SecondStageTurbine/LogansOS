@@ -221,6 +221,8 @@ const DESKTOP_APPS_HANDOFF_DEATH_BOOT_CAPTURE_REL: &str =
 const DESKTOP_APPS_REUSE_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_reuse_boot.ppm";
 const DESKTOP_APPS_FLOOD_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_flood_boot.ppm";
 const DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_grab_boot.ppm";
+const DESKTOP_APPS_ARTHUR_HANG_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_apps_arthur_hang_boot.ppm";
 const DESKTOP_CLOCK_BOOT_MID_REL: &str = "target/neo-test/desktop_clock_boot_mid.ppm";
 const V1_CONSOLE_LIVENESS_CAPTURE_REL: &str = "target/neo-test/v1_console_liveness.ppm";
 
@@ -666,6 +668,20 @@ const DESKTOP_APPS_GRAB_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"\x04again\n",
     ),
 ];
+/// PR #15 re-check item 3, Arthur's failure is his alone: once the probe app
+/// is open (and in front), Arthur sends a commit and never receives its reply
+/// (`atrium-apps-arthur-hang`). After the reply deadline the WM ends him
+/// alone; the probe app keeps its turns and gets its key (it exits 7 on it),
+/// and the session goes back to Home.
+const DESKTOP_APPS_ARTHUR_HANG_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps arthur failed code=24", b"a"),
+];
 /// DI-1b resize: desktop_pointer_boot's script, then (after the clamped
 /// grab, the cursor at 332,462) to the moved frame's bottom-right corner
 /// handle: 7 × `mouse_move 124 0`, 3 × `mouse_move 0 124`, `mouse_move 6 0`
@@ -793,7 +809,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 34] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 35] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -947,6 +963,13 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 34] = [
         DESKTOP_APPS_GRAB_BOOT_HID_STEPS,
         DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL,
         b"\x04again\n",
+    ),
+    // PR #15 re-check item 3: Arthur hung, ended alone.
+    desktop(
+        "desktop_apps_arthur_hang_boot",
+        DESKTOP_APPS_ARTHUR_HANG_BOOT_HID_STEPS,
+        DESKTOP_APPS_ARTHUR_HANG_BOOT_CAPTURE_REL,
+        b"a",
     ),
     // DS-1c: captured once the answer (and the Lens) is composited.
     DesktopScenario {
@@ -3342,6 +3365,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_apps_grab_boot",
         feature: "neo-test-desktop-apps-grab-boot",
         user_feature: Some("desktop-apps-grab-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 re-check item 3: Arthur never receives a reply while the
+        // probe app is open; the WM ends him alone, keeps serving the probe
+        // app, and goes back to Home once it exits.
+        name: "desktop_apps_arthur_hang_boot",
+        feature: "neo-test-desktop-apps-arthur-hang-boot",
+        user_feature: Some("desktop-apps-arthur-hang-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -7153,6 +7186,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-handoff-death-boot-test")
         | Some("desktop-apps-reuse-boot-test")
         | Some("desktop-apps-flood-boot-test")
+        | Some("desktop-apps-arthur-hang-boot-test")
         | Some("desktop-apps-grab-boot-test") => {
             vec!["atrium-apps", "desktop-home-boot-test"]
         }
@@ -7297,9 +7331,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
         Some("desktop-apps-drop-boot-test") => vec!["probe-app-drop-reply"],
         Some("desktop-apps-handoff-death-boot-test") => vec!["probe-app-die-on-discard"],
-        Some("desktop-apps-reuse-boot-test") | Some("desktop-apps-grab-boot-test") => {
-            vec!["probe-app-exit-after-key"]
-        }
+        Some("desktop-apps-reuse-boot-test")
+        | Some("desktop-apps-grab-boot-test")
+        | Some("desktop-apps-arthur-hang-boot-test") => vec!["probe-app-exit-after-key"],
         Some("desktop-apps-flood-boot-test") => vec!["probe-app"],
         // DS-1c: the worker is the Lens (and, with no handles, DS-1b's probe).
         Some("desktop-lens")
@@ -7449,6 +7483,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-arthur-flood",
+        ],
+        Some("desktop-apps-arthur-hang-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-arthur-hang",
         ],
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
@@ -17350,7 +17389,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         for needle in [
             "PROBEAPP dying before discard ack",
-            "DESKTOP apps released client=1 closed=5 failed=0",
+            "DESKTOP apps released client=1 closed=6 failed=0",
             "DESKTOP apps stale activator client=1 refused=yes",
             "DESKTOP apps client ended client=1 value=5",
         ] {
@@ -17372,7 +17411,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP apps client connected client=1 value=1",
                 "DESKTOP apps front client=1 via=launch",
                 "DESKTOP apps front client=0 via=client-ended",
-                "DESKTOP apps released client=1 closed=5 failed=0",
+                "DESKTOP apps released client=1 closed=6 failed=0",
                 "DESKTOP apps stale activator client=1 refused=yes",
                 "DESKTOP apps client ended client=1 value=7",
                 // The same slot, a new generation.
@@ -17380,7 +17419,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP apps front client=1 via=launch",
                 "PROBEAPP key code=5 count=1",
                 "DESKTOP apps front client=0 via=client-ended",
-                "DESKTOP apps released client=1 closed=5 failed=0",
+                "DESKTOP apps released client=1 closed=6 failed=0",
                 "DESKTOP apps stale activator client=1 refused=yes",
                 "DESKTOP apps client ended client=1 value=7",
                 "DESKTOP arthur line=again\n",
@@ -17427,6 +17466,35 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 scenario.name
             ));
         }
+    }
+    // PR #15 re-check item 3: Arthur's failure is his alone.
+    if scenario.name == "desktop_apps_arthur_hang_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP arthur hanging reply=never-received",
+                // His owed reply untaken past the deadline: he alone ends.
+                "DESKTOP apps client hung client=0",
+                "DESKTOP apps arthur failed code=24 reaped=yes others=1",
+                // The probe app is still served: its key, its exit, its
+                // release.
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps released client=1 closed=6 failed=0",
+                "DESKTOP apps client ended client=1 value=7",
+                "DESKTOP session end client=arthur contained=24",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "PR #15 re-check item 3: a hung Arthur is ended alone; the probe app and the WM live on",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP apps client unreaped",
+            "PR #15 re-check item 3: the probe app ended by itself, not with Arthur",
+        )?;
     }
     // PR #15 review item 4: a grab follows the front, not its press.
     if scenario.name == "desktop_apps_grab_boot" {

@@ -48,6 +48,8 @@ pub mod atrium_desktop;
 pub mod atrium_handoff;
 #[cfg(feature = "atrium-launch")]
 pub mod atrium_launch;
+/// PR #15 re-check: a cap lent over a client's channel by tries (pure).
+pub mod atrium_lend;
 pub mod atrium_protocol;
 pub mod atrium_wm;
 /// OT-85: epoch → civil date/time, and its text (pure).

@@ -561,6 +561,8 @@ const SCENARIO: &str = "desktop_apps_handoff_death_boot";
 const SCENARIO: &str = "desktop_apps_reuse_boot";
 #[cfg(feature = "neo-test-desktop-apps-flood-boot")]
 const SCENARIO: &str = "desktop_apps_flood_boot";
+#[cfg(feature = "neo-test-desktop-apps-arthur-hang-boot")]
+const SCENARIO: &str = "desktop_apps_arthur_hang_boot";
 #[cfg(feature = "neo-test-desktop-apps-grab-boot")]
 const SCENARIO: &str = "desktop_apps_grab_boot";
 /// DL-1: every desktop feature on — the Lens docked to a window that moves
@@ -622,6 +624,8 @@ const DESKTOP_PASS: &str = "desktop_apps_drop_boot=ok view=home probe_app=exits_
 const DESKTOP_PASS: &str = "desktop_apps_handoff_death_boot=ok view=home probe_app=dies_mid_handoff route=back_to_arthur handles=released";
 #[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_reuse_boot=ok view=home slot=reused generation=new handles=released stale_activator=refused";
+#[cfg(feature = "neo-test-desktop-apps-arthur-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_arthur_hang_boot=ok view=home arthur=hung ended=arthur_only probe_app=kept_served wm=live";
 #[cfg(feature = "neo-test-desktop-apps-flood-boot")]
 const DESKTOP_PASS: &str =
     "desktop_apps_flood_boot=ok view=home arthur=floods probe_app_keys=served sak_tab=served";

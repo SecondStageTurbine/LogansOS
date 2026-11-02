@@ -92,6 +92,10 @@ atrium-apps-probe = ["desktop-home"]
 # back to back for a while (each commit waits for its reply), so his channel
 # is never quiet; the probe app's turns must still come.
 atrium-apps-arthur-flood = ["atrium-apps-probe"]
+# PR #15 re-check item 3 boot test: once the probe app is open, Arthur sends
+# one commit and never receives its reply; the WM ends him alone, the probe app
+# keeps its turns, and the session goes back to Home once it exits.
+atrium-apps-arthur-hang = ["atrium-apps-probe"]
 # Chad DS-1c F1 boot test: ask for the Lens again after a refused bloom (the
 # WM's `desktop-lens-fault-test` fails the first two).
 desktop-lens-fault-test = ["desktop-lens"]

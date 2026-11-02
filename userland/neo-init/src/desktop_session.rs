@@ -115,6 +115,11 @@ const ARTHUR: usize = 0;
 /// [`connect`] proves in the handshake, and nothing particular to Arthur.
 struct Client {
     session: Handle,
+    /// PR #15 re-check (new finding): the WM's copy of the client's session
+    /// end. Spawn hands the client its own copy and leaves this one with the
+    /// WM; it is closed only once the client is gone (closing it closes that
+    /// side for the client too), never left behind per launch.
+    session_peer: Handle,
     surface: Handle,
     /// The WM's copy of the client's surface end (granted to it). Closed only
     /// once the client is gone: closing a side's handle closes that side.
@@ -1420,15 +1425,34 @@ fn connect(
         Ok(pair) => pair,
         Err(_) => return Err(4),
     };
-    let process = spawn(client_end)?;
+    let process = match spawn(client_end) {
+        Ok(process) => process,
+        Err(code) => {
+            let _ = libneo::sys_channel_close(session);
+            let _ = libneo::sys_channel_close(client_end);
+            return Err(code);
+        }
+    };
     *spawned = Some(process);
     // OT-88 A1a: a client whose handshake fails is ended, never left
     // half-connected: its session channel closed and its process killed.
     // Arthur's is reaped here as before; any other client's reap is the
     // table's, without waiting on it (`apps::Dying`).
-    handshake(scene, (width, height), ids, session, process, shown, link).inspect_err(|_| {
-        let _ = libneo::sys_channel_close(session);
+    // The client is killed before the session's ends are closed: closing
+    // them is then only the WM's release, never a signal to a live client.
+    handshake(
+        scene,
+        (width, height),
+        ids,
+        (session, client_end),
+        process,
+        shown,
+        link,
+    )
+    .inspect_err(|_| {
         let _ = libneo::sys_kill(process);
+        let _ = libneo::sys_channel_close(session);
+        let _ = libneo::sys_channel_close(client_end);
         if let Link::Blocking = link {
             let _ = sys_wait(process, 0);
         }
@@ -1468,7 +1492,7 @@ fn handshake(
     scene: &mut Scene,
     (width, height): (usize, usize),
     ids: ClientIds,
-    session: Handle,
+    (session, session_peer): (Handle, Handle),
     process: libneo::ProcessHandle,
     shown: bool,
     link: Link,
@@ -1614,6 +1638,7 @@ fn handshake(
     held.keep();
     Ok(Client {
         session,
+        session_peer,
         surface,
         surface_peer: surface_client,
         process,
@@ -1638,6 +1663,7 @@ fn arthur_session(
     #[cfg(feature = "desktop-home")] home_focus: &home::HomeFocus,
     #[cfg(feature = "desktop-home")] broker: &mut libneo::atrium_launch::LaunchBroker,
 ) -> i32 {
+    let mut serving = false;
     let code = arthur_session_turns(
         scene,
         clients,
@@ -1648,7 +1674,10 @@ fn arthur_session(
         home_focus,
         #[cfg(feature = "desktop-home")]
         broker,
+        &mut serving,
     );
+    #[cfg(not(feature = "atrium-apps"))]
+    let _ = serving;
     // PR #15 review item 3: a session that ended early (his channel failing,
     // his reply never taken) ends Arthur the way any client ends: his session
     // closed, killed, reaped without waiting past the grace, his handles
@@ -1663,6 +1692,7 @@ fn arthur_session(
             arthur.surface_peer,
             arthur.buffer,
             arthur.activator,
+            arthur.session_peer,
             Handle(arthur.process.0),
         ] {
             let _ = libneo::sys_channel_close(handle);
@@ -1672,7 +1702,30 @@ fn arthur_session(
     // Chad #177 item 4: Arthur's entry (and with it his buffer mapping, so
     // its pin and charge) is cleared on every path, an early error included.
     clients.slots[ARTHUR] = None;
+    // PR #15 re-check item 3: before his session serves (no other client
+    // exists yet), a failure of his own (his handshake, his `G`/`M`, his
+    // launch handoff's discard) ends him alone too (`connect` or the block
+    // above ended him): the WM goes back to Home rather than ending the
+    // desktop. (Failures once his session serves are contained in it.)
+    #[cfg(feature = "atrium-apps")]
+    if !serving && arthur_failed_starting(code) {
+        Line::new()
+            .s(b"DESKTOP apps arthur failed code=")
+            .n(code as u64)
+            .s(b" others=0\n")
+            .emit();
+        return 0;
+    }
     code
+}
+
+/// PR #15 re-check item 3: the codes of a session's start that are Arthur's
+/// failure, not the WM's: his handshake (but its channel creation `6` and the
+/// mapping checks `14`/`15`), its first commit (`50`-`52`), his `G`/`M`
+/// (`21`), and his launch handoff's intent and discard (`23`, `31`, `35`).
+#[cfg(feature = "atrium-apps")]
+fn arthur_failed_starting(code: i32) -> bool {
+    matches!(code, 5 | 7..=13 | 16..=21 | 23 | 31 | 35 | 50..=52)
 }
 
 /// [`arthur_session`]'s body, which may return with Arthur's entry still set.
@@ -1683,6 +1736,7 @@ fn arthur_session_turns(
     intent: &[u8],
     #[cfg(feature = "desktop-home")] home_focus: &home::HomeFocus,
     #[cfg(feature = "desktop-home")] broker: &mut libneo::atrium_launch::LaunchBroker,
+    serving: &mut bool,
 ) -> i32 {
     // DI-1b resize: a new client starts at its created size.
     #[cfg(feature = "desktop-resize")]
@@ -1715,6 +1769,7 @@ fn arthur_session_turns(
         dying: [None; MAX_CLIENTS - 1],
         start: 0,
         generation: [0; MAX_CLIENTS - 1],
+        arthur_gone: false,
     });
     let Client {
         session,
@@ -1841,7 +1896,8 @@ fn arthur_session_turns(
     let mut permissions = permission::Session::default();
     #[cfg(feature = "desktop-idle-boot-test")]
     let mut idle_window = idle_witness::Window::start();
-    loop {
+    *serving = true;
+    let fault = 'serve: loop {
         // OT-66 L2 (AAG F2): the lock is served every turn, not only when
         // Arthur's channel is empty: a client flooding requests can't keep
         // it from engaging.
@@ -1867,7 +1923,7 @@ fn arthur_session_turns(
             {
                 if let Err(why) = apps::flush_arthur() {
                     apps::log_arthur(why);
-                    return 24;
+                    break 'serve Some(24);
                 }
                 if let Err(code) = apps::turns(scene, &mut apps, activator, client) {
                     return code;
@@ -1885,7 +1941,7 @@ fn arthur_session_turns(
                 match try_recv_request(surface) {
                     Ok(Some(incoming)) => break incoming,
                     Ok(None) => {}
-                    Err(_) => return 24,
+                    Err(_) => break 'serve Some(24),
                 }
             }
             #[cfg(not(feature = "atrium-apps"))]
@@ -1935,7 +1991,7 @@ fn arthur_session_turns(
         #[cfg(not(feature = "desktop-pointer"))]
         let incoming = match recv_incoming(surface) {
             Ok(incoming) => incoming,
-            Err(_) => return 24,
+            Err(_) => break 'serve Some(24),
         };
         // Bytes that do not decode are the client's error: refused in a
         // reply when the header names the request, dropped when it does not.
@@ -1949,7 +2005,7 @@ fn arthur_session_turns(
                 match target {
                     Some((opcode, request_id)) => {
                         if !refuse(surface, opcode, request_id, identity, status) {
-                            return 24;
+                            break 'serve Some(24);
                         }
                     }
                     None => log_dropped(len),
@@ -1968,7 +2024,7 @@ fn arthur_session_turns(
                         Err(Fault::Client(status)) => {
                             if !refuse(surface, header.opcode, header.request_id, identity, status)
                             {
-                                return 26;
+                                break 'serve Some(26);
                             }
                             continue;
                         }
@@ -2000,7 +2056,7 @@ fn arthur_session_turns(
                     log(b"DESKTOP answer composited surface=arthur full_scene=wm_owned\n");
                 }
                 if !send_reply(surface, opcode, header.request_id, identity) {
-                    return 26;
+                    break 'serve Some(26);
                 }
                 #[cfg(not(feature = "desktop-session-boot-test"))]
                 let _ = serial;
@@ -2039,7 +2095,7 @@ fn arthur_session_turns(
                     identity,
                     status,
                 ) {
-                    return 121;
+                    break 'serve Some(121);
                 }
             }
             // DI-1b resize: the client laid itself out at the published size.
@@ -2056,7 +2112,7 @@ fn arthur_session_turns(
                             identity,
                             status,
                         ) {
-                            return 95;
+                            break 'serve Some(95);
                         }
                         continue;
                     }
@@ -2067,7 +2123,7 @@ fn arthur_session_turns(
                     header.request_id,
                     identity,
                 ) {
-                    return 95;
+                    break 'serve Some(95);
                 }
             }
             Request::Destroy(destroy) => {
@@ -2081,7 +2137,7 @@ fn arthur_session_turns(
                         identity,
                         refused.status(),
                     ) {
-                        return 28;
+                        break 'serve Some(28);
                     }
                     continue;
                 }
@@ -2123,14 +2179,16 @@ fn arthur_session_turns(
                 frames.log();
                 log(b"DESKTOP surface destroyed client=arthur registry_alive=false\n");
                 if !send_reply(surface, OP_DESTROY_SURFACE, header.request_id, identity) {
-                    return 28;
+                    break 'serve Some(28);
                 }
                 // His reply is delivered before he is reaped.
                 #[cfg(feature = "atrium-apps")]
-                if let Err(code) = apps::settle_arthur(scene, &mut apps, activator, client) {
-                    return code;
+                match apps::settle_arthur(scene, &mut apps, activator, client) {
+                    Ok(true) => {}
+                    Ok(false) => break 'serve Some(24),
+                    Err(code) => return code,
                 }
-                break;
+                break 'serve None;
             }
             // L1.3a: Arthur asks for one action on one path. The WM answers
             // from its record or its own prompt, then lends the cap.
@@ -2160,15 +2218,34 @@ fn arthur_session_turns(
                     identity,
                     answer.status,
                 ) {
-                    return 35;
+                    break 'serve Some(35);
                 }
-                // The lent cap follows the reply on his channel.
+                // The lent cap follows the reply on his channel. PR #15
+                // re-check item 3 (input B): with the client table, every
+                // step of it is a try, and the other clients keep their turns
+                // meanwhile.
                 #[cfg(feature = "atrium-apps")]
-                if let Err(code) = apps::settle_arthur(scene, &mut apps, activator, client) {
-                    return code;
+                match apps::settle_arthur(scene, &mut apps, activator, client) {
+                    Ok(true) => {}
+                    Ok(false) => break 'serve Some(24),
+                    Err(code) => return code,
                 }
+                #[cfg(feature = "atrium-apps")]
+                match apps::lend_arthur(
+                    scene,
+                    &mut apps,
+                    activator,
+                    client,
+                    surface,
+                    permission::lent(&answer),
+                ) {
+                    Ok(true) => {}
+                    Ok(false) => break 'serve Some(35),
+                    Err(code) => return code,
+                }
+                #[cfg(not(feature = "atrium-apps"))]
                 if !permission::lend(surface, &answer) {
-                    return 35;
+                    break 'serve Some(35);
                 }
             }
             #[cfg(feature = "arthur-actions")]
@@ -2188,7 +2265,7 @@ fn arthur_session_turns(
                     identity,
                     status,
                 ) {
-                    return 36;
+                    break 'serve Some(36);
                 }
             }
             // DS-1: Arthur hands the keyboard back (Esc). Home takes over
@@ -2219,7 +2296,7 @@ fn arthur_session_turns(
                     Err(code) => return code,
                 };
                 if !send_status(surface, header.request_id, identity, status) {
-                    return 34;
+                    break 'serve Some(34);
                 }
             }
             #[cfg(feature = "desktop-home")]
@@ -2234,7 +2311,7 @@ fn arthur_session_turns(
                         identity,
                         refused.status(),
                     ) {
-                        return 32;
+                        break 'serve Some(32);
                     }
                     continue;
                 }
@@ -2244,13 +2321,15 @@ fn arthur_session_turns(
                     header.request_id,
                     identity,
                 ) {
-                    return 32;
+                    break 'serve Some(32);
                 }
                 // Home's loop doesn't retry his reply, and its resume
                 // follows the reply on his session: deliver it first.
                 #[cfg(feature = "atrium-apps")]
-                if let Err(code) = apps::settle_arthur(scene, &mut apps, activator, client) {
-                    return code;
+                match apps::settle_arthur(scene, &mut apps, activator, client) {
+                    Ok(true) => {}
+                    Ok(false) => break 'serve Some(24),
+                    Err(code) => return code,
                 }
                 if let Err(code) = home::hold(scene, home_focus) {
                     return code;
@@ -2268,8 +2347,11 @@ fn arthur_session_turns(
                     Ok(intent) => intent,
                     Err(code) => return code,
                 };
-                if let Err(code) = home::resume(scene, activator, session, intent.as_bytes()) {
-                    return code;
+                match home::resume(scene, activator, session, intent.as_bytes()) {
+                    Ok(()) => {}
+                    // His intent send, or his discard ack: his failure.
+                    Err(code @ (33 | 36)) => break 'serve Some(code),
+                    Err(code) => return code,
                 }
                 #[cfg(feature = "desktop-pointer")]
                 {
@@ -2295,7 +2377,7 @@ fn arthur_session_turns(
                     identity,
                     status,
                 ) {
-                    return 122;
+                    break 'serve Some(122);
                 }
             }
             // A request the protocol knows but this session does not take
@@ -2308,19 +2390,56 @@ fn arthur_session_turns(
                     identity,
                     libneo::atrium_protocol::ProtocolError::BadState.status(),
                 ) {
-                    return 29;
+                    break 'serve Some(29);
                 }
             }
         }
+    };
+
+    // Without the client table, a failure of Arthur's ends the session as
+    // it always has (the kill-switch: no change off `atrium-apps`).
+    #[cfg(not(feature = "atrium-apps"))]
+    if let Some(code) = fault {
+        return code;
+    }
+    // PR #15 re-check item 3: a failure of Arthur's is his alone. He is
+    // ended; the other clients keep running and are served here until each
+    // has exited (or failed), and then the session ends as his destroy would
+    // have ended it, back to Home; the WM never ends with him.
+    #[cfg(feature = "atrium-apps")]
+    if let Some(code) = fault {
+        if let Err(code) = apps::contain_arthur(scene, &mut apps, process, activator, client, code)
+        {
+            return code;
+        }
+        while apps.live() {
+            #[cfg(feature = "login")]
+            if let Err(code) = lock::service(scene) {
+                return code;
+            }
+            if let Err(code) = apps::turns(scene, &mut apps, activator, client) {
+                return code;
+            }
+            let front_activator = apps.front_activator(activator);
+            if let Err(code) = scene.pointer_tick(front_activator, home_focus, &mut escaped) {
+                return code;
+            }
+            libneo::sys_sched_yield();
+        }
+        scene.set_focused(false);
     }
 
     // OT-88 A1a: the other clients end with Arthur's session in A1a.
     #[cfg(feature = "atrium-apps")]
     apps::end_all(&mut apps);
     // PR #15 review item 3: Arthur is reaped like the others, without
-    // waiting on him: killed if he hasn't exited within the grace.
+    // waiting on him: killed if he hasn't exited within the grace. (Already
+    // reaped when he failed.)
     #[cfg(feature = "atrium-apps")]
-    let exit = apps::reap_bounded(process);
+    let exit = match fault {
+        Some(_) => Ok(0),
+        None => apps::reap_bounded(process),
+    };
     #[cfg(not(feature = "atrium-apps"))]
     let exit = sys_wait(process, 0);
     #[cfg(feature = "desktop-home")]
@@ -2358,9 +2477,12 @@ fn arthur_session_turns(
         let _ = libneo::sys_channel_close(handle);
     }
     // PR #15 review item 2: the WM's copy of his surface end too (closable
-    // only now that he's gone).
+    // only now that he's gone), and (re-check) of his session end.
     #[cfg(feature = "atrium-apps")]
-    let _ = libneo::sys_channel_close(arthur.surface_peer);
+    {
+        let _ = libneo::sys_channel_close(arthur.surface_peer);
+        let _ = libneo::sys_channel_close(arthur.session_peer);
+    }
     #[cfg(feature = "desktop-resize")]
     {
         scene.configure = None;
@@ -2370,6 +2492,15 @@ fn arthur_session_turns(
     #[cfg(feature = "atrium-apps")]
     drop(apps);
     clients.slots[ARTHUR] = None;
+    #[cfg(feature = "atrium-apps")]
+    if let Some(code) = fault {
+        Line::new()
+            .s(b"DESKTOP session end client=arthur contained=")
+            .n(code as u64)
+            .s(b"\n")
+            .emit();
+        return 0;
+    }
     match exit {
         Ok(0) => {
             log(b"DESKTOP session end client=arthur exit=0\n");
@@ -2843,8 +2974,9 @@ mod apps {
     /// A reply the client hasn't received this long after its request marks
     /// it hung, and it is ended (A2's Spine chip shows it before then).
     const REPLY_NS: u64 = 5_000_000_000;
-    /// The route handoff's discard step (`K`, then the client's `D`).
-    const DISCARD_NS: u64 = 1_000_000_000;
+    /// The route handoff's discard step (`K`, then the client's `D`; for
+    /// Arthur's resume from Home, his intent and his `D`).
+    pub const DISCARD_NS: u64 = 1_000_000_000;
     /// An ended client that hasn't exited this long after its session
     /// channel closed is killed.
     const EXIT_NS: u64 = 1_000_000_000;
@@ -2959,23 +3091,156 @@ mod apps {
 
     /// Deliver the reply owed to Arthur before a step that must follow it on
     /// his channel (his destroy's exit, a permission's lent cap). The other
-    /// clients keep their turns meanwhile; bounded by [`REPLY_NS`].
+    /// clients keep their turns meanwhile; bounded by [`REPLY_NS`]. `Ok(false)`:
+    /// Arthur is hung or gone (his failure, contained by the caller); `Err` is
+    /// the WM's own.
     pub fn settle_arthur(
         scene: &mut Scene,
         apps: &mut Apps,
         arthur_activator: Handle,
         arthur_pixels: &SharedPixels,
-    ) -> Result<(), i32> {
+    ) -> Result<bool, i32> {
         while arthur_owed() {
             if let Err(why) = flush_arthur() {
                 log_client(why, ARTHUR, 0);
-                return Err(24);
+                return Ok(false);
             }
             if !arthur_owed() {
                 break;
             }
             turns(scene, apps, arthur_activator, arthur_pixels)?;
             libneo::sys_sched_yield();
+        }
+        Ok(true)
+    }
+
+    /// The lend of a permission's cap on Arthur's `surface` channel (PR #15
+    /// re-check item 3, input B). Every step is a try
+    /// ([`libneo::atrium_lend`]); while Arthur isn't ready for one, the other
+    /// clients keep their turns. Not taken within [`REPLY_NS`], or answered
+    /// wrong: `Ok(false)`, Arthur's failure (contained by the caller), the WM
+    /// never parked on him.
+    #[cfg(feature = "arthur-actions")]
+    pub fn lend_arthur(
+        scene: &mut Scene,
+        apps: &mut Apps,
+        arthur_activator: Handle,
+        arthur_pixels: &SharedPixels,
+        surface: Handle,
+        lent: Option<(Handle, libneo::CapRights)>,
+    ) -> Result<bool, i32> {
+        use libneo::atrium_lend::{LendError, LendIo, Try, lend};
+        struct Io {
+            channel: Handle,
+            cap: Handle,
+            rights: libneo::CapRights,
+        }
+        fn tried(r: i64, done: i64) -> Try {
+            match r {
+                r if r == done => Try::Done,
+                EAGAIN => Try::NotReady,
+                _ => Try::Failed,
+            }
+        }
+        impl LendIo for Io {
+            fn try_offer(&mut self) -> Try {
+                tried(libneo::sys_try_send(self.channel, b"O"), 1)
+            }
+            fn try_control(&mut self, expected: u8) -> Try {
+                let mut byte = [0u8; 1];
+                match tried(libneo::sys_try_recv(self.channel, &mut byte), 1) {
+                    Try::Done if byte[0] != expected => Try::Failed,
+                    other => other,
+                }
+            }
+            fn try_grant(&mut self) -> Try {
+                tried(
+                    libneo::sys_try_grant(self.channel, self.cap, self.rights),
+                    0,
+                )
+            }
+        }
+        let Some((cap, rights)) = lent else {
+            return Ok(true);
+        };
+        let mut io = Io {
+            channel: surface,
+            cap,
+            rights,
+        };
+        let deadline = monotonic_ns().saturating_add(REPLY_NS);
+        match lend(&mut io, deadline, monotonic_ns, || {
+            turns(scene, apps, arthur_activator, arthur_pixels)?;
+            libneo::sys_sched_yield();
+            Ok(())
+        }) {
+            Ok(()) => Ok(true),
+            Err(LendError::Between(code)) => Err(code),
+            Err(LendError::TimedOut(step)) => {
+                log_lend(b"hung", step);
+                Ok(false)
+            }
+            Err(LendError::Failed(step)) => {
+                log_lend(b"failed", step);
+                Ok(false)
+            }
+        }
+    }
+
+    #[cfg(feature = "arthur-actions")]
+    fn log_lend(what: &[u8], step: libneo::atrium_lend::Step) {
+        use libneo::atrium_lend::Step;
+        Line::new()
+            .s(b"DESKTOP apps arthur lend ")
+            .s(what)
+            .s(match step {
+                Step::Offer => b" step=offer\n",
+                Step::Ready => b" step=ready\n",
+                Step::Grant => b" step=grant\n",
+                Step::Ack => b" step=ack\n",
+            })
+            .emit();
+    }
+
+    /// PR #15 re-check item 3 (input A): Arthur failed (`code`: his channel,
+    /// his protocol, or a reply or lend he never took). He alone is ended:
+    /// killed and reaped without waiting past [`EXIT_NS`], his replies no
+    /// longer tries; the other clients stay, and if he was in front the next
+    /// live one takes it. His handles are the session's teardown's to close
+    /// (once). Then the session serves the others until none is left.
+    pub fn contain_arthur(
+        scene: &mut Scene,
+        apps: &mut Apps,
+        process: ProcessHandle,
+        arthur_activator: Handle,
+        arthur_pixels: &SharedPixels,
+        code: i32,
+    ) -> Result<(), i32> {
+        disarm_arthur();
+        apps.arthur_gone = true;
+        let _ = libneo::sys_kill(process);
+        let exit = reap_bounded(process);
+        let others = apps.others.iter().filter(|c| c.is_some()).count();
+        Line::new()
+            .s(b"DESKTOP apps arthur failed code=")
+            .n(code as u64)
+            .s(b" reaped=")
+            .s(if exit.is_ok() { b"yes" } else { b"no" })
+            .s(b" others=")
+            .n(others as u64)
+            .s(b"\n")
+            .emit();
+        if apps.front == ARTHUR
+            && let Some(next) = next_other(apps)
+        {
+            switch(
+                scene,
+                apps,
+                next,
+                arthur_activator,
+                arthur_pixels,
+                b"arthur-failed",
+            )?;
         }
         Ok(())
     }
@@ -2984,9 +3249,9 @@ mod apps {
     #[derive(Clone, Copy)]
     pub struct Dying {
         process: ProcessHandle,
-        /// The WM's surface (both ends), buffer and activator handles, when
-        /// it got them.
-        handles: [Option<Handle>; 4],
+        /// The WM's surface (both ends), buffer, activator and session-peer
+        /// handles, when it got them.
+        handles: [Option<Handle>; 5],
         since: u64,
         killed: bool,
     }
@@ -3016,6 +3281,9 @@ mod apps {
         /// item 2), so whatever named the slot's previous client (an owed
         /// reply) no longer matches it.
         pub generation: [u32; MAX_CLIENTS - 1],
+        /// PR #15 re-check item 3: Arthur failed and was ended alone
+        /// ([`contain_arthur`]); the front never goes back to him.
+        pub arthur_gone: bool,
     }
 
     impl Apps<'_> {
@@ -3161,7 +3429,7 @@ mod apps {
                 if let Some(process) = spawned {
                     apps.dying[index - 1] = Some(Dying {
                         process,
-                        handles: [None; 4],
+                        handles: [None; 5],
                         since: monotonic_ns(),
                         killed: true,
                     });
@@ -3318,13 +3586,47 @@ mod apps {
         }
     }
 
-    /// The live client after the one in front, wrapping to Arthur.
+    /// The live client after the one in front, wrapping to Arthur (to the
+    /// one in front itself, once Arthur is gone and no other is live).
     fn next_live(apps: &Apps) -> usize {
+        if apps.arthur_gone {
+            return next_other(apps).unwrap_or(apps.front);
+        }
         let n = apps.others.len() + 1;
         (1..n)
             .map(|step| (apps.front + step) % n)
             .find(|&index| index == ARTHUR || apps.others[index - 1].is_some())
             .unwrap_or(ARTHUR)
+    }
+
+    /// The live client other than Arthur after the one in front, if any.
+    fn next_other(apps: &Apps) -> Option<usize> {
+        let n = apps.others.len() + 1;
+        (1..=n)
+            .map(|step| (apps.front + step) % n)
+            .find(|&index| index != ARTHUR && apps.others[index - 1].is_some())
+    }
+
+    /// The front after client `index` ended or failed its handoff: Arthur,
+    /// or once he is gone the next live client (none: the session's
+    /// `serve_others` ends and Home takes the route back).
+    fn fall_back(
+        scene: &mut Scene,
+        apps: &mut Apps,
+        arthur_activator: Handle,
+        arthur_pixels: &SharedPixels,
+        via: &[u8],
+    ) -> Result<(), i32> {
+        if !apps.arthur_gone {
+            return switch(scene, apps, ARTHUR, arthur_activator, arthur_pixels, via);
+        }
+        match next_other(apps) {
+            Some(next) => switch(scene, apps, next, arthur_activator, arthur_pixels, via),
+            None => {
+                apps.front = ARTHUR;
+                Ok(())
+            }
+        }
     }
 
     /// Bring client `index` to the front by the ordered handoff (swap the
@@ -3371,11 +3673,12 @@ mod apps {
                     // PR #15 review item 2: the swap already gave the route
                     // to the failed client, whatever `front` still says. The
                     // route and the front go back to Arthur on every failed
-                    // handoff, not only when the failed client was in front.
-                    return switch(
+                    // handoff, not only when the failed client was in front
+                    // (re-check item 3: or to the next live client, Arthur
+                    // gone).
+                    return fall_back(
                         scene,
                         apps,
-                        ARTHUR,
                         arthur_activator,
                         arthur_pixels,
                         b"handoff-failed",
@@ -3431,16 +3734,16 @@ mod apps {
                 Some(client.surface_peer),
                 Some(client.buffer),
                 Some(client.activator),
+                Some(client.session_peer),
             ],
             since: monotonic_ns(),
             killed: false,
         });
         CYCLE.store(apps.live(), Ordering::Relaxed);
         if apps.front == index {
-            switch(
+            fall_back(
                 scene,
                 apps,
-                ARTHUR,
                 arthur_activator,
                 arthur_pixels,
                 b"client-ended",
@@ -3543,6 +3846,7 @@ mod apps {
                         Some(client.surface_peer),
                         Some(client.buffer),
                         Some(client.activator),
+                        Some(client.session_peer),
                     ],
                     since: monotonic_ns(),
                     killed: false,
@@ -5070,11 +5374,17 @@ mod home {
     /// Hand Arthur an intent: `b"I"` + up to [`MAX_INTENT`] printable bytes
     /// (possibly none) on the session channel.
     pub fn send_intent(session: Handle, intent: &[u8]) -> bool {
+        let (message, len) = intent_message(intent);
+        sys_send(session, &message[..len]) == len as i64
+    }
+
+    /// `I` and the intent (at most [`MAX_INTENT`] bytes), and its length.
+    fn intent_message(intent: &[u8]) -> ([u8; 1 + MAX_INTENT], usize) {
         let mut message = [0u8; 1 + MAX_INTENT];
         message[0] = b'I';
         let len = intent.len().min(MAX_INTENT);
         message[1..1 + len].copy_from_slice(&intent[..len]);
-        sys_send(session, &message[..1 + len]) == (1 + len) as i64
+        (message, 1 + len)
     }
 
     /// Back from Home to the held Arthur (Chad DS-1a F1: `HANDOFF`): its own
@@ -5094,12 +5404,31 @@ mod home {
                     // Logged before the send: the held Arthur cannot act (or
                     // log) until the intent arrives.
                     log_resume(intent.len());
-                    if !send_intent(session, intent) {
-                        return Err(33);
+                    // PR #15 re-check item 6: with the client table, the
+                    // intent and his `D` are tries against one deadline, as a
+                    // client's handoff is; a held Arthur that stopped taking
+                    // them is his failure (33/36, contained), never the WM
+                    // parked.
+                    #[cfg(feature = "atrium-apps")]
+                    {
+                        let link = super::Link::within(super::apps::DISCARD_NS);
+                        let (message, len) = intent_message(intent);
+                        if !link.send(session, &message[..len]) {
+                            return Err(33);
+                        }
+                        if !link.recv_control(session, b'D') {
+                            return Err(36);
+                        }
                     }
-                    // Arthur has discarded its queue: only then the view.
-                    if !super::recv_control(session, b'D') {
-                        return Err(36);
+                    #[cfg(not(feature = "atrium-apps"))]
+                    {
+                        if !send_intent(session, intent) {
+                            return Err(33);
+                        }
+                        // Arthur has discarded its queue: only then the view.
+                        if !super::recv_control(session, b'D') {
+                            return Err(36);
+                        }
                     }
                     Ok(())
                 },

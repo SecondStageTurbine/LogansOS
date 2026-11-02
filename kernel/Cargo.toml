@@ -1085,6 +1085,9 @@ neo-test-desktop-apps-handoff-death-boot = ["neo-test-desktop-pointer", "ipc-try
 neo-test-desktop-apps-reuse-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 neo-test-desktop-apps-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 neo-test-desktop-apps-grab-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 re-check item 3: Arthur hangs on a reply with the probe app live; he
+# alone is ended.
+neo-test-desktop-apps-arthur-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # DS-1c: the DS-1 session whose Arthur blooms the read-only Lens (a second
 # client); kernel-identical to desktop_home_boot / desktop_pointer_boot, only
 # the userland build (`desktop-lens`) and the host-side capture checks differ.

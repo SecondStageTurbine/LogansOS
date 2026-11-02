@@ -636,6 +636,38 @@ impl ArthurSurface {
         Ok(serial)
     }
 
+    /// PR #15 re-check item 3 boot test: send one commit and never receive
+    /// its reply, then never take another message (the WM must end this
+    /// Arthur alone and keep its other clients).
+    #[cfg(feature = "atrium-apps-arthur-hang")]
+    pub fn commit_and_hang(&mut self) -> ! {
+        let serial = self.client_serial.saturating_add(1);
+        let (x, y, width, height) = self.damage();
+        let damage = encode_damage_rect(x, y, width, height);
+        let _ = sys_buffer_commit_damage(self.buffer, &damage);
+        let request_id = self.next_request_id();
+        let sent = send_request(
+            self.surface,
+            request_id,
+            Request::CommitDamage(libneo::atrium_protocol::CommitDamage {
+                identity: self.identity,
+                client_serial: serial,
+                x,
+                y,
+                width,
+                height,
+            }),
+        );
+        crate::stage_b_log_line(if sent {
+            b"DESKTOP arthur hanging reply=never-received"
+        } else {
+            b"DESKTOP arthur hanging send=failed"
+        });
+        loop {
+            libneo::sys_sched_yield();
+        }
+    }
+
     /// Boot-test probe (desktop_resize_boot): one request the WM must refuse
     /// for each of its session loop's client-error arms, each answered in
     /// its reply's status while the session goes on. None of them changes
