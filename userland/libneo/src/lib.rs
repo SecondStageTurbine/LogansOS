@@ -75,6 +75,7 @@ pub mod mem_info;
 pub mod nsync;
 pub mod nthread;
 pub mod ntls;
+pub mod pipe_abi;
 pub mod tls;
 pub mod wait_abi;
 
@@ -311,11 +312,9 @@ pub const SYS_WAIT_ANY: u64 = 0x1B5;
 pub const SYS_BUFFER_UNMAP: u64 = 0x1B6;
 /// L1a.1 step 2a (kernel `pipe`; ENOSYS elsewhere): a byte pipe. See
 /// [`sys_pipe_create`], [`sys_pipe_read`], [`sys_pipe_write`].
-pub const SYS_PIPE_CREATE: u64 = 0x1BA;
-pub const SYS_PIPE_READ: u64 = 0x1BB;
-pub const SYS_PIPE_WRITE: u64 = 0x1BC;
-/// `sys_pipe_read` / `sys_pipe_write` flag: don't park (`EAGAIN` instead).
-pub const PIPE_NONBLOCK: u64 = 1;
+pub use pipe_abi::{
+    PIPE_NONBLOCK, SYS_PIPE_CREATE, SYS_PIPE_READ, SYS_PIPE_WRITE, pipe_split_ends,
+};
 /// Pipe sizes the terminal uses (THINK L1a §3.3), and the largest allowed.
 pub const PIPE_STDIN_CAPACITY: u64 = 4 * 1024;
 pub const PIPE_STDOUT_CAPACITY: u64 = 64 * 1024;
@@ -3145,29 +3144,6 @@ pub fn sys_pipe_create(capacity: u64) -> Result<(Handle, Handle), i64> {
     } else {
         let (rd, wr) = pipe_split_ends(r as u64);
         Ok((Handle(rd), Handle(wr)))
-    }
-}
-
-/// `SYS_PIPE_CREATE`'s packed return: the read end's handle in the low 32
-/// bits, the write end's in the high 32.
-#[inline]
-pub const fn pipe_split_ends(packed: u64) -> (u32, u32) {
-    (packed as u32, (packed >> 32) as u32)
-}
-
-/// The pipe ABI's byte oracle on libneo's side (Dexter #56 F3), the same
-/// hand-laid values as the kernel's in `tools/pipe-logic-tests`.
-#[cfg(test)]
-mod pipe_abi_tests {
-    #[test]
-    fn pipe_create_return_and_flag() {
-        let packed = u64::from_le_bytes([0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]);
-        assert_eq!(packed, 0x5566_7788_1122_3344);
-        assert_eq!(super::pipe_split_ends(packed), (0x1122_3344, 0x5566_7788));
-        assert_eq!(super::PIPE_NONBLOCK, 1);
-        assert_eq!(super::SYS_PIPE_CREATE, 0x1BA);
-        assert_eq!(super::SYS_PIPE_READ, 0x1BB);
-        assert_eq!(super::SYS_PIPE_WRITE, 0x1BC);
     }
 }
 

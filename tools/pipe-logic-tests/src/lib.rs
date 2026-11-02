@@ -12,6 +12,11 @@
 #[path = "../../../kernel/src/ipc/pipe_logic.rs"]
 mod pipe_logic;
 
+/// libneo's side of the pipe ABI, mounted the same way, so the byte oracle
+/// below pins both halves independently (Dexter #56 F3).
+#[path = "../../../userland/libneo/src/pipe_abi.rs"]
+mod libneo_pipe_abi;
+
 #[cfg(test)]
 mod tests {
     use super::pipe_logic::*;
@@ -350,6 +355,19 @@ mod tests {
         );
         assert_eq!(pack_ends(0, 1), 0x0000_0001_0000_0000);
         assert_eq!(PIPE_NONBLOCK, 1);
+        // libneo's half, against the same hand-laid bytes.
+        use super::libneo_pipe_abi as user;
+        let packed = u64::from_le_bytes([0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]);
+        assert_eq!(user::pipe_split_ends(packed), (0x1122_3344, 0x5566_7788));
+        assert_eq!(user::PIPE_NONBLOCK, 1);
+        assert_eq!(
+            (
+                user::SYS_PIPE_CREATE,
+                user::SYS_PIPE_READ,
+                user::SYS_PIPE_WRITE
+            ),
+            (0x1BA, 0x1BB, 0x1BC)
+        );
     }
 
     /// The zero-length contract (Dexter #46 1a; step-2 THINK §2a), as

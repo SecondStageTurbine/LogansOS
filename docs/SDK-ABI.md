@@ -362,8 +362,8 @@ A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wi
 Notes:
 - `SYS_PIPE_CREATE`'s return packs the read end's handle in bits 0–31 and the write end's in bits 32–63:
   handles `(0x11223344, 0x55667788)` return `0x5566778811223344`, little-endian bytes
-  `44 33 22 11 88 77 66 55` (the byte oracle: `tools/pipe-logic-tests` `abi_byte_oracle`, and libneo's
-  `pipe_abi_tests`). `PIPE_NONBLOCK` is bit 0 of `flags`; other bits are ignored.
+  `44 33 22 11 88 77 66 55` (the byte oracle: `tools/pipe-logic-tests` `abi_byte_oracle`, which checks the
+  kernel's packer and libneo's `pipe_abi.rs` against those bytes). `PIPE_NONBLOCK` is bit 0 of `flags`; other bits are ignored.
 - A handle carries every meta right (`USE`, `GRANT`, `DERIVE`, `REVOKE`) and only its end's semantic right
   (`READ` = bit 0 on a read end, `WRITE` = bit 1 on a write end); the wrong end is `EPERM`.
 - A write of at most 512 bytes (`PIPE_ATOMIC`) that fits the capacity is atomic. A `SYS_WAIT_ANY` item of

@@ -60,7 +60,7 @@ and the wait item):
 - **Syscalls** at `0x1BA`-`0x1BC` (`0x1B7`-`0x1B9` are taken by #15's A0k calls; no branch uses `0x1BA`-`0x1BF`) (all `cfg(feature = "pipe")`, each with an SDK-ABI row):
   - `SYS_PIPE_CREATE(capacity) -> rd | wr << 32`, two installs with the `sys_chan_create` rollback
     (syscall.rs 2112-2155); capacity 1..=64 KiB, else `EINVAL`. The packing is `pipe_logic::pack_ends`, with a
-    hand-laid byte oracle in `tools/pipe-logic-tests` and the same fixture against libneo's `pipe_split_ends`
+    hand-laid byte oracle in `tools/pipe-logic-tests` and the same fixture against libneo's `pipe_split_ends` (`userland/libneo/src/pipe_abi.rs`, mounted in the same test)
     (Dexter #56 F3).
   - `SYS_PIPE_READ(h, buf, len, flags) -> n`, and `SYS_PIPE_WRITE(h, buf, len, flags) -> n`. `flags` 0 blocks;
     `PIPE_NONBLOCK` (1) is a try (`EAGAIN`). A read with a deadline is `SYS_WAIT_ANY` on the pipe item, then a
