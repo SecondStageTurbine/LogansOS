@@ -230,7 +230,11 @@ a removed line, an ungated line, and a block gated on an existing feature.
 **Inputs** (`workflow_dispatch`):
 - `batch`: PR numbers, in landing order;
 - `base_sha` (optional): defaults to main's tip at plan time;
-- `prefix` (optional): run only the first N members, for bisecting.
+- `prefix` (optional): run only the first N members, for bisecting;
+- `scenarios` (with `prefix` only): the failing scenarios a bisect leg runs.
+
+*As built (S2b):* a batch is always the full tier. The plan job fails a batch dispatched with `tier: quick`, and
+`batch-report` says "merge evidence: yes" only for the full tier with all 4 shards and every other job green.
 
 **Quick-green, by machine rule (F7).** For each member, `batch-plan` resolves the head SHA once. It then reads
 `GET /repos/{owner}/{repo}/commits/{sha}/check-runs` and requires each of `Quick: host-checks`,
@@ -291,6 +295,12 @@ Each job prints the tree hash; `batch-report` checks they are all equal and prin
   - The first prefix that fails names the PR that introduced the failure, even when the cause is an interaction with
     an earlier member.
   - `prefix=0` is the base alone. A failure there is a `main` problem, handled by the escaped-defect contract.
+- *As built (S2b):* the timing table's `result` column is `pass`, `FAIL` (QEMU ran), `FAIL-build` (no QEMU run: a
+  kernel, userland or image build failed) or `FAIL-timeout` (the last QEMU run hit its limit). A batch shard runs
+  `--keep-going --rerun-timeouts`: every timeout runs once more at the end of its shard, as a `rerun-…` row, and only a
+  re-run failure stays a failure. `batch-report` sorts the rows into those classes, counts K from the plan's shard
+  list (not a fixed 4), and prints the failing names for the next `prefix` leg. A bisect leg is one QEMU job,
+  `cargo neo-test <scenarios> --keep-going --rerun-timeouts`, with no host, build, RNG or fuzz job.
 - **Owner (F10).** The PM names the owner: the author of the first failing prefix's last member. That PR is bounced,
   and the batch re-forms without it. If an interaction failure has no single owner, the batch is not landed. Nothing
   is on `main` to revert, because nothing lands red.
@@ -434,3 +444,19 @@ Commits and licenses were read from shallow clones (`git log -1`, the license fi
 | F29 | Same as F9. |
 | F30 `main` push is host-only | Section 4. |
 | F31 S0 status | Marked done (section 5). |
+
+## 10. Review resolution (Dexter, relay 271, on #45 `e4dd26e2` / #47 `7c932271`)
+
+| Finding | Resolution |
+|---|---|
+| #45 item 4: 7 / 11 jobs, not 3 / 2 | `build-checks` folds product build, the feature clippy configurations, SPDX and identity; decoder fuzz is one job; `main`'s push run is host-only. Quick PR 4 jobs (3 at once), `main` push 3 (2 at once). Section 3 has the arithmetic: 4 seats + a K = 4 batch = 20. |
+| #45 note 1: the smoke job re-plans | It takes the plan job's base SHA (`gate_base`) and no longer runs `gate-plan`. A failing or tier-less plan is full-alone (the last `tier=` line). |
+| #45 note 2: `SCENARIO_ONLY_EXCEPTION` | Unchanged here; it is the PM's question 3 (section 8). |
+| 2.1 evidence not tied to tier; `base_sha` unchecked; no pagination; prefix without batch | `batch-plan.sh` asks `gate-plan` first and demands the smoke job for `quick`, the 4 shards for `full-alone`; the base must be on `main`; `gh api --paginate`; the plan job rejects `prefix` or `scenarios` without `batch`. |
+| 2.3 a quick batch passes for a full one | 2.4 above: rejected by the plan job, and not evidence in `batch-report`. |
+| 2.4 a prefix leg runs 4 full shards | One job, the named failing scenarios (2.5). |
+| 2.5 no build/timeout classification; timeout re-run procedural; K hard-coded | 2.5 above: the `result` classes, `--rerun-timeouts`, K from the plan. |
+| 2.6 the revert takes other merges | `revert-batch.sh` takes only the first `batch: member 1, 2, …` run after the base, each merge's second parent checked; a host test reproduces Dexter's case plus a later batch. |
+| 2.7 a failed plan hides behind `tee` | The step runs under `bash -o pipefail` and writes the plan to a file first. |
+| 2.8 token scope | A top-level `permissions: contents: read`; only the plan job adds reads. |
+| Section 6 rows in CLAUDE.md | "At most 4 quick tiers" now matches section 3; the invariant is stated; a full-alone PR's merge evidence is its batch-of-one run. |

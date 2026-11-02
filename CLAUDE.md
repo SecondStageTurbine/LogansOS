@@ -580,28 +580,35 @@ per-PR full gates queue behind each other. The gate now has two tiers. The rules
 close-gate evidence and the AAG to match.
 
 **Quick tier, on every PR (automatic).**
-- `CI` runs on every PR push. Its QEMU job is one cell, `QEMU smoke (quick tier)`:
-  - `cargo xtask gate-plan`, then `cargo neo-test --tier quick` (the smoke list plus the PR's changed scenarios
-    within the cost budget);
+- `CI` runs on every PR push: a plan job (`cargo xtask gate-plan`), then three jobs, `Host Tests, Format & Lint`,
+  `Build Checks` (product build, the feature-gated clippy configurations, SPDX, identity) and one QEMU cell,
+  `QEMU smoke (quick tier)`:
+  - `cargo neo-test --tier quick` (the smoke list plus the PR's changed scenarios within the cost budget), against
+    the plan job's base;
   - a 12-minute budget check.
 - A seat can also dispatch `CI` with `tier: quick` on a branch.
 - The RETURN or `PM:` comment cites **this run's URL** as the close-gate evidence. This replaces "the PR's own
   `workflow_dispatch` QEMU run".
 
 **Full tier: one run over a batch, before anything lands.**
-- The PM dispatches `CI` with `batch: "<PR numbers in landing order>"`:
-  - `base_sha` defaults to main's tip;
-  - `prefix=N` is a bisect leg; `prefix=0` is the base alone.
-- **A member must be green on its exact head** (its PR run's smoke job passed), and `tier=quick` by `gate-plan`.
+- The PM dispatches `CI` on `main` with `tier: full` and `batch: "<PR numbers in landing order>"`:
+  - `base_sha` defaults to main's tip, and must be on `main`;
+  - a batch is always the full tier: the plan job fails a batch dispatched with `tier: quick`.
+- **A member must be green on its exact head, in the evidence its `gate-plan` tier calls for:** its PR run's smoke
+  job passed (`tier=quick`), or its PR run's 4 shards passed (`full-alone`). A `full-alone` PR may only be a batch
+  of one.
 - **A PR `gate-plan` puts in `full-alone` gets the full tier on its own PR run:** the plan job sees `full-alone` and
   runs the 4 shards instead of the smoke job. That covers the SMP/concurrency core, the harness and xtask (except a
-  scenario-only addition), `scripts/`, the workflows and the build configuration. Its landing is a batch of one,
-  whose plan accepts the 4 green shards as its green run.
+  scenario-only addition), `scripts/`, the workflows and the build configuration. That run is its close-gate
+  evidence; **its merge evidence is still its batch-of-one run**, on the assembled tree (main at the base plus the PR).
 - Every job rebuilds the same tree with `scripts/batch-assemble.sh` and fails unless its hash is the plan's.
-- `batch-report` lists every failing scenario and flags infra.
+- `batch-report` is the verdict. It is green, and prints "Merge evidence: yes", only for a full-tier batch with all
+  4 shards and every other job green. It classifies what failed: scenario failures, build failures (`FAIL-build`:
+  the scenario never reached QEMU), timeouts that failed their re-run, timeouts that passed it, and QEMU jobs with no
+  timing table (infra).
 
-**Merge bar.** It replaces "4-shard gate green on the exact SHA". The batch run must be green on the batch tree. The
-merge report names:
+**Merge bar.** It replaces "4-shard gate green on the exact SHA". The batch run's `batch-report` must say "Merge
+evidence: yes" for the batch tree. The merge report names:
 - the batch base SHA;
 - every member's head SHA;
 - the batch tree hash;
@@ -620,14 +627,20 @@ The PM's own `git show --stat` stays **per PR**.
   - by any code, re-batch.
 
 **Red batch.**
-- **Bisect by prefix** (`prefix=N`): binary search, one job per round, running only the failing scenarios. The first
-  failing prefix's last member is the owner, and that PR is bounced.
-- **Infra reds are re-fired, never bisected:** a shard with no timing table, runner loss, disk-full or OOM.
-- **A timeout is re-run once** before bisecting.
+- **A timeout is re-run once** before anyone bisects: each batch shard runs `--keep-going --rerun-timeouts`, so a
+  scenario that timed out runs again at the end of its shard, on the same tree. A re-run pass is not a failure (the
+  report lists it; raise its timeout); a re-run failure is bisected like any other.
+- **Bisect by prefix:** dispatch the same `batch` with `prefix=N` and `scenarios` set to the list `batch-report`
+  prints. That runs one QEMU job, `QEMU bisect leg (named scenarios)`, with only those scenarios, on the first N
+  members (`prefix=0` is the base alone). Binary search over N; the first failing prefix's last member is the owner,
+  and that PR is bounced. A bisect leg is never merge evidence.
+- **Infra reds are re-fired, never bisected:** a QEMU job with no timing table, runner loss, disk-full or OOM.
 - A red batch never lands, so it never reaches `main`.
 
-**Revert unit.** `scripts/revert-batch.sh <base>` reverts a landed batch's merges as **one commit**. That is the "one
-action from green" of the escaped-defect contract, and the ~4-hour fix-forward window applies to the named owner.
+**Revert unit.** `scripts/revert-batch.sh <base>` reverts a landed batch's merges as **one commit**, and only those:
+the run of `batch: member 1, 2, …` merges (author `OT-58 batch`) right after the base, never another PR's merge or a
+later batch. That is the "one action from green" of the escaped-defect contract, and the ~4-hour fix-forward window
+applies to the named owner.
 
 **AAG.**
 - Still per kernel-touching PR, **plus one AAG over the batch's composed diff** when two or more members touch the
@@ -635,11 +648,17 @@ action from green" of the escaped-defect contract, and the ~4-hour fix-forward w
 - SMP-core PRs are `full-alone`, so they never share a batch, and their cross-family lens stays per PR.
 
 **QEMU stagger.** The "at most ~2-3 kernel-touching QEMU gates in flight" rule is **superseded for GitHub-hosted
-runs** by the 20-job limit. While a batch runs, at most 4 quick tiers run alongside it. The stagger still applies if
+runs** by the 20-job limit. A quick tier is 3 jobs at once and a K = 4 batch is 8, so the PM dispatches a batch only
+while at most 4 quick tiers are running (4 × 3 + 8 = 20; THINK section 3). The stagger still applies if
 `QEMU_RUNNER_LABELS` points the QEMU jobs back at self-hosted runners.
 
 **Tree identity** (a docs-only rebase keeps a gate): compare everything **except** `Plans/`, `docs/` and `*.md`, not
 only `kernel`/`userland`/`tools`/`Cargo.*`.
+
+**The invariant (THINK section 6):** nothing lands on `main` unless a full-tier run passed on a tree that equals,
+outside `Plans/`, `docs/` and `*.md`, `main` after the landing. Its guards are the batch's tree-hash check, the PM's
+pre-landing re-assembly, and the post-landing diff above. `main`'s own push run is host-only (host checks and build
+checks); the batch run is its QEMU evidence.
 
 **Transition.** Until the first batch lands, a PR's own green `tier: full` dispatch is still valid merge evidence.
 `tier: full` without `batch` is today's gate, and it stays the kill-switch.
