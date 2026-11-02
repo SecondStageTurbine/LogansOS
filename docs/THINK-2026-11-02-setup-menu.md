@@ -2,13 +2,15 @@
 # THINK: the first-boot setup menu (a "Try or Install" wizard), Ubuntu-style
 
 **Date:** 2026-11-02 · **Author:** Dexter · **Dispatch:**
-`Plans/DISPATCH-2026-11-02-setup-menu-think-dexter.md` (relay 282, F11) · **Status:** design only, no code.
+`Plans/DISPATCH-2026-11-02-setup-menu-think-dexter.md` (relay 282, F11) · **Status:** revision 2 (relay 285),
+design only, no code.
 
 **The ask (the PL, 2026-11-02):** a menu like Ubuntu's, where you choose your Wi-Fi or internet, put in the
 time, the keyboard, and the rest, for the "try it before you install it" sessions.
 
-**Code and docs are cited at `origin/main` `88ec5e866`** (2026-11-02), unless a line names another ref. The two
-keyboard PRs are cited from their branches, because they are not on `main` yet.
+**Code and docs are cited at `origin/main` `2cf6af300`** (2026-11-02), unless a line names another ref. The two
+keyboard PRs are now merged there (#53 `b03abfbab`, #54 `cab959819`), after revision 1 was written on their
+branches.
 
 **The one-breath answer.**
 - **One wizard, drawn by the WM**, as a pre-desktop view in `neo-init` (the login, lock and installer views are the
@@ -21,9 +23,10 @@ keyboard PRs are cited from their branches, because they are not on `main` yet.
   The installer does not carry the record into the target in v1; that follows OT-66 §7's precedent and is named
   as the convergence rung (§5, S7b).
 - **Today:** Comfort works end to end; Time zone works once Seat I's time-zone build lands (PR #51 is design
-  only); Network can show a wired lease with one new read-only syscall, with Wi-Fi an honest stub; Language and
-  Keyboard are hidden until they can do something, with their rungs specified; Try or Install needs OT-87 R5 and,
-  until the medium is readable, its Install action is a restart.
+  only); **Network has no page until S4** — the link and lease exist in the kernel, but no userland call exposes
+  them, so the wizard makes no network claim and the Wi-Fi half is a stub; Language and Keyboard are hidden until
+  they can do something, with their rungs specified; Try or Install needs OT-87 R5 and, until the medium is
+  readable, its Install action is a restart.
 - **Seven build rungs + one convergence**, each with a QEMU scenario, a serial-script key walk, a frame oracle
   and a kill-switch. The whole wizard off ⇒ today's boot, bit for bit.
 
@@ -113,7 +116,7 @@ Home field is reused as the time-zone search box. Up/Down/Tab move, Enter/Space 
 | 0 | **Welcome** | "Set up LogansOS. A few short screens; you can change any of these later." **Begin** / **Skip setup** | nothing | yes |
 | 1 | **Language** | which language the desktop uses | `Language` (catalog id) | **hidden until a second language exists** (§3.1) |
 | 2 | **Keyboard** | which layout the keys type, with a test line | `KeyboardLayout` (table id) | **hidden until a second layout exists** (§3.2) |
-| 3 | **Network** | the wired link's status; Wi-Fi is coming; **Continue without a network** | nothing persisted; the lease is kernel state | yes |
+| 3 | **Network** | the wired link's status; Wi-Fi is coming; **Continue without a network** | nothing persisted; the lease is kernel state | **hidden until S4** (no userland status call on `main`) |
 | 4 | **Time zone** | city or IANA name, with a live clock preview | `TimeZone` (zone id), and one clock confirm | yes, once Seat I's build lands |
 | 5 | **Comfort** | Reduce motion, Reduce transparency | `ReduceMotion`, `ReduceTransparency` | **yes — works today** |
 | 6 | **Try or Install** | a summary of the choices, then **Try LogansOS** / **Install LogansOS** | nothing; it is an action | yes, once OT-87 R5 lands |
@@ -176,15 +179,32 @@ fails. The wizard needs a second mode:
   `userland/neo-init/src/desktop_session.rs:1047`, so the rest of the session (glass material, motion) sees the
   wizard's choices exactly as an installed session would.
 
-**The time-zone write is one kernel call, at the end, not per page.** The clock contract is `CLOCK_REALTIME` is
-UTC, and `SYS_CLOCK_CONFIRM_REALTIME(offset_secs)` is **write-once** (a second call returns `EALREADY`) (time-zone
-THINK §2.1). A wizard that confirmed on the Time zone page could not survive Back-and-change. So:
+**The time-zone write is one kernel call, when the Time zone page is left — not at the end of the wizard.** The
+clock contract is `CLOCK_REALTIME` is UTC, and `SYS_CLOCK_CONFIRM_REALTIME(offset_secs)` is **write-once** (a
+second call returns `EALREADY`) (time-zone THINK §2.1). Revision 1 deferred that call to the end of the wizard, so
+every action-log record written before it carried the RTC's local wall time as if it were UTC
+(`userland/neo-init/src/desktop_session/action_log.rs:75-82`), and an appended, hash-chained record cannot be
+corrected afterwards. The confirm therefore moves to the moment the zone becomes a real choice:
 
 - the Time zone page computes a **preview** in userspace (`libneo::tz`): the RTC's wall reading with the chosen
   zone's abbreviation and offset, from `local_to_utc`'s inverse direction — no syscall;
-- the **one confirm** happens when the wizard leaves the last settings page, using the final zone. If the user
-  skips the wizard, no confirm happens and the clock stays unconfirmed (Home shows the RTC wall time with
-  "zone not set", time-zone THINK §2.7), which is honest rather than wrong.
+- **leaving the Time zone page confirms the clock once**, with the chosen zone's offset. From that instant
+  `CLOCK_REALTIME` is UTC, so every record appended after it is right. If `SYS_CLOCK_REALTIME_STATUS` already says
+  confirmed (a later refactor, or a session that knew its zone at start), the page is review-only and makes no
+  second call;
+- **the zone is a one-way commit for the session.** Back from Comfort or Try/Install reaches the page in review
+  mode — it shows the confirmed zone and offers no re-selection, because write-once forbids a second confirm and
+  the wizard will not store a zone the clock is not using. A changed mind is Home's `timezone <name>` after setup
+  (the time-zone lane's verb; whether that re-confirms is §7 q. 8), or a reboot;
+- **no action-log record is written before the confirm.** The wizard holds its page choices in a small in-memory
+  queue and appends them, in order, once the confirm succeeds; each record's `time_s` is the event's monotonic
+  instant mapped onto the confirmed clock (`confirmed_utc − (m_confirm − m_event)`), not the RTC reading. Nothing
+  is rewritten and the chain is untouched (§4.4);
+- if the user skips the zone page or the wizard, no confirm happens and the clock stays unconfirmed (Home shows
+  the RTC wall time with "zone not set", time-zone THINK §2.7). The queued records are then appended with the
+  time-zone lane's "unconfirmed" flag and the RTC reading, so they are marked rather than silently wrong. On a
+  Try boot the append itself fails (the mount is read-only, OT-87 §6.3) and the queue is dropped: Try writes
+  nothing.
 
 **`RtcLocal` is not a wizard question.** The default is 1 (the RTC holds local time, Windows' convention, right
 for the dual-boot target); `rtc utc` fixes a UTC machine (time-zone THINK §2.3). Asking a first-boot user "does
@@ -194,7 +214,8 @@ and the open question is recorded in §7.
 ### 2.3 Try vs Install, precisely
 
 **Try.**
-- The wizard runs on **every** Try boot, because nothing it sets persists. Four screens plus Welcome is cheap;
+- The wizard runs on **every** Try boot, because nothing it sets persists. The visible screens (Welcome, Time
+  zone, Comfort, Try/Install) are cheap;
   the alternative (a write to the boot medium) is not possible (read-only) and would be a surprise on a shared USB.
 - Settings are the volatile overlay (§2.2). The clock confirm is real for the session but not persisted.
 - It writes **nothing** to any disk. `/neofs` is absent or mounted read-only (OT-87 §6.3); the wizard does not
@@ -256,7 +277,7 @@ seed path is otherwise stable, and only after S7.
 |---|---|---|---|
 | Language | no i18n at all: every string is a `&'static str`; no `gettext`, no catalog, no locale in the kernel or userland | a new catalog + `Language` key + runtime page text | **hidden stub**, rung S6 |
 | Keyboard | one US table (`keymap_us_logic.rs`, PRs #53/#54), no selector; the WM, Arthur and the kernel each decode | the shared table + a layout selector passed to clients | **hidden stub**, rung S5 |
-| Network | wired DHCP at boot (RTL8125 and USB CDC-ECM); no per-interface status syscall; Wi-Fi driver exists but is not product-wired | `SYS_NET_IF_STATUS` + the view | **wired read-only works**, rung S4; **Wi-Fi stub** |
+| Network | wired DHCP at boot (RTL8125 and USB CDC-ECM); **no per-interface status call reachable from userland** (`SYS_NET_STATS` is per socket); Wi-Fi driver exists but is not product-wired | `SYS_NET_IF_STATUS` + the view | **kernel state exists, the wizard cannot read it — no page until S4**; **Wi-Fi stub** |
 | Time zone | design merged (PR #51), build is Seat I's next; no zone key on `main` yet | `TimeZone`, `libneo::tz`, the confirm call | **works when the TZ build lands**, rung S3 |
 | Comfort | keys 1/2 exist and apply live | `settings::set_wm` + the scene | **works today** |
 | Try or Install | OT-87 R4.4 installer view exists; the Try flag and the second Limine entry are R5, not built | R5's flag + `installer_view::run` | **needs R5**, rung S7 |
@@ -306,8 +327,7 @@ each decoder. To add one:
 
 **v1 recommendation: hide the page until two tables exist.** The first non-US table should be one whose keycaps
 differ visibly from US (UK is the smallest honest choice: `"`/`@`, `£`/`#`, `\`/`~`), hand-written from the
-keycap legends with the same all-keys KAT the US table has (`tools/xtask/src/keymap_tests.rs` on the keymap
-branch is the pattern).
+keycap legends with the same all-keys KAT the US table has (`tools/xtask/src/keymap_tests.rs` is the pattern).
 Licensing is not an issue for a layout table written from the standard; no upstream file is copied.
 
 ### 3.3 Network
@@ -319,14 +339,17 @@ Licensing is not an issue for a layout table written from the standard; no upstr
   `kernel/Cargo.toml:145-160`), also with DHCP.
 The DHCP client is a **single global** bound to one interface (`kernel/src/net/dhcpv4.rs:23`). The RTL8125
 bring-up skips DHCP when another interface already holds the boot lease (`rtl8125.rs:1224`); the USB CDC-ECM path
-is the other bring-up. The lease is
-queryable: `dhcpv4::snapshot()` (`:365`) returns the state, the offered and bound `Lease` (ip, mask, router, dns,
-t1, t2, expiry), and `identity::snapshot_links()` (`kernel/src/net/identity.rs:231`) returns `(ifindex, up)`.
-`ipv4::preferred_address(ifindex)` gives the address.
+is the other bring-up. The lease is **queryable inside the kernel**: `dhcpv4::snapshot()` (`:365`) returns the
+state, the offered and bound `Lease` (ip, mask, router, dns, t1, t2, expiry), and
+`identity::snapshot_links()` (`kernel/src/net/identity.rs:231`) returns `(ifindex, up)`.
+`ipv4::preferred_address(ifindex)` gives the address. All of that is kernel state; **no userland call exposes the
+link, the lease or the address today**.
 
-**What is missing for the screen.** There is no per-interface status call. `SYS_NET_STATS` is **per socket**
-(`syscall.rs:5932`, it looks up a socket handle) and returns packet/byte counters, not link or lease. A new
-read-only opcode is needed:
+**What today's `main` cannot do — and why the page waits on S4.** There is no per-interface status call reachable
+from userland. `SYS_NET_STATS` is **per socket** (`syscall.rs:5932`, it looks up a socket handle) and returns
+packet/byte counters, not link or lease. So a wizard on `main` cannot show a lease and must not claim to: **the
+Network page is not compiled in v1** (the hide rule, §1.2 item 5) and **S1's walk has no Network step**. It
+appears with S4, when the read-only opcode lands:
 
 ```
 SYS_NET_IF_STATUS(out: *mut NetIfStatusV1, len: usize) -> 0 | -errno
@@ -343,11 +366,16 @@ NetIfStatusV1 { version, flags, ifindex, driver[12], mac[6], ipv4[4], prefix,
   `net-dial-cap`, a `NetInfoCap` minted to neo-init is a one-line addition; I recommend not adding a cap for a
   read-only status call.
 
-**What the page shows, and what it must not promise.**
+**What the S4 page shows, and what it must not promise.**
 - one row: `Wired: connected — 10.0.2.15` or `Wired: no link` or `Network status is unavailable`;
 - one row: the driver (`rtl8125`, `cdc-ecm`) and, if a lease exists, the remaining time;
 - one row: `Wi-Fi: coming` (disabled, no list);
 - **Continue without a network** always enabled; no screen blocks on a connection.
+
+**Before S4 there is no Network page at all** — not even a Continue-only stub. The kernel has the facts but no
+call hands them over, so a page could only say "unavailable" or promise a status it cannot read; the design's own
+rule (§1.2 item 5) is to hide a page that cannot do anything. A Continue-only stub would also be honest, but it is
+a page the user cannot use; hiding also keeps a dead page out of the S1 gate.
 
 **Why Wi-Fi is a stub, not a list.** The driver exists (`kernel/src/drivers/usb/mt7601u/`, feature `mt7601u`,
 not in `product`/`desktop`), with a scan, a WPA2/WPA3-SAE connect path and a boot DHCP loop. But there is **no
@@ -374,13 +402,15 @@ wizard plugs into four pieces, not new ones:
 |---|---|---|
 | `TimeZone` (4), `RtcLocal` (5) | `settings-core` (time-zone THINK §2.3) | writes 4 with `set_wm`; leaves 5 at its default |
 | zone table + `libneo::tz` | `userland/libneo/src/tz.rs` + generated table (§2.2-2.4) | search by name/prefix; `utc_to_local` for the preview |
-| `SYS_CLOCK_CONFIRM_REALTIME(offset)` | kernel, feature `rtc-offset` (§2.1) | **one** call at the end of the wizard |
+| `SYS_CLOCK_CONFIRM_REALTIME(offset)` | kernel, feature `rtc-offset` (§2.1) | **one** call when the Time zone page is left |
 | `SYS_CLOCK_REALTIME_STATUS()` | kernel, same feature | read once to log whether the clock is confirmed |
 
 The page is a short list first (UTC and a handful of common zones, pointer-pickable) with the Home field as the
 search box: typing `new y` filters to `America/New_York`; Enter selects; the card shows the IANA name, the
 abbreviation and the offset now (the same information the `timezone` Home card shows). The preview uses the RTC
-wall reading, because the clock is unconfirmed until the end; it does not claim to be UTC.
+wall reading, because the clock is unconfirmed until the page is left; it does not claim to be UTC. Leaving the
+page is the commit point: it confirms the clock and makes the zone review-only for the rest of the session
+(§2.2), and the page-choice records queued before it are appended after it with corrected timestamps (§4.4).
 
 **Dependency.** If `rtc-offset` is off (the kill-switch), the page is hidden and the clock is OT-85's: the wizard
 does not fake a zone it cannot apply.
@@ -519,9 +549,20 @@ its own frames; the intro and Home are not shown until it ends. If a client were
 kernel's focus gate means it receives no key, and `compose`/`commit_present` show only the wizard's frames (the
 lock screen's two rules, `lock.rs`'s module doc, are the precedent).
 
-**The action log.** Each page choice and the final action are logged (`setup page=<name> choice=<value>`,
-`setup done action=try|install`), never a secret. No credentials exist in the wizard; when Wi-Fi join lands, its
-passphrase must never reach the action log (the same rule as the account password).
+**The action log, and the confirm boundary.** Each page choice and the final action are logged
+(`setup page=<name> choice=<value>`, `setup done action=try|install`), never a secret. No credentials exist in the
+wizard; when Wi-Fi join lands, its passphrase must never reach the action log (the same rule as the account
+password).
+
+The log's timestamp is `CLOCK_REALTIME` (`action_log.rs:75-82`), which is the RTC's local wall time until the
+confirm; an appended record cannot be rewritten because the chain links every byte. So **the wizard writes no
+record before the confirm**: the page choices go into a small in-memory queue (in `setup-core`) and are appended
+in order at the confirm, each with `time_s` set from the confirmed clock and the event's monotonic instant
+(`confirmed_utc − (m_confirm − m_event)`). The chain then holds the truth and nothing is rewritten. The queue is
+at most a handful of rows (one per page choice); if the confirm never happens it is flushed with the time-zone
+lane's "unconfirmed" flag and the RTC reading (§2.2), and on a Try boot the append fails on the read-only mount
+and the queue is dropped. This needs one small `action_log` seam: an append carrying an explicit `time_s`
+instead of calling `now_s()` (`action_log.rs:152`, `:186`).
 
 ### 4.5 The frames and the eight-row budget
 
@@ -564,12 +605,15 @@ No code. **Gate:** PM merge after the read. **Kill-switch:** n/a.
 ### S1 — the wizard shell: pages, navigation, frames
 
 `userland/setup-core` (page enum, order, key map, summary, time-zone search) + `desktop_session/setup.rs` (the
-view) + the page renderings, with every value at its default and the two stub pages compiled behind
-`setup-stub-pages`. No store writes, no clock call, no network call, no install action (Try only).
+view) + the page renderings, with every value at its default and the Language/Keyboard stub pages compiled behind
+`setup-stub-pages` (the Network page does not exist until S4). No store writes, no clock call, no network call, no
+install action (Try only), and no action-log write: the page walk is asserted from the serial log, and the log
+queue arrives with S3's confirm.
 
-**Gate `setup_menu_walk`:** a serial script walks Begin → Network (Continue) → Time zone (UTC, Continue) → Comfort
-(toggle both) → Try → **Home**. It asserts
+**Gate `setup_menu_walk`:** a serial script walks Begin → Time zone (UTC, Continue) → Comfort (toggle both) →
+Try → **Home**. It asserts
 - each page's `DESKTOP setup page=<name>` line,
+- that no `DESKTOP setup page=network` line exists (the page is absent, not a stub, §3.3),
 - the final `DESKTOP setup done action=try`,
 - the page digests from `setup_oracle.py` (card slot, labels masked and column-checked),
 - that the intro follows (`DESKTOP intro …`) and Home is ready.
@@ -599,22 +643,31 @@ three-key one; the wizard's store calls are no-ops.
 ### S3 — the Time zone page and the one confirm
 
 Depends on the time-zone build. The page: the field search, the IANA/abbreviation/offset rows, the preview from
-the RTC wall reading, and the single confirm when the wizard leaves the last settings page.
+the RTC wall reading, the **single confirm when the page is left**, the review-only state after it, and the
+action-log queue flush (§2.2, §4.4).
 
-**Gate `setup_menu_tz`:** `-rtc base=2026-11-01T05:59:00` (a local-time RTC in New York during EDT), walk to the
-page, type `new y`, choose `America/New_York`, finish, and assert
+**Gate `setup_menu_tz`:** Jarvis's discriminator — `-rtc base=2026-11-01T01:59:00` with `RtcLocal=1` (a local-time
+RTC in New York, in the repeated fall-back hour; the earlier instant is taken, time-zone THINK §2.1). Walk
+Welcome (Begin) → Time zone, type `new y`, choose `America/New_York`, leave the page, finish, and assert
 - `DESKTOP setup tz=America/New_York`;
-- the clock reads `01:59 EST` and, a minute later, `01:00 EST` (the fall-back KAT from the time-zone THINK §4);
+- the clock reads `01:59 EDT` and, a minute later, `01:00 EST` (the fall-back KAT from the time-zone THINK §4);
 - `SYS_CLOCK_REALTIME_STATUS` is 1; the record's `TimeZone` is the New York id;
-- a host KAT: a second confirm in the same boot returns `EALREADY`.
-**Control:** skip the wizard → status 0, Home shows "zone not set".
+- **the action-log ordering and time:** the Welcome record is appended **after** the confirm, and its `time_s`
+  lands within a few seconds of `1793512740` (the confirmed UTC, 05:59 — the walk's monotonic delta puts it
+  slightly earlier), not `1793498340` (01:59 read as UTC, four hours behind); no record in the log carries
+  `1793498340`; and the record chain verifies end to end;
+- a host KAT: a second confirm in the same boot returns `EALREADY`, and the wizard's status check never makes
+  that call (the page is review-only once confirmed).
+**Control:** skip the wizard → status 0, Home shows "zone not set"; the queued records, if any, carry the
+time-zone lane's "unconfirmed" flag and the RTC reading.
 
 **Kill-switch `rtc-offset`:** off ⇒ the page is hidden, no confirm, the clock is OT-85's bit for bit.
 
 ### S4 — the Network page: `SYS_NET_IF_STATUS`
 
 A read-only kernel opcode with a fixed `NetIfStatusV1` (I-12 hand-laid byte oracle) and the view. Kernel-touching
-⇒ the 4-shard gate and an AAG lens on the net-lock/IF rule.
+⇒ the 4-shard gate and an AAG lens on the net-lock/IF rule. **The page is not compiled before this rung**
+(§3.3): S4 lands the call and the page together, so there is never a wizard page that cannot read its status.
 
 **Gate `setup_menu_net`:** QEMU with `usb-net` on slirp (the CDC-ECM product path) → the page logs
 `setup net link=up driver=cdc-ecm ipv4=10.0.2.15`; **control** with no NIC → `link=down`, Continue still enabled,
@@ -692,7 +745,7 @@ falsifier is not a design.
 | # | If this is true | Then | The check |
 |---|---|---|---|
 | 1 | The WM cannot host a pre-desktop view with a volatile store without touching every `settings::set` call site, coupling the wizard to glass/motion/login | the wizard is a **separate client** with a WM-mediated `OP_SETUP`, and the store writes stay in the WM; the cost is a new protocol | Count the `settings::` call sites and prototype S1/S2; if the diff reaches the scene, change the shape |
-| 2 | The clock must be right **during** the wizard, not after | the Time zone page confirms immediately and the write-once contract must be relaxed (a re-confirm that adjusts by a delta, with its own concurrency KAT), or the page moves before boot | S3's preview: does the wizard's own header show the wrong time? |
+| 2 | The pre-confirm records cannot be timestamped correctly (the log only knows `now_s()` from `CLOCK_REALTIME`, `action_log.rs:75-82`, and the chain forbids rewriting) | fall back to **tagging** them "unconfirmed" at append (the time-zone lane's flag) instead of correcting them; the wizard then records the RTC reading plus the flag, and S3 must ship that flag first | Jarvis's discriminator: `RtcLocal=1`, RTC at `2026-11-01 01:59` New York, make a page choice before the Time zone page, then set New York and finish; the page record must land within a few seconds of `1793512740` (05:59 UTC, the earlier ambiguous instant), not `1793498340` (01:59 read as UTC, four hours behind) |
 | 3 | A layout cannot be selected per session for every decoder (the console, Arthur and the WM disagree) | the keyboard page promises text it cannot deliver; move layout selection to a pre-boot chooser, or accept US on the console and say so | S5's first build: type the same keys in Home, Arthur and the console |
 | 4 | `SYS_NET_IF_STATUS` cannot report a lease without new kernel bookkeeping (the DHCP snapshot is not per interface, or the locks forbid the read) | the network page becomes an unconditional Continue; drop it rather than show "unknown" on every boot | S4's spike: read `dhcpv4::snapshot()` and `identity::snapshot_links()` from a syscall body |
 | 5 | The install bundle cannot be loaded at runtime (as today), **and** the PL rejects a restart at the Try/Install screen | the wizard has no Try/Install screen; the Limine menu is the only chooser, and the wizard ends with "Continue" | R5 + L3u; ask the PL which cost is acceptable |
@@ -717,9 +770,49 @@ wizard's value (7).
 4. **`RtcLocal`.** I recommend leaving it out of the wizard and at its default 1 (the dual-boot convention), with
    `rtc utc` for UTC machines. A wizard row would ask a question most users cannot answer and would make the
    clock wrong in a new way on the machines that guess wrong.
-5. **Does the wizard run on every Try boot?** I recommend yes (nothing persists; four screens), but it is a
-   product call the PL should confirm on the preview.
+5. **Does the wizard run on every Try boot?** I recommend yes (nothing persists; the visible screens are
+   Welcome, Time zone, Comfort and Try/Install, §2.3), but it is a product call the PL should confirm on the
+   preview.
 6. **Is the network screen worth its rung?** The survey says it is optional everywhere, and elementary does not
    even have one. The PL asked for it, and it costs one read-only syscall; I recommend landing it, but it must
-   never block and its Wi-Fi half waits for the Wi-Fi lane.
+   never block and its Wi-Fi half waits for the Wi-Fi lane. It has no page until S4 (§3.3).
 7. **A "test connection" button?** Not in v1: no wire RX (OT-96 R1/R2). Revisit when OT-96 lands.
+8. **A zone change after the confirm.** The wizard's zone is a one-way commit for the session (§2.2): write-once
+   forbids a second confirm. Home's `timezone <name>` after setup (time-zone THINK §2.5) must define whether a
+   post-confirm change re-confirms (a delta call, with its own concurrency KAT) or takes effect at the next boot.
+   The same question governs the wizard's Back into its own Time zone page. I recommend the delta re-confirm, but
+   it changes the time-zone lane's write-once contract, so it is the PM's call.
+
+---
+
+## Revision 2 — relay 285 (Jarvis's two FAILs)
+
+**Reviewed:** `origin/dexter/setup-menu-think` `a514ea631`, relay 284
+(`Plans/RETURN-2026-11-02-setup-menu-review-jarvis.md`). PASS: the security model (§4.1, §4.4); Try vs Install
+persistence (§2.3, §2.4), keeping the S2 ordering note — `StoreMode::Volatile` is chosen **before**
+`settings::load`, which writes an initial record when none exists; and the rungs/kill-switches (§5). Two FAILs,
+fixed here.
+
+1. **Network readiness was overstated (§3).** Revision 1's table said "wired read-only works", which is false
+   until S4: `main` has no per-interface status call reachable from userland (`SYS_NET_STATS` is per socket). The
+   table now says the kernel state exists but the wizard cannot read it, and **the Network page is not in v1 at
+   all** — S4 lands the opcode and the page together. There is no Continue-only stub (a page that cannot say
+   anything breaks the design's own hide rule, §1.2 item 5); S1's walk loses its Network step, §3.3 and §5 S1/S4
+   say so.
+2. **§6 falsifier #2 was already true.** Revision 1 confirmed the clock at the end of the wizard, so every
+   page-choice record written before it took `CLOCK_REALTIME`'s RTC-local reading as UTC
+   (`action_log.rs:75-82`) and stayed wrong after the confirm — a hash-chained record cannot be rewritten. Fixed
+   three ways, together:
+   - **the confirm moves to the moment the Time zone page is left** (§2.2, §3.4), so every record after that
+     point is correct;
+   - **the wizard writes no record before the confirm**: its page choices queue in memory and are appended after
+     the confirm with `time_s` from the event's monotonic instant (§4.4), so the pre-confirm records are
+     corrected, not tagged;
+   - **the zone is a one-way commit for the session**; a later change is Home's `timezone` verb (new open
+     question §7 q. 8).
+   The discriminator is Jarvis's: `RtcLocal=1`, RTC at `2026-11-01 01:59` New York (the repeated fall-back hour;
+   the earlier instant is taken). The pre-confirm page record must land within a few seconds of `1793512740`
+   (05:59 UTC), not `1793498340` (01:59 read as UTC, four hours behind), and the chain must verify.
+
+Also refreshed at this revision: the keyboard citations now point at the merged commits on `main` (#53
+`b03abfbab`, #54 `cab959819`), not their branches, and §3.2's KAT path is cited from `main`.
