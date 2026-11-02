@@ -178,6 +178,15 @@ layer** of answers, not the last:
 | `servo-allocator` 0.7.0 | `libc::{malloc, free, realloc}` missing | No | A target-cfg arm on std's allocator (upstream's own non-jemalloc path) |
 | `surfman` 0.14.0 | no platform `default` module | No | A target-cfg stub: SWGL answers GL (#22), and surfman's contexts are never created |
 
+**Where `mio` and `socket2` come from** (`cargo tree -e features -i tokio`, `-i mio`, `-i socket2`, x86_64 Linux):
+`tokio`'s `net` and `signal` features are turned on by `warp` and `webdriver`, both reached only through
+`servo-embedder-traits` (`webdriver` → `warp`); `socket2` comes from `hyper-util` under `servo-net-traits`.
+`ipc-channel` 0.23.1 needs `mio` only on Linux/BSD/illumos, and it has an in-process backend (its
+`force-inprocess` feature, or a target-cfg arm next to `wasi`/`unknown`). So the socket crates are pulled in by
+WebDriver and HTTP **types**, not by anything layout does. The likely fix is to keep them off our target
+(a target-cfg edge in the two traits crates, or `force-inprocess` plus stubs), not to port `mio`. Porting `mio` would
+be the growing compat island ADR-078's A4 rule exists to stop.
+
 `harfbuzz-sys` (C++) built for our target unchanged. `freetype-sys` and `fontsan` sit behind `libz-sys`, and
 `tokio`, `ipc-channel` and the `servo-*` traits crates sit behind `mio`/`socket2`/`getrandom`, so they are the
 probe's second layer. **None of the first layer needs a layout or DOM change**: each is a provider seam (entropy,
