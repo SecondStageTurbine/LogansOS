@@ -278,6 +278,23 @@ mod showcase_tests {
         assert_eq!(keycode_to_ascii(0x28, false), Some(b'\n'));
         assert_eq!(keycode_to_ascii(0x2a, false), Some(0x08));
         assert_eq!(keycode_to_ascii(0x38, true), Some(b'?'));
+        // ADR-074 key events: modifiers in x, lock state (Caps Lock) in y.
+        assert_eq!(
+            input_event_to_ascii([1, 1, 0x33, 0, 0x02, 0, 0, 0]),
+            Some(b':')
+        );
+        assert_eq!(
+            input_event_to_ascii([1, 1, 0x34, 0, 0x20, 0, 0, 0]),
+            Some(b'"')
+        );
+        assert_eq!(
+            input_event_to_ascii([1, 1, 0x1d, 0, 0x00, 0, 1, 0]),
+            Some(b'Z')
+        );
+        assert_eq!(
+            input_event_to_ascii([1, 1, 0x1d, 0, 0x20, 0, 1, 0]),
+            Some(b'z')
+        );
 
         let pressed_a = [1, 1, 0x04, 0, 0, 0, 0, 0];
         let released_a = [1, 0, 0x04, 0, 0, 0, 0, 0];

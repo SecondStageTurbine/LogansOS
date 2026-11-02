@@ -56,8 +56,9 @@ pub fn input_event_to_ascii(event: [u8; 8]) -> Option<u8> {
     }
     let code = u16::from_le_bytes([event[2], event[3]]);
     let keycode = u8::try_from(code).ok()?;
-    let modifiers = u16::from_le_bytes([event[4], event[5]]);
-    keycode_to_ascii(keycode, modifiers & 0x22 != 0)
+    let modifiers = u16::from_le_bytes([event[4], event[5]]) as u8;
+    let locks = u16::from_le_bytes([event[6], event[7]]) as u8;
+    keycode_to_ascii_locked(keycode, modifiers, locks)
 }
 
 /// A9-C: the keys that scroll Arthur's transcript.
@@ -106,41 +107,29 @@ pub const fn scroll_allowed(key: ScrollKey, input_empty: bool) -> bool {
     }
 }
 
-pub fn keycode_to_ascii(keycode: u8, shifted: bool) -> Option<u8> {
+/// The shared US layout (`kernel/src/drivers/keymap_us_logic.rs`).
+#[allow(dead_code)]
+mod keymap {
+    include!("../../../kernel/src/drivers/keymap_us_logic.rs");
+}
+
+/// A key's ASCII byte: printable keys from the shared US layout with the
+/// event's Shift and lock state; Enter, Esc, Backspace and Tab as control
+/// bytes.
+pub fn keycode_to_ascii_locked(keycode: u8, modifiers: u8, locks: u8) -> Option<u8> {
     match keycode {
-        0x04..=0x1d => {
-            let base = b'a' + (keycode - 0x04);
-            Some(if shifted { base - 32 } else { base })
-        }
-        0x1e..=0x26 => {
-            let unshifted = b'1' + (keycode - 0x1e);
-            let shifted_digits = b"!@#$%^&*(";
-            Some(if shifted {
-                shifted_digits[(keycode - 0x1e) as usize]
-            } else {
-                unshifted
-            })
-        }
-        0x27 => Some(if shifted { b')' } else { b'0' }),
         0x28 => Some(b'\n'),
         // DS-1: Esc hands the keyboard back to Home (ignored elsewhere).
         0x29 => Some(0x1b),
         0x2a => Some(0x08),
         0x2b => Some(b'\t'),
-        0x2c => Some(b' '),
-        0x2d => Some(if shifted { b'_' } else { b'-' }),
-        0x2e => Some(if shifted { b'+' } else { b'=' }),
-        0x2f => Some(if shifted { b'{' } else { b'[' }),
-        0x30 => Some(if shifted { b'}' } else { b']' }),
-        0x31 => Some(if shifted { b'|' } else { b'\\' }),
-        0x33 => Some(if shifted { b':' } else { b';' }),
-        0x34 => Some(if shifted { b'"' } else { b'\'' }),
-        0x35 => Some(if shifted { b'~' } else { b'`' }),
-        0x36 => Some(if shifted { b'<' } else { b',' }),
-        0x37 => Some(if shifted { b'>' } else { b'.' }),
-        0x38 => Some(if shifted { b'?' } else { b'/' }),
-        _ => None,
+        _ => keymap::printable(keycode, modifiers, locks),
     }
+}
+
+/// [`keycode_to_ascii_locked`] with Shift only and no lock keys.
+pub fn keycode_to_ascii(keycode: u8, shifted: bool) -> Option<u8> {
+    keycode_to_ascii_locked(keycode, if shifted { keymap::MOD_SHIFT } else { 0 }, 0)
 }
 
 /// A compact 5x7 uppercase font. Lowercase is deliberately folded to uppercase
