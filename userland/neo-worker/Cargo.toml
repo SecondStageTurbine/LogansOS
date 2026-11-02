@@ -111,6 +111,9 @@ arthur-action-surface = []
 phase4-socket-udp-loopback = []
 phase4-slaac-udp-ipv6-loopback = []
 phase4-https-fetch = []
+# OT-61 rung 5: the HTTPS fixture as the fetch broker's peer (libneo's
+# pipelined-request TLS server; #29 review item 5 keeps it off elsewhere).
+fetch-broker-fixture = ["phase4-https-fetch", "libneo/tls-pipelined-peer"]
 ipc-rendezvous-translate-fault = []
 vfs-testfs-open-read-close = []
 vfs-testfs-write-readback = []

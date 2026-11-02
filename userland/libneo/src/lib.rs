@@ -943,6 +943,10 @@ pub mod process_rights {
 
 pub mod net_dial_rights {
     pub const DIAL: u8 = 1 << 0;
+    /// OT-61 rung 5b: the cap may reach non-public addresses (root caps carry
+    /// it on a `net-dial-public-only` kernel; a cap derived without it dials
+    /// only public addresses).
+    pub const NON_PUBLIC: u8 = 1 << 1;
 }
 
 /// GPU P1 Slice 6 semantic rights.  These mirror the kernel's typed

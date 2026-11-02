@@ -54,6 +54,10 @@ atrium-settings = []
 # L1.3: OP_PERMISSION / OP_PERMISSION_DONE (Arthur asks the WM's prompt for one
 # action on one path; THINK-2026-10-30-l1.3).
 atrium-permission = []
+# OT-61 rung 5 (#29 review item 5): the TLS fixture's server accepts a
+# request pipelined with the client's Finished, and receives wait through more
+# empty polls (a peer in another process). Off, libneo's TLS is unchanged.
+tls-pipelined-peer = []
 # C1.1 test-only: enables SYS_FUTEX_QUEUE_LEN and sys_futex_queue_len.
 # Must NOT ship in production — test-only discriminator for the threads_futex barrier.
 neo-test = []
