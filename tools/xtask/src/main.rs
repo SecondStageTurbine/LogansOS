@@ -10143,6 +10143,10 @@ const NON_CORE_PATHS: &[&str] = &[
     "kernel/src/scenario/",
     "kernel/src/boot_model_logic.rs",
     "kernel/src/boot_modules.rs",
+    // #16 (L7.1): write-once TSC stamps and firmware-table reads; no lock,
+    // scheduler or per-CPU state.
+    "kernel/src/boot_time.rs",
+    "kernel/src/boot_time_logic.rs",
     "kernel/src/errno.rs",
     "kernel/src/install_bundle_logic.rs",
     "kernel/src/install_ui_logic.rs",
