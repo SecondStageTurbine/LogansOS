@@ -21,3 +21,6 @@ Every item J.c. reports from trying LogansOS goes here, with its owner and state
 J.c. chose to **trim** the cloud seats (7-day usage warning): keep B, C, D, E, F, I; H and G are done; A retires
 after the tiered-gate stack lands.
 
+**J.c. (2026-11-02 midday):** he'll test F4/F8 (time zone), F10 (key repeat) and F9 (password message) together:
+the PM tells him once all three are on `main` **and** in a published preview. No interim updates on these.
+
