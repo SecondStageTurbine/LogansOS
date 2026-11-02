@@ -236,7 +236,9 @@ impl Thread {
     #[cfg(any(
         feature = "neo-test-admission-park-kill",
         feature = "neo-test-ipc-park-kill",
-        feature = "neo-test-kill-at-exit"
+        feature = "neo-test-kill-at-exit",
+        feature = "neo-test-pipe-core",
+        feature = "neo-test-pipe-park-kill"
     ))]
     pub fn bind_process_for_test(&mut self, pid: ProcessId, pmap: Arc<Pmap>) {
         self.pid = pid;

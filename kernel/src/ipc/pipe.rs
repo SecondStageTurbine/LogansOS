@@ -33,8 +33,8 @@ use crate::sched::scheduler::{self, ThreadWakeToken};
 use crate::sync::IrqSafeMutex;
 
 /// Parked readers (and, separately, writers) per pipe. A terminal has one
-/// of each; more parkers than this first wake and clear the list (the stale
-/// tokens of killed threads go with it), then park.
+/// of each. A full list first drops the tokens of killed threads; with this
+/// many live waiters a blocking call gets `EAGAIN`.
 pub const PARK_MAX: usize = 8;
 
 struct Inner {
@@ -115,8 +115,8 @@ impl Wakes {
 enum Parked {
     /// Woken (or the list was cleared): try again.
     Retry,
-    /// Can't park: `EAGAIN` (token table full) or `ESRCH` (the process is
-    /// being torn down).
+    /// Can't park: `EAGAIN` (the scheduler's token table, or this side's
+    /// waiter list, is full) or `ESRCH` (the process is being torn down).
     Fail(i64),
 }
 
@@ -238,6 +238,22 @@ impl PipeObject {
                 Ok((ReadOutcome::WouldBlock, _)) => {}
                 Err(_) => return Err(EINVAL),
             }
+            // `pipe_core`'s CP-14 leg: hold the check-to-park window open
+            // (the guard held, so a writer on another CPU waits for it).
+            #[cfg(all(
+                feature = "neo-test-pipe-core",
+                not(feature = "neo-test-pipe-core-cp14-control")
+            ))]
+            race::window();
+            // The control: the pre-fix shape, the guard dropped between the
+            // check and the park. A write in the window finds no token, and
+            // the reader parks on a pipe that has bytes (a lost wake).
+            #[cfg(feature = "neo-test-pipe-core-cp14-control")]
+            let g = {
+                drop(g);
+                race::window();
+                self.state.lock()
+            };
             match self.park(g, End::Read) {
                 Parked::Retry => continue,
                 Parked::Fail(e) => return Err(e),
@@ -283,14 +299,22 @@ impl PipeObject {
             End::Read => &mut g.readers,
             End::Write => &mut g.writers,
         };
-        let Some(slot) = list.iter().position(Option::is_none) else {
-            // Full: wake and clear everyone on this side (stale tokens of
-            // killed threads included), then retry. Live waiters re-check.
-            let mut wakes = Wakes::none();
-            wakes.drain(list);
-            drop(g);
-            wakes.fire(self);
-            return Parked::Retry;
+        let slot = list.iter().position(Option::is_none).or_else(|| {
+            // Full: drop the tokens of threads no longer parked on them (a
+            // woken token leaves the list when it is woken, so these are
+            // threads killed while parked), then look again. Lock order pipe
+            // → scheduler, as the park itself.
+            for t in list.iter_mut() {
+                if t.is_some_and(|tok| !scheduler::token_still_parked(tok)) {
+                    *t = None;
+                }
+            }
+            list.iter().position(Option::is_none)
+        });
+        // Still full: PARK_MAX live waiters on this side. Never wake them to
+        // make room (they would re-park and evict each other forever).
+        let Some(slot) = slot else {
+            return Parked::Fail(EAGAIN);
         };
         match scheduler::try_block_current_with_token_and_guard(g, |inner: &mut Inner, token| {
             match side {
@@ -311,6 +335,58 @@ impl PipeObject {
     pub fn counts_for_test(&self) -> (u32, u32, usize) {
         let g = self.state.lock();
         (g.logic.readers(), g.logic.writers(), g.logic.buffered())
+    }
+
+    /// Test witness: how many tokens are parked on `side` (a killed thread's
+    /// stale token counts until a wake or a full list clears it).
+    #[cfg(feature = "neo-test")]
+    pub fn parked_for_test(&self, side: End) -> usize {
+        let g = self.state.lock();
+        let list = match side {
+            End::Read => &g.readers,
+            End::Write => &g.writers,
+        };
+        list.iter().filter(|t| t.is_some()).count()
+    }
+}
+
+/// `pipe_core`'s CP-14 leg: the next blocking read that finds the pipe empty
+/// stops between that check and its park until a writer on another CPU has
+/// started its write, then a while longer. Test-only.
+#[cfg(feature = "neo-test-pipe-core")]
+pub mod race {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// Set by the harness; taken by the next empty blocking read.
+    pub static ARMED: AtomicBool = AtomicBool::new(false);
+    /// The reader is inside the window.
+    pub static IN_WINDOW: AtomicBool = AtomicBool::new(false);
+    /// The writer has started its write (set just before it takes the lock).
+    pub static WRITER_STARTED: AtomicBool = AtomicBool::new(false);
+    /// Windows in which the writer had started before the reader left.
+    pub static HITS: AtomicU64 = AtomicU64::new(0);
+
+    pub fn window() {
+        if !ARMED.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        IN_WINDOW.store(true, Ordering::Release);
+        // Bounded: interrupts are off here, so no tick can end it.
+        let mut started = false;
+        for _ in 0..50_000_000u64 {
+            if WRITER_STARTED.load(Ordering::Acquire) {
+                started = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        // Let the write reach the lock (or, in the control, complete).
+        for _ in 0..2_000_000u64 {
+            core::hint::spin_loop();
+        }
+        if started {
+            HITS.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 

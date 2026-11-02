@@ -1398,7 +1398,7 @@ impl PerCpuSchedulerInner {
         slot.thread.take()
     }
 
-    #[cfg(feature = "neo-test")]
+    #[cfg(any(feature = "neo-test", feature = "pipe"))]
     fn token_slot_occupied(&self, token: ThreadWakeToken) -> bool {
         self.token_parked
             .get(token.slot as usize)
@@ -2676,6 +2676,19 @@ pub fn debug_total_zombies() -> usize {
         total += sched.zombie_count.load(Ordering::Acquire);
     }
     total
+}
+
+/// L1a.1 step 2a: is `token`'s thread still parked on it? A pipe's full
+/// waiter list drops the tokens of threads killed while parked. Callers may
+/// hold a lock that orders before the scheduler's (the pipe's).
+#[cfg(feature = "pipe")]
+pub fn token_still_parked(token: ThreadWakeToken) -> bool {
+    without_interrupts(|| {
+        let Some(sched) = scheduler_for_cpu(token.cpu_id) else {
+            return false;
+        };
+        sched.inner.lock().token_slot_occupied(token)
+    })
 }
 
 #[cfg(feature = "neo-test")]

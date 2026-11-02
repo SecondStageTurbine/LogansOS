@@ -3675,7 +3675,9 @@ pub(crate) fn infer_run_syscall_for_test(
 #[cfg(any(
     feature = "neo-test-admission-park-kill",
     feature = "neo-test-ipc-park-kill",
-    feature = "neo-test-kill-at-exit"
+    feature = "neo-test-kill-at-exit",
+    feature = "neo-test-pipe-core",
+    feature = "neo-test-pipe-park-kill"
 ))]
 pub(crate) fn admission_kill_process_for_test(
     page: x86_64::structures::paging::PhysFrame,
@@ -3699,10 +3701,19 @@ pub(crate) fn syscall_dispatch_for_test(num: u64, a0: u64, a1: u64, a2: u64) -> 
     syscall_dispatch(num, a0, a1, a2, 0, 0, 0)
 }
 
+/// L1a.1 step 2a: the pipe scenarios' stand-in syscall, with the fourth
+/// argument (`SYS_PIPE_READ` / `SYS_PIPE_WRITE` flags).
+#[cfg(any(feature = "neo-test-pipe-core", feature = "neo-test-pipe-park-kill"))]
+pub(crate) fn syscall_dispatch4_for_test(num: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> i64 {
+    syscall_dispatch(num, a0, a1, a2, a3, 0, 0)
+}
+
 #[cfg(any(
     feature = "neo-test-admission-park-kill",
     feature = "neo-test-ipc-park-kill",
-    feature = "neo-test-kill-at-exit"
+    feature = "neo-test-kill-at-exit",
+    feature = "neo-test-pipe-core",
+    feature = "neo-test-pipe-park-kill"
 ))]
 pub(crate) const ADMISSION_KILL_VA: u64 = 0x0000_0011_0000_0000;
 
@@ -6630,7 +6641,7 @@ pub(crate) fn wait_any_items(items: &[WaitItem], deadline_ns: u64) -> i64 {
         if mask != 0 {
             return mask as i64;
         }
-        #[cfg(feature = "neo-test-wait-any-core")]
+        #[cfg(any(feature = "neo-test-wait-any-core", feature = "neo-test-pipe-core"))]
         wait_any::rebind_window_hook(pid);
         // Register, then check again (CP-14): a fire that lands after this
         // check finds the entry and sets `fired`, which the park sees.
