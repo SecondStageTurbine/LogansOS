@@ -21,6 +21,9 @@ stub. Their survey (licences, last commits, what links and what only builds) is
 - `stubs/windows-sys-0.61.2/` — an empty crate with `windows-sys`'s name, version, licence and feature table.
   It is in the C2.4 lockfile only behind `cfg(windows)` dependencies, and the published crate is 60 MB of
   Windows bindings that never build for our target.
+- `stubs/<crate>-<version>/` (40 more, OT-61 L0) — empty stand-ins for crates `userland/layout-smoke`'s lockfile
+  names only behind other platforms' `cfg`s, or behind edges option A switches off (`servo-script`, `surfman`):
+  "The stubs for other platforms", below.
 - `licenses/` — licence texts a vendored crate was published without (`void` 1.0.2, below).
 - `gen-vendored-table.py` prints this file's crate table from the crates' own files; `gen-patch-table.py` prints a
   smoke's `[patch.crates-io]` table.
@@ -83,6 +86,86 @@ to resolve the lockfile.
   this section.
 - **Why not vendor the real crate.** The published `windows-sys` 0.61.2 is about 60 MB of Windows API bindings that
   never build for our target.
+
+## The stubs for other platforms (OT-61 L0)
+
+`userland/layout-smoke` (L0's closure probe) names 40 more stubs in its `[patch.crates-io]` table, in
+`stubs/<crate>-<version>/`. Each is built the same way as the `windows-sys` stub above: the published crate's
+name, version, licence, `[lib]` name and `[features]` table, and an empty `#![no_std]` `src/lib.rs`. No upstream
+code is in them. Feature entries that point at dependencies (`dep:x`, `x/feature`) are dropped, since a stub has
+no dependencies; optional dependencies that were implicit features are kept as empty features, so every feature
+a dependent asks for still exists. The manifests are generated from each crate's published `Cargo.toml`, never
+typed by hand.
+
+- **Why they're in the lockfile.** Cargo resolves every platform's dependencies into one lockfile. Each stub
+  below is reached only through a dependency edge whose `cfg` is false for both our target and the build
+  host's build scripts (macOS, Windows, wasm, Android, hermit, UEFI, `fuzzing`), or through an edge option A
+  switched off for our target: `servo-layout`'s `script` dependency and `servo-paint-api`'s `surfman`, both
+  under `cfg(not(target_os = "neoplutarch"))`.
+- **Why it's safe: checked, not assumed.** With the stubs patched in, `cargo build -Zunstable-options
+  --unit-graph` for `x86_64-unknown-neoplutarch` gives the same 507 units over the same 387 packages, with the
+  same features, as without them (host build-script units included), and the build stops at the same point (the
+  `-lstdc++` link that waits on `neo-crt`, #2). None of the 40 is compiled. If one ever were, its dependent would
+  fail to compile against the empty crate: a loud failure, never a silently wrong build.
+- **What they save.** Without them the lockfile has 668 packages, including mozjs (Servo's SpiderMonkey
+  bindings), `aws-lc-sys`, `bindgen` and the Apple/Windows/wasm binding crates. With them it has 489, of which
+  431 come from crates.io: exactly the crates the target build compiles. Those 431 are what L0 vendors.
+- **The `cfg(unix)` / `cfg(target_os = "linux")` edges.** Some edges below (`iana-time-zone`, `num_threads`,
+  `mio`, `tempfile`, `freetype`, `fontconfig-parser`, `yeslogic-fontconfig-sys`) are true on a Linux host. They
+  are safe only because no crate behind them is built for the host here; the unit graph above is the check. The
+  stubs apply to `layout-smoke`'s workspace only: `neo-layout-dom` and `neo-static-page` are separate
+  workspaces with no `[patch]` table, so their host tests resolve the real crates.
+- **Licences.** Each stub keeps its upstream licence expression, in its manifest's `license` field and its SPDX
+  line, and the upstream licence files where the published crate ships them. Seven published crates ship none
+  (`dwrote`, the four `objc2` crates, `r-efi`, `servo-script`); their stubs carry a `LICENSE-NOTE.md` saying so.
+  `winapi` 0.3.9 declares the old `MIT/Apache-2.0` form; its stub writes it as `MIT OR Apache-2.0`. #25 carries
+  its own `winapi` 0.3.9 stub (under `ot61-swgl`); when #55 rebases onto it, the two converge on one copy.
+- **`servo-script`.** Its stub holds the published 0.7.0's name, version, `[lib] name = "script"` and features.
+  Option A (`Plans/DECISION-2026-11-02-ot61-first-page-option-a.md`) makes `servo-layout` not depend on it for our
+  target, so the closure behind it (mozjs and its build tooling, about 420 MB of sources) is never vendored.
+
+| Stub | Licence | Reached only from (dependent, under) |
+|---|---|---|
+| `arbitrary` 1.5.0 | MIT OR Apache-2.0 | rav1e 0.8.1, `cfg(fuzzing)` |
+| `core-foundation` 0.9.4 | MIT OR Apache-2.0 | wr_glyph_rasterizer 0.70.1, `cfg(any(target_os = "macos", target_os = "ios"))` |
+| `core-graphics` 0.23.2 | MIT OR Apache-2.0 | wr_glyph_rasterizer 0.70.1, `cfg(any(target_os = "macos", target_os = "ios"))` |
+| `core-text` 20.1.0 | MIT OR Apache-2.0 | wr_glyph_rasterizer 0.70.1, `cfg(any(target_os = "macos", target_os = "ios"))` |
+| `crunchy` 0.2.4 | MIT | half 2.7.1, `cfg(target_arch = "spirv")` |
+| `dwrote` 0.11.5 | MPL-2.0 | servo-fonts 0.7.0, `cfg(target_os = "windows")`; servo-fonts-traits 0.7.0, `cfg(target_os = "windows")`; wr_glyph_rasterizer 0.70.1, `cfg(target_os = "windows")` |
+| `fontconfig-parser` 0.5.8 | MIT | fontdb 0.24.0, `cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))` |
+| `freetype` 0.8.0 | MIT OR Apache-2.0 | wr_glyph_rasterizer 0.70.1, `cfg(any(target_os = "android", all(unix, not(any(target_os = "macos", target_os = "ios")))))` |
+| `hermit-abi` 0.5.3 | MIT OR Apache-2.0 | num_cpus 1.17.0, `cfg(target_os = "hermit")` |
+| `iana-time-zone` 0.1.65 | MIT OR Apache-2.0 | chrono 0.4.45, `cfg(unix)` |
+| `interpolate_name` 0.2.4 | MIT | rav1e 0.8.1, `cfg(fuzzing)` |
+| `jiff-static` 0.2.39 | Unlicense OR MIT | jiff 0.2.39, `cfg(any())` |
+| `jiff-tzdb-platform` 0.1.3 | Unlicense OR MIT | jiff 0.2.39, `cfg(any(windows, target_family = "wasm"))` |
+| `js-sys` 0.3.107 | MIT OR Apache-2.0 | glow 0.17.0, `cfg(target_arch = "wasm32")`; uuid 1.29.0, `cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"), target_feature = "atomics"))` |
+| `libfuzzer-sys` 0.4.13 | (MIT OR Apache-2.0) AND NCSA | rav1e 0.8.1, `cfg(fuzzing)` |
+| `mach2` 0.7.0 | BSD-2-Clause OR MIT OR Apache-2.0 | servo-base 0.7.0, `cfg(any(target_os = "macos", target_os = "ios"))` |
+| `mio` 1.2.4 | MIT | ipc-channel 0.23.1, `cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))` |
+| `num_threads` 0.1.8 | MIT OR Apache-2.0 | time 0.3.55, `cfg(target_family = "unix")` |
+| `objc` 0.2.7 | MIT | wr_glyph_rasterizer 0.70.1, `cfg(any(target_os = "macos", target_os = "ios"))` |
+| `objc2` 0.6.5 | MIT | servo-fonts 0.7.0, `cfg(target_os = "macos")` |
+| `objc2-core-foundation` 0.3.2 | Zlib OR Apache-2.0 OR MIT | servo-fonts 0.7.0, `cfg(target_os = "macos")` |
+| `objc2-core-graphics` 0.3.2 | Zlib OR Apache-2.0 OR MIT | harfbuzz-sys 0.8.0, `cfg(target_vendor = "apple")`; servo-fonts 0.7.0, `cfg(target_os = "macos")` |
+| `objc2-core-text` 0.3.2 | Zlib OR Apache-2.0 OR MIT | harfbuzz-sys 0.8.0, `cfg(target_vendor = "apple")`; servo-fonts 0.7.0, `cfg(target_os = "macos")` |
+| `portable-atomic` 1.15.0 | Apache-2.0 OR MIT | jiff 0.2.39, `cfg(not(target_has_atomic = "ptr"))` |
+| `portable-atomic-util` 0.2.8 | Apache-2.0 OR MIT | jiff 0.2.39, `cfg(not(target_has_atomic = "ptr"))` |
+| `r-efi` 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later | getrandom 0.4.3, `cfg(all(target_os = "uefi", getrandom_backend = "efi_rng"))` |
+| `rand` 0.9.5 | MIT OR Apache-2.0 | rav1e 0.8.1, `cfg(fuzzing)` |
+| `rand_chacha` 0.9.0 | MIT OR Apache-2.0 | rav1e 0.8.1, `cfg(fuzzing)` |
+| `servo-script` 0.7.0 | MPL-2.0 | servo-layout 0.7.0, `cfg(not(target_os = "neoplutarch"))` |
+| `surfman` 0.14.0 | MIT OR Apache-2.0 OR MPL-2.0 | servo-paint-api 0.7.0, `cfg(not(target_os = "neoplutarch"))` |
+| `tempfile` 3.27.0 | MIT OR Apache-2.0 | ipc-channel 0.23.1, `cfg(any(target_os = "linux", target_os = "openbsd", target_os = "freebsd", target_os = "illumos"))` |
+| `wasi` 0.11.1+wasi-snapshot-preview1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | getrandom 0.2.17, `cfg(target_os = "wasi")` |
+| `web-sys` 0.3.107 | MIT OR Apache-2.0 | glow 0.17.0, `cfg(target_arch = "wasm32")` |
+| `winapi` 0.3.9 | MIT OR Apache-2.0 | servo-fonts 0.7.0, `cfg(target_os = "windows")`; zeitstempel 0.2.2, `cfg(windows)` |
+| `winapi-util` 0.1.11 | Unlicense OR MIT | same-file 1.0.6, `cfg(windows)`; walkdir 2.5.0, `cfg(windows)` |
+| `windows` 0.62.2 | MIT OR Apache-2.0 | harfbuzz-sys 0.8.0, `cfg(target_family = "windows")`; ipc-channel 0.23.1, `cfg(target_os = "windows")` |
+| `windows-link` 0.2.1 | MIT OR Apache-2.0 | chrono 0.4.45, `cfg(windows)`; jiff 0.2.39, `cfg(windows)` |
+| `windows-sys` 0.52.0 | MIT OR Apache-2.0 | ring 0.17.14, `cfg(all(all(target_arch = "aarch64", target_endian = "little"), target_os = "windows"))` |
+| `xml` 1.4.0 | MIT | servo-fonts 0.7.0, `cfg(target_os = "android")` |
+| `yeslogic-fontconfig-sys` 6.0.1 | MIT | servo-fonts 0.7.0, `cfg(all(any(target_os = "linux", target_os = "freebsd"), not(target_env = "ohos")))` |
 
 ## The crates
 

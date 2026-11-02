@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "interpolate_name"
+version = "0.2.4"
+edition = "2018"
+license = "MIT"
+repository = "https://github.com/lu-zero/interpolate_name"
+description = "LogansOS empty stand-in for interpolate_name 0.2.4 (never compiled for LogansOS)"
+
+[lib]
+path = "src/lib.rs"
+proc-macro = true
+
+[features]

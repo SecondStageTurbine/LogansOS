@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "portable-atomic-util"
+version = "0.2.8"
+edition = "2018"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/taiki-e/portable-atomic-util"
+description = "LogansOS empty stand-in for portable-atomic-util 0.2.8 (never compiled for LogansOS)"
+
+[lib]
+name = "portable_atomic_util"
+path = "src/lib.rs"
+
+[features]
+"alloc" = []
+"default" = []
+"std" = ["alloc"]
+"serde" = []
