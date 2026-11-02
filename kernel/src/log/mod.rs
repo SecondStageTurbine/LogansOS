@@ -14,6 +14,12 @@ pub fn write_fmt(args: fmt::Arguments<'_>) {
 }
 
 pub fn flush() {
+    // OT-90 P3b: after K4 a parked CPU may hold the sink's lock; K3 already
+    // flushed it.
+    #[cfg(feature = "power-stop-cpus")]
+    if crate::drivers::console::serial::stopped_world() {
+        return;
+    }
     block_sink::flush();
 }
 

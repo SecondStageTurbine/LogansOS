@@ -32,7 +32,11 @@ pub mod dmar_logic;
 pub mod timers_logic;
 
 /// i8042 lane: the MADT's I/O APICs and ISA interrupt source overrides.
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 #[path = "madt_logic.rs"]
 pub mod madt_logic;
 
@@ -56,7 +60,11 @@ const SIG_DMAR: &[u8; 4] = b"DMAR";
     feature = "power-control"
 ))]
 const SIG_FADT: &[u8; 4] = b"FACP";
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 const SIG_MADT: &[u8; 4] = b"APIC";
 #[cfg(feature = "lapic-timer")]
 const SIG_HPET: &[u8; 4] = b"HPET";
@@ -298,7 +306,11 @@ pub fn timer_hardware(rsdp_phys: u64) -> TimerHardware {
 }
 
 /// i8042 lane: the MADT's I/O APICs and ISA overrides (`None` without one).
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 pub fn madt(rsdp_phys: u64) -> Option<madt_logic::Madt> {
     if rsdp_phys == 0 {
         return None;

@@ -244,8 +244,13 @@ const SCENARIO: &str = "irqsafe_mutex_if_restore";
 const SCENARIO: &str = "irqsafe_mutex_bench";
 #[cfg(feature = "neo-test-ai-latency-oracle")]
 const SCENARIO: &str = "ai_latency_oracle";
-#[cfg(feature = "neo-test-xsave-ymm-context-switch")]
+#[cfg(all(
+    feature = "neo-test-xsave-ymm-context-switch",
+    not(feature = "neo-test-xsave-ebx-understated")
+))]
 const SCENARIO: &str = "xsave_ymm_context_switch";
+#[cfg(feature = "neo-test-xsave-ebx-understated")]
+const SCENARIO: &str = "xsave_ebx_understated";
 #[cfg(all(
     feature = "neo-test-irq-xmm-preserve",
     not(feature = "neo-test-irq-xmm-preserve-fxsave")
@@ -1051,6 +1056,14 @@ const SCENARIO: &str = "ot90_stuck_disk";
 const SCENARIO: &str = "ot90_stuck_sink_off";
 #[cfg(feature = "neo-test-ot90-stuck-sink-restart")]
 const SCENARIO: &str = "ot90_stuck_sink_restart";
+#[cfg(feature = "neo-test-ot90-stop-cpus")]
+const SCENARIO: &str = "ot90_stop_cpus";
+#[cfg(feature = "neo-test-ot90-stop-holdout")]
+const SCENARIO: &str = "ot90_stop_holdout";
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+const SCENARIO: &str = "ot90_stop_shootdown";
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+const SCENARIO: &str = "ot90_stop_wedged";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1617,6 +1630,10 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
     feature = "neo-test-ot90-straggler-forced",
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-shootdown",
+    feature = "neo-test-ot90-stop-wedged",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -4960,6 +4977,14 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ot90-stuck-disk")]
     run_ot90_stuck_disk();
+    #[cfg(any(
+        feature = "neo-test-ot90-stop-cpus",
+        feature = "neo-test-ot90-stop-holdout",
+        feature = "neo-test-ot90-stop-wedged"
+    ))]
+    run_ot90_stop_cpus();
+    #[cfg(feature = "neo-test-ot90-stop-shootdown")]
+    run_ot90_stop_shootdown();
 
     #[cfg(any(
         feature = "neo-test-ot90-stuck-sink-off",
@@ -6493,6 +6518,25 @@ fn run_xsave_ymm_context_switch() -> ! {
     }
 
     crate::sched::reap();
+    // `xsave_ebx_understated`: CPUID.(0DH,0):EBX answered 576 (x87|SSE),
+    // as under WHPX, while XCR0 holds x87|SSE|AVX. The area must still be
+    // sized for AVX (its component ends at 576 + 256 = 832), and the timer
+    // ticks and context switches above must have survived it.
+    #[cfg(feature = "neo-test-xsave-ebx-understated")]
+    {
+        let (ebx, understated) = crate::arch::x86_64::fpu::ebx_report();
+        let area = crate::arch::x86_64::fpu::save_area_size();
+        if ebx != 576 || !understated || area < 832 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ebx_understated_not_handled ebx={} understated={} area={}",
+                SCENARIO,
+                ebx,
+                understated,
+                area
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fpu=xsave area={} mask=0x{:x} ymm=preserved xmm=preserved x87=preserved",
         SCENARIO,
@@ -40332,6 +40376,81 @@ fn run_ot90_straggler_forced() -> ! {
         crate::sched::yield_now();
         crate::sched::reap();
         core::hint::black_box(&channel);
+    }
+}
+
+/// OT-90 P3b `ot90_stop_cpus` / `ot90_stop_holdout`: power-off with K4 and
+/// K5. The APs are idle (or running the harness's own threads) when the
+/// shutdown starts; K4 must park every one of them before S5, by the STOP
+/// IPI, or (`-holdout`, where the highest AP ignores it once) the NMI. xtask
+/// judges it by QMP and the K4/K5 lines.
+#[cfg(any(
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-wedged"
+))]
+fn run_ot90_stop_cpus() -> ! {
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// `ot90_stop_shootdown`: shootdowns the sender completed.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_SENT: AtomicU64 = AtomicU64::new(0);
+/// Set by K4 (`acpi::shutdown::stop_world`) just before it closes
+/// shootdowns: the sender starts then, so the storm overlaps K4 and nothing
+/// earlier (a long storm on TCG starves the other vCPUs' acknowledgements).
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_GO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// The sender: once K4 says go, a full-flush shootdown to every other ready
+/// CPU (the shutdown CPU among them), interrupts off around each (the
+/// review's IF=0 sender), one after another with a yield between.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+extern "C" fn ot90_storm_sender() -> ! {
+    while !OT90_STORM_GO.load(Ordering::Acquire) {
+        crate::sched::yield_now();
+    }
+    loop {
+        crate::arch::x86_64::disable_interrupts();
+        crate::mm::tlb_shootdown::shootdown(None, crate::mm::tlb_shootdown::other_cpus_mask());
+        OT90_STORM_SENT.fetch_add(1, Ordering::Release);
+        crate::arch::x86_64::enable_interrupts();
+        crate::sched::yield_now();
+    }
+}
+
+/// Review #6 item 1 (CP-64): power-off while the highest AP sends
+/// shootdowns at every other CPU, the shutdown CPU among them. K4 starts the
+/// sender, waits until it has completed some, then closes shootdowns: it must
+/// take the sender lock (waiting out the one in flight and acknowledging it)
+/// before it stops answering, and the AP must park by the STOP IPI. A
+/// shootdown timeout panics the run.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+fn run_ot90_stop_shootdown() -> ! {
+    use crate::arch::x86_64::per_cpu::MAX_CPUS;
+    let me = crate::arch::x86_64::per_cpu::current_cpu_id();
+    let Some(ap) = (0..MAX_CPUS as u32)
+        .rev()
+        .find(|&cpu| cpu != me && crate::sched::scheduler::cpu_scheduler_ready(cpu))
+    else {
+        fail("reason=no_ap");
+    };
+    let t = crate::sched::thread::Thread::new("ot90-storm", ot90_storm_sender);
+    if crate::sched::scheduler::place_thread_on_cpu(t, ap).is_err() {
+        fail("reason=storm_place_failed");
+    }
+    frame("INFO", &alloc::format!("stage=storm_ready ap={ap}"));
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
     }
 }
 

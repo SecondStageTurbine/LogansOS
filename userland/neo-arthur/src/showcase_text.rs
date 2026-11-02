@@ -48,10 +48,15 @@ pub const BODY_PX: f32 = 16.0;
 pub const LINE_HEIGHT: i32 = 24;
 pub const BODY_BASELINE: i32 = 18;
 pub const TRANSCRIPT_TOP: i32 = 64;
-/// A9-D: the busy emblem's rect: this far right of the caret, this wide,
-/// two lines high (the WM centres its 44 px emblem in it).
-pub const BUSY_GAP: i32 = 4;
-pub const BUSY_WIDTH: i32 = 48;
+/// A9-D: the side of the WM's busy emblem (neo-atrium `busy::SIDE`). Arthur
+/// reserves a square this size at the right end of the header line, so the
+/// emblem sits there, right-aligned to the inner width.
+pub const BUSY_SIDE: i32 = 44;
+/// The header line's vertical middle: half the title's cap height (16 px at
+/// 22 px Inter) above its baseline. The emblem is centred on it.
+pub const HEADER_LINE_MID: i32 = TITLE_BASELINE - 8;
+/// What the reply line shows, in `structure`, until the reply's first byte.
+pub const THINKING: &str = "\u{2026}";
 /// The transcript at the created 640x400 size: twelve lines.
 pub const TRANSCRIPT: Rect = transcript_rect(SURFACE_WIDTH, SURFACE_HEIGHT);
 
@@ -68,6 +73,10 @@ const TRANSCRIPT_FOOTER_GAP: i32 = 12;
 // The created size lays out exactly as before resize existed (S2).
 const _: () = assert!(TRANSCRIPT.height == 12 * LINE_HEIGHT && TRANSCRIPT.width == 592);
 const _: () = assert!(FOOTER_RULE_Y == 364 && FOOTER_BASELINE == 386);
+// The emblem stays between the surface's top and the header rule.
+const _: () = assert!(
+    HEADER_LINE_MID - BUSY_SIDE / 2 >= 0 && HEADER_LINE_MID + BUSY_SIDE / 2 < HEADER_RULE_Y
+);
 
 /// DI-1b resize: the transcript for a `width` x `height` surface: as many
 /// whole lines as fit between the header and the footer.
@@ -114,6 +123,9 @@ pub struct TextSurface<'f> {
     /// can be committed on its own ([`Self::take_footer_damage`]).
     footer: FooterModel,
     footer_damage: Rect,
+    /// A9-D: where [`Self::reserve_busy`] drew the reply line's "…", erased
+    /// by the next transcript byte; empty when none is shown.
+    thinking: Rect,
     /// A9-C: the transcript line the view's top row shows while the user has
     /// scrolled up; `None` while it follows the newest text.
     #[cfg(feature = "arthur-scrollback")]
@@ -168,6 +180,7 @@ impl TextSurface<'static> {
             history: Vec::with_capacity(HISTORY),
             footer: FooterModel::Loading,
             footer_damage: Rect::new(0, 0, 0, 0),
+            thinking: Rect::new(0, 0, 0, 0),
             #[cfg(feature = "arthur-scrollback")]
             view_top: None,
             #[cfg(feature = "arthur-scrollback")]
@@ -218,6 +231,7 @@ impl<'f> TextSurface<'f> {
         let mut canvas = canvas(pixels, width, height, self.stride);
         let full = canvas.bounds();
         canvas.fill(full, GROUND);
+        self.thinking = Rect::new(0, 0, 0, 0);
         draw_line(
             &mut canvas,
             &mut self.sans,
@@ -302,6 +316,11 @@ impl<'f> TextSurface<'f> {
     pub fn write_byte(&mut self, pixels: &mut [u32], byte: u8) {
         self.remember(byte);
         let mut canvas = canvas(pixels, self.width, self.height, self.stride);
+        if !self.thinking.is_empty() {
+            canvas.fill(self.thinking, GROUND);
+            self.damage = self.damage.union(&self.thinking);
+            self.thinking = Rect::new(0, 0, 0, 0);
+        }
         self.flow.push(&mut self.sans, &mut canvas, as_char(byte));
         // A9-C: the flow drew at the bottom; the view it covered is redrawn
         // before the next commit. A held view whose top line the 512-line
@@ -390,20 +409,44 @@ impl<'f> TextSurface<'f> {
         self.history.push(byte);
     }
 
-    /// A9-D: the rect for the WM's busy emblem, as (x, y, w, h): from just
-    /// right of the caret, `BUSY_WIDTH` wide, over the current line and the
-    /// one below it (made empty first, scrolling the transcript up a line if
-    /// the caret is on the last row). `None` if nothing of it is on the
-    /// surface. With the scrollback, the newest view comes back first: the
-    /// rect is beside the caret, and only that view has the caret on it.
+    /// A9-D: start Arthur's thinking: a quiet "…" in `structure` at the
+    /// caret (the reply line, after "Arthur> "), which the reply's first byte
+    /// erases, and the rect for the WM's busy emblem in the header
+    /// ([`Self::busy_rect`]). With the scrollback, the newest view comes back
+    /// first: only that view has the caret on it.
     #[cfg_attr(not(feature = "arthur-busy-emblem"), allow(dead_code))]
     pub fn reserve_busy(&mut self, pixels: &mut [u32]) -> Option<(u16, u16, u16, u16)> {
         #[cfg(feature = "arthur-scrollback")]
         self.follow(pixels);
         let mut canvas = canvas(pixels, self.width, self.height, self.stride);
-        self.flow.make_room(&mut canvas, 1);
         let (x, y) = self.flow.caret(&self.sans);
-        let rect = Rect::new(x + BUSY_GAP, y, BUSY_WIDTH, 2 * LINE_HEIGHT);
+        let drawn = draw_line(
+            &mut canvas,
+            &mut self.sans,
+            BODY_PX,
+            THINKING,
+            x as f32,
+            y + BODY_BASELINE,
+            STRUCTURE,
+            self.flow.region(),
+        );
+        self.thinking = self.thinking.union(&drawn);
+        self.damage = self.damage.union(&drawn);
+        self.busy_rect()
+    }
+
+    /// A9-D: the busy emblem's rect, as (x, y, w, h): a `BUSY_SIDE` square
+    /// at the right end of the header line (right-aligned to the inner
+    /// width, centred on the title line), where only ground is drawn. `None`
+    /// if nothing of it is on the surface.
+    #[cfg_attr(not(feature = "arthur-busy-emblem"), allow(dead_code))]
+    pub fn busy_rect(&self) -> Option<(u16, u16, u16, u16)> {
+        let rect = Rect::new(
+            self.width as i32 - MARGIN_X - BUSY_SIDE,
+            HEADER_LINE_MID - BUSY_SIDE / 2,
+            BUSY_SIDE,
+            BUSY_SIDE,
+        );
         as_tuple(rect.intersect(&Rect::new(0, 0, self.width as i32, self.height as i32)))
     }
 
