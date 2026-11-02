@@ -698,6 +698,29 @@ fn home_keys_decode_hid_usages() {
     assert_eq!(decode(ev(0x51, false, true)), Some(Key::Down));
     assert_eq!(decode(ev(0x04, false, false)), None, "release");
     assert_eq!(decode(ev(0x32, false, true)), None, "non-US #");
+    // Hand-laid INPUT_EVENT_V1 bytes: kind, flags, usage LE, modifiers LE
+    // (x), lock state LE (y). Shift+`;` and right Shift+`'`; Caps Lock (y
+    // bit 0) on a letter, with Shift, and on a symbol key (no effect).
+    assert_eq!(
+        decode([1, 1, 0x33, 0, 0x02, 0, 0, 0]),
+        Some(Key::Char(b':'))
+    );
+    assert_eq!(
+        decode([1, 1, 0x34, 0, 0x20, 0, 0, 0]),
+        Some(Key::Char(b'"'))
+    );
+    assert_eq!(
+        decode([1, 1, 0x04, 0, 0x00, 0, 1, 0]),
+        Some(Key::Char(b'A'))
+    );
+    assert_eq!(
+        decode([1, 1, 0x04, 0, 0x02, 0, 1, 0]),
+        Some(Key::Char(b'a'))
+    );
+    assert_eq!(
+        decode([1, 1, 0x33, 0, 0x00, 0, 1, 0]),
+        Some(Key::Char(b';'))
+    );
     assert_eq!(decode([2, 1, 4, 0, 0, 0, 0, 0]), None, "not a key event");
     let mut line = crate::keys::Line::<4>::default();
     for k in [
