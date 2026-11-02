@@ -100,3 +100,4 @@ RELAY 279 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-02-relays-277-2
 RELAY 280 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-02-relays-277-281.md | Section 280 (#57 re-check 2; RETURN `Plans/RETURN-2026-11-02-pr57-recheck2-chad.md`)
 RELAY 281 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-277-281.md | Section 281 (#56 F1/F2; RETURN `Plans/RETURN-2026-11-02-pr56-recheck-dexter.md`)
 RELAY 282 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-setup-menu-think-dexter.md | Section "Relay 282" (setup menu THINK; RETURN `Plans/RETURN-2026-11-02-setup-menu-think-dexter.md`)
+RELAY 283 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-283.md | Section "Relay 283" (#45/#47 re-check; RETURN `Plans/RETURN-2026-11-02-pr45-pr47-recheck-dexter.md`)
