@@ -12,10 +12,13 @@
 //! `tools/block-guard-logic-tests` mount this file by `#[path]`, so keep it
 //! free of `crate::` paths and feature cfgs.
 //!
-//! Only the four primary entries are read; extended/logical chains are not
-//! followed (a later rung). An entry is believed only when it is a FAT type,
-//! starts past LBA 0, lies inside the device and overlaps no other believed
-//! entry; anything else is reported, never mounted.
+//! Only primary FAT entries are mounted. An extended container's chain of
+//! EBRs is walked ([`extended_chain`], bounded in length and refusing any
+//! link that doesn't move forward inside the container), but only so its
+//! logical partitions count as claimed space: a FAT primary is believed only
+//! when it starts past LBA 0, lies inside the device and overlaps no other
+//! entry of any type, primary or logical (Chad's #17 review). Anything else
+//! is reported, never mounted.
 
 /// The MBR's boot signature at bytes 510..512.
 pub const SIGNATURE: [u8; 2] = [0x55, 0xaa];
@@ -53,7 +56,9 @@ pub enum Rejected {
     Degenerate,
     /// Ends past the device's last block.
     PastEnd,
-    /// Overlaps an earlier believed entry.
+    /// Overlaps another entry, of any type (another primary, an extended
+    /// container, or a logical partition from its chain): both are refused,
+    /// since nothing says which one is right.
     Overlaps,
 }
 
@@ -120,9 +125,83 @@ pub fn entry(sector: &[u8], slot: usize) -> Option<Entry> {
     })
 }
 
+/// Extended-container partition types: CHS (`0x05`), LBA (`0x0F`), Linux
+/// (`0x85`).
+pub const EXTENDED_TYPES: [u8; 3] = [0x05, 0x0f, 0x85];
+/// The most logical partitions one chain may hold before it is refused.
+pub const MAX_LOGICAL: usize = 32;
+
+/// Why an extended chain was refused (the walk stops there; what it found
+/// before still counts as claimed space).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainError {
+    /// More than [`MAX_LOGICAL`] links.
+    TooLong,
+    /// A link that doesn't move strictly forward (a loop, or a step back).
+    Loop,
+    /// A link outside its extended container.
+    OutsideContainer,
+    /// An EBR that couldn't be read, or without `0x55AA`.
+    BadEbr,
+}
+
+/// Walk the EBR chain of the extended container `(first_lba, lba_count)`:
+/// each EBR's first entry is a logical partition (relative to that EBR), its
+/// second the next EBR (relative to the container's start). `read(lba)`
+/// returns one 512-byte sector. Every logical partition found is written to
+/// `out` as `(first, end)`; returns how many, and the error that stopped the
+/// walk if one did. Bounded: at most [`MAX_LOGICAL`] reads, every link
+/// strictly after the one before and inside the container.
+pub fn extended_chain(
+    container: (u64, u64),
+    read: &mut dyn FnMut(u64) -> Option<[u8; 512]>,
+    out: &mut [(u64, u64); MAX_LOGICAL],
+) -> (usize, Option<ChainError>) {
+    let (start, count) = container;
+    let end = start + count;
+    let mut ebr = start;
+    let mut n = 0;
+    loop {
+        if ebr < start || ebr >= end {
+            return (n, Some(ChainError::OutsideContainer));
+        }
+        if n == MAX_LOGICAL {
+            return (n, Some(ChainError::TooLong));
+        }
+        let Some(sector) = read(ebr) else {
+            return (n, Some(ChainError::BadEbr));
+        };
+        if sector[510..512] != SIGNATURE {
+            return (n, Some(ChainError::BadEbr));
+        }
+        if let Some(logical) = entry(&sector, 0)
+            && logical.lba_count != 0
+        {
+            let first = ebr + logical.first_lba;
+            out[n] = (first, first + logical.lba_count);
+            n += 1;
+        }
+        let Some(next) = entry(&sector, 1) else {
+            return (n, None);
+        };
+        let next = start + next.first_lba;
+        if next <= ebr {
+            return (n, Some(ChainError::Loop));
+        }
+        ebr = next;
+    }
+}
+
 /// Classify sector 0 (at least 512 bytes) of a device of `block_count`
-/// blocks.
+/// blocks, with no extended chain read (`classify_with` with nothing more
+/// claimed).
 pub fn classify(sector: &[u8], block_count: u64) -> Sector0 {
+    classify_with(sector, block_count, &[])
+}
+
+/// [`classify`], with `logical` (the `(first, end)` ranges an extended
+/// chain claims, from [`extended_chain`]) counted as taken space too.
+pub fn classify_with(sector: &[u8], block_count: u64, logical: &[(u64, u64)]) -> Sector0 {
     if sector.len() < 512 || sector[510..512] != SIGNATURE {
         return Sector0::Blank;
     }
@@ -134,17 +213,28 @@ pub fn classify(sector: &[u8], block_count: u64) -> Sector0 {
     {
         return Sector0::Protective;
     }
+    // Every non-empty primary with a real extent claims its space, whatever
+    // its type and whether or not it is believed itself.
+    let mut claimed: [Option<(u64, u64)>; PRIMARY_ENTRIES] = [None; PRIMARY_ENTRIES];
+    for (slot, c) in claimed.iter_mut().enumerate() {
+        if let Some(e) = entry(sector, slot)
+            && e.lba_count != 0
+        {
+            *c = Some((e.first_lba, e.first_lba + e.lba_count));
+        }
+    }
     let mut out = [None; PRIMARY_ENTRIES];
-    let mut believed: [Option<(u64, u64)>; PRIMARY_ENTRIES] = [None; PRIMARY_ENTRIES];
-    for slot in 0..PRIMARY_ENTRIES {
+    for (slot, verdict) in out.iter_mut().enumerate() {
         let Some(e) = entry(sector, slot) else {
             continue;
         };
-        let verdict = judge(&e, block_count, &believed);
-        if verdict.is_ok() {
-            believed[slot] = Some((e.first_lba, e.first_lba + e.lba_count));
-        }
-        out[slot] = Some(verdict.map_err(|r| (e, r)));
+        let others = claimed
+            .iter()
+            .enumerate()
+            .filter(|&(other, _)| other != slot)
+            .filter_map(|(_, c)| *c)
+            .chain(logical.iter().copied());
+        *verdict = Some(judge(&e, block_count, others).map_err(|r| (e, r)));
     }
     Sector0::Table(out)
 }
@@ -152,7 +242,7 @@ pub fn classify(sector: &[u8], block_count: u64) -> Sector0 {
 fn judge(
     e: &Entry,
     block_count: u64,
-    believed: &[Option<(u64, u64)>; PRIMARY_ENTRIES],
+    mut others: impl Iterator<Item = (u64, u64)>,
 ) -> Result<Entry, Rejected> {
     if e.boot_flag != 0x00 && e.boot_flag != 0x80 {
         return Err(Rejected::BadBootFlag);
@@ -168,11 +258,7 @@ fn judge(
     if end > block_count {
         return Err(Rejected::PastEnd);
     }
-    if believed
-        .iter()
-        .flatten()
-        .any(|&(s, x)| e.first_lba < x && s < end)
-    {
+    if others.any(|(s, x)| e.first_lba < x && s < end) {
         return Err(Rejected::Overlaps);
     }
     Ok(*e)
@@ -180,11 +266,17 @@ fn judge(
 
 /// The believed entry `index` (1..=4) of `sector`, or `None` (no table, a
 /// superfloppy, a protective MBR, an empty slot, or a rejected entry).
-pub fn partition(sector: &[u8], block_count: u64, index: u32) -> Option<Entry> {
+/// `logical` as for [`classify_with`].
+pub fn partition(
+    sector: &[u8],
+    block_count: u64,
+    index: u32,
+    logical: &[(u64, u64)],
+) -> Option<Entry> {
     if !(1..=PRIMARY_ENTRIES as u32).contains(&index) {
         return None;
     }
-    match classify(sector, block_count) {
+    match classify_with(sector, block_count, logical) {
         Sector0::Table(slots) => slots[index as usize - 1]?.ok(),
         _ => None,
     }

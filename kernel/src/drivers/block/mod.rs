@@ -791,7 +791,39 @@ pub fn mbr_partition(
     if !GuardReader(device.as_ref()).read(0, &mut sector) {
         return None;
     }
-    match mbr_logic::classify(&sector, geometry.block_count) {
+    // Every extended container's logical partitions count as claimed space
+    // (Chad's #17 review): walk each chain, bounded, through the same reader.
+    let mut logical = alloc::vec::Vec::new();
+    for slot in 0..mbr_logic::PRIMARY_ENTRIES {
+        let Some(ext) = mbr_logic::entry(&sector, slot) else {
+            continue;
+        };
+        if !mbr_logic::EXTENDED_TYPES.contains(&ext.part_type) || ext.lba_count == 0 {
+            continue;
+        }
+        let mut found = [(0u64, 0u64); mbr_logic::MAX_LOGICAL];
+        let mut read = |lba: u64| {
+            let mut ebr = alloc::vec![0u8; block];
+            if lba >= geometry.block_count || !GuardReader(device.as_ref()).read(lba, &mut ebr) {
+                return None;
+            }
+            let mut out = [0u8; 512];
+            out.copy_from_slice(&ebr[..512]);
+            Some(out)
+        };
+        let (n, error) =
+            mbr_logic::extended_chain((ext.first_lba, ext.lba_count), &mut read, &mut found);
+        if let Some(why) = error {
+            serial_println!(
+                "[ kernel ] block: MBR extended chain in partition={} stopped after {} logical: {:?}",
+                ext.index,
+                n,
+                why
+            );
+        }
+        logical.extend_from_slice(&found[..n]);
+    }
+    match mbr_logic::classify_with(&sector, geometry.block_count, &logical) {
         mbr_logic::Sector0::Table(slots) => match slots.get(index.checked_sub(1)? as usize)? {
             Some(Ok(entry)) => partition::PartitionDevice::from_mbr(device.clone(), entry),
             Some(Err((entry, why))) => {

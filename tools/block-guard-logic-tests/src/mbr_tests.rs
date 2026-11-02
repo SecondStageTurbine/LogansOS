@@ -5,7 +5,8 @@
 //! `55 AA` at 510), not produced by any writer in this tree.
 
 use super::mbr_logic::{
-    Entry, Rejected, Sector0, classify, is_fat_boot_sector, parse_source, partition,
+    ChainError, Entry, MAX_LOGICAL, Rejected, Sector0, classify, extended_chain,
+    is_fat_boot_sector, parse_source, partition,
 };
 
 /// A 16 GB stick's worth of 512-byte blocks.
@@ -77,17 +78,17 @@ fn hand_laid_stick_mbr_decodes_to_its_bytes() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(partition(&s, STICK_BLOCKS, 1), Some(want));
-    assert_eq!(partition(&s, STICK_BLOCKS, 2), None);
-    assert_eq!(partition(&s, STICK_BLOCKS, 0), None);
-    assert_eq!(partition(&s, STICK_BLOCKS, 5), None);
+    assert_eq!(partition(&s, STICK_BLOCKS, 1, &[]), Some(want));
+    assert_eq!(partition(&s, STICK_BLOCKS, 2, &[]), None);
+    assert_eq!(partition(&s, STICK_BLOCKS, 0, &[]), None);
+    assert_eq!(partition(&s, STICK_BLOCKS, 5, &[]), None);
 }
 
 #[test]
 fn partition_ending_exactly_at_the_last_block_is_believed() {
     let s = hand_laid_stick_mbr();
     // 2048 + 31_264_768 = 31_266_816: ends on the device's end, inclusive.
-    assert!(partition(&s, 2048 + 31_264_768, 1).is_some());
+    assert!(partition(&s, 2048 + 31_264_768, 1, &[]).is_some());
     // One block short of a device: past the end.
     match classify(&s, 2048 + 31_264_768 - 1) {
         Sector0::Table(slots) => assert_eq!(slots[0].unwrap().unwrap_err().1, Rejected::PastEnd),
@@ -100,7 +101,7 @@ fn superfloppy_is_not_read_as_a_table() {
     let s = hand_laid_superfloppy();
     assert!(is_fat_boot_sector(&s));
     assert_eq!(classify(&s, 131_072), Sector0::Superfloppy);
-    assert_eq!(partition(&s, 131_072, 1), None);
+    assert_eq!(partition(&s, 131_072, 1, &[]), None);
 }
 
 #[test]
@@ -149,13 +150,13 @@ fn protective_mbr_defers_to_gpt() {
     s[510] = 0x55;
     s[511] = 0xaa;
     assert_eq!(classify(&s, STICK_BLOCKS), Sector0::Protective);
-    assert_eq!(partition(&s, STICK_BLOCKS, 1), None);
+    assert_eq!(partition(&s, STICK_BLOCKS, 1, &[]), None);
 }
 
 #[test]
 fn bad_entries_are_rejected_and_never_mounted() {
     let mut s = [0u8; 512];
-    put_entry(&mut s, 0, 0x80, 0x0c, 2048, 4096); // good, bootable
+    put_entry(&mut s, 0, 0x80, 0x0c, 2048, 4096); // FAT, overlaps entry 3
     put_entry(&mut s, 1, 0x00, 0x83, 8192, 4096); // Linux: not FAT
     put_entry(&mut s, 2, 0x00, 0x0e, 4096, 4096); // overlaps entry 1
     put_entry(&mut s, 3, 0x12, 0x06, 16384, 16); // bad boot flag
@@ -164,12 +165,13 @@ fn bad_entries_are_rejected_and_never_mounted() {
     let Sector0::Table(slots) = classify(&s, 65536) else {
         panic!()
     };
-    assert_eq!(slots[0].unwrap().unwrap().first_lba, 2048);
+    // Overlap is symmetric: neither of two overlapping entries is believed.
+    assert_eq!(slots[0].unwrap().unwrap_err().1, Rejected::Overlaps);
     assert_eq!(slots[1].unwrap().unwrap_err().1, Rejected::NotFat);
     assert_eq!(slots[2].unwrap().unwrap_err().1, Rejected::Overlaps);
     assert_eq!(slots[3].unwrap().unwrap_err().1, Rejected::BadBootFlag);
-    for m in 2..=4 {
-        assert_eq!(partition(&s, 65536, m), None, "p{m}");
+    for m in 1..=4 {
+        assert_eq!(partition(&s, 65536, m, &[]), None, "p{m}");
     }
 }
 
@@ -187,17 +189,122 @@ fn degenerate_entries_are_rejected() {
     assert_eq!(slots[1].unwrap().unwrap_err().1, Rejected::Degenerate);
 }
 
+/// Chad's #17 review: every entry counts against every other, whatever its
+/// type or verdict. His input: slot 1 FAT32 LBA at 2048+4096 and slot 2 Linux
+/// at 4096+4096 on a 65536-block device; slot 1 used to mount.
 #[test]
-fn a_rejected_entry_does_not_shadow_a_later_good_one() {
-    // Entry 1 is past the end (rejected); entry 2 sits in the same range
-    // and is believed: only believed entries count for overlap.
+fn a_fat_entry_overlapping_any_entry_is_refused() {
+    let mut s = [0u8; 512];
+    put_entry(&mut s, 0, 0x00, 0x0c, 2048, 4096);
+    put_entry(&mut s, 1, 0x00, 0x83, 4096, 4096);
+    s[510] = 0x55;
+    s[511] = 0xaa;
+    // The byte oracle: the two entries as laid out.
+    assert_eq!(
+        s[446..478],
+        [
+            0x00, 0, 0, 0, 0x0c, 0, 0, 0, 0x00, 0x08, 0, 0, 0x00, 0x10, 0, 0, //
+            0x00, 0, 0, 0, 0x83, 0, 0, 0, 0x00, 0x10, 0, 0, 0x00, 0x10, 0, 0,
+        ]
+    );
+    let Sector0::Table(slots) = classify(&s, 65536) else {
+        panic!()
+    };
+    assert_eq!(slots[0].unwrap().unwrap_err().1, Rejected::Overlaps);
+    assert_eq!(partition(&s, 65536, 1, &[]), None);
+    // A past-end entry still claims its space: a FAT entry under it is
+    // refused too (nothing says which one is right).
     let mut s = [0u8; 512];
     put_entry(&mut s, 0, 0x00, 0x0c, 2048, 1_000_000);
     put_entry(&mut s, 1, 0x00, 0x0c, 2048, 4096);
     s[510] = 0x55;
     s[511] = 0xaa;
-    assert_eq!(partition(&s, 65536, 1), None);
-    assert_eq!(partition(&s, 65536, 2).unwrap().lba_count, 4096);
+    assert_eq!(partition(&s, 65536, 1, &[]), None);
+    assert_eq!(partition(&s, 65536, 2, &[]), None);
+    // An extended container overlapping a FAT primary refuses it; the same
+    // FAT primary clear of it is believed.
+    let mut s = [0u8; 512];
+    put_entry(&mut s, 0, 0x00, 0x0c, 2048, 4096);
+    put_entry(&mut s, 1, 0x00, 0x0f, 6000, 8192);
+    s[510] = 0x55;
+    s[511] = 0xaa;
+    assert_eq!(partition(&s, 65536, 1, &[]), None);
+    put_entry(&mut s, 1, 0x00, 0x0f, 6144, 8192);
+    assert!(partition(&s, 65536, 1, &[]).is_some());
+    // A logical partition (from the chain) under a FAT primary refuses it.
+    assert_eq!(partition(&s, 65536, 1, &[(5000, 5100)]), None);
+}
+
+/// An EBR: entry 0 the logical partition (relative to this EBR), entry 1
+/// the next EBR (relative to the container start), `0x55AA`.
+fn ebr(logical: (u32, u32), next: Option<u32>) -> [u8; 512] {
+    let mut s = [0u8; 512];
+    put_entry(&mut s, 0, 0x00, 0x83, logical.0, logical.1);
+    if let Some(next) = next {
+        put_entry(&mut s, 1, 0x00, 0x05, next, 1);
+    }
+    s[510] = 0x55;
+    s[511] = 0xaa;
+    s
+}
+
+/// Chad's #17 review: the extended chain is walked, bounded. A container
+/// at 10000+20000 with EBRs at 10000 and 12000.
+#[test]
+fn the_extended_chain_walk_is_bounded() {
+    let container = (10_000u64, 20_000u64);
+    let mut out = [(0u64, 0u64); MAX_LOGICAL];
+    // A proper two-link chain: logical partitions at 10063+100 and 12063+200.
+    let mut read = |lba: u64| match lba {
+        10_000 => Some(ebr((63, 100), Some(2000))),
+        12_000 => Some(ebr((63, 200), None)),
+        _ => None,
+    };
+    assert_eq!(extended_chain(container, &mut read, &mut out), (2, None));
+    assert_eq!(&out[..2], &[(10_063, 10_163), (12_063, 12_263)]);
+    // A loop (the second EBR points back at the first) stops at once.
+    let mut read = |lba: u64| match lba {
+        10_000 => Some(ebr((63, 100), Some(2000))),
+        12_000 => Some(ebr((63, 200), Some(0))),
+        _ => None,
+    };
+    assert_eq!(
+        extended_chain(container, &mut read, &mut out),
+        (2, Some(ChainError::Loop))
+    );
+    // A self-link stops too.
+    let mut read = |_| Some(ebr((63, 100), Some(0)));
+    assert_eq!(
+        extended_chain(container, &mut read, &mut out),
+        (1, Some(ChainError::Loop))
+    );
+    // A link past the container.
+    let mut read = |lba: u64| (lba == 10_000).then(|| ebr((63, 100), Some(25_000)));
+    assert_eq!(
+        extended_chain(container, &mut read, &mut out),
+        (1, Some(ChainError::OutsideContainer))
+    );
+    // An endless forward chain (each EBR one block on) stops at MAX_LOGICAL.
+    let mut reads = 0;
+    let mut read = |_| {
+        reads += 1;
+        Some(ebr((1, 1), Some(reads as u32)))
+    };
+    assert_eq!(
+        extended_chain(container, &mut read, &mut out),
+        (MAX_LOGICAL, Some(ChainError::TooLong))
+    );
+    // An unreadable or unsigned EBR.
+    let mut read = |_| None;
+    assert_eq!(
+        extended_chain(container, &mut read, &mut out),
+        (0, Some(ChainError::BadEbr))
+    );
+    let mut read = |_| Some([0u8; 512]);
+    assert_eq!(
+        extended_chain(container, &mut read, &mut out),
+        (0, Some(ChainError::BadEbr))
+    );
 }
 
 #[test]
