@@ -5085,6 +5085,14 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // Chad's #18 review: looping file and directory chains are errors.
+    TestScenario {
+        name: "phase3_fat32_loop_chain",
+        feature: "neo-test-phase3-fat32-loop-chain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     TestScenario {
         name: "phase3_fat32_native_control",
         feature: "neo-test-phase3-fat32-native-control",
@@ -14167,6 +14175,9 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         } else if scenario_name == "phase3_fat32_readonly_no_write" {
             // L3a-2 (T4/T5): the FAT32 fixture, marked dirty.
             prepare_fat32_dirty_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_loop_chain" {
+            // Chad's #18 review: looping chains.
+            prepare_fat32_loop_storage_disk(&device1)?
         } else {
             prepare_fat32_storage_disk(&device1)?
         };
@@ -16092,6 +16103,106 @@ fn prepare_fat_fixture_disk(
     )?;
     run_mtools("mcopy", &["-i", &image, &weights_path, "::/weights.neom"])?;
 
+    Ok(path.to_path_buf())
+}
+
+/// Chad's #18 review: the FAT32 fixture plus `loop.bin` (three clusters) and
+/// `loopdir` (its first cluster filled with 8.3 entries, so it has no end
+/// marker), then both chains patched by hand in every FAT copy: the file's
+/// second cluster points back at its first (`A -> B -> A`), the directory's
+/// first cluster at itself.
+fn prepare_fat32_loop_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let image = path.display().to_string();
+    let mut img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let bps = u16_at(&img, 11);
+    let cluster = bps * img[13] as usize;
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("fat32-fixtures");
+    let loop_file = fixture_dir.join("loop.bin");
+    fs::write(&loop_file, vec![0x5au8; cluster * 3])
+        .map_err(|e| format!("write {}: {e}", loop_file.display()))?;
+    run_mtools(
+        "mcopy",
+        &[
+            "-i",
+            &image,
+            &loop_file.display().to_string(),
+            "::/LOOP.BIN",
+        ],
+    )?;
+    run_mtools("mmd", &["-i", &image, "::/LOOPDIR"])?;
+    let tiny = write_fat32_fixture(&fixture_dir, "tiny.txt", b"x")?;
+    for i in 0..cluster / 32 - 2 {
+        run_mtools(
+            "mcopy",
+            &[
+                "-i",
+                &image,
+                &tiny.display().to_string(),
+                &format!("::/LOOPDIR/F{i:04}.TXT"),
+            ],
+        )?;
+    }
+    img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let reserved = u16_at(&img, 14);
+    let fats = img[16] as usize;
+    let per_fat = u32_at(&img, 36) as usize;
+    let root_cluster = u32_at(&img, 44);
+    let fat_at = |c: u32| reserved * bps + c as usize * 4;
+    let data_at = |c: u32| (reserved + fats * per_fat) * bps + (c as usize - 2) * cluster;
+    let next = |img: &[u8], c: u32| u32_at(img, fat_at(c)) & 0x0fff_ffff;
+    // Find a short entry in the root directory (following its chain, bounded).
+    let find = |img: &[u8], name: &[u8; 11]| -> Result<u32, String> {
+        let mut c = root_cluster;
+        for _ in 0..64 {
+            let base = data_at(c);
+            for i in 0..cluster / 32 {
+                let e = &img[base + i * 32..base + i * 32 + 32];
+                if &e[0..11] == name {
+                    return Ok(((u16_at(e, 20) as u32) << 16) | u16_at(e, 26) as u32);
+                }
+            }
+            c = next(img, c);
+            if c >= 0x0fff_fff8 {
+                break;
+            }
+        }
+        Err(format!(
+            "{}: no {:?} in the root",
+            path.display(),
+            String::from_utf8_lossy(name)
+        ))
+    };
+    let file_first = find(&img, b"LOOP    BIN")?;
+    let dir_first = find(&img, b"LOOPDIR    ")?;
+    let file_second = next(&img, file_first);
+    if !(2..0x0fff_fff7).contains(&file_second) {
+        return Err(format!(
+            "{}: loop.bin has no second cluster",
+            path.display()
+        ));
+    }
+    for f in 0..fats {
+        let off = f * per_fat * bps;
+        let put = |img: &mut Vec<u8>, c: u32, v: u32| {
+            let at = off + fat_at(c);
+            img[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        put(&mut img, file_second, file_first);
+        put(&mut img, dir_first, dir_first);
+    }
+    let dir_base = data_at(dir_first);
+    if (0..cluster / 32).any(|i| img[dir_base + i * 32] == 0) {
+        return Err(format!(
+            "{}: loopdir's first cluster is not full",
+            path.display()
+        ));
+    }
+    fs::write(path, &img).map_err(|e| format!("write FAT32 disk {}: {e}", path.display()))?;
     Ok(path.to_path_buf())
 }
 

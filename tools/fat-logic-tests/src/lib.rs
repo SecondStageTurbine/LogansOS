@@ -271,4 +271,133 @@ mod tests {
             Dirty::default()
         );
     }
+
+    /// Chad's #18 review: a FAT whose chain loops (`A -> B -> A`) is
+    /// corruption, and reading must say so instead of returning the same
+    /// clusters again (a file) or walking forever (a directory, which has no
+    /// size to stop at). Real FAT16 images, patched by hand.
+    fn fat16_entry_at(img: &[u8], cluster: u32) -> usize {
+        let reserved = u16::from_le_bytes([img[14], img[15]]) as usize;
+        reserved * 512 + cluster as usize * 2
+    }
+
+    fn set_fat16(img: &mut [u8], cluster: u32, value: u16) {
+        let reserved = u16::from_le_bytes([img[14], img[15]]) as usize;
+        let per_fat = u16::from_le_bytes([img[22], img[23]]) as usize * 512;
+        let fats = img[16] as usize;
+        for f in 0..fats {
+            let at = reserved * 512 + f * per_fat + cluster as usize * 2;
+            img[at..at + 2].copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    fn run_bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(20))
+            .expect("the walk did not finish: a loop was followed")
+    }
+
+    #[test]
+    fn a_looping_chain_is_corruption() {
+        use std::io::{Read as _, Write as _};
+        // A file of three clusters, then its chain patched to A -> B -> A.
+        let mut img = fat16();
+        let cluster_size = {
+            let mut disk = Cursor::new(&mut img);
+            let fs = fatfs::FileSystem::new(
+                fatfs::StdIoWrapper::new(&mut disk),
+                fatfs::FsOptions::new(),
+            )
+            .expect("mount");
+            let cs = fs.cluster_size() as usize;
+            let mut f = fs.root_dir().create_file("loop.bin").unwrap();
+            f.write_all(&vec![0x5a; cs * 3]).unwrap();
+            f.flush().unwrap();
+            drop(f);
+            // A directory whose first cluster is full (8.3 names, one entry
+            // each, after `.` and `..`): no end marker in it, so listing it
+            // has to follow its chain.
+            let dir = fs.root_dir().create_dir("loopdir").unwrap();
+            for i in 0..cs / 32 - 2 {
+                dir.create_file(&format!("F{i:04}.TXT")).unwrap();
+            }
+            cs
+        };
+        // The first clusters, from the root directory's raw short entries
+        // (FAT16: the root follows the FATs; first cluster at byte 26).
+        let short_first = |img: &[u8], name: &[u8; 11]| -> u32 {
+            let reserved = u16::from_le_bytes([img[14], img[15]]) as usize;
+            let per_fat = u16::from_le_bytes([img[22], img[23]]) as usize;
+            let root = (reserved + img[16] as usize * per_fat) * 512;
+            let entries = u16::from_le_bytes([img[17], img[18]]) as usize;
+            (0..entries)
+                .map(|i| &img[root + i * 32..root + i * 32 + 32])
+                .find(|e| &e[0..11] == name)
+                .map(|e| u32::from(u16::from_le_bytes([e[26], e[27]])))
+                .expect("short entry")
+        };
+        let file_first = short_first(&img, b"LOOP    BIN");
+        let dir_first = short_first(&img, b"LOOPDIR    ");
+        // The chain as written: A -> A+1 -> A+2 -> end. Make it A -> A+1 -> A.
+        let a = file_first;
+        let b = u16::from_le_bytes([
+            img[fat16_entry_at(&img, a)],
+            img[fat16_entry_at(&img, a) + 1],
+        ]);
+        assert_eq!(u32::from(b), a + 1);
+        set_fat16(&mut img, a + 1, a as u16);
+        // The directory: its first cluster pointing at itself.
+        set_fat16(&mut img, dir_first, dir_first as u16);
+        // Every 32-byte slot of that cluster is in use (no end marker).
+        let data_start = {
+            let reserved = u16::from_le_bytes([img[14], img[15]]) as usize;
+            let per_fat = u16::from_le_bytes([img[22], img[23]]) as usize;
+            let root_sectors = u16::from_le_bytes([img[17], img[18]]) as usize * 32 / 512;
+            (reserved + img[16] as usize * per_fat + root_sectors) * 512
+        };
+        let dir_at = data_start + (dir_first as usize - 2) * cluster_size;
+        assert!((0..cluster_size / 32).all(|i| img[dir_at + i * 32] != 0));
+
+        let file_result = {
+            let img = img.clone();
+            run_bounded(move || {
+                let mut disk = Cursor::new(img);
+                let fs = fatfs::FileSystem::new(
+                    fatfs::StdIoWrapper::new(&mut disk),
+                    fatfs::FsOptions::new(),
+                )
+                .unwrap();
+                let mut f = fs.root_dir().open_file("loop.bin").unwrap();
+                let mut out = Vec::new();
+                f.read_to_end(&mut out).map(|_| out.len())
+            })
+        };
+        let err = file_result.expect_err("a looping file chain read back as data");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+
+        let dir_result = run_bounded(move || {
+            let mut disk = Cursor::new(img);
+            let fs = fatfs::FileSystem::new(
+                fatfs::StdIoWrapper::new(&mut disk),
+                fatfs::FsOptions::new(),
+            )
+            .unwrap();
+            let dir = fs.root_dir().open_dir("loopdir").unwrap();
+            let mut n = 0usize;
+            for e in dir.iter() {
+                if e.is_err() {
+                    return Err(n);
+                }
+                n += 1;
+            }
+            Ok(n)
+        });
+        assert!(
+            dir_result.is_err(),
+            "a looping directory chain was walked: {dir_result:?}"
+        );
+    }
 }

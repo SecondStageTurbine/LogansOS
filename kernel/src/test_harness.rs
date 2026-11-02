@@ -804,6 +804,8 @@ const SCENARIO: &str = "phase3_fat32_mbr_off";
 const SCENARIO: &str = "phase3_fat32_fat16_read";
 #[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
 const SCENARIO: &str = "phase3_fat32_readonly_no_write";
+#[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+const SCENARIO: &str = "phase3_fat32_loop_chain";
 #[cfg(feature = "neo-test-phase3-fat32-native-control")]
 const SCENARIO: &str = "phase3_fat32_native_control";
 #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
@@ -1496,6 +1498,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-fat32-mbr-off",
     feature = "neo-test-phase3-fat32-fat16-read",
     feature = "neo-test-phase3-fat32-readonly-no-write",
+    feature = "neo-test-phase3-fat32-loop-chain",
     feature = "neo-test-phase3-fat32-native-control",
     feature = "neo-test-phase3-ext4-mount-readonly",
     feature = "neo-test-phase3-ext4-readdir-root",
@@ -1842,6 +1845,7 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-phase3-fat32-mbr-off",
         feature = "neo-test-phase3-fat32-fat16-read",
         feature = "neo-test-phase3-fat32-readonly-no-write",
+        feature = "neo-test-phase3-fat32-loop-chain",
         feature = "neo-test-phase3-fat32-native-control",
         feature = "neo-test-phase3-ext4-mount-readonly",
         feature = "neo-test-phase3-ext4-readdir-root",
@@ -5185,6 +5189,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
     run_phase3_fat32_readonly_no_write();
+
+    #[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+    run_phase3_fat32_loop_chain();
 
     #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
     run_phase3_ext4_mount_readonly();
@@ -37505,6 +37512,81 @@ fn fat_no_write_hash() -> u64 {
 /// flag set (as a stick pulled without unmounting has). Mount, list, read,
 /// try a write (refused by rights), unmount; the first 2 MiB hash the same
 /// before and after, and rust-fatfs attempted no write at all.
+/// Chad's #18 review: xtask's fixture has `loop.bin` (three clusters) with
+/// its chain patched to `A -> B -> A`, and `loopdir`, whose first cluster is
+/// full and points at itself. Reading the file to its end must fail (not
+/// return the same clusters again), and listing the directory must fail (not
+/// walk forever: a directory has no size to stop at). The rest of the volume
+/// still reads.
+#[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+fn run_phase3_fat32_loop_chain() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let req = mount4b_build_request_v1(3, "device1", "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_loop_mount_rc", rc as u64);
+    }
+    // The file: read until an error; the whole of it (3 clusters' worth) or
+    // more coming back means the loop was followed.
+    let file = fat32_open_or_fail("/fat32/loop.bin", crate::fs::FileRights::READ);
+    let mut buf = [0u8; 512];
+    let mut total = 0usize;
+    let file_err = loop {
+        match file.read(&mut buf) {
+            Ok(0) => break None,
+            Ok(n) => total += n,
+            Err(e) => break Some(e),
+        }
+        if total > 1 << 20 {
+            break None;
+        }
+    };
+    drop(file);
+    // The directory: list until an error (bounded, so a missed loop fails
+    // here rather than hanging inside the library, which the fix prevents).
+    let dir = fat32_open_or_fail("/fat32/loopdir", fat32_dir_rights());
+    let mut cursor = 0u64;
+    let mut listed = 0usize;
+    let dir_err = loop {
+        match dir.readdir_one(cursor, crate::fs::FileRights::READDIR) {
+            Ok(Some(entry)) => {
+                cursor = entry.next_cursor;
+                listed += 1;
+                if listed > 4096 {
+                    break None;
+                }
+            }
+            Ok(None) => break None,
+            Err(e) => break Some(e),
+        }
+    };
+    drop(dir);
+    // The rest of the volume still reads.
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    if file_err.is_none() || dir_err.is_none() {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=fat_loop_followed file_bytes={} file_err={:?} dir_listed={} dir_err={:?}",
+            SCENARIO,
+            total,
+            file_err,
+            listed,
+            dir_err
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} file_err={:?} file_bytes_before={} dir_err={:?} dir_listed_before={} hello=match",
+        SCENARIO,
+        file_err,
+        total,
+        dir_err,
+        listed
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 #[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
 fn run_phase3_fat32_readonly_no_write() -> ! {
     let (_probe, _device0) = require_phase3_virtio_blk_ready();

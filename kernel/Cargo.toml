@@ -1806,6 +1806,11 @@ neo-test-phase3-fat32-mbr-off = ["neo-test-phase3-fat32"]
 # (the native driver, no `fat-fs`, reads the fixture as before).
 neo-test-phase3-fat32-fat16-read = ["neo-test-phase3-fat32", "fat-fs"]
 neo-test-phase3-fat32-readonly-no-write = ["neo-test-phase3-fat32", "fat-fs"]
+# Chad's #18 review: a volume whose file chain (A -> B -> A) and directory
+# chain (a cluster pointing at itself) loop. Reading the file and listing
+# the directory each fail with an error; neither returns revisited data or
+# walks forever.
+neo-test-phase3-fat32-loop-chain = ["neo-test-phase3-fat32", "fat-fs"]
 neo-test-phase3-fat32-native-control = ["neo-test-phase3-fat32"]
 # Phase 3 BUILD-4D: ext4 read-only foreign filesystem scenarios.
 neo-test-phase3-ext4 = ["neo-test-phase3-mount-table"]
