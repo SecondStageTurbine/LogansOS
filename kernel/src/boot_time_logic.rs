@@ -187,28 +187,24 @@ pub fn fbpt_address(fpdt: &[u8], phys_bits: u32) -> Result<u64, FpdtError> {
     Ok(address)
 }
 
-/// UEFI memory types (UEFI 2.10 §7.2, `EFI_MEMORY_TYPE`) that can hold
-/// firmware tables in RAM: reserved (0, where EDK2 puts the FBPT),
-/// runtime-services data (6), ACPI reclaim (9) and ACPI NVS (10). Not MMIO
-/// (11), MMIO port space (12) or unusable memory (8): Limine's own map folds
-/// those into its one RESERVED type (Janus's #16 re-check), which is why the
-/// raw UEFI map is read instead.
-pub const EFI_FIRMWARE_RAM_TYPES: [u32; 4] = [0, 6, 9, 10];
-/// `EFI_MEMORY_WB`: the region supports write-back caching.
-pub const EFI_MEMORY_WB: u64 = 0x8;
+/// UEFI memory types (UEFI 2.10 §7.2, `EFI_MEMORY_TYPE`) that are firmware
+/// tables in RAM the OS may read: ACPI reclaim (9) and ACPI NVS (10). Not
+/// MMIO (11), MMIO port space (12) or unusable memory (8), which Limine's own
+/// map folds into its one RESERVED type (Janus's first #16 re-check), and
+/// not reserved (0) or runtime-services data (6) either: UEFI uses reserved
+/// for hardware ranges and for RAM withheld from the OS, and a descriptor's
+/// attributes are capabilities, not its current state, so nothing in the
+/// map says such a range may be read (Janus's third re-check; his advice:
+/// leave ambiguous reserved ranges unavailable). A firmware that keeps its
+/// FBPT in reserved memory (EDK2's default) therefore reports the firmware
+/// time as unavailable (`not-firmware-memory`), never a guessed read.
+pub const EFI_FIRMWARE_RAM_TYPES: [u32; 2] = [9, 10];
 
-/// Whether a descriptor of `kind` with `attribute` is firmware RAM. ACPI
-/// reclaim and NVS are RAM by definition. Reserved (0) and runtime data (6)
-/// are used for hardware ranges too (UEFI: "reserved ... the OS must not
-/// access", Janus's second #16 re-check), so they count only when the
-/// firmware also says the range is write-back cacheable, which RAM it
-/// allocated as reserved is and device registers are not.
-pub fn efi_is_firmware_ram(kind: u32, attribute: u64) -> bool {
-    match kind {
-        9 | 10 => true,
-        0 | 6 => attribute & EFI_MEMORY_WB != 0,
-        _ => false,
-    }
+/// Whether a descriptor of `kind` is firmware RAM the OS may read. The
+/// attribute is ignored on purpose: it lists capabilities (Janus's third
+/// #16 re-check), so it can't make a reserved range readable.
+pub fn efi_is_firmware_ram(kind: u32, _attribute: u64) -> bool {
+    EFI_FIRMWARE_RAM_TYPES.contains(&kind)
 }
 
 /// The three fields of Limine's EFI memory-map response data, in order:
@@ -260,7 +256,7 @@ pub fn efi_firmware_regions(map: &[u8], desc_size: usize, out: &mut [(u64, u64)]
         }
         let kind = u32::from_le_bytes([desc[0], desc[1], desc[2], desc[3]]);
         let attribute = u64::from_le_bytes(desc[32..40].try_into().unwrap_or([0; 8]));
-        if !EFI_FIRMWARE_RAM_TYPES.contains(&kind) || !efi_is_firmware_ram(kind, attribute) {
+        if !efi_is_firmware_ram(kind, attribute) {
             continue;
         }
         let base = u64::from_le_bytes(desc[8..16].try_into().unwrap_or([0; 8]));

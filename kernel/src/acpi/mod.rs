@@ -480,13 +480,12 @@ pub fn firmware_boot_times(
     if rsdp_phys == 0 {
         return Err(FpdtError::NoFpdt);
     }
-    // Every range below is read only when it lies wholly inside one
-    // firmware-RAM region of the raw UEFI memory map (reserved, runtime data,
-    // ACPI reclaim, ACPI NVS: not MMIO or unusable memory, which Limine's own
-    // map would call RESERVED too): a damaged pointer into a hole, MMIO or
-    // the kernel's RAM is refused before any byte of it is touched. No UEFI
-    // map (a BIOS boot): nothing is readable, and the firmware time is
-    // unavailable.
+    // Every range below is read only when it lies wholly inside one ACPI
+    // reclaim or ACPI NVS region of the raw UEFI memory map, the only types
+    // that say the OS may read them (`boot_time_logic::efi_is_firmware_ram`):
+    // a damaged pointer into a hole, MMIO, reserved memory or the kernel's RAM
+    // is refused before any byte of it is touched. No UEFI map (a BIOS boot),
+    // or tables kept in reserved memory: the firmware time is unavailable.
     let regions = crate::boot_time::firmware_regions();
     let readable = |phys: u64, len: usize| {
         crate::boot_time_logic::in_firmware_memory(phys, len as u64, regions)

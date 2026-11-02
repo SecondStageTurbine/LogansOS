@@ -425,7 +425,8 @@ mod tests {
     /// physical start u64 at 8, virtual start at 16, page count at 24,
     /// attribute at 32, then 8 bytes of a newer descriptor's tail):
     /// - EfiReservedMemoryType (0) at 0x6b92_0000, 16 pages, write-back
-    ///   cacheable (attribute 0xF): the FBPT's home;
+    ///   cacheable (attribute 0xF): where EDK2 puts the FBPT, and still not
+    ///   readable (reserved);
     /// - EfiMemoryMappedIO (11) at 0xfee0_0000, 1 page: Janus's input;
     /// - EfiACPIMemoryNVS (10) at 0x7f00_0000, 2 pages.
     #[rustfmt::skip]
@@ -457,11 +458,13 @@ mod tests {
     fn mmio_is_never_firmware_ram() {
         let mut out = [(0u64, 0u64); 8];
         let n = efi_firmware_regions(&EFI_MAP, 48, &mut out);
-        assert_eq!(&out[..n], &[(0x6b92_0000, 0x1_0000), (0x7f00_0000, 0x2000)]);
-        // Janus's input: an FBPT pointer into the LAPIC's MMIO page.
+        // Only the ACPI NVS range: MMIO is out, and so is the WB reserved
+        // range (Janus's third re-check: reserved is never readable by type).
+        assert_eq!(&out[..n], &[(0x7f00_0000, 0x2000)]);
+        // Janus's first input: an FBPT pointer into the LAPIC's MMIO page.
         assert!(!in_firmware_memory(0xfee0_0000, 8, &out[..n]));
-        // The real FBPT home and an NVS table are readable.
-        assert!(in_firmware_memory(0x6b92_8000, 8, &out[..n]));
+        // A reserved FBPT home is unavailable; an NVS table is readable.
+        assert!(!in_firmware_memory(0x6b92_8000, 8, &out[..n]));
         assert!(in_firmware_memory(0x7f00_1000, 0x1000, &out[..n]));
         // A descriptor size too small for the layout yields nothing; so does
         // a BIOS boot (no map).
@@ -469,45 +472,67 @@ mod tests {
         assert_eq!(efi_firmware_regions(&[], 48, &mut out), 0);
         // Unusable memory (8) and boot-services data (4) are not firmware RAM.
         let mut map = EFI_MAP;
-        map[0] = 8;
         map[96] = 4;
         assert_eq!(efi_firmware_regions(&map, 48, &mut out), 0);
-        // A full `out` stops the walk (later ranges then refused).
+        // ACPI reclaim (9) is; a full `out` stops the walk (later ranges are
+        // then refused).
+        let mut map = EFI_MAP;
+        map[0] = 9;
         let mut one = [(0u64, 0u64); 1];
-        assert_eq!(efi_firmware_regions(&EFI_MAP, 48, &mut one), 1);
+        assert_eq!(efi_firmware_regions(&map, 48, &mut one), 1);
+        assert_eq!(one[0], (0x6b92_0000, 0x1_0000));
         // A page count whose length overflows is skipped.
         let mut map = EFI_MAP;
+        map[0] = 9;
         map[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
         let n = efi_firmware_regions(&map, 48, &mut out);
         assert_eq!(&out[..n], &[(0x7f00_0000, 0x2000)]);
     }
 
-    /// Janus's second #16 re-check: a reserved (type 0) descriptor is also
-    /// how firmware describes hardware the OS must not touch. His input:
-    /// type 0 at 0xfee00000, one page, attribute 0. Reserved and runtime
-    /// data count as firmware RAM only when write-back cacheable.
+    /// Janus's second and third #16 re-checks: a reserved (type 0) or
+    /// runtime-data (type 6) descriptor never makes a range readable,
+    /// whatever its attributes (they are capabilities, and reserved also
+    /// covers RAM withheld from the OS). His inputs: type 0 at 0xfee00000
+    /// with attribute 0; type 0 at 0x6b920000 with WB (0x8); with WB|RP
+    /// (0x2008).
     #[test]
-    fn reserved_hardware_is_not_firmware_ram() {
-        let mut map = [0u8; 48];
-        map[8..16].copy_from_slice(&0xfee0_0000u64.to_le_bytes());
-        map[24..32].copy_from_slice(&1u64.to_le_bytes());
+    fn reserved_memory_is_never_firmware_ram() {
+        let desc = |kind: u32, base: u64, attr: u64| {
+            let mut d = [0u8; 48];
+            d[0..4].copy_from_slice(&kind.to_le_bytes());
+            d[8..16].copy_from_slice(&base.to_le_bytes());
+            d[24..32].copy_from_slice(&1u64.to_le_bytes());
+            d[32..40].copy_from_slice(&attr.to_le_bytes());
+            d
+        };
         let mut out = [(0u64, 0u64); 4];
-        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 0);
-        assert!(!in_firmware_memory(0xfee0_0000, 8, &out[..0]));
-        // Uncacheable only (a typical MMIO attribute, with RUNTIME): refused.
-        map[32..40].copy_from_slice(&0x8000_0000_0000_0001u64.to_le_bytes());
-        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 0);
-        // Write-back cacheable: RAM the firmware reserved.
-        map[32..40].copy_from_slice(&0x0fu64.to_le_bytes());
-        assert_eq!(efi_firmware_regions(&map, 48, &mut out), 1);
-        // The rule itself: ACPI reclaim/NVS always; 0 and 6 only with WB;
-        // nothing else, whatever the attribute.
-        assert!(efi_is_firmware_ram(9, 0) && efi_is_firmware_ram(10, 0));
-        assert!(!efi_is_firmware_ram(0, 0x1) && efi_is_firmware_ram(0, 0x8));
-        assert!(!efi_is_firmware_ram(6, 0) && efi_is_firmware_ram(6, 0xf));
-        for kind in [1, 2, 3, 4, 5, 7, 8, 11, 12, 13] {
+        for (kind, base, attr) in [
+            (0, 0xfee0_0000, 0),
+            (0, 0xfee0_0000, 0x8000_0000_0000_0001),
+            (0, 0x6b92_0000, 0x8),
+            (0, 0x6b92_0000, 0x2008),
+            (0, 0x6b92_0000, 0xf),
+            (6, 0x6b92_0000, 0x8000_0000_0000_000f),
+        ] {
+            assert_eq!(
+                efi_firmware_regions(&desc(kind, base, attr), 48, &mut out),
+                0,
+                "type {kind} at {base:#x} attr {attr:#x}"
+            );
+        }
+        // ACPI reclaim and NVS are readable, whatever the attribute.
+        assert_eq!(
+            efi_firmware_regions(&desc(9, 0x6b92_0000, 0), 48, &mut out),
+            1
+        );
+        assert_eq!(
+            efi_firmware_regions(&desc(10, 0x6b92_0000, 0xf), 48, &mut out),
+            1
+        );
+        for kind in [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13] {
             assert!(!efi_is_firmware_ram(kind, 0xf), "type {kind}");
         }
+        assert!(efi_is_firmware_ram(9, 0) && efi_is_firmware_ram(10, 0));
     }
 
     /// Janus's second #16 re-check: the kernel cast the `Response` wrapper,
