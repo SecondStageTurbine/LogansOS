@@ -19,6 +19,7 @@ on:
     paths:
       - 'third_party/ot61-browser/**'
       - 'userland/servo-closure-smoke/**'
+      - 'userland/stylo-smoke/**'
       - 'userland/neoplutarch-std-overlay/**'
       - 'userland/neo-std-pal/**'
       - 'userland/x86_64-unknown-neoplutarch.json'
@@ -104,3 +105,65 @@ jobs:
           bash scripts/ci-disk-guard.sh clean
           target userland/servo-closure-smoke/target userland/std-real-smoke/target
           .rustup-home .cargo-home
+  # OT-61 C2.4: upstream Stylo over the same vendored tree. Its build script
+  # renders the property code from Mako templates with the host's python3
+  # (J.c., 2026-10-31: allowed, with no network fetch). The Python it imports
+  # is bundled in the vendored crate (stylo-0.22.0/properties/vendored_python,
+  # VENDORED.md); PIP_NO_INDEX makes any pip lookup fail closed. Like the
+  # closure job, the first build of this third-party build code runs here.
+  stylo-build:
+    name: Stylo (C2.4) over the vendored closure (x86_64-unknown-neoplutarch)
+    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 60
+
+    env:
+      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      PIP_NO_INDEX: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure rustup is present (self-hosted runners)
+        run: |
+          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
+          if ! command -v rustup >/dev/null 2>&1; then
+            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          fi
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none
+
+      - name: python3 is present
+        run: |
+          set -e
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo "ERROR: ${RUNNER_NAME:-runner} has no python3; Stylo's build script needs it (C2.4 survey §3.7)"
+            exit 1
+          fi
+          python3 --version
+
+      # Every crate must come from third_party/ot61-browser: the lockfile may
+      # name crates.io only for neo-std-pal's linked_list_allocator.
+      - name: The Stylo closure resolves to the vendored sources only
+        working-directory: userland/stylo-smoke
+        run: |
+          set -e
+          registry=$(awk '/^name = /{n=$3} /^source = "registry/{print n}' Cargo.lock | tr -d '"')
+          echo "from crates.io: ${registry:-none}"
+          if [ "$registry" != "linked_list_allocator" ]; then
+            echo "ERROR: a closure crate resolves to crates.io, not the vendored copy"
+            exit 1
+          fi
+
+      - name: xtask ot61-closure-build --stylo (overlay std + Stylo + A4 checks)
+        run: cargo run -p xtask -- ot61-closure-build --stylo
