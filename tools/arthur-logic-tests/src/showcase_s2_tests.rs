@@ -339,53 +339,79 @@ fn s2_long_answer_wraps_and_scrolls_inside_the_transcript() {
     );
 }
 
-/// A9-D: the busy emblem's rect starts just right of "Arthur> ", spans that
-/// line and the one below, holds only ground (nothing Arthur drew is under
-/// the emblem), and stays inside the transcript, scrolling it a line when the
-/// caret is on the last row.
+/// A9-D (header indicator): the busy emblem's rect is a `BUSY_SIDE` square at
+/// the right end of the header line, right-aligned to the inner width and
+/// centred on the title line, above the header rule and holding only ground;
+/// the reply line gets a quiet "…" in `structure` right after "Arthur> ",
+/// which the reply's first byte erases. Nothing scrolls.
 #[test]
-fn busy_rect_is_empty_ground_right_of_the_caret() {
-    use super::showcase_text::{BUSY_GAP, BUSY_WIDTH, GROUND};
+fn busy_rect_is_in_the_header_and_the_reply_line_shows_an_ellipsis() {
+    use super::showcase_text::{
+        BUSY_SIDE, GROUND, HEADER_LINE_MID, HEADER_RULE_Y, MARGIN_X, STRUCTURE, TEXT_PRIMARY,
+    };
+    use neo_text::Font;
+    use neo_text::fonts::INTER_REGULAR;
+    use neo_text::layout::measure;
     let t = TRANSCRIPT;
+    let sans = Font::from_bytes(INTER_REGULAR).unwrap();
     let check = |text: &mut TextSurface<'static>, px: &mut Vec<u32>, row: i32| {
+        let before = px.clone();
         let (x, y, w, h) = text.reserve_busy(px).expect("on the surface");
         let (x, y, w, h) = (x as i32, y as i32, w as i32, h as i32);
         assert_eq!(
-            (y, w, h),
-            (t.y + row * LINE_HEIGHT, BUSY_WIDTH, 2 * LINE_HEIGHT)
+            (x, y, w, h),
+            (
+                SURFACE_WIDTH as i32 - MARGIN_X - BUSY_SIDE,
+                HEADER_LINE_MID - BUSY_SIDE / 2,
+                BUSY_SIDE,
+                BUSY_SIDE
+            )
         );
-        // Right of "Arthur> " (ink to its left on the line), in the transcript.
-        assert!(x > t.x + BUSY_GAP && x + w <= t.x + t.width);
-        assert!(y + h <= t.y + t.height);
-        let line = &px[y as usize * SURFACE_WIDTH..(y + LINE_HEIGHT) as usize * SURFACE_WIDTH];
-        assert!(
-            line.chunks(SURFACE_WIDTH)
-                .any(|r| r[t.x as usize..(x - BUSY_GAP) as usize]
-                    .iter()
-                    .any(|&p| p != GROUND)),
-            "\"Arthur> \" is left of the rect"
-        );
+        assert!(y >= 0 && y + h < HEADER_RULE_Y);
         for yy in y..y + h {
             for xx in x..x + w {
-                assert_eq!(
-                    px[yy as usize * SURFACE_WIDTH + xx as usize],
-                    GROUND,
-                    "({xx},{yy})"
-                );
+                assert_eq!(px[yy as usize * SURFACE_WIDTH + xx as usize], GROUND);
             }
         }
+        // The "…" on the reply line, right of "Arthur> ", in `structure`;
+        // nothing else changed.
+        let band = (t.y + row * LINE_HEIGHT) as usize..(t.y + (row + 1) * LINE_HEIGHT) as usize;
+        let caret = t.x + measure(&sans, 16.0, "Arthur> ").ceil() as i32;
+        let mut ink = 0;
+        for (i, (&now, &was)) in px.iter().zip(before.iter()).enumerate() {
+            if now == was {
+                continue;
+            }
+            let (xx, yy) = ((i % SURFACE_WIDTH) as i32, i / SURFACE_WIDTH);
+            assert!(
+                band.contains(&yy) && xx >= caret && xx < caret + 24,
+                "({xx},{yy})"
+            );
+            assert_ne!(now, TEXT_PRIMARY, "the ellipsis is dimmer than the text");
+            ink += 1;
+        }
+        assert!(ink > 0, "the ellipsis is drawn");
+        assert!(
+            px.iter()
+                .zip(before.iter())
+                .any(|(&now, &was)| now != was && now == STRUCTURE),
+            "its solid pixels are `structure`"
+        );
+        let _ = text.take_damage();
     };
     // Mid-transcript: the greeting, a question, then Arthur's prompt on row 3.
     let (mut text, mut px) = s2_surface();
     typed(&mut text, &mut px, b"hi\nArthur> ");
+    let (mut never, mut never_px) = s2_surface();
+    typed(&mut never, &mut never_px, b"hi\nArthur> ");
     let _ = text.take_damage();
     check(&mut text, &mut px, 3);
-    assert_eq!(
-        text.take_damage(),
-        None,
-        "room below already: nothing scrolled"
-    );
-    // On the last row: one line scrolls away to make room below it.
+    typed(&mut text, &mut px, b"Hello.");
+    typed(&mut never, &mut never_px, b"Hello.");
+    // The reply's first byte erases it: the surface then holds exactly what
+    // one that never showed it holds.
+    assert_eq!(px, never_px, "the reply replaces the ellipsis");
+    // On the last row: nothing scrolls for the emblem any more.
     let (mut text, mut px) = s2_surface();
     for _ in 0..20 {
         typed(&mut text, &mut px, b"a line\n");
@@ -393,11 +419,7 @@ fn busy_rect_is_empty_ground_right_of_the_caret() {
     typed(&mut text, &mut px, b"Arthur> ");
     let _ = text.take_damage();
     let last = t.height / LINE_HEIGHT - 1;
-    check(&mut text, &mut px, last - 1);
-    assert_eq!(
-        text.take_damage(),
-        Some((t.x as u16, t.y as u16, t.width as u16, t.height as u16))
-    );
+    check(&mut text, &mut px, last);
 }
 
 /// A9-C with A9-D: reserving the busy rect while scrolled up brings the
