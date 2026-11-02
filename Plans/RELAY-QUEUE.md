@@ -102,3 +102,4 @@ RELAY 281 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-277-281.
 RELAY 282 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-setup-menu-think-dexter.md | Section "Relay 282" (setup menu THINK; RETURN `Plans/RETURN-2026-11-02-setup-menu-think-dexter.md`)
 RELAY 283 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-283.md | Section "Relay 283" (#45/#47 re-check; RETURN `Plans/RETURN-2026-11-02-pr45-pr47-recheck-dexter.md`)
 RELAY 284 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-02-relay-284.md | Section "Relay 284" (setup-menu THINK design read; RETURN `Plans/RETURN-2026-11-02-setup-menu-review-jarvis.md`)
+RELAY 285 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-285.md | Section "Relay 285" (setup-menu THINK revision; RETURN appended to `Plans/RETURN-2026-11-02-setup-menu-think-dexter.md`)
