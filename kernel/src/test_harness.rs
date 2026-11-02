@@ -6528,6 +6528,24 @@ fn run_xsave_ymm_context_switch() -> ! {
         if rejected != 1 {
             fail("reason=larger_ap_not_rejected");
         }
+        // #57 re-check: bringup attributed the rejection to the AP that made
+        // it, so every AP it counts as started signalled ready.
+        let (started, ready) = crate::arch::x86_64::smp::aps_started_ready_for_test();
+        serial_println!(
+            "xsave_ap_policy: aps_started={} aps_ready={}",
+            started,
+            ready
+        );
+        if started != ready {
+            fail("reason=rejected_ap_counted_as_started");
+        }
+        // The rejected AP (the first launched, cpu_id 1) has no kernel IDT, so
+        // it must be out of the registry `cpu_stop::stop_others` targets; the
+        // admitted ones stay in it.
+        use crate::arch::x86_64::smp::cpu_registered_for_test as registered;
+        if registered(1) || !registered(2) {
+            fail("reason=rejected_ap_still_registered");
+        }
     }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fpu=xsave area={} mask=0x{:x} ymm=preserved xmm=preserved x87=preserved",

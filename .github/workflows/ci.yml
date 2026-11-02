@@ -570,6 +570,8 @@ jobs:
   # from the components, the AP admitted under the boot CPU's FPU policy and
   # the scheduler on LAPIC ticks; the control (EBX trusted, as before the fix)
   # must end in the product panic screen with the #GP diagnostics (item 4).
+  # The `cpu-*` modes make the EMULATOR answer 576 (QEMU's gdbstub and
+  # scripts/ci/cpuid-0d-model.py, no kernel hook; #57 re-check, relay 274).
   # Its first run caught a CPUID asm defect only the opt-level-3 kernel hit.
   # Hermetic (no model, no network); same trigger as the QEMU shards.
   product-xsave-boot:
@@ -644,7 +646,7 @@ jobs:
                 --target x86_64-unknown-none,aarch64-unknown-none
           fi
 
-      - name: Boot the product kernel with CPUID.(0DH,0):EBX=576 (witness, then control)
+      - name: Boot the product kernel with CPUID.(0DH,0):EBX=576 (emulator-side, then kernel hook; witness and control each)
         run: |
           docker compose run --rm \
             --user "$(id -u):$(id -g)" \
@@ -656,7 +658,7 @@ jobs:
             -e CARGO_HTTP_MULTIPLEXING \
             -e CARGO_NET_RETRY \
             neo \
-            bash -c "bash scripts/ci/product-xsave-boot.sh witness && bash scripts/ci/product-xsave-boot.sh control"
+            bash -c "for m in cpu-witness cpu-control witness control; do bash scripts/ci/product-xsave-boot.sh \$m || exit 1; done"
 
   spdx-lint:
     name: SPDX License Headers

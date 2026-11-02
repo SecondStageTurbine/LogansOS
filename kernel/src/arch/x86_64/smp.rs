@@ -50,6 +50,26 @@ static APS_READY: AtomicU32 = AtomicU32::new(0);
 /// offline (#52 review, item 1).
 static APS_REJECTED: AtomicU32 = AtomicU32::new(0);
 
+/// `xsave_ap_policy`: how many APs bringup counted as started.
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+static APS_STARTED: AtomicU32 = AtomicU32::new(0);
+
+/// `xsave_ap_policy`: (APs counted as started, APs that signalled ready).
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+pub fn aps_started_ready_for_test() -> (u32, u32) {
+    (
+        APS_STARTED.load(Ordering::Acquire),
+        APS_READY.load(Ordering::Acquire),
+    )
+}
+
+/// `xsave_ap_policy`: whether `cpu_id` is in the registry IPIs and
+/// `cpu_stop::stop_others` target.
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+pub fn cpu_registered_for_test(cpu_id: u32) -> bool {
+    apic::cpu_registered(cpu_id)
+}
+
 /// `xsave_ap_policy`: how many APs stayed offline for the FPU save policy.
 #[cfg(feature = "neo-test-xsave-ap-policy")]
 pub fn aps_rejected_for_test() -> u32 {
@@ -203,8 +223,30 @@ pub fn bring_up_aps() {
         // recover a boot if a wedged AP holds the global buddy lock.)
         const AP_READY_SPIN_LIMIT: u64 = 4_000_000_000;
         let expected = started + 1;
+        // The rejection baseline is read BEFORE `bootstrap` publishes the AP's
+        // entry: a rejecting AP increments APS_REJECTED as its first act, which
+        // can land before any load the BSP makes after `bootstrap`. Read late,
+        // the rejection is lost: the BSP waits out the spin limit and counts
+        // the AP as started (#57 re-check, relay 274). Serialized bringup means
+        // no other AP is in flight, so the next increment is this AP's.
+        let rejected_at_launch = APS_REJECTED.load(Ordering::Acquire);
         cpu.bootstrap(ap_entry, cpu_id as u64);
         started += 1;
+        // `xsave_ap_policy`: hold the BSP here until this AP has decided, so
+        // the window the late read loses is always open (deterministic).
+        #[cfg(feature = "neo-test-xsave-ap-policy")]
+        for _ in 0..AP_READY_SPIN_LIMIT {
+            if APS_REJECTED.load(Ordering::Acquire) != rejected_at_launch
+                || APS_READY.load(Ordering::Acquire) >= expected
+            {
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        #[cfg(not(feature = "neo-test-xsave-ap-policy-late-sample"))]
+        let rejected_before = rejected_at_launch;
+        // The revert-check: the baseline read after `bootstrap`, as before.
+        #[cfg(feature = "neo-test-xsave-ap-policy-late-sample")]
         let rejected_before = APS_REJECTED.load(Ordering::Acquire);
         let mut spins: u64 = 0;
         while APS_READY.load(Ordering::Acquire) < expected
@@ -215,8 +257,10 @@ pub fn bring_up_aps() {
             spins += 1;
         }
         if APS_REJECTED.load(Ordering::Acquire) != rejected_before {
-            // It halted in `ap_entry` and never signals ready: not started.
+            // It halted in `ap_entry` and never signals ready: not started,
+            // and no longer a CPU anything may send an IPI or NMI to.
             started -= 1;
+            apic::unregister_lapic_id(cpu_id);
             serial_println!(
                 "[ kernel ] smp: cpu_id={} lapic_id={} left offline - it cannot run under the FPU save policy",
                 cpu_id,
@@ -234,6 +278,8 @@ pub fn bring_up_aps() {
         "[ kernel ] smp: started {} AP(s) (serialized bringup)",
         started
     );
+    #[cfg(feature = "neo-test-xsave-ap-policy")]
+    APS_STARTED.store(started, Ordering::Release);
 
     // Backstop barrier: with serialized bringup every started AP has already
     // signaled `APS_READY` by here, so this is normally a no-op. Kept to emit the

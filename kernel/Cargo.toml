@@ -614,17 +614,24 @@ neo-test-xsave-ebx-understated = ["neo-test-xsave-ymm-context-switch", "test-xsa
 # (the first timer tick's iretq takes a #GP, or YMM state is corrupted).
 neo-test-xsave-ebx-understated-control = ["neo-test-xsave-ebx-understated", "test-xsave-ebx-trusted"]
 # The same two hooks without `neo-test`, for the product-kernel boot witness
-# (#52 review item 3, scripts/ci/product-xsave-boot.sh): CPUID.(0DH,0):EBX
-# answers 576 whatever XCR0 holds, as WHPX did; `-trusted` sizes the area
-# from EBX alone, as before the fix (its control). Never in an image.
+# (#52 review item 3, scripts/ci/product-xsave-boot.sh). `-576`: the kernel
+# reads CPUID.(0DH,0):EBX as 576 whatever XCR0 holds, as WHPX answered.
+# `-trusted`: the area is sized from EBX alone, as before the fix (the
+# controls); it injects nothing, so it pairs with `-576` or with an emulator
+# that answers 576 (the `cpu-*` modes). Never in an image.
 test-xsave-ebx-576 = ["xsave-fpu"]
-test-xsave-ebx-trusted = ["test-xsave-ebx-576"]
+test-xsave-ebx-trusted = ["xsave-fpu"]
 # #52 review item 1: the FPU save policy is the boot CPU's, fixed once
 # published. The first AP checked needs 64 bytes more than it (stays
 # offline), the second 64 bytes less (comes online; the policy must not
 # shrink). Control: each AP republishes its own size, as before (must FAIL).
 neo-test-xsave-ap-policy = ["neo-test-xsave-ymm-context-switch"]
 neo-test-xsave-ap-policy-control = ["neo-test-xsave-ap-policy"]
+# #57 re-check: the rejection baseline read after the AP's launch, as before.
+# The rejection is lost, so the BSP waits out its spin limit on an AP that
+# will never signal: must FAIL (times out; rejected_ap_counted_as_started if
+# it ever got there).
+neo-test-xsave-ap-policy-late-sample = ["neo-test-xsave-ap-policy"]
 # Regression for interrupt-entry state: a test-only vector (swapgs_irq_entry)
 # and the timer stub, entered with AC=1/DF=1 and a hostile MXCSR, must
 # preserve the interrupted xmm0-15/flags/MXCSR and run their bodies with DF=0

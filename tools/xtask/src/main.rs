@@ -2405,7 +2405,10 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // needs a smaller one comes online without shrinking it. Needs
         // NEO_SMP>=3 (the gate runs 4). Control:
         // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ap-policy-control (each AP
-        // republishes its own size, as before: must FAIL).
+        // republishes its own size, as before: must FAIL), and
+        // neo-test-xsave-ap-policy-late-sample (the rejection baseline read
+        // after the AP's launch, as before: the rejection is lost and the
+        // BSP waits out its spin limit, so it times out).
         name: "xsave_ap_policy",
         feature: "neo-test-xsave-ap-policy",
         user_feature: None,
@@ -8304,11 +8307,11 @@ fn cmd_vendor_verify(args: &[String]) -> Result<(), String> {
 
 fn cmd_iso(args: &[String]) -> Result<(), String> {
     let (with_model, rest) = split_with_model(args)?;
-    if let Some(extra) = split_product_kernel(&rest)? {
+    if let Some(options) = split_product_kernel(&rest)? {
         if with_model.is_some() {
             return Err("--product-kernel builds no model; drop --with-model".to_string());
         }
-        return cmd_iso_product_kernel(&extra);
+        return cmd_iso_product_kernel(&options);
     }
     match with_model {
         None => {
@@ -8319,18 +8322,28 @@ fn cmd_iso(args: &[String]) -> Result<(), String> {
     }
 }
 
-/// `iso --product-kernel [--features <extra>]`: `Some(extra)` when the flag
-/// is present. Any other argument is an error (this image takes no other
-/// build options).
-fn split_product_kernel(args: &[String]) -> Result<Option<Vec<String>>, String> {
+/// `iso --product-kernel [--no-kaslr] [--features <extra>]`: the product
+/// kernel's options when the flag is present. Any other argument is an error
+/// (this image takes no other build options).
+struct ProductKernelIso {
+    extra: Vec<String>,
+    /// Limine loads the kernel at its link address, so its ELF's addresses
+    /// are its run-time ones (`product-xsave-boot.sh`'s CPUID model).
+    no_kaslr: bool,
+}
+
+fn split_product_kernel(args: &[String]) -> Result<Option<ProductKernelIso>, String> {
     if !args.iter().any(|a| a == "--product-kernel") {
         return Ok(None);
     }
     let mut extra = Vec::new();
+    let mut no_kaslr = false;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--product-kernel" {
             continue;
+        } else if arg == "--no-kaslr" {
+            no_kaslr = true;
         } else if arg == "--features" {
             let list = iter
                 .next()
@@ -8342,23 +8355,23 @@ fn split_product_kernel(args: &[String]) -> Result<Option<Vec<String>>, String> 
             return Err(format!("iso --product-kernel: unexpected argument `{arg}`"));
         }
     }
-    Ok(Some(extra))
+    Ok(Some(ProductKernelIso { extra, no_kaslr }))
 }
 
 /// `iso --product-kernel`: the product image's kernel (its features and
 /// opt-level, `build_product_image_kernel`), plus `extra` features, with no
 /// model staged. A boot witness for the shipped kernel (#52 review, item 3:
 /// `scripts/ci/product-xsave-boot.sh`); not a usable image.
-fn cmd_iso_product_kernel(extra: &[String]) -> Result<(), String> {
+fn cmd_iso_product_kernel(options: &ProductKernelIso) -> Result<(), String> {
     set_stage_std_real_smoke(&[]);
     set_fault_probe_stage(None);
     set_stage_reclaim_probe(false);
     set_stage_kat_model(false);
     set_boot_model_stage(None);
     build_product_image_user()?;
-    build_product_image_kernel_with(extra)?;
+    build_product_image_kernel_with(&options.extra)?;
     set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
-    let result = assemble_iso();
+    let result = assemble_iso_with_limine_kaslr(options.no_kaslr.then_some(false));
     set_desktop_resolution(None);
     result
 }
