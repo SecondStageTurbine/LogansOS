@@ -1204,13 +1204,25 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     ),
     step(b"DESKTOP zone set name=Europe/London", b"rtc utc\n"),
     step(b"DESKTOP zone rtc=utc", b"\x1b"),
-    step(b"DESKTOP zone closed via=esc", b"hello desktop"),
-    HOME_TYPED_ENTER,
+    // F8: Arthur's two rounds ask the time, then (after a hold and resume)
+    // the date. Each ends in `?`, its only `?`, so Enter waits for all of it.
+    step(b"DESKTOP zone closed via=esc", b"what time is it?"),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     ROUND1_ESC,
     HOLD_TAB,
     CHIP1_TAB,
-    CHIP0_AGAIN,
-    AGAIN_ENTER,
+    step(b"DESKTOP home chip selected=0", b"what's the date?"),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
+    // The PM (#68): a question the phrase table doesn't hold still goes to
+    // the model (here, its no-model line).
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    step(
+        b"DESKTOP home chip selected=0",
+        b"what time is it in tokyo?",
+    ),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
@@ -7803,6 +7815,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-busy-emblem",
             // A9-C: PgUp/PgDn and Up/Down scroll the transcript.
             "arthur-scrollback",
+            // F8: the time and the date from the clock, before the model.
+            "arthur-clock",
         ],
         Some("desktop-session-boot-test")
         | Some("desktop-glass-boot-test")
@@ -7981,13 +7995,19 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-resize",
         ],
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
-        Some("desktop-intro-boot-test")
-        | Some("install-atrium-boot-test")
-        | Some("desktop-clock-boot-test") => vec![
+        Some("desktop-intro-boot-test") | Some("install-atrium-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
             "desktop-resize",
+        ],
+        // F8: Arthur's third round (a question the clock leaves alone).
+        Some("desktop-clock-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-clock-boot-test",
         ],
         // OT-22: the parked session parks Arthur too; the control spins both.
         Some("desktop-park") => vec!["desktop-session", "desktop-home", "desktop-park"],
@@ -19957,6 +19977,14 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP zone card shown rows=6",
                 "DESKTOP zone closed via=esc",
                 "DESKTOP home intent submitted target=arthur",
+                // F8: Arthur answers from the clock, in London (zone 288),
+                // before the model (`require_arthur_clock_answers`).
+                "DESKTOP arthur line=what time is it?",
+                "DESKTOP arthur clock question=time basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what's the date?",
+                "DESKTOP arthur clock question=date basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what time is it in tokyo?",
+                "DESKTOP arthur turn path=no-model",
                 "DESKTOP view switch=home residue_pixels=0",
                 "DESKTOP home return client=arthur exit=0 focus=wm-home",
                 "DESKTOP clock readback box=642,285,720,84 ink_pixels=",
@@ -19966,6 +19994,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         require_single_arthur(scenario, observed, false)?;
         require_clock_words(scenario, observed)?;
+        require_arthur_clock_answers(scenario, observed)?;
         require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL)?;
         require_clock_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL, true)?;
         require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_CAPTURE_REL)?;
@@ -22073,6 +22102,84 @@ fn require_wallclock_probe_oracle(
     if realtime < base || realtime - base > 120_000_000_000 {
         return Err(format!(
             "`{}` realtime {realtime} is not the base {base} plus a short boot",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// F8: Arthur's two answers against the host oracle. Realtime is confirmed
+/// UTC by then (the pinned RTC's 17:48 EDT, so 21:48 UTC plus the run), and
+/// the zone is London, on BST (UTC+1) on 21 October 2026: the time is the
+/// oracle's for `realtime_s + 3600` with "BST", the date that instant's.
+fn require_arthur_clock_answers(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let mut seen = 0;
+    for line in serial
+        .lines()
+        .filter(|l| l.contains("DESKTOP arthur clock question="))
+    {
+        let s = numeric(line, "realtime_s").unwrap_or(0);
+        if !(WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900).contains(&s) {
+            return Err(format!(
+                "`{}` Arthur's clock read {s}, not confirmed UTC near the pin: {line:?}",
+                scenario.name
+            ));
+        }
+        let (d, t, _) = civil_oracle(s + 3_600);
+        let want = if line.contains("question=time") {
+            format!("It's {t} BST.")
+        } else {
+            format!("Today is {d}.")
+        };
+        if quoted(line, "reply") != Some(want.as_str()) {
+            return Err(format!(
+                "`{}` Arthur answered {line:?}; the host oracle says {want:?}",
+                scenario.name
+            ));
+        }
+        seen += 1;
+    }
+    if seen != 2 {
+        return Err(format!(
+            "`{}` expected Arthur's time and date answers, saw {seen}",
+            scenario.name
+        ));
+    }
+    // A time question outside the phrase table is the model's (Jarvis,
+    // #68): after its line, Arthur's next turn line is the model path's,
+    // and no clock answer follows. This scenario boots no model, so the
+    // model path is its no-model line (`path=no-model`); the two clock
+    // rounds before it must not have taken it.
+    let tokyo = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .nth(1)
+        .ok_or_else(|| format!("`{}` Arthur never got the Tokyo question", scenario.name))?;
+    if tokyo.contains("DESKTOP arthur clock question=") {
+        return Err(format!(
+            "`{}` the clock answered \"what time is it in tokyo?\"; it is the model's",
+            scenario.name
+        ));
+    }
+    let next = tokyo
+        .lines()
+        .find(|l| l.contains("DESKTOP arthur turn path=") || l.contains("DESKTOP arthur line="));
+    if !next.is_some_and(|l| l.contains("DESKTOP arthur turn path=")) {
+        return Err(format!(
+            "`{}` \"what time is it in tokyo?\" never reached the model path: {next:?}",
+            scenario.name
+        ));
+    }
+    let before = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .next()
+        .unwrap_or("");
+    if before.contains("DESKTOP arthur turn path=") {
+        return Err(format!(
+            "`{}` a clock question took the model path",
             scenario.name
         ));
     }
@@ -24775,6 +24882,25 @@ mod tests {
             .and_then(|r| r.split(']').next())
             .unwrap();
         assert!(arthur.contains("\"arthur-busy-emblem\""), "{arthur}");
+    }
+
+    /// F8 (Jarvis, #68): Arthur's clock answers are a separate feature (its
+    /// kill-switch), and the product image's Arthur turns them on.
+    #[test]
+    fn product_image_answers_the_time() {
+        let src = include_str!("main.rs");
+        let arthur = src
+            .split("Some(\"desktop-with-model\") => vec![\n            \"desktop-session\"")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(arthur.contains("\"arthur-clock\""), "{arthur}");
+        let cargo = include_str!("../../../userland/neo-arthur/Cargo.toml");
+        let session = cargo
+            .lines()
+            .find(|l| l.starts_with("desktop-session = "))
+            .unwrap();
+        assert!(!session.contains("arthur-clock"), "{session}");
     }
 
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A
