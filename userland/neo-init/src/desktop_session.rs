@@ -526,21 +526,22 @@ impl Scene {
         #[cfg(feature = "desktop-session-boot-test")]
         let started = drag_perf::now();
         let mut presented = 0u64;
-        // The sprite's and each edge's rect are composed on their own, then
-        // committed and presented once, as the box around what was composed
-        // (one present and fence per frame, not one per strip). The rest of
-        // that box in the output plane is what is already on screen.
-        let mut written = Rect::default();
-        for rect in core::iter::once(damage).chain(edges) {
+        // The sprite's and each edge's rect are composed, then each is
+        // committed and presented exactly as itself (PR #58 review: no box
+        // around them, so nothing unchanged is presented), with one fence
+        // wait for the frame, on the last present.
+        let mut written = [Rect::default(); 9];
+        for (slot, rect) in written
+            .iter_mut()
+            .zip(core::iter::once(damage).chain(edges))
+        {
             let rect = rect.intersect(&screen);
             if !rect.is_empty() {
                 presented += rect.w as u64 * rect.h as u64;
-                written = written.union(&self.compose(true, rect).map_err(|c| 100 + c)?);
+                *slot = self.compose(true, rect).map_err(|c| 100 + c)?;
             }
         }
-        if !written.is_empty() {
-            self.commit_present(written).map_err(|c| 100 + c)?;
-        }
+        self.commit_present_rects(&written).map_err(|c| 100 + c)?;
         #[cfg(feature = "desktop-session-boot-test")]
         if drag_frame {
             drag_perf::frame(started, presented);
@@ -1056,24 +1057,41 @@ impl Scene {
     /// Commit exactly `written` of the output plane and present it; wait
     /// for the present's fence.
     fn commit_present(&self, written: Rect) -> Result<(), i32> {
+        self.commit_present_rects(&[written])
+    }
+
+    /// [`Self::commit_present`] for several rects: each committed and
+    /// presented exactly as itself (no box around them), then one fence wait,
+    /// on the last present. Presents complete in order and a fence is
+    /// satisfied by its own epoch or a later one (`fence_satisfied`), so the
+    /// last epoch's fence covers every rect before it (F7: a drag frame's
+    /// strips, one fence per frame).
+    fn commit_present_rects(&self, rects: &[Rect]) -> Result<(), i32> {
         // OT-66 L2: and only the lock's own frame reaches the screen.
         #[cfg(feature = "login")]
         if lock::locked() && !self.lock.painting {
             return Ok(());
         }
-        let rect = encode_damage_rect(
-            written.x as u16,
-            written.y as u16,
-            written.w as u16,
-            written.h as u16,
-        );
-        if sys_buffer_commit_damage(self.output, &rect) != 0 {
-            return Err(41);
+        let mut last = None;
+        for written in rects.iter().filter(|r| !r.is_empty()) {
+            let rect = encode_damage_rect(
+                written.x as u16,
+                written.y as u16,
+                written.w as u16,
+                written.h as u16,
+            );
+            if sys_buffer_commit_damage(self.output, &rect) != 0 {
+                return Err(41);
+            }
+            let epoch = sys_fb_present(self.output, 0, 0);
+            if epoch < 1 {
+                return Err(42);
+            }
+            last = Some(epoch);
         }
-        let epoch = sys_fb_present(self.output, 0, 0);
-        if epoch < 1 {
-            return Err(42);
-        }
+        let Some(epoch) = last else {
+            return Ok(());
+        };
         let mut result = [0u8; PRESENT_RESULT_V1_LEN];
         if sys_present_fence_wait(self.output, epoch as u64, &mut result, 1000) != 0
             || u32::from_le_bytes([result[8], result[9], result[10], result[11]]) != 1
