@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3a: the browser bundle's private static C/C++ runtime
+# (docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md).
+#
+# musl 1.2.5's portable "top half" (string, ctype, math, stdlib, multibyte,
+# stdio formatting; third_party/ot61-crt/vendor/musl, MIT) compiled by build.rs, over
+# a bottom half written here in Rust on the neoplutarch std: allocation, errno,
+# the monotonic clock, stdio writes, exit and abort. It issues no raw syscall
+# of its own, so the PAL manifest's surface (tools/ot61-pal-manifest.toml) is
+# unchanged: everything below it is std.
+#
+# Not a root-workspace member: it builds only for x86_64-unknown-neoplutarch,
+# as a path dependency of a standalone std crate (userland/cxx-runtime-smoke).
+[package]
+name = "neo-crt"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0 AND MIT"
+description = "OT-61 C3a: private static C/C++ runtime for the browser bundle (musl top half over a Rust/std bottom half)"
+build = "build.rs"
+links = "neo_crt_c"
+
+[lib]
+test = false
+doctest = false
+
+[build-dependencies]
+cc = "=1.2.63"

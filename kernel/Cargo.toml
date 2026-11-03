@@ -477,6 +477,10 @@ neo-test-servo-closure-smoke-avx = ["neo-test-servo-closure-smoke", "xsave-fpu"]
 # OT-61 C2.4: upstream Stylo styles an html5ever document on-target.
 # kernel-rng: any std HashMap's RandomState seeds from getrandom.
 neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+# OT-61 C3a: the browser bundle's private C/C++ runtime (userland/neo-crt) in
+# a real-std process: libc checks against independent oracles, per-thread
+# errno, malloc from several threads.
+neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is

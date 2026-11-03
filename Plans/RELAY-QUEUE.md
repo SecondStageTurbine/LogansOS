@@ -113,3 +113,4 @@ RELAY 292 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-03-relays-290-
 RELAY 293 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-290-295.md | Section 293 (#15 re-check; RETURN `Plans/RETURN-2026-11-03-pr15-recheck3-chad.md`)
 RELAY 294 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-03-relays-290-295.md | Section 294 (#7 review; RETURN `Plans/RETURN-2026-11-03-pr7-quiesce-review-janus.md`)
 RELAY 295 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-03-relays-290-295.md | Section 295 (#58 review; RETURN `Plans/RETURN-2026-11-03-pr58-drag-review-jarvis.md`)
+RELAY 296 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relay-296.md | Section 296 (#60 restart-hint re-check; RETURN `Plans/RETURN-2026-11-03-pr60-recheck2-janus.md`)
