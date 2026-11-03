@@ -18176,6 +18176,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         for needle in [
             "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
             "[ swgl-smoke ] ok(3) every byte == the hand-laid pattern (BGRA, no flip, padding and canaries untouched)",
+            "[ swgl-smoke ] ok(4) the 7x5 buffer passes fb::attach's checks",
+            "[ swgl-smoke ] ok(5) fb::attach refuses each bad framebuffer before SWGL sees it",
             "[ swgl-smoke ] PASS",
         ] {
             require_serial_contains(
