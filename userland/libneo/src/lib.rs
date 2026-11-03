@@ -57,6 +57,8 @@ pub mod atrium_wm;
 pub mod boot_time_logic;
 /// OT-85: epoch → civil date/time, and its text (pure).
 pub mod civil;
+/// F8: Arthur's time and date answers (pure).
+pub mod clock_answer;
 pub mod grant_store;
 /// OT-61 C2.1: the `SYS_HANDLE_INFO` record (pure).
 pub mod handle_info;
