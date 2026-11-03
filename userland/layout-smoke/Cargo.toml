@@ -20,6 +20,8 @@ bench = false
 
 [dependencies]
 neo-std-pal = { path = "../neo-std-pal" }
+# The private C/C++ runtime (musl + libc++) for HarfBuzz and fontsan.
+neo-crt = { path = "../neo-crt" }
 app_units = "=0.7.8"
 fonts = { package = "servo-fonts", version = "=0.7.0" }
 fonts_traits = { package = "servo-fonts-traits", version = "=0.7.0" }
