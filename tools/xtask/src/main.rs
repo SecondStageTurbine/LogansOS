@@ -212,6 +212,7 @@ const DESKTOP_INTRO_BOOT_MID_REL: &str = "target/neo-test/desktop_intro_boot_mid
 const SETUP_MENU_WALK_CAPTURE_REL: &str = "target/neo-test/setup_menu_walk.ppm";
 const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
 const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
+const SETUP_MENU_SKIP_WELCOME_REL: &str = "target/neo-test/setup_menu_skip_welcome.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -1145,6 +1146,10 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 38] = [
         )
     },
     DesktopScenario {
+        mid: Some((
+            b"DESKTOP setup page=welcome rows=5",
+            SETUP_MENU_SKIP_WELCOME_REL,
+        )),
         long_timeout: true,
         ..desktop(
             "setup_menu_skip",
@@ -19941,6 +19946,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "S1 has no Network page, and the walk never skips",
         )?;
         require_framebuffer_capture(scenario, SETUP_MENU_WALK_TRY_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_WALK_TRY_REL, true)?;
         require_framebuffer_capture(scenario, SETUP_MENU_WALK_CAPTURE_REL)?;
     }
     // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
@@ -19982,6 +19988,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "DESKTOP setup page=network",
             "a skipped menu shows no other page",
         )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL, false)?;
         require_framebuffer_capture(scenario, SETUP_MENU_SKIP_CAPTURE_REL)?;
     }
     if scenario.name == "desktop_intro_boot" {
@@ -22398,10 +22406,6 @@ fn require_intro_capture(
     card: IntroCard,
 ) -> Result<(), String> {
     #[allow(dead_code)]
-    mod home {
-        include!("../../../fixtures/desktop-ds1/home_digests.rs");
-    }
-    #[allow(dead_code)]
     mod intro {
         include!("../../../fixtures/desktop-intro/intro.rs");
     }
@@ -22419,11 +22423,29 @@ fn require_intro_capture(
             "help",
         ),
     };
-    let (capture, raster) = load_capture(
-        scenario,
-        capture_rel,
-        ("intro capture", "intro capture", ""),
-    )?;
+    check_card_capture(scenario, capture_rel, want, text_box, patterns, name)
+}
+
+/// A card row's oracle: its band (x, y, w, h), green threshold, pattern.
+type CardRow = ((usize, usize, usize, usize), u8, &'static str);
+
+/// A capture of Home with a WM card (the intro's, the setup menu's) against
+/// its oracle: the digest with the Home label boxes and the card's text box
+/// masked, then each row's column pattern.
+fn check_card_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    want: u64,
+    text_box: (usize, usize, usize, usize),
+    patterns: &[CardRow],
+    name: &str,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod home {
+        include!("../../../fixtures/desktop-ds1/home_digests.rs");
+    }
+    let (capture, raster) =
+        load_capture(scenario, capture_rel, ("card capture", "card capture", ""))?;
     let b = home::DS1_HOME_LABEL_BOXES_1920X1080;
     let hash = masked_fnv(&raster, &[b[0], b[1], b[2], text_box]);
     if hash != want {
@@ -22448,6 +22470,37 @@ fn require_intro_capture(
         }
     }
     Ok(())
+}
+
+/// F11 S1: a setup menu page's capture against `setup_oracle.py fixture`.
+fn require_setup_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    try_page: bool,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod setup {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    if try_page {
+        check_card_capture(
+            scenario,
+            capture_rel,
+            setup::TRY_GLASS_1920X1080,
+            setup::TRY_TEXT_BOX,
+            &setup::TRY_PATTERNS[..],
+            "setup try",
+        )
+    } else {
+        check_card_capture(
+            scenario,
+            capture_rel,
+            setup::WELCOME_GLASS_1920X1080,
+            setup::WELCOME_TEXT_BOX,
+            &setup::WELCOME_PATTERNS[..],
+            "setup welcome",
+        )
+    }
 }
 
 /// DL-1 (desktop_full_boot): the capture with the Lens docked to the moved

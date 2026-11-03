@@ -231,3 +231,24 @@ fn page_names_for_the_log() {
         ]
     );
 }
+
+/// The gate compares the two (setup-menu THINK §4.5): the wording
+/// `scripts/desktop/setup_oracle.py` typed again is these rows.
+#[test]
+fn rows_are_the_oracles_wording() {
+    #[allow(dead_code)]
+    mod oracle {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    assert_eq!(rows(&Wizard::new(false)), oracle::WELCOME_ROWS);
+    let mut w = Wizard::new(false);
+    w.on(Input::Choose); // Begin
+    w.on(Input::Up); // to Continue
+    w.on(Input::Choose);
+    w.on(Input::Choose); // Reduce motion
+    w.on(Input::Down);
+    w.on(Input::Choose); // Reduce transparency
+    w.on(Input::Down);
+    assert_eq!(w.on(Input::Choose), Outcome::Page(Page::Try));
+    assert_eq!(rows(&w), oracle::TRY_ROWS);
+}
