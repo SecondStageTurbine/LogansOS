@@ -123,3 +123,6 @@ RELAY 302 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-302-
 RELAY 303 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-03-relays-302-305.md | Section 303 (#56 pipe cross-CPU review; RETURN `Plans/RETURN-2026-11-03-pr56-pipe-review-chad.md`)
 RELAY 304 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-03-relays-302-305.md | Section 304 (#68 F8 review; RETURN `Plans/RETURN-2026-11-03-pr68-f8-review-jarvis.md`)
 RELAY 305 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-302-305.md | Section 305 (#64 setup-menu THINK re-check; RETURN `Plans/RETURN-2026-11-03-pr64-recheck-jarvis.md`)
+RELAY 306 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-306-308.md | Section 306 (#68 F8 re-check; RETURN `Plans/RETURN-2026-11-03-pr68-recheck-jarvis.md`)
+RELAY 307 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-306-308.md | Section 307 (#66 SWGL re-check; RETURN `Plans/RETURN-2026-11-03-pr66-recheck-jarvis.md`)
+RELAY 308 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-306-308.md | Section 308 (#67 pthreads re-check; RETURN `Plans/RETURN-2026-11-03-pr67-recheck-chad.md`)
