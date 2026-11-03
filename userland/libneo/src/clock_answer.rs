@@ -5,8 +5,8 @@
 //! Host-tested by `tools/tz-logic-tests` (mounted with `civil` and `tz`).
 //!
 //! The question match is deliberately narrow: a fixed set of phrasings,
-//! after lower-casing, dropping apostrophes and end punctuation and
-//! collapsing spaces. Anything else ("what time is it in Tokyo", "what time
+//! after lower-casing, dropping apostrophes and the end punctuation and
+//! collapsing spaces; any other punctuation means it isn't one. Anything else ("what time is it in Tokyo", "what time
 //! does the shop open") still goes to the model.
 
 use super::civil::{self, Text};
@@ -51,21 +51,25 @@ const DATE: [&str; 13] = [
 /// The longest line considered (longer ones are never these questions).
 const MAX: usize = 48;
 
-/// The question `line` asks, if it is one of the phrasings above.
+/// The question `line` asks, if it is one of the phrasings above. Only
+/// end punctuation (`?`, `.`, `!`, after the words) and apostrophes are
+/// dropped, and runs of spaces count as one; any other punctuation, such
+/// as `what,time is it`, is not one of these questions (Jarvis, #68).
 pub fn question(line: &[u8]) -> Option<Question> {
+    // Trim the ends: spaces, then end punctuation (and spaces among it).
+    let mut end = line.len();
+    while end > 0 && matches!(line[end - 1], b' ' | b'\t' | b'?' | b'.' | b'!') {
+        end -= 1;
+    }
     let mut buf = [0u8; MAX];
     let mut len = 0;
     let mut space = false;
-    for &b in line {
+    for &b in &line[..end] {
         let c = match b {
             b'A'..=b'Z' => b + 32,
             b'a'..=b'z' | b'0'..=b'9' => b,
             b'\'' => continue,
             b' ' | b'\t' => {
-                space = len != 0;
-                continue;
-            }
-            b'?' | b'.' | b'!' | b',' => {
                 space = len != 0;
                 continue;
             }

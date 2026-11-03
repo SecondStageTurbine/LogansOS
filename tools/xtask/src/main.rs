@@ -7405,6 +7405,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-busy-emblem",
             // A9-C: PgUp/PgDn and Up/Down scroll the transcript.
             "arthur-scrollback",
+            // F8: the time and the date from the clock, before the model.
+            "arthur-clock",
         ],
         Some("desktop-session-boot-test")
         | Some("desktop-glass-boot-test")
@@ -19188,6 +19190,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP arthur line=what's the date?",
                 "DESKTOP arthur clock question=date basis=utc zone=288 realtime_s=",
                 "DESKTOP arthur line=what time is it in tokyo?",
+                "DESKTOP arthur turn path=no-model",
                 "DESKTOP view switch=home residue_pixels=0",
                 "DESKTOP home return client=arthur exit=0 focus=wm-home",
                 "DESKTOP clock readback box=642,285,720,84 ink_pixels=",
@@ -21352,8 +21355,11 @@ fn require_arthur_clock_answers(
             scenario.name
         ));
     }
-    // A time question outside the phrase table is the model's: no clock
-    // answer between its line and the end of the session.
+    // A time question outside the phrase table is the model's (Jarvis,
+    // #68): after its line, Arthur's next turn line is the model path's,
+    // and no clock answer follows. This scenario boots no model, so the
+    // model path is its no-model line (`path=no-model`); the two clock
+    // rounds before it must not have taken it.
     let tokyo = serial
         .split("DESKTOP arthur line=what time is it in tokyo?")
         .nth(1)
@@ -21361,6 +21367,25 @@ fn require_arthur_clock_answers(
     if tokyo.contains("DESKTOP arthur clock question=") {
         return Err(format!(
             "`{}` the clock answered \"what time is it in tokyo?\"; it is the model's",
+            scenario.name
+        ));
+    }
+    let next = tokyo
+        .lines()
+        .find(|l| l.contains("DESKTOP arthur turn path=") || l.contains("DESKTOP arthur line="));
+    if !next.is_some_and(|l| l.contains("DESKTOP arthur turn path=")) {
+        return Err(format!(
+            "`{}` \"what time is it in tokyo?\" never reached the model path: {next:?}",
+            scenario.name
+        ));
+    }
+    let before = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .next()
+        .unwrap_or("");
+    if before.contains("DESKTOP arthur turn path=") {
+        return Err(format!(
+            "`{}` a clock question took the model path",
             scenario.name
         ));
     }
@@ -24063,6 +24088,25 @@ mod tests {
             .and_then(|r| r.split(']').next())
             .unwrap();
         assert!(arthur.contains("\"arthur-busy-emblem\""), "{arthur}");
+    }
+
+    /// F8 (Jarvis, #68): Arthur's clock answers are a separate feature (its
+    /// kill-switch), and the product image's Arthur turns them on.
+    #[test]
+    fn product_image_answers_the_time() {
+        let src = include_str!("main.rs");
+        let arthur = src
+            .split("Some(\"desktop-with-model\") => vec![\n            \"desktop-session\"")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(arthur.contains("\"arthur-clock\""), "{arthur}");
+        let cargo = include_str!("../../../userland/neo-arthur/Cargo.toml");
+        let session = cargo
+            .lines()
+            .find(|l| l.starts_with("desktop-session = "))
+            .unwrap();
+        assert!(!session.contains("arthur-clock"), "{session}");
     }
 
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A

@@ -1270,6 +1270,10 @@ fn run_desktop_session(
                         open_lens(surface, launch_cap, lens_token);
                     }
                 } else if model_ready {
+                    // F8 (Jarvis, #68): which path a line took, so a scenario
+                    // can show a question reached the model.
+                    #[cfg(feature = "desktop-session-boot-test")]
+                    stage_b_log_line(b"DESKTOP arthur turn path=model");
                     // A9-D: the WM turns the emblem while the model runs;
                     // the reply's commit ends it.
                     #[cfg(feature = "arthur-busy-emblem")]
@@ -1304,6 +1308,8 @@ fn run_desktop_session(
                     let _ = (&mut *reply, &mut *state, &mut *backend);
                     #[cfg(feature = "arthur-memory")]
                     let _ = &mut *memory;
+                    #[cfg(feature = "desktop-session-boot-test")]
+                    stage_b_log_line(b"DESKTOP arthur turn path=no-model");
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");

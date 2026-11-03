@@ -387,6 +387,7 @@ mod tests {
         use super::clock_answer::{Question, question};
         for q in [
             "what time is it",
+            "what time is it?",
             "What time is it?",
             "  WHAT TIME IS IT NOW?! ",
             "what's the time",
@@ -410,6 +411,11 @@ mod tests {
             "what time does the shop open",
             "date night ideas",
             "what's the time difference to London",
+            // Jarvis (#68): punctuation inside is not a word break.
+            "what,time is it",
+            "what time, is it",
+            "what?time is it",
+            "what time is it?!x",
             "",
             "?",
             "time time time time time time time time time time time",
