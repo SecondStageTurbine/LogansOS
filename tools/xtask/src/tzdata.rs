@@ -321,6 +321,61 @@ pub fn render(
     out
 }
 
+/// A tz release tag: four digits from 20xx, then letters (`2026e`).
+fn is_release_tag(tag: &str) -> bool {
+    let b = tag.as_bytes();
+    b.len() >= 5
+        && b.starts_with(b"20")
+        && b[2..4].iter().all(u8::is_ascii_digit)
+        && b[4..].iter().all(u8::is_ascii_lowercase)
+}
+
+/// The release a checkout is, and its commit, or why it isn't one (Dexter,
+/// #59). The table records both, so they must describe exactly what `zic`
+/// compiles:
+/// - every source file is tracked and nothing tracked is modified or staged
+///   (a dirty tree at a release tag is not that release);
+/// - HEAD carries a tag of the release form (not any tag);
+/// - that tag names HEAD's commit.
+fn provenance(src: &Path) -> Result<(String, String), String> {
+    let mut tracked = alloc_args(&["ls-files", "--error-unmatch", "--"]);
+    tracked.extend(SOURCES.iter().map(|s| s.to_string()));
+    git(src, &tracked.iter().map(String::as_str).collect::<Vec<_>>())
+        .map_err(|e| format!("tzdata: a source file isn't tracked in the checkout: {e}"))?;
+    let dirty = git(src, &["status", "--porcelain", "--untracked-files=no"])?;
+    if !dirty.is_empty() {
+        return Err(format!(
+            "tzdata: the tz checkout has changes, so it isn't the release:\n{dirty}"
+        ));
+    }
+    let tag = git(
+        src,
+        &[
+            "describe",
+            "--tags",
+            "--exact-match",
+            "--match",
+            "20[0-9][0-9][a-z]*",
+        ],
+    )
+    .map_err(|e| format!("tzdata: the tz checkout must be at a release tag (e.g. 2026e): {e}"))?;
+    if !is_release_tag(&tag) {
+        return Err(format!("tzdata: `{tag}` is not a tz release tag"));
+    }
+    let commit = git(src, &["rev-parse", "HEAD"])?;
+    let tagged = git(src, &["rev-parse", &format!("{tag}^{{commit}}")])?;
+    if tagged != commit {
+        return Err(format!(
+            "tzdata: tag {tag} names {tagged}, but the checkout is at {commit}"
+        ));
+    }
+    Ok((tag, commit))
+}
+
+fn alloc_args(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| s.to_string()).collect()
+}
+
 pub fn cmd_tzdata(args: &[String], workspace: &Path) -> Result<(), String> {
     let mut src: Option<PathBuf> = None;
     let mut it = args.iter();
@@ -331,9 +386,7 @@ pub fn cmd_tzdata(args: &[String], workspace: &Path) -> Result<(), String> {
         }
     }
     let src = src.ok_or("tzdata: --src <tz checkout at a release tag> is required")?;
-    let version = git(&src, &["describe", "--tags", "--exact-match"])
-        .map_err(|e| format!("the tz checkout must be at a release tag: {e}"))?;
-    let commit = git(&src, &["rev-parse", "HEAD"])?;
+    let (version, commit) = provenance(&src)?;
 
     let out_dir = std::env::temp_dir().join(format!("xtask-tzdata-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
@@ -405,6 +458,61 @@ pub fn cmd_tzdata(args: &[String], workspace: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_tags() {
+        for t in ["2026e", "2024a", "2099z", "2030aa"] {
+            assert!(is_release_tag(t), "{t}");
+        }
+        for t in [
+            "not-a-release",
+            "2026",
+            "2026E",
+            "1999a",
+            "2026e-rc",
+            "v2026e",
+            "",
+        ] {
+            assert!(!is_release_tag(t), "{t}");
+        }
+    }
+
+    /// Dexter's two counterexamples, on a scratch repository: a modified
+    /// source at the release tag, and a non-release tag. Then the clean
+    /// release is accepted, with the tag's commit.
+    #[test]
+    fn provenance_refuses_a_dirty_tree_and_other_tags() {
+        let dir = std::env::temp_dir().join(format!("xtask-tz-prov-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let run = |args: &[&str]| {
+            let ok = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@invalid"])
+                .args(args)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&["init", "-q"]);
+        for f in SOURCES {
+            fs::write(dir.join(f), "# data\n").unwrap();
+        }
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "release"]);
+        run(&["tag", "not-a-release"]);
+        assert!(provenance(&dir).unwrap_err().contains("release tag"));
+        run(&["tag", "2026e"]);
+        let (tag, commit) = provenance(&dir).unwrap();
+        assert_eq!(tag, "2026e");
+        assert_eq!(commit, git(&dir, &["rev-parse", "HEAD"]).unwrap());
+        fs::write(dir.join("africa"), "# data, changed\n").unwrap();
+        assert!(provenance(&dir).unwrap_err().contains("has changes"));
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     /// Footers written out by hand from POSIX.1-2017 §8.3 and RFC 8536.
     #[test]

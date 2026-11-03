@@ -60,6 +60,9 @@ pub type ZoneId = u16;
 pub struct Offset {
     pub seconds: i32,
     pub abbr: &'static str,
+    /// The rule's DST part is in force. Not "summer time": a zone with
+    /// negative DST has it in winter (Europe/Dublin: GMT in winter is DST,
+    /// IST in summer is standard). Show `abbr`; don't infer a season.
     pub is_dst: bool,
 }
 
@@ -164,8 +167,27 @@ fn transition_local(t: Transition, y: i64) -> i64 {
     (first + day - 1) * 86400 + t.time as i64
 }
 
+/// The instants the rule arithmetic evaluates: ±2^40 s (about ±34,800
+/// years). An instant outside is evaluated at the nearest bound (the final
+/// rule repeats every year, so the offset is that year's), and results are
+/// saturated, so every function here is defined, and never overflows, for
+/// any `i64` (Dexter, #59).
+pub const INSTANT_MAX: i64 = 1 << 40;
+pub const INSTANT_MIN: i64 = -INSTANT_MAX;
+
+const fn clamp(t: i64) -> i64 {
+    if t < INSTANT_MIN {
+        INSTANT_MIN
+    } else if t > INSTANT_MAX {
+        INSTANT_MAX
+    } else {
+        t
+    }
+}
+
 /// The offset in force at `utc` (seconds since 1970, UTC).
 pub fn offset_at(rule: &Rule, utc: i64) -> Offset {
+    let utc = clamp(utc);
     let standard = Offset {
         seconds: rule.std_offset,
         abbr: rule.std_abbr,
@@ -207,17 +229,17 @@ pub fn offset_at(rule: &Rule, utc: i64) -> Offset {
 pub fn utc_to_local(utc: i64, id: ZoneId) -> (i64, Offset) {
     let rule = zone(id).map_or(ZONES[0].rule, |z| z.rule);
     let offset = offset_at(&rule, utc);
-    (utc + offset.seconds as i64, offset)
+    (utc.saturating_add(offset.seconds as i64), offset)
 }
 
 /// A local wall time (seconds since 1970, counted as if UTC) as UTC.
 pub fn local_to_utc(local: i64, id: ZoneId) -> LocalResult {
     let rule = zone(id).map_or(ZONES[0].rule, |z| z.rule);
     let Some(dst) = rule.dst else {
-        return LocalResult::Single(local - rule.std_offset as i64);
+        return LocalResult::Single(local.saturating_sub(rule.std_offset as i64));
     };
-    let as_std = local - rule.std_offset as i64;
-    let as_dst = local - dst.offset as i64;
+    let as_std = local.saturating_sub(rule.std_offset as i64);
+    let as_dst = local.saturating_sub(dst.offset as i64);
     let std_ok = offset_at(&rule, as_std).seconds == rule.std_offset;
     let dst_ok = offset_at(&rule, as_dst).seconds == dst.offset;
     match (std_ok, dst_ok) {
@@ -227,15 +249,15 @@ pub fn local_to_utc(local: i64, id: ZoneId) -> LocalResult {
         (false, false) => {
             // In the gap: the offset before it is the one in force a day
             // earlier (longer than any gap).
-            let before = offset_at(&rule, as_std.min(as_dst) - 86400).seconds as i64;
+            let before = offset_at(&rule, as_std.min(as_dst).saturating_sub(86400)).seconds as i64;
             let after = if before == rule.std_offset as i64 {
                 dst.offset as i64
             } else {
                 rule.std_offset as i64
             };
             LocalResult::Gap {
-                offset_before: local - before,
-                offset_after: local - after,
+                offset_before: local.saturating_sub(before),
+                offset_after: local.saturating_sub(after),
             }
         }
     }

@@ -200,4 +200,43 @@ mod tests {
         let utc_rule = ZONES[0].rule;
         assert_eq!(offset_at(&utc_rule, 0).abbr, "UTC");
     }
+
+    /// Dexter (#59): every function is defined for any `i64`. Outside
+    /// ±2^40 s the offset is the bound's, and results saturate; in the
+    /// test profile overflow checks are on, so a panic would fail this.
+    #[test]
+    fn the_i64_extremes_are_defined() {
+        use super::tz::{INSTANT_MAX, INSTANT_MIN};
+        let ny = id("America/New_York");
+        let sydney = id("Australia/Sydney");
+        for z in [tz::UTC, ny, sydney, u16::MAX] {
+            let (hi, o_hi) = utc_to_local(i64::MAX, z);
+            assert_eq!(o_hi, utc_to_local(INSTANT_MAX, z).1);
+            assert_eq!(hi, i64::MAX.saturating_add(o_hi.seconds as i64));
+            let (lo, o_lo) = utc_to_local(i64::MIN, z);
+            assert_eq!(o_lo, utc_to_local(INSTANT_MIN, z).1);
+            assert_eq!(lo, i64::MIN.saturating_add(o_lo.seconds as i64));
+            for t in [i64::MAX, i64::MIN, i64::MAX - 1, i64::MIN + 1] {
+                match local_to_utc(t, z) {
+                    LocalResult::Single(u) | LocalResult::Ambiguous(u, _) => {
+                        assert_eq!(u.signum(), t.signum())
+                    }
+                    LocalResult::Gap { offset_after, .. } => {
+                        assert_eq!(offset_after.signum(), t.signum())
+                    }
+                }
+            }
+        }
+        // New York west of UTC: the top saturates nowhere (MAX - 5 h or
+        // 4 h), the bottom saturates to MIN.
+        assert!(matches!(
+            utc_to_local(i64::MAX, ny).1.seconds,
+            -18000 | -14400
+        ));
+        assert_eq!(utc_to_local(i64::MIN, ny).0, i64::MIN);
+        // Sydney east of UTC: the top saturates to MAX.
+        assert_eq!(utc_to_local(i64::MAX, sydney).0, i64::MAX);
+        // Inside the range nothing changed: the 2026 KAT instants hold.
+        assert_eq!(utc_to_local(1793512800, ny).1.abbr, "EST");
+    }
 }
