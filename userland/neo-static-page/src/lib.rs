@@ -102,6 +102,9 @@ pub struct StaticPage {
     layout: Box<dyn Layout>,
     painted: Arc<Mutex<Painted>>,
     url_for_fonts: ServoUrl,
+    /// The font service thread's proxy, to stop it when the page goes
+    /// (`Drop`).
+    font_service: Arc<fonts::SystemFontServiceProxy>,
     /// The receiving ends of channels nothing here reads: kept so a send on
     /// them is not an error.
     _keep: (
@@ -147,8 +150,9 @@ impl StaticPage {
             paint_api.clone(),
             profile_traits::mem::ProfilerChan(memory_sender),
         );
+        let font_proxy = Arc::new(font_service.to_proxy());
         let font_context = Arc::new(FontContext::new(
-            Arc::new(font_service.to_proxy()),
+            font_proxy.clone(),
             paint_api.clone(),
             net_traits::ResourceThreads::new(generic_channel::channel().expect("a channel").0),
         ));
@@ -202,6 +206,7 @@ impl StaticPage {
             layout,
             painted,
             url_for_fonts: extra_url,
+            font_service: font_proxy,
             _keep: (Box::new(script_port), Box::new(memory_port), embedder_port),
         }
     }
@@ -291,6 +296,19 @@ impl StaticPage {
     /// How many display lists layout has sent.
     pub fn display_lists(&self) -> usize {
         self.painted.lock().map(|p| p.display_lists).unwrap_or(0)
+    }
+}
+
+impl Drop for StaticPage {
+    /// Stop the font service thread before its channels go: Servo's shutdown
+    /// sends it `Exit` and waits for the reply
+    /// (`SystemFontServiceProxy::exit`). Without that, dropping the page
+    /// disconnects the service's channel and its loop's `recv().unwrap()`
+    /// panics (`system_font_service.rs:123`); with `panic = "abort"` that ends
+    /// the process (the fourth on-target L2 run, 2026-11-03, after every
+    /// border box had matched).
+    fn drop(&mut self) {
+        self.font_service.exit();
     }
 }
 
