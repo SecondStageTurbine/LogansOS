@@ -126,3 +126,19 @@ fn parents_follow_the_tree() {
     let flat = unsafe { td.dangerous_flat_tree_parent() }.expect("and a flat-tree parent");
     assert_eq!(flat, tr);
 }
+
+#[test]
+fn the_document_element_is_html_past_the_doctype() {
+    let d = doc();
+    // The document's first child is the doctype (not an element); the
+    // document element is <html>, a reflow's dirty root.
+    let id = d.document_element().expect("a document element");
+    assert_ne!(id, 0);
+    let html = node(&d, id);
+    assert_eq!(
+        html.as_element()
+            .map(|e| e.local_name().to_string())
+            .as_deref(),
+        Some("html")
+    );
+}
