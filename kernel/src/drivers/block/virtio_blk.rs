@@ -1637,10 +1637,25 @@ fn write_driver_features(common: VirtAddr, features: u64) {
     }
 }
 
-/// OT-90 P3b-2 (K6): reset the device (status 0), registers only.
+/// OT-90 P3b-2 (K6): reset the device (status 0), registers only. An
+/// `Err` when the status never reads back 0 (Janus's #7 review, item 2b):
+/// the device isn't confirmed reset. `reset_device`'s poll, reporting its
+/// outcome; the probe path keeps `reset_device` as it was.
 #[cfg(feature = "power-quiesce")]
-pub fn shutdown_reset(common: u64) {
-    reset_device(VirtAddr::new(common));
+pub fn shutdown_reset(common: u64) -> Result<(), &'static str> {
+    let common = VirtAddr::new(common);
+    // SAFETY: the device's common configuration, mapped at probe; K6 runs
+    // alone.
+    unsafe {
+        mmio_write8(common, COMMON_DEVICE_STATUS, 0);
+        for _ in 0..100_000 {
+            if mmio_read8(common, COMMON_DEVICE_STATUS) == 0 {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+    }
+    Err("reset-timeout")
 }
 
 fn reset_device(common: VirtAddr) {

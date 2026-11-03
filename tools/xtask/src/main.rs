@@ -6030,6 +6030,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // Janus's #7 review, items 1 and 3: an AP parked by NMI holding the heap
+    // allocator's lock, and a bus master that won't clear; S5 must still come.
+    TestScenario {
+        name: "ot90_quiesce_heap_held",
+        feature: "neo-test-ot90-quiesce-heap-held",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -11032,7 +11041,8 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_holdout"
         | "ot90_stop_shootdown"
         | "ot90_stop_wedged"
-        | "ot90_quiesce" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_quiesce"
+        | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -11165,6 +11175,34 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             ));
         }
+    }
+    // Janus's #7 review, items 1 and 3: the highest AP parked by NMI holding
+    // the heap's lock (no holdout, so K5 and K6 ran); K6 stopped the disk,
+    // reported the stuck bus master and kept the IOMMU on; S5 still came, so
+    // nothing after K4 freed heap memory.
+    if scenario.name == "ot90_quiesce_heap_held" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 targets=",
+                "[ power ] K5 lapic_timer=",
+                "[ power ] K6 disk=0 virtio-reset ok",
+                "FAILED bme-still-set",
+                "disks_failed=0 bus_masters_cleared=",
+                "bus_masters_failed=1 iommu=kept",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(true, k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
     }
     // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
     // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
@@ -15126,6 +15164,7 @@ fn scenario_uses_storage_disk(scenario: TestScenario) -> bool {
         || scenario.name == "virtio_blk_io_gate_contention"
         || scenario.name == "vtd_fence"
         || scenario.name == "ot90_quiesce"
+        || scenario.name == "ot90_quiesce_heap_held"
         || scenario.name == "graphics_vtd_domain"
         || scenario.name == "model_load_cascade"
         || scenario.name == "mount_authority"
@@ -15906,7 +15945,9 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         "phase3_neofs_cache_evict" | "phase3_neofs_cache_evict_off" => Some("normal"),
         "phase3_neofs_allocator_reuse_guard" => Some("normal"),
         "phase3_neofs_reboot_persistence_small_file" => Some("normal"),
-        "ot90_s5_durability" | "ot90_quiesce" | "ot90_stuck_disk" => Some("normal"),
+        "ot90_s5_durability" | "ot90_quiesce" | "ot90_quiesce_heap_held" | "ot90_stuck_disk" => {
+            Some("normal")
+        }
         "phase3_neofs_fsync_noop_write_through" => Some("normal"),
         "phase3_neofs_cow_write_after_write" => Some("normal"),
         "phase3_neofs_crash_mid_overwrite_recovery" => Some("normal"),

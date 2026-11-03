@@ -1066,6 +1066,8 @@ const SCENARIO: &str = "ot90_stop_shootdown";
 const SCENARIO: &str = "ot90_stop_wedged";
 #[cfg(feature = "neo-test-ot90-quiesce")]
 const SCENARIO: &str = "ot90_quiesce";
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+const SCENARIO: &str = "ot90_quiesce_heap_held";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1635,6 +1637,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-ot90-straggler-forced",
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
@@ -4998,7 +5001,10 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     ))]
     run_ot90_stuck_sink();
 
-    #[cfg(feature = "neo-test-ot90-quiesce")]
+    #[cfg(any(
+        feature = "neo-test-ot90-quiesce",
+        feature = "neo-test-ot90-quiesce-heap-held"
+    ))]
     run_ot90_quiesce();
 
     #[cfg(feature = "neo-test-sys-getrandom")]
@@ -30972,6 +30978,7 @@ fn run_phase3_pci_virtio_blk_probe_smoke() -> ! {
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
     feature = "neo-test-phase3-virtio-blk-abandoned-io-no-leak",
     feature = "neo-test-phase3-virtio-blk-flush-negotiated-gate",
@@ -33213,6 +33220,7 @@ const NEOFS_2C_DIRECT_BLOCK_BYTES: usize = 4096;
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33247,6 +33255,7 @@ fn mount_neofs_rw_or_fail() -> crate::fs::neofs::MountReport {
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33272,6 +33281,7 @@ fn neofs_2c_rw_rights() -> crate::fs::FileRights {
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33302,6 +33312,7 @@ fn neofs_2c_fail_vfs(reason: &str, err: crate::fs::VfsError) -> ! {
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33332,6 +33343,7 @@ fn neofs_2c_fail_count(reason: &str, got: usize, expected: usize) -> ! {
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33358,6 +33370,7 @@ fn neofs_2c_create_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFile> 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33410,6 +33423,7 @@ fn neofs_2c_open_read_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFil
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33436,6 +33450,7 @@ fn neofs_2c_write_all_or_fail(file: &crate::fs::OpenFile, input: &[u8]) {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -40691,11 +40706,23 @@ fn run_ot90_stop_shootdown() -> ! {
     }
 }
 
+/// `ot90_quiesce_heap_held`: whether K6 should report `dev`'s Bus Master
+/// Enable as still set. The first bus master K6 clears does, once, so the
+/// IOMMU-kept path runs (Janus's #7 review, item 1).
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+pub fn ot90_bme_stuck(_dev: crate::drivers::pci::Device) -> bool {
+    static FIRST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+    FIRST.swap(false, Ordering::AcqRel)
+}
+
 /// OT-90 P3b-2 `ot90_quiesce`: power-off with K6. NeoFS is mounted
 /// writable on disk 0 and a file is written, so the write guard has armed
 /// that disk; K6 must stop its controller, clear every bus master and then
 /// S5. xtask judges it by QMP and the K6 lines.
-#[cfg(feature = "neo-test-ot90-quiesce")]
+#[cfg(any(
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held"
+))]
 fn run_ot90_quiesce() -> ! {
     let _ = mount_neofs_rw_or_fail();
     let file = neofs_2c_create_or_fail("/neofs/ot90-quiesce.txt");
