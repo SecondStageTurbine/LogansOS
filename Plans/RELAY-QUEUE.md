@@ -126,3 +126,5 @@ RELAY 305 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-302
 RELAY 306 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-306-308.md | Section 306 (#68 F8 re-check; RETURN `Plans/RETURN-2026-11-03-pr68-recheck-jarvis.md`)
 RELAY 307 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-306-308.md | Section 307 (#66 SWGL re-check; RETURN `Plans/RETURN-2026-11-03-pr66-recheck-jarvis.md`)
 RELAY 308 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relays-306-308.md | Section 308 (#67 pthreads re-check; RETURN `Plans/RETURN-2026-11-03-pr67-recheck-chad.md`)
+RELAY 309 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-03-relays-309-310.md | Section 309 (#8 PowerControl cap + SYS_POWER; RETURN `Plans/RETURN-2026-11-03-pr8-power-cap-review-janus.md`)
+RELAY 310 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-03-relays-309-310.md | Section 310 (#14 power menu; RETURN `Plans/RETURN-2026-11-03-pr14-power-menu-review-jarvis.md`)
