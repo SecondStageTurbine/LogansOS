@@ -98,3 +98,22 @@ windows-link = { path = "../../third_party/ot61-browser/stubs/windows-link-0.2.1
 windows-sys-052 = { package = "windows-sys", path = "../../third_party/ot61-browser/stubs/windows-sys-0.52.0" }
 xml = { path = "../../third_party/ot61-browser/stubs/xml-1.4.0" }
 yeslogic-fontconfig-sys = { path = "../../third_party/ot61-browser/stubs/yeslogic-fontconfig-sys-6.0.1" }
+# Crates.io crates the lock names only through optional features our target
+# build doesn't turn on (image's AVIF/EXR codecs, serde_with's chrono/hex/
+# schemars/jiff, rustls-webpki's ring, HarfBuzz's FreeType): same stubs.
+bs58 = { path = "../../third_party/ot61-browser/stubs/bs58-0.5.1" }
+chrono = { path = "../../third_party/ot61-browser/stubs/chrono-0.4.45" }
+embedded-io-04 = { package = "embedded-io", path = "../../third_party/ot61-browser/stubs/embedded-io-0.4.0" }
+embedded-io = { path = "../../third_party/ot61-browser/stubs/embedded-io-0.6.1" }
+exr = { path = "../../third_party/ot61-browser/stubs/exr-1.74.2" }
+freetype-sys = { path = "../../third_party/ot61-browser/stubs/freetype-sys-0.23.0" }
+hex = { path = "../../third_party/ot61-browser/stubs/hex-0.4.3" }
+indexmap-1 = { package = "indexmap", path = "../../third_party/ot61-browser/stubs/indexmap-1.9.3" }
+jiff = { path = "../../third_party/ot61-browser/stubs/jiff-0.2.39" }
+ravif = { path = "../../third_party/ot61-browser/stubs/ravif-0.13.0" }
+ring = { path = "../../third_party/ot61-browser/stubs/ring-0.17.14" }
+rustc_version = { path = "../../third_party/ot61-browser/stubs/rustc_version-0.4.1" }
+schemars-09 = { package = "schemars", path = "../../third_party/ot61-browser/stubs/schemars-0.9.0" }
+schemars = { path = "../../third_party/ot61-browser/stubs/schemars-1.2.3" }
+wasm-bindgen = { path = "../../third_party/ot61-browser/stubs/wasm-bindgen-0.2.130" }
+zlib-rs = { path = "../../third_party/ot61-browser/stubs/zlib-rs-0.6.8" }

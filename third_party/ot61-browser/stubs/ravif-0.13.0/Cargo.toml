@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "ravif"
+version = "0.13.0"
+edition = "2024"
+license = "BSD-3-Clause"
+repository = "https://github.com/kornelski/cavif-rs"
+description = "LogansOS empty stand-in for ravif 0.13.0 (never compiled for LogansOS)"
+
+[lib]
+name = "ravif"
+path = "src/lib.rs"
+
+[features]
+"asm" = []
+"default" = ["asm", "threading"]
+"threading" = []

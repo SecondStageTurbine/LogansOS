@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "schemars"
+version = "1.2.3"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/GREsau/schemars"
+description = "LogansOS empty stand-in for schemars 1.2.3 (never compiled for LogansOS)"
+
+[lib]
+name = "schemars"
+path = "src/lib.rs"
+
+[features]
+"_ui_test" = []
+"default" = ["derive", "std"]
+"derive" = []
+"preserve_order" = []
+"raw_value" = []
+"std" = []
+"arrayvec07" = []
+"bigdecimal04" = []
+"bytes1" = []
+"chrono04" = []
+"either1" = []
+"indexmap2" = []
+"jiff02" = []
+"rust_decimal1" = []
+"schemars_derive" = []
+"semver1" = []
+"smallvec1" = []
+"smol_str02" = []
+"smol_str03" = []
+"url2" = []
+"uuid1" = []

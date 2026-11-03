@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "exr"
+version = "1.74.2"
+edition = "2018"
+license = "BSD-3-Clause"
+repository = "https://github.com/johannesvollmer/exrs"
+description = "LogansOS empty stand-in for exr 1.74.2 (never compiled for LogansOS)"
+
+[lib]
+name = "exr"
+path = "src/lib.rs"
+
+[features]
+"avx2-tests" = []
+"default" = ["rayon"]
+"rayon" = []
+"simd-benches" = []
+"sse2-tests" = []

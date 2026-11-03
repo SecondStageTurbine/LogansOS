@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "chrono"
+version = "0.4.45"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/chronotope/chrono"
+description = "LogansOS empty stand-in for chrono 0.4.45 (never compiled for LogansOS)"
+
+[lib]
+name = "chrono"
+path = "src/lib.rs"
+
+[features]
+"__internal_bench" = []
+"alloc" = []
+"clock" = ["winapi", "now"]
+"core-error" = []
+"default" = ["clock", "std", "oldtime", "wasmbind"]
+"defmt" = []
+"libc" = []
+"now" = ["std"]
+"oldtime" = []
+"rkyv" = []
+"rkyv-16" = []
+"rkyv-32" = []
+"rkyv-64" = []
+"rkyv-validation" = []
+"std" = ["alloc"]
+"unstable-locales" = []
+"wasmbind" = []
+"winapi" = []
+"arbitrary" = []
+"iana-time-zone" = []
+"js-sys" = []
+"pure-rust-locales" = []
+"serde" = []
+"wasm-bindgen" = []
+"windows-link" = []
