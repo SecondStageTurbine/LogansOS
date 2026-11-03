@@ -3822,13 +3822,22 @@ mod home {
                 return Ok(line);
             }
             if home.line.edit(key) {
+                #[cfg(feature = "desktop-session-boot-test")]
+                let typed_len = home.line.as_bytes().len() as u64;
                 scene.repaint_chrome(field);
                 scene.present(false, field).map_err(|c| 100 + c)?;
                 // Logged once the keystroke is on screen (boot-test only: in
                 // production the WM never logs what the user types).
                 #[cfg(feature = "desktop-session-boot-test")]
-                if let Key::Char(c) = key {
-                    log_key(c);
+                match key {
+                    Key::Char(c) => log_key(c),
+                    // F10: a held Backspace's repeats, one per byte removed.
+                    Key::Backspace => super::Line::new()
+                        .s(b"DESKTOP home keystroke backspace len=")
+                        .n(typed_len)
+                        .s(b"\n")
+                        .emit(),
+                    _ => {}
                 }
             }
         }
