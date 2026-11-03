@@ -1261,6 +1261,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "neofs-cache-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "neofs-commit-logic-tests"
 version = "0.0.1"
 
