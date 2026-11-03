@@ -345,7 +345,7 @@ pub fn shown(realtime: i64, basis: Basis, zone: ZoneId) -> (i64, Shown) {
 /// `wall`: the reading less its true UTC instant, or `None` when that is
 /// unknown ([`rtc_reading_utc`]).
 pub fn confirm_offset(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> {
-    rtc_reading_utc(wall, zone, rtc_local).map(|utc| wall - utc)
+    rtc_reading_utc(wall, zone, rtc_local).and_then(|utc| wall.checked_sub(utc))
 }
 
 /// After a confirm with `confirmed` (the RTC read as `realtime + confirmed`),
@@ -353,7 +353,10 @@ pub fn confirm_offset(wall: i64, zone: ZoneId, rtc_local: bool) -> Option<i64> {
 /// differently: then only a restart applies them (the confirm is
 /// write-once), and Home says so.
 pub fn needs_restart(realtime: i64, confirmed: i64, zone: ZoneId, rtc_local: bool) -> bool {
-    confirm_offset(realtime + confirmed, zone, rtc_local) != Some(confirmed)
+    realtime
+        .checked_add(confirmed)
+        .and_then(|wall| confirm_offset(wall, zone, rtc_local))
+        != Some(confirmed)
 }
 
 /// A Home verb about the clock (THINK-2026-11-02-time-zones §2.5). The WM

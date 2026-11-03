@@ -309,6 +309,15 @@ mod tests {
         assert!(needs_restart(utc, -18000, ny, false));
         assert!(needs_restart(utc, -18000, sydney, true));
         assert!(needs_restart(utc, -18000, tz::UTC, true));
+        // Dexter (#59): defined at the i64 extremes too.
+        for t in [i64::MAX, i64::MIN] {
+            for z in [ny, sydney, tz::UTC] {
+                let _ = confirm_offset(t, z, true);
+                let _ = needs_restart(t, -18000, z, true);
+                let _ = needs_restart(t, i64::MAX, z, false);
+            }
+        }
+        assert_eq!(confirm_offset(i64::MAX, tz::UTC, false), Some(0));
     }
 
     #[test]
