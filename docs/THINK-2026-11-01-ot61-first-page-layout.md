@@ -239,3 +239,8 @@ Checked 2026-11-01, from crates.io (the API and the index); no repository was cl
 
 Exact bytes for L1's oracle (the font's tables) come from the font file fetched raw (`git`/`curl`), never a
 summarizing fetch.
+
+**The closure's crates (2026-11-03).** The 195 crates L0 vendors beyond Stylo's closure and the SWGL/WebRender trees
+have their own licence, freshness and RustSec table: `docs/RESEARCH-2026-11-03-ot61-l0-layout-closure-SURVEY.md`.
+All licences are on CLAUDE.md's list, and no known vulnerability affects them. Five `unic-*` crates carry RustSec
+"unmaintained" notices, and `arrayref` must stay at 0.3.9.
