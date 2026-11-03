@@ -481,6 +481,10 @@ neo-test-servo-closure-smoke-avx = ["neo-test-servo-closure-smoke", "xsave-fpu"]
 # OT-61 C2.4: upstream Stylo styles an html5ever document on-target.
 # kernel-rng: any std HashMap's RandomState seeds from getrandom.
 neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+# OT-61 C3a: the browser bundle's private C/C++ runtime (userland/neo-crt) in
+# a real-std process: libc checks against independent oracles, per-thread
+# errno, malloc from several threads.
+neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is
@@ -2124,6 +2128,12 @@ neo-test-ot90-cap = ["neo-test", "power-cap"]
 # OT-90 P5: the intro desktop with `power-cap`; `shut down` typed at Home,
 # confirmed, powers off (neo-init `power-menu`).
 neo-test-ot90-power-menu = ["neo-test-desktop-intro-boot", "power-cap"]
+# Janus's #7 review, items 1 and 3: the same power-off, but the highest AP
+# ignores STOP and, in its NMI handler, takes the heap allocator's lock and
+# parks holding it; one bus master's Bus Master Enable reads back set. K6 must
+# keep the IOMMU on, and nothing after K4 may free heap memory (a drop there
+# spins on that lock): S5 must still come.
+neo-test-ot90-quiesce-heap-held = ["neo-test", "power-quiesce"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]

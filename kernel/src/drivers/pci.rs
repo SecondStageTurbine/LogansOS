@@ -930,9 +930,12 @@ pub fn bus_masters() -> Vec<Device> {
 }
 
 /// OT-90 P3b-2 (K6): clear Bus Master Enable, so the function can start no
-/// more DMA. Config space through CF8/CFC, no lock: K6 runs alone.
+/// more DMA. Config space through CF8/CFC, no lock: K6 runs alone. Returns
+/// whether the bit read back clear (Janus's #7 review, item 1): a function
+/// that keeps it set, or no longer answers (all ones), isn't confirmed
+/// stopped, and K6 then leaves the IOMMU on.
 #[cfg(feature = "power-quiesce")]
-pub fn clear_bus_master(dev: Device) {
+pub fn clear_bus_master(dev: Device) -> bool {
     const PCI_COMMAND_BUS_MASTER: u16 = 1 << 2;
     let command = config_read_u16(dev.bus, dev.device, dev.function, 0x04);
     config_write_u16(
@@ -942,6 +945,11 @@ pub fn clear_bus_master(dev: Device) {
         0x04,
         command & !PCI_COMMAND_BUS_MASTER,
     );
+    #[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+    if crate::test_harness::ot90_bme_stuck(dev) {
+        return false;
+    }
+    config_read_u16(dev.bus, dev.device, dev.function, 0x04) & PCI_COMMAND_BUS_MASTER == 0
 }
 
 /// Clear bus-master (DMA) rights (the I2C-HID touchpad is PIO only).

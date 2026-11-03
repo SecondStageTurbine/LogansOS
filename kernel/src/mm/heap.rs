@@ -145,6 +145,16 @@ unsafe impl GlobalAlloc for IrqSafeHeap {
     }
 }
 
+/// `ot90_quiesce_heap_held`: take the allocator's lock and never release it
+/// (a CPU parked mid-allocation). `try_lock`, so a CPU that already held it
+/// when its NMI came doesn't spin on itself.
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+pub fn hold_lock_forever_for_test() {
+    if let Some(guard) = ALLOCATOR.inner.try_lock() {
+        core::mem::forget(guard);
+    }
+}
+
 pub fn init<M, A>(mapper: &mut M, frame_alloc: &mut A)
 where
     M: Mapper<Size4KiB> + Translate,
