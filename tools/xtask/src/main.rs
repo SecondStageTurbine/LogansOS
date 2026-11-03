@@ -208,6 +208,10 @@ const DESKTOP_MOTION_RM_BOOT_MID_REL: &str = "target/neo-test/desktop_motion_rm_
 /// (mid capture, at session start).
 const DESKTOP_INTRO_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_intro_boot.ppm";
 const DESKTOP_INTRO_BOOT_MID_REL: &str = "target/neo-test/desktop_intro_boot_mid.ppm";
+/// F11 S1: the walk's end Home and its Try page; the skip control's end.
+const SETUP_MENU_WALK_CAPTURE_REL: &str = "target/neo-test/setup_menu_walk.ppm";
+const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
+const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -868,7 +872,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 38] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1128,6 +1132,27 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
             b"\r",
         )
     },
+    // F11 S1: the setup menu before the intro session; the Try page is
+    // captured as it shows (step 3's oracle reads it).
+    DesktopScenario {
+        mid: Some((b"DESKTOP setup page=try rows=5", SETUP_MENU_WALK_TRY_REL)),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_walk",
+            SETUP_MENU_WALK_STEPS,
+            SETUP_MENU_WALK_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_skip",
+            SETUP_MENU_SKIP_STEPS,
+            SETUP_MENU_SKIP_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // OT-87 R4.4: the Atrium installer in the intro session, booted as an
     // install scenario (`run_install_scenario`): the list captured as it
     // shows, the confirmation after Enter (`\r`).
@@ -1298,6 +1323,56 @@ const INSTALL_ATRIUM_HID_STEPS: &[SerialScriptStep] = &[
     // With the Install chip shown, Tab from Arthur's chip goes to it (no
     // Lens in this build), and one more Tab to the field.
     step(b"DESKTOP home chip selected=3", b"\t"),
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S1 (`setup_menu_walk`): the walk the gate names (setup-menu THINK
+/// §5 S1): Begin, Time zone (UTC, Continue), Comfort (both on), Try, then
+/// the intro session as `desktop_intro_boot` runs it. Each key waits for the
+/// line the previous one produced (the matcher starts afresh after a step).
+const SETUP_MENU_WALK_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    // UTC is chosen already; Enter keeps it, then Up wraps to Continue.
+    step(b"DESKTOP setup page=timezone rows=8", b"\n"),
+    step(b"DESKTOP setup redraw page=timezone focus=0", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    // Space toggles too; Tab moves like Down.
+    step(b"DESKTOP setup page=comfort rows=6", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=0", b"\t"),
+    step(b"DESKTOP setup redraw page=comfort focus=1", b"\n"),
+    step(b"DESKTOP setup redraw page=comfort focus=1", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S1's control (`setup_menu_skip`): Esc on Welcome asks, Enter skips,
+/// and the session is the intro's.
+const SETUP_MENU_SKIP_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=skip rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
     CHIP0_AGAIN,
     AGAIN_ENTER,
     step(b"DESKTOP arthur answer composited serial=", b"q"),
@@ -3623,6 +3698,24 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_intro_boot",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("desktop-intro-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S1: the first-boot setup menu walked by keys (Begin, Time zone,
+        // Comfort, Try), then the intro session; the kernel's end check is
+        // the intro's (the menu leaves Home as it found it).
+        name: "setup_menu_walk",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S1's control: Esc on Welcome, Skip, then the intro session.
+        name: "setup_menu_skip",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-menu-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -7694,6 +7787,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
         | Some("desktop-clock-boot-test")
+        | Some("setup-menu-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -7983,7 +8077,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
         Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
-        | Some("desktop-clock-boot-test") => vec![
+        | Some("desktop-clock-boot-test")
+        | Some("setup-menu-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -18553,6 +18648,8 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         INSTALL_ATRIUM_SCENARIO
         | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
         | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
+        // F11 S1: the intro session's kernel, after the setup menu.
+        "setup_menu_walk" | "setup_menu_skip" => "desktop_intro_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }
@@ -19804,6 +19901,88 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         require_motion(scenario, observed, MotionProfile::Full, &MOTION_KIND_NAMES)?;
         require_dock_capture(scenario, DESKTOP_FULL_BOOT_CAPTURE_REL)?;
+    }
+    // F11 S1 (setup-menu THINK §5 S1): the walk, page by page, then the
+    // intro session; no Network page (it doesn't exist until S4).
+    if scenario.name == "setup_menu_walk" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup redraw page=timezone focus=0",
+                "DESKTOP setup redraw page=timezone focus=4",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup redraw page=comfort focus=0",
+                "DESKTOP setup redraw page=comfort focus=1",
+                "DESKTOP setup redraw page=comfort focus=1",
+                "DESKTOP setup redraw page=comfort focus=2",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=1 reduce_transparency=1",
+                // The menu leaves Home as it found it: then Home is ready.
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the setup menu's walk (Begin, Time zone, Comfort, Try), then the intro session",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=network",
+            "S1 has no Network page, and the walk never skips",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=skip",
+            "S1 has no Network page, and the walk never skips",
+        )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_WALK_TRY_REL)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_WALK_CAPTURE_REL)?;
+    }
+    // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
+    // defaults and no other page, and the session is the intro's.
+    if scenario.name == "setup_menu_skip" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=skip rows=5",
+                "DESKTOP setup done action=skip",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "Esc on Welcome, Skip, then the intro session",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=timezone",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=comfort",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=try",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=network",
+            "a skipped menu shows no other page",
+        )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_SKIP_CAPTURE_REL)?;
     }
     if scenario.name == "desktop_intro_boot" {
         require_serial_sequence(
@@ -25003,8 +25182,13 @@ mod tests {
         let mut gate: Vec<&str> = TEST_SCENARIOS
             .iter()
             .map(|s| s.name)
-            // OT-87 R4.4: the Atrium installer is a desktop session too.
-            .filter(|n| n.starts_with("desktop_") || n.starts_with("install_atrium"))
+            // OT-87 R4.4: the Atrium installer is a desktop session too, and
+            // so is F11's setup menu.
+            .filter(|n| {
+                n.starts_with("desktop_")
+                    || n.starts_with("install_atrium")
+                    || n.starts_with("setup_menu_")
+            })
             .collect();
         let mut table: Vec<&str> = DESKTOP_SCENARIOS.iter().map(|d| d.name).collect();
         gate.sort_unstable();

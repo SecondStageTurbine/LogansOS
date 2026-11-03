@@ -22,6 +22,7 @@ vault-core = { path = "../vault-core", optional = true }
 login-core = { path = "../login-core", optional = true }
 # OT-88 S1 (feature `atrium-settings-store`): the NEOSET1 settings record.
 settings-core = { path = "../settings-core", optional = true }
+setup-core = { path = "../setup-core", optional = true }
 # L2.1 (feature `arthur-action-log`): the NAL1 action-log record and chain.
 action-log-core = { path = "../action-log-core", optional = true }
 # Desktop S3 (feature `desktop-glass`): the glass chrome scene.
@@ -188,6 +189,13 @@ boot-time = ["desktop-intro"]
 # WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
 # time come from it and are set live by OP_SETTING. Off => the presence
 # files, as today.
+# F11 S1 (docs/THINK-2026-11-02-setup-menu.md): the first-boot setup menu
+# on Home's card, before sign-in. Off: no hook, no frames, today's boot.
+setup-menu = ["desktop-intro", "desktop-home", "dep:setup-core"]
+# The Language and Keyboard pages, stubs until a second of each exists.
+setup-stub-pages = ["setup-menu"]
+# The setup menu's boot test (`setup_menu_walk`).
+setup-menu-boot-test = ["setup-menu", "desktop-intro-boot-test"]
 atrium-settings-store = ["login", "desktop-home", "dep:settings-core", "libneo/atrium-settings"]
 # L1.3a (THINK-2026-10-30-l1.3): Arthur's actions behind the WM's permission
 # prompt. The WM is the grant authority: the record is .system/arthur-grants.json

@@ -1213,6 +1213,7 @@ dependencies = [
  "login-core",
  "neo-atrium",
  "settings-core",
+ "setup-core",
  "vault-core",
 ]
 
