@@ -118,3 +118,4 @@ RELAY 297 | janus | GPT-6-Luna | high | Plans/DISPATCH-2026-11-03-relays-297-299
 RELAY 298 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-03-relays-297-299.md | Section 298 (#66 review; RETURN `Plans/RETURN-2026-11-03-pr66-review-jarvis.md`)
 RELAY 299 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-03-relays-297-299.md | Section 299 (#67 review; RETURN `Plans/RETURN-2026-11-03-pr67-review-chad.md`)
 RELAY 300 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-03-relay-300.md | Section 300 (NeoFS find_cached_block loop; RETURN `Plans/RETURN-2026-11-03-neofs-cache-loop-review-jarvis.md`)
+RELAY 301 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-03-relay-301.md | Section 301 (#69 NeoFS loop re-check, items 3/4; RETURN `Plans/RETURN-2026-11-03-pr69-recheck-jarvis.md`)
