@@ -99,7 +99,7 @@ if [[ "$FAILED" -eq 0 ]]; then
   # !xsave-fpu (FXSAVE) context-switch/syscall/timer asm. Build it, as CI does.
   run_check "!xsave-fpu kernel build (assembles the FXSAVE asm)" bash -c \
     "cd kernel && cargo build -Zjson-target-spec --bin kernel --no-default-features"
-  # CI's "Product Feature Build" job builds and lints userland crates under
+  # CI's "Build Checks" job builds and lints userland crates under
   # non-default features (the shipped desktop WMs and their boot tests). The
   # workspace clippy above sees only default features, so a warning under one
   # of those (an import left unused, #168) passed this script and failed CI.
