@@ -32,26 +32,41 @@ use layout_api::{
 };
 use malloc_size_of_derive::MallocSizeOf;
 use neo_layout_dom::Document;
-use paint_api::display_list::PaintTimingInfo;
-use paint_api::{CrossProcessPaintApi, PaintMessage};
+use paint_api::display_list::{PaintDisplayListInfo, PaintTimingInfo};
+use paint_api::{CrossProcessPaintApi, PaintMessage, SerializableDisplayListPayload};
 use servo_base::Epoch;
-use servo_base::generic_channel::{self, GenericCallback};
+use servo_base::generic_channel::{self, GenericCallback, GenericReceiver};
 use servo_base::id::{PipelineNamespace, PipelineNamespaceId, TEST_PIPELINE_ID, TEST_WEBVIEW_ID};
 use servo_url::ServoUrl;
 use style::context::QuirksMode;
 use style::media_queries::MediaList;
 use style::stylesheets::{AllowImportRules, Origin, Stylesheet, UrlExtraData};
-use webrender_api::{FontInstanceKey, FontKey, IdNamespace, ImageKey};
+use webrender_api::{
+    BuiltDisplayList, DisplayListPayload, FontInstanceKey, FontKey, IdNamespace, ImageKey,
+};
 
 mod no_images;
 pub mod oracle;
 pub use no_images::NoImages;
+
+/// One display list layout sent: its descriptor, and the two channels the
+/// rest arrives on. `send_display_list` sends `SendDisplayList` first and the
+/// info and data after it, so they can't be read inside the paint callback
+/// (it runs during that first send); [`StaticPage::take_display_list`] reads
+/// them once the reflow has returned.
+type SentDisplayList = (
+    webrender_api::BuiltDisplayListDescriptor,
+    GenericReceiver<PaintDisplayListInfo>,
+    GenericReceiver<SerializableDisplayListPayload>,
+);
 
 /// What layout sent to "paint" during a reflow.
 #[derive(Default)]
 pub struct Painted {
     /// How many display lists layout sent.
     pub display_lists: usize,
+    /// The display lists not yet taken, oldest first.
+    sent: Vec<SentDisplayList>,
 }
 
 /// The in-process stand-in for Servo's paint thread: it hands out WebRender
@@ -84,9 +99,19 @@ impl PaintHost {
             PaintMessage::GenerateImageKey(_webview, reply) => {
                 let _ = reply.send(ImageKey::new(NAMESPACE, self.key()));
             }
-            PaintMessage::SendDisplayList { .. } => {
+            PaintMessage::SendDisplayList {
+                display_list_descriptor,
+                display_list_info_receiver,
+                display_list_data_receiver,
+                ..
+            } => {
                 if let Ok(mut p) = self.painted.lock() {
                     p.display_lists += 1;
+                    p.sent.push((
+                        display_list_descriptor,
+                        display_list_info_receiver,
+                        display_list_data_receiver,
+                    ));
                 }
             }
             // Fonts added, frames requested, epochs, viewport: nothing to
@@ -291,6 +316,26 @@ impl StaticPage {
             rect.size.width.to_px(),
             rect.size.height.to_px(),
         ])
+    }
+
+    /// The newest display list layout sent, rebuilt as WebRender takes it
+    /// (`BuiltDisplayList::from_data`, as Servo's paint thread does), with
+    /// layout's info for it (pipeline, epoch, viewport). `None` if layout
+    /// sent none, or its channels closed. Older ones are dropped.
+    pub fn take_display_list(&self) -> Option<(PaintDisplayListInfo, BuiltDisplayList)> {
+        let (descriptor, info, data) = {
+            let mut p = self.painted.lock().ok()?;
+            let last = p.sent.pop()?;
+            p.sent.clear();
+            last
+        };
+        let info = info.recv().ok()?;
+        let data = data.recv().ok()?;
+        let payload = DisplayListPayload {
+            items_data: data.items_data,
+            spatial_tree: data.spatial_tree,
+        };
+        Some((info, BuiltDisplayList::from_data(payload, descriptor)))
     }
 
     /// How many display lists layout has sent.
