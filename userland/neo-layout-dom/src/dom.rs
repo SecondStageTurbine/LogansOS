@@ -201,6 +201,17 @@ impl Document {
         &self.nodes[0]
     }
 
+    /// The document element (DOM's `documentElement`): the document node's
+    /// first element child, `<html>` for any page html5ever parses. A reflow's
+    /// dirty root is an element; layout unwraps `as_element()` on it.
+    pub fn document_element(&self) -> Option<usize> {
+        self.nodes[0]
+            .children
+            .iter()
+            .copied()
+            .find(|&c| self.nodes[c].element().is_some())
+    }
+
     /// How many nodes the document has (the document node included).
     pub fn len(&self) -> usize {
         self.nodes.len()
