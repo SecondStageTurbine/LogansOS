@@ -18252,6 +18252,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ layout-smoke ] ok(54) #b border box = [8, 90, 114, 54] (x, y, w, h px)",
             "[ layout-smoke ] ok(55) #c border box = [8, 159, 784, 25] (x, y, w, h px)",
             "[ layout-smoke ] ok(56) layout sent a display list to the in-process paint host",
+            "[ layout-smoke ] ok(57) the static-page thread finished",
             "[ layout-smoke ] PASS",
         ] {
             require_serial_contains(

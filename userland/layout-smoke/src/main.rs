@@ -187,31 +187,44 @@ pub extern "C" fn _start() -> ! {
         m.ic_horizontal_advance.is_none(),
     );
 
-    // L2: one reflow of a block-only page through neo-static-page (layout
-    // driven without script), its border boxes checked against the
-    // hand-worked oracle (neo-static-page/src/oracle.rs, CSS 2.1 8.3.1 and
-    // 10.3.3; no text, so no font metric enters the numbers).
-    let (w, h) = neo_static_page::oracle::VIEWPORT;
-    let mut page = neo_static_page::StaticPage::new(neo_static_page::oracle::PAGE, w, h);
-    check(
-        50,
-        "one reflow of the oracle page produced a result",
-        page.reflow(w, h),
-    );
-    for (i, &(id, want)) in neo_static_page::oracle::EXPECT.iter().enumerate() {
-        let got = page.border_box(id);
-        println!("{TAG} #{id} border box: {got:?}");
-        check(
-            51 + i as i32,
-            &format!("#{id} border box = {want:?} (x, y, w, h px)"),
-            got == Some(want),
-        );
-    }
-    check(
-        56,
-        "layout sent a display list to the in-process paint host",
-        page.display_lists() >= 1,
-    );
+    // L2 runs on its own thread with the 8 MiB stack Servo gives the script
+    // thread layout runs on (servo-script 0.7.0, script_thread.rs:490). This
+    // thread stands in for script: it creates the page, so its thread state
+    // is SCRIPT. On the process's 64 KiB main stack the first reflow
+    // overflowed into the guard page (ring-3 #PF 83 KiB below the stack top,
+    // the third on-target L2 run, 2026-11-03).
+    let l2 = std::thread::Builder::new()
+        .name("static-page".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            // L2: one reflow of a block-only page through neo-static-page (layout
+            // driven without script), its border boxes checked against the
+            // hand-worked oracle (neo-static-page/src/oracle.rs, CSS 2.1 8.3.1 and
+            // 10.3.3; no text, so no font metric enters the numbers).
+            let (w, h) = neo_static_page::oracle::VIEWPORT;
+            let mut page = neo_static_page::StaticPage::new(neo_static_page::oracle::PAGE, w, h);
+            check(
+                50,
+                "one reflow of the oracle page produced a result",
+                page.reflow(w, h),
+            );
+            for (i, &(id, want)) in neo_static_page::oracle::EXPECT.iter().enumerate() {
+                let got = page.border_box(id);
+                println!("{TAG} #{id} border box: {got:?}");
+                check(
+                    51 + i as i32,
+                    &format!("#{id} border box = {want:?} (x, y, w, h px)"),
+                    got == Some(want),
+                );
+            }
+            check(
+                56,
+                "layout sent a display list to the in-process paint host",
+                page.display_lists() >= 1,
+            );
+        })
+        .expect("spawn the static-page thread");
+    check(57, "the static-page thread finished", l2.join().is_ok());
 
     println!("{TAG} PASS");
     std::process::exit(0)
