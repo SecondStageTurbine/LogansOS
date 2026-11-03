@@ -1292,6 +1292,7 @@ dependencies = [
  "ipc-channel",
  "libz-sys",
  "malloc_size_of_derive",
+ "neo-font-store",
  "neo-layout-dom",
  "parking_lot",
  "servo-base",

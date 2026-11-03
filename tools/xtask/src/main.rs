@@ -18296,6 +18296,11 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ layout-smoke ] ok(60) layout's display list was taken for WebRender",
             "[ layout-smoke ] ok(61) WebRender renders the page's frame into our 800x600 buffer",
             "[ layout-smoke ] ok(62) every pixel == the hand-derived frame (white; #b's 2 px border black)",
+            "[ layout-smoke ] ok(70) one reflow of the text page produced a result",
+            "[ layout-smoke ] ok(71) the text page renders, with ink",
+            "[ layout-smoke ] ok(72) no ink outside the run's hand-derived box",
+            "[ layout-smoke ] ok(73) every character of \"Hello, LogansOS 0\" has ink in its advance cell",
+            "[ layout-smoke ] ok(74) the text's ink is grey (B = G = R)",
             "[ layout-smoke ] ok(57) the static-page thread finished",
             "[ layout-smoke ] PASS",
         ] {

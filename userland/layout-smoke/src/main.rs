@@ -29,6 +29,7 @@
 #![feature(random)]
 
 mod l3;
+mod l4;
 
 use app_units::Au;
 use fonts::PlatformFontMethods;
@@ -226,6 +227,15 @@ pub extern "C" fn _start() -> ! {
             );
             // L3: that display list, rendered by WebRender on SWGL.
             l3::render_and_check(&page);
+            drop(page);
+            // L4: a line of text in the bundled font, through the same path.
+            let mut text = neo_static_page::StaticPage::new(l4::PAGE, w, h);
+            check(
+                70,
+                "one reflow of the text page produced a result",
+                text.reflow(w, h),
+            );
+            l4::render_and_check(&text);
         })
         .expect("spawn the static-page thread");
     check(57, "the static-page thread finished", l2.join().is_ok());

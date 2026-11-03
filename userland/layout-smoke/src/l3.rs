@@ -17,21 +17,22 @@ use std::sync::{Arc, Condvar, Mutex};
 use gleam::gl;
 use webrender::api::units::DeviceIntSize;
 use webrender::api::{
-    ColorF, DocumentId, FramePublishId, FrameReadyParams, RenderNotifier, RenderReasons,
+    ColorF, DocumentId, FontInstanceOptions, FramePublishId, FrameReadyParams, RenderNotifier,
+    RenderReasons,
 };
 use webrender::{Transaction, WebRenderOptions, create_webrender_instance};
 
 use crate::{TAG, check};
 
-const W: usize = 800;
-const H: usize = 600;
+pub const W: usize = 800;
+pub const H: usize = 600;
 const STRIDE: usize = W * 4;
 
 /// BGRA bytes of an opaque colour (SWGL's memory order).
 const fn bgra(r: u8, g: u8, b: u8) -> [u8; 4] {
     [b, g, r, 0xFF]
 }
-const WHITE: [u8; 4] = bgra(0xFF, 0xFF, 0xFF);
+pub const WHITE: [u8; 4] = bgra(0xFF, 0xFF, 0xFF);
 const BLACK: [u8; 4] = bgra(0, 0, 0);
 
 /// The hand-derived frame: `#b`'s border ring is black, everything else white.
@@ -45,7 +46,7 @@ fn expected(x: usize, y: usize) -> [u8; 4] {
     }
 }
 
-fn pixel(buf: &[u8], x: usize, y: usize, flipped: bool) -> [u8; 4] {
+pub fn pixel(buf: &[u8], x: usize, y: usize, flipped: bool) -> [u8; 4] {
     let row = if flipped { H - 1 - y } else { y };
     let at = row * STRIDE + x * 4;
     [buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]
@@ -94,15 +95,25 @@ impl Notifier {
     }
 }
 
-/// Render the page's display list and check every pixel (checks 60-62).
-pub fn render_and_check(page: &neo_static_page::StaticPage) {
-    let taken = page.take_display_list();
-    check(
-        60,
-        "layout's display list was taken for WebRender",
-        taken.is_some(),
-    );
-    let (info, list) = taken.expect("checked");
+/// Why a frame couldn't be rendered.
+pub enum RenderError {
+    /// Layout sent no display list.
+    NoDisplayList,
+    /// WebRender failed to start or to render; the message says how.
+    WebRender(String),
+    /// The frame isn't in our buffer (SWGL's colour buffer is another one).
+    NotOurBuffer,
+}
+
+/// Render the page's latest display list, and the fonts layout added for it,
+/// by WebRender on SWGL into a fresh 800 x 600 buffer (pre-filled with
+/// `0x5A`, so a pixel nothing wrote shows). The buffer is in GL row order.
+pub fn render_frame(page: &neo_static_page::StaticPage) -> Result<Vec<u8>, RenderError> {
+    let (info, list) = page.take_display_list().ok_or(RenderError::NoDisplayList)?;
+    let fonts = page.take_fonts();
+    for name in &fonts.missing {
+        println!("{TAG} layout added a font that isn't bundled: {name}");
+    }
 
     let mut fb = vec![0x5Au8; STRIDE * H];
     let ctx = swgl::Context::create();
@@ -125,28 +136,31 @@ pub fn render_and_check(page: &neo_static_page::StaticPage) {
         clear_caches_with_quads: false,
         ..WebRenderOptions::default()
     };
-    let (mut renderer, sender) = match create_webrender_instance(
-        gl.clone(),
-        Box::new(Clone::clone(&notifier)),
-        opts,
-        None,
-    ) {
-        Ok(r) => r,
-        Err(e) => {
-            println!("{TAG} create_webrender_instance: {e:?}");
-            check(
-                61,
-                "WebRender starts on SWGL and renders the page's frame",
-                false,
-            );
-            unreachable!()
-        }
-    };
+    let (mut renderer, sender) =
+        create_webrender_instance(gl.clone(), Box::new(Clone::clone(&notifier)), opts, None)
+            .map_err(|e| RenderError::WebRender(format!("create_webrender_instance: {e:?}")))?;
 
     let mut api = sender.create_api();
     let size = DeviceIntSize::new(W as i32, H as i32);
     let doc = api.add_document(size);
     let mut txn = Transaction::new();
+    // The display list's text names its fonts by key: add them first.
+    for f in fonts.fonts {
+        txn.add_raw_font(f.key, f.bytes, f.index);
+    }
+    for i in fonts.instances {
+        txn.add_font_instance(
+            i.key,
+            i.font_key,
+            i.size,
+            Some(FontInstanceOptions {
+                flags: i.flags,
+                ..Default::default()
+            }),
+            Some(i.platform_options),
+            i.variations,
+        );
+    }
     txn.set_display_list(info.epoch.into(), (info.pipeline_id, list));
     txn.set_root_pipeline(info.pipeline_id);
     txn.generate_frame(0, true, false, RenderReasons::empty());
@@ -154,22 +168,43 @@ pub fn render_and_check(page: &neo_static_page::StaticPage) {
     notifier.wait();
     renderer.update();
     let rendered = renderer.render(size, 0);
-    if let Err(e) = &rendered {
-        println!("{TAG} render: {e:?}");
-    }
+
     // SWGL queues draws; asking for the colour buffer with `flush` runs
     // them into our buffer (as webrender-smoke does before its read).
     let (ptr, w, h, stride) = ctx.get_color_buffer(0, true);
     let ours = ptr == fb.as_mut_ptr().cast::<c_void>()
         && (w, h, stride) == (W as i32, H as i32, STRIDE as i32);
+    drop(api);
+    renderer.deinit();
+
+    if let Err(e) = rendered {
+        return Err(RenderError::WebRender(format!("render: {e:?}")));
+    }
     if !ours {
         println!("{TAG} colour buffer {ptr:?} {w}x{h} stride {stride}");
+        return Err(RenderError::NotOurBuffer);
+    }
+    Ok(fb)
+}
+
+/// Render the oracle page's display list and check every pixel (checks
+/// 60-62).
+pub fn render_and_check(page: &neo_static_page::StaticPage) {
+    let frame = render_frame(page);
+    check(
+        60,
+        "layout's display list was taken for WebRender",
+        !matches!(frame, Err(RenderError::NoDisplayList)),
+    );
+    if let Err(RenderError::WebRender(e)) = &frame {
+        println!("{TAG} {e}");
     }
     check(
         61,
         "WebRender renders the page's frame into our 800x600 buffer",
-        rendered.is_ok() && ours,
+        frame.is_ok(),
     );
+    let fb = frame.ok().expect("checked");
 
     let (first, n) = mismatches(&fb, true);
     if let Some((x, y, got, want)) = first {
@@ -187,7 +222,4 @@ pub fn render_and_check(page: &neo_static_page::StaticPage) {
         "every pixel == the hand-derived frame (white; #b's 2 px border black)",
         n == 0,
     );
-
-    drop(api);
-    renderer.deinit();
 }
