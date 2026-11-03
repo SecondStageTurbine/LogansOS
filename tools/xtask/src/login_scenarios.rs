@@ -670,7 +670,10 @@ fn two_boot(
         &[
             "LOGIN screen shown",
             "LOGIN password refused failures=1 next_delay_s=0",
+            // F9 (J.c.): the wrong try is said, on the row nearest the field.
+            "LOGIN note=\"Incorrect password. Try again.\" row=last",
             "LOGIN password refused failures=2 next_delay_s=0",
+            "LOGIN note=\"Incorrect password. Try again.\" row=last",
             "LOGIN password refused failures=3 next_delay_s=1",
             "LOGIN backoff wait_s=1",
             "LOGIN signed in failures=3",
@@ -1435,6 +1438,8 @@ fn lock_session_checks(
             "LOCK route deferred to=",
             "DESKTOP arthur lock probe committed picture=0 busy=sent",
             "LOCK password refused failures=1 next_delay_s=0",
+            // F9 (J.c.): the lock screen says so too.
+            "LOCK note=\"Incorrect password. Try again.\" row=last",
             "LOCK unlocked failures=1 to=client",
             "DESKTOP arthur keystroke ascii=113",
             "DESKTOP arthur lock probe committed picture=1 busy=sent",
