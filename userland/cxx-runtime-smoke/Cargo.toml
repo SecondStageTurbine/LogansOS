@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 C3a, the browser
+# bundle's private C/C++ runtime (userland/neo-crt) linked into a real-std
+# binary for x86_64-unknown-neoplutarch, with C and C++ checks that run
+# on-target (docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md).
+[workspace]
+
+[package]
+name = "cxx-runtime-smoke"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 C3a gate: musl-derived libc and libc++ over a std bottom half, checked on-target"
+build = "build.rs"
+
+[[bin]]
+name = "cxx-runtime-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[[bin]]
+# The hardening twin: indexes a std::vector out of bounds. libc++'s fast
+# hardening mode must trap (ud2), and the kernel kills only this process
+# (exit 132, 128 + SIGILL).
+name = "cxx-hardening-trap"
+path = "src/trap.rs"
+test = false
+bench = false
+
+[dependencies]
+neo-std-pal = { path = "../neo-std-pal" }
+neo-crt = { path = "../neo-crt" }
+
+[build-dependencies]
+cc = "=1.2.63"

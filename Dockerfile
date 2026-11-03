@@ -83,6 +83,20 @@ RUN git clone --depth 1 --branch ${LIMINE_VERSION} \
 
 ENV LIMINE_DIR=/opt/limine
 
+# OT-61 C3a: neo-crt (musl + libc++) and SWGL's C++ compile with clang, so
+# scenarios that link them (cxx_runtime_smoke, the SWGL/WebRender smokes)
+# need it in the gate. Debian trixie's packaged LLVM, held to major 19: the
+# image build fails if apt resolves another major, so a mirror change can't
+# move the gate's compiler silently. Its own layer, after the QEMU and
+# Limine builds, so their cached layers stay valid.
+ARG NEO_CRT_CLANG_MAJOR=19
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        clang-${NEO_CRT_CLANG_MAJOR} \
+    && rm -rf /var/lib/apt/lists/* \
+    && clang-${NEO_CRT_CLANG_MAJOR} --version \
+    && test "$(clang-${NEO_CRT_CLANG_MAJOR} -dumpversion | cut -d. -f1)" = "${NEO_CRT_CLANG_MAJOR}"
+ENV NEO_CRT_CLANG=clang-${NEO_CRT_CLANG_MAJOR}
+
 # Create the neo user. UID/GID 1000 lines up with the typical first
 # user on Linux hosts; on Windows/Mac with Docker Desktop the file
 # ownership translation is handled by the Docker VM.
