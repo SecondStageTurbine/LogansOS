@@ -1213,6 +1213,7 @@ dependencies = [
  "login-core",
  "neo-atrium",
  "settings-core",
+ "setup-core",
  "vault-core",
 ]
 
@@ -1915,6 +1916,10 @@ version = "0.0.1"
 dependencies = [
  "blake3",
 ]
+
+[[package]]
+name = "setup-core"
+version = "0.0.1"
 
 [[package]]
 name = "sha1"
