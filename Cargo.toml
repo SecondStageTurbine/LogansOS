@@ -61,6 +61,7 @@ members = [
     "tools/rtl8125-logic-tests",
     "tools/rtc-logic-tests",
     "tools/boot-time-logic-tests",
+    "tools/tz-logic-tests",
     "tools/ntls-logic-tests",
     "tools/handle-info-logic-tests",
     "tools/install-ui-abi-tests",
