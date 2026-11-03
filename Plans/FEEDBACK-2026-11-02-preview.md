@@ -14,7 +14,7 @@ Every item J.c. reports from trying LogansOS goes here, with its owner and state
 | F7 | Dragging windows is laggy | Mostly compatibility mode (TCG, software CPU) with a software compositor; also full-frame redraws during a drag | Seat F (after #15) | Queued |
 | F8 | Arthur answers "what time is it" with a model disclaimer | The model has no clock; Arthur should answer time/date questions from the system clock (with the user's zone, F4) | Seat I (with F4) | Queued |
 | F9 | A wrong password at login is refused silently; J.c. wants "Incorrect password. Try again." | The login screen gives no failure feedback | Seat I | #62 **on main** (`d8217c05`) |
-| F10 | Holding Backspace (or any key) doesn't repeat | The i8042 driver drops typematic repeats on purpose (FINDINGS trap 9) expecting software auto-repeat, which was never built | Seat I | PR #61: all PASS; gating now (batch of one, run 41594310768) |
+| F10 | Holding Backspace (or any key) doesn't repeat | The i8042 driver drops typematic repeats on purpose (FINDINGS trap 9) expecting software auto-repeat, which was never built | Seat I | #61 **on main** (`504d582f`) |
 
 **2026-11-02 midday:** J.c. confirmed the accelerated launcher boots on his machine (F2 verified on real WHPX). F4/F8
 (time zone, Arthur's time answers) are still open: only the design (#51) has merged; the build is Seat I's.
