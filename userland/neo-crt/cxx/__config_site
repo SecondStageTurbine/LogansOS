@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+// OT-61 C3a: libc++ 18.1.8's __config_site for neo-crt, written by hand from
+// third_party/ot61-crt/vendor/libcxx/include/__config_site.in (Part of the
+// LLVM Project, Apache License v2.0 with LLVM Exceptions) instead of by
+// libc++'s CMake. Each setting is explained in
+// docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md §3.
+
+#ifndef _LIBCPP___CONFIG_SITE
+#define _LIBCPP___CONFIG_SITE
+
+#define _LIBCPP_ABI_VERSION 1
+#define _LIBCPP_ABI_NAMESPACE __1
+// The C library is neo-crt's musl top half.
+#define _LIBCPP_HAS_MUSL_LIBC
+// No C++ threading layer yet: std::thread/mutex/condition_variable are
+// absent. SpiderMonkey threads through its own pthread port (C3), which will
+// sit on the C1 primitives std already uses.
+#define _LIBCPP_HAS_NO_THREADS
+// No ambient filesystem, no random_device (entropy is a capability), no
+// locales beyond "C", no time-zone database, no std modules.
+#define _LIBCPP_HAS_NO_FILESYSTEM
+#define _LIBCPP_HAS_NO_RANDOM_DEVICE
+#define _LIBCPP_HAS_NO_LOCALIZATION
+#define _LIBCPP_HAS_NO_TIME_ZONE_DATABASE
+#define _LIBCPP_HAS_NO_STD_MODULES
+#define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS
+#define _LIBCPP_PSTL_CPU_BACKEND_SERIAL
+// Browser code: the cheap bounds and precondition checks are on by default.
+#define _LIBCPP_HARDENING_MODE_DEFAULT _LIBCPP_HARDENING_MODE_FAST
+
+#endif // _LIBCPP___CONFIG_SITE

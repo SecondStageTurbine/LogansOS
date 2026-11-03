@@ -245,6 +245,9 @@ desktop = [
     "desktop-session",
     "usb-hotplug",
     "rtc-epoch",
+    # F10 (J.c., 2026-11-02): held keys repeat, in every desktop kernel the
+    # gate boots as in the product image.
+    "key-autorepeat",
     "kernel-sysstat",
     "phase9-real-quant",
     "threaded-matmul",
@@ -472,6 +475,10 @@ neo-test-servo-closure-smoke-avx = ["neo-test-servo-closure-smoke", "xsave-fpu"]
 # OT-61 C2.4: upstream Stylo styles an html5ever document on-target.
 # kernel-rng: any std HashMap's RandomState seeds from getrandom.
 neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+# OT-61 C3a: the browser bundle's private C/C++ runtime (userland/neo-crt) in
+# a real-std process: libc checks against independent oracles, per-thread
+# errno, malloc from several threads.
+neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is
@@ -941,6 +948,13 @@ neo-test-di1-forward = ["neo-test", "atrium-pointer-forward", "neo-test-atrium-r
 # schedules, each forced on one CPU by an armed point (`focus::race`) that
 # runs Super+L (or a route read) between a route check and its effect.
 neo-test-lock-route-races = ["neo-test", "sak-lock-route", "neo-test-atrium-runtime"]
+# Jarvis (#61): a key repeat checked under one activation epoch is never
+# delivered under another (focus change, or Super+L, between the check and the
+# stage, or between the stage and the flush).
+neo-test-key-repeat-epoch = ["neo-test", "key-autorepeat", "sak-lock-route", "neo-test-atrium-runtime"]
+# Control: the repeat staged under a fresh epoch read (the pre-fix shape).
+# Must FAIL reason=repeat_crossed_focus_change.
+neo-test-key-repeat-epoch-control = ["neo-test-key-repeat-epoch"]
 # Control for hid_contention's mixed-IF phase: `PRIMARY` taken with the
 # caller's IF (main's pre-fix shape). Must FAIL reason=hid_primary_mixed_if_deadlock.
 neo-test-hid-mixed-if-control = ["neo-test-hid-contention"]

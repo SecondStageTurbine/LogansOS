@@ -60,6 +60,7 @@ members = [
     "tools/rtl8125-logic-tests",
     "tools/rtc-logic-tests",
     "tools/boot-time-logic-tests",
+    "tools/tz-logic-tests",
     "tools/ntls-logic-tests",
     "tools/handle-info-logic-tests",
     "tools/install-ui-abi-tests",
@@ -87,6 +88,10 @@ exclude = [
     # with -Z build-std=std (+ restricted_std); it must NOT build for the host
     # workspace (clippy/test). xtask builds it standalone via its own config.
     "userland/std-real-smoke",
+    # OT-61 C3a: the browser bundle's private C/C++ runtime. Builds only for
+    # x86_64-unknown-neoplutarch (std + clang), as a path dependency of
+    # userland/cxx-runtime-smoke; never for the host workspace.
+    "userland/neo-crt",
     # OT-86 Fix 1: vendored rust-osdev `acpi` 6.1.1 (upstream MIT/Apache-2.0
     # licence and formatting). A path dependency of tools/acpi-aml-grade only;
     # kept out of the workspace so first-party lints and fmt don't apply to it.

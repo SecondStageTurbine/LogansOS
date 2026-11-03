@@ -47,11 +47,33 @@ pub fn on_event(repeat: &mut KeyRepeat, event: InputEventV1, now_ns: u64) {
     }
 }
 
-/// The repeat due at `now_ns`, if any.
-pub fn poll(repeat: &mut KeyRepeat, now_ns: u64) -> Option<InputEventV1> {
-    let event = repeat.poll(now_ns, super::focus::activation_epoch())?;
+/// The repeat due at `now_ns`, if any, with the activation epoch it was
+/// checked against. Give both to [`deliver`]: staging it under a fresh read
+/// of the epoch would let a repeat checked before a focus change or lock
+/// reach the new owner (Jarvis, #61).
+pub fn poll(repeat: &mut KeyRepeat, now_ns: u64) -> Option<(InputEventV1, u64)> {
+    let epoch = super::focus::activation_epoch();
+    let event = repeat.poll(now_ns, epoch)?;
     REPEATS.fetch_add(1, Ordering::Relaxed);
-    Some(event)
+    Some((event, epoch))
+}
+
+/// Deliver a repeat from [`poll`] under the epoch it was checked against:
+/// staged (`stage_event_at`), or routed on the legacy path
+/// (`route_event_at`), and dropped either way if the focus has moved.
+pub fn deliver(stage: &mut super::focus::Stage, event: InputEventV1, epoch: u64) {
+    // `key_repeat_epoch`'s control: the pre-fix shape, staged under a fresh
+    // read of the epoch. The scenario must then FAIL.
+    if cfg!(feature = "neo-test-key-repeat-epoch-control") {
+        let _ = epoch;
+        super::focus::stage_event(stage, event);
+        return;
+    }
+    if cfg!(feature = "atrium-input-stage-legacy") {
+        super::focus::route_event_at(event, epoch);
+    } else {
+        super::focus::stage_event_at(stage, event, epoch);
+    }
 }
 
 pub fn note_typematic(n: u64) {
