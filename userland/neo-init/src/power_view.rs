@@ -122,8 +122,8 @@ fn next_input(scene: &mut Scene, events: Handle) -> Result<Input, i32> {
     }
 }
 
-/// The confirm card, then the call. Returns to Home on Back, Esc or a
-/// refusal; on success it never returns (the power goes).
+/// The confirm card, then the call. Returns to Home on Back, any key but
+/// Enter, or a refusal; on success it never returns (the power goes).
 pub fn run(scene: &mut Scene, events: Handle, cmd: PowerCommand) -> Result<(), i32> {
     show(scene, power::confirm_lines(cmd))?;
     #[cfg(feature = "desktop-session-boot-test")]
@@ -134,9 +134,7 @@ pub fn run(scene: &mut Scene, events: Handle, cmd: PowerCommand) -> Result<(), i
         .emit();
     let go = loop {
         match next_input(scene, events)? {
-            Input::Key(Key::Enter) => break true,
-            Input::Key(Key::Escape) => break false,
-            Input::Key(_) => {}
+            Input::Key(key) => break power::confirm_key_goes_ahead(key),
             Input::Press(x, y) => {
                 if let Some(go) = button(scene, x, y) {
                     break go;

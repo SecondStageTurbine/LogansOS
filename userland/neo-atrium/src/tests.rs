@@ -3389,6 +3389,27 @@ mod power {
         }
     }
 
+    /// Jarvis's #14 review, item 1: on the confirm card only Enter goes
+    /// ahead; Esc and every other key the view can receive go back.
+    #[test]
+    fn only_enter_confirms_a_power_action() {
+        use crate::keys::Key;
+        assert!(confirm_key_goes_ahead(Key::Enter));
+        for key in [
+            Key::Escape,
+            Key::Char(b'a'),
+            Key::Char(b'y'),
+            Key::Char(b' '),
+            Key::Backspace,
+            Key::Tab,
+            Key::Up,
+            Key::Down,
+        ] {
+            assert!(!confirm_key_goes_ahead(key), "{key:?}");
+        }
+        assert!(confirm_lines(PowerCommand::ShutDown)[2].contains("any other key goes back"));
+    }
+
     #[test]
     fn the_actions_are_the_abi_numbers() {
         assert_eq!(PowerCommand::ShutDown.action(), 1);

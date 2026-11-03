@@ -71,9 +71,17 @@ pub fn confirm_lines(cmd: PowerCommand) -> Vec<String> {
     alloc::vec![
         String::from(ask),
         String::from("Open apps close first; anything they haven't saved is lost."),
-        String::from("Enter to go ahead, Esc to go back."),
+        String::from("Enter to go ahead; any other key goes back."),
         crate::intro::button_row(go),
     ]
+}
+
+/// What a key does on the confirm card (Jarvis's #14 review, item 1): Enter
+/// goes ahead and every other key goes back, so only an explicit Enter (or
+/// the drawn button) reaches `SYS_POWER`. Keys Home doesn't use, and
+/// releases, never arrive here (`keys::decode` drops them).
+pub fn confirm_key_goes_ahead(key: crate::keys::Key) -> bool {
+    key == crate::keys::Key::Enter
 }
 
 /// The button row's index on the confirm card.
