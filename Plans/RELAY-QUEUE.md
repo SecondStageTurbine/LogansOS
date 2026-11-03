@@ -103,3 +103,7 @@ RELAY 282 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-setup-menu-thin
 RELAY 283 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-283.md | Section "Relay 283" (#45/#47 re-check; RETURN `Plans/RETURN-2026-11-02-pr45-pr47-recheck-dexter.md`)
 RELAY 284 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-02-relay-284.md | Section "Relay 284" (setup-menu THINK design read; RETURN `Plans/RETURN-2026-11-02-setup-menu-review-jarvis.md`)
 RELAY 285 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relay-285.md | Section "Relay 285" (setup-menu THINK revision; RETURN appended to `Plans/RETURN-2026-11-02-setup-menu-think-dexter.md`)
+RELAY 286 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-02-relays-286-289.md | Section 286 (#59 tz slice 1; RETURN `Plans/RETURN-2026-11-02-pr59-tz-review-dexter.md`)
+RELAY 287 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-02-relays-286-289.md | Section 287 (#60 clock/RTC; RETURN `Plans/RETURN-2026-11-02-pr60-clock-review-janus.md`)
+RELAY 288 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-02-relays-286-289.md | Section 288 (#61 key repeat; RETURN `Plans/RETURN-2026-11-02-pr61-repeat-review-jarvis.md`)
+RELAY 289 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-02-relays-286-289.md | Section 289 (#62 password message; RETURN `Plans/RETURN-2026-11-02-pr62-password-review-jarvis.md`)
