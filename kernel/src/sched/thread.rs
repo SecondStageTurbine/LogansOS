@@ -188,6 +188,12 @@ pub struct Thread {
     /// `Arc<Channel>` would leak (CP-30); owned here, `Thread::free` drops it
     /// (CP-36's pattern). Written only by the thread itself, and by `free`.
     pub(super) ipc_anchor: Option<Arc<crate::ipc::Channel>>,
+    /// CP-67 for the pipe (L1a.1 step 2a): the pipe a blocking pipe syscall
+    /// is using, moved here from the syscall frame for the call
+    /// (`scheduler::with_pipe_anchor`), so a thread force-killed while parked
+    /// in the pipe doesn't leak it. Dropped by `Thread::free`.
+    #[cfg(feature = "pipe")]
+    pub(super) pipe_anchor: Option<Arc<crate::ipc::pipe::PipeObject>>,
     /// OT-61 C1.2 (P3): this thread's user FS.base, set by `SYS_THREAD_SET_TLS`
     /// and loaded into `IA32_FS_BASE` whenever the thread is switched in
     /// (`scheduler::load_user_fs_base`). Every thread starts at 0, including a
@@ -230,7 +236,9 @@ impl Thread {
     #[cfg(any(
         feature = "neo-test-admission-park-kill",
         feature = "neo-test-ipc-park-kill",
-        feature = "neo-test-kill-at-exit"
+        feature = "neo-test-kill-at-exit",
+        feature = "neo-test-pipe-core",
+        feature = "neo-test-pipe-park-kill"
     ))]
     pub fn bind_process_for_test(&mut self, pid: ProcessId, pmap: Arc<Pmap>) {
         self.pid = pid;
@@ -260,6 +268,10 @@ impl Thread {
             let anchor = thread.process.take();
             // CP-67: a thread reaped while parked in IPC (force-killed).
             thread.ipc_anchor = None;
+            #[cfg(feature = "pipe")]
+            {
+                thread.pipe_anchor = None;
+            }
             #[cfg(feature = "obj-quota")]
             {
                 thread.obj_charge = None;
@@ -350,6 +362,8 @@ impl Thread {
             #[cfg(feature = "browser-runtime")]
             fs_base: 0,
             ipc_anchor: None,
+            #[cfg(feature = "pipe")]
+            pipe_anchor: None,
         })
     }
 
@@ -412,6 +426,8 @@ impl Thread {
             #[cfg(feature = "browser-runtime")]
             fs_base: 0,
             ipc_anchor: None,
+            #[cfg(feature = "pipe")]
+            pipe_anchor: None,
         })
     }
 
@@ -537,6 +553,8 @@ impl Thread {
             #[cfg(feature = "browser-runtime")]
             fs_base: 0,
             ipc_anchor: None,
+            #[cfg(feature = "pipe")]
+            pipe_anchor: None,
         })
     }
 
@@ -615,6 +633,8 @@ impl Thread {
             #[cfg(feature = "browser-runtime")]
             fs_base: 0,
             ipc_anchor: None,
+            #[cfg(feature = "pipe")]
+            pipe_anchor: None,
         })
     }
 }

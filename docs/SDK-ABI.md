@@ -172,7 +172,7 @@ of the listed features compiles the arm), `A` (image A), `libneo` (wrapper in `u
 | 11 | 0x0B | `SYS_RECV_GRANT` | `channel_h: u32, max_rights: u16` | new handle index | `ENOSYS` (no grant pending), `EBADF`, `EPERM` | always | yes | `sys_recv_grant` |
 | 12 | 0x0C | `SYS_OPEN` | `path: ptr, path_len, flags: u32, rights: u32` | fd | `EINVAL`, `EPERM` (`system-store`/`cap-rooted-open`), `ENOENT`, `EACCES`, `EEXIST`, `EISDIR`, `ENOTDIR`, `EBUSY`, `ESTALE`, `EIO`, `EBADMSG` (`flags` 0 = open, `1<<0` = create regular) | always | yes | `sys_open` |
 | 13 | 0x0D | `SYS_READ` | `fd: u32, buf: ptr, len` | bytes read | `EINVAL` (len > `MAX_FILE_IO`), `EBADF`, `EACCES`, `EPERM`, VFS errors | always | yes | `sys_read`, `sys_read_fd` |
-| 14 | 0x0E | `SYS_CLOSE` | `fd: u32` (file or channel) | 0 | `EBADF` (unallocated, wrong kind, or stdio fd) | always | yes | `sys_close`, `sys_channel_close` |
+| 14 | 0x0E | `SYS_CLOSE` | `fd: u32` (file, channel or, under `pipe`, a pipe end; more kinds under `close-object-handles` and `net-dial-public-only`) | 0 | `EBADF` (unallocated, wrong kind, or stdio fd) | always | yes | `sys_close`, `sys_channel_close` |
 | 15 | 0x0F | `SYS_FSYNC` | `fd: u32` | 0 (needs no file right) | `EBADF`, VFS errors | always | yes | `sys_fsync` |
 | 16 | 0x10 | `SYS_READDIR` | `fd: u32, out: ptr, out_len, cursor: ptr<u64>` | bytes of one `NeoDirentV1` record; 0 at EOF | `EINVAL`, `EBADF`, `EACCES`, `ENOTDIR`, `EPERM`, VFS errors | always | yes | `sys_readdir` |
 | 17 | 0x11 | `SYS_MOUNT` | `dir_fd: u32, req: ptr, req_len, flags: u32` | 0 | `EINVAL`, `EBADF`, `EPERM`, `ENOENT`, `EACCES`, `EEXIST`, `ENOTDIR`, `ENOSYS`, `EIO`, `EBADMSG` (`MountRequestV1`) | always | yes | `sys_mount` |
@@ -351,6 +351,34 @@ Notes:
 - `SYS_WAIT_ANY` items are 8 bytes each (`u32 handle, u32 kind`); `deadline_ns` is absolute monotonic,
   and `n == 0` with `u64::MAX` (wait forever on nothing) is `EINVAL`.
 
+### Pipes (0x1BA–0x1BC)
+
+A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wiring.md`). Compiled under
+`pipe` (which needs `wait-multiplex`); without it the numbers return `ENOSYS`.
+
+| # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
+|---|-----|------|------|---------|--------|------|---|--------|
+| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (512..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
+| 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
+| 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
+
+Notes:
+- `SYS_PIPE_CREATE`'s return packs the read end's handle in bits 0–31 and the write end's in bits 32–63:
+  handles `(0x11223344, 0x55667788)` return `0x5566778811223344`, little-endian bytes
+  `44 33 22 11 88 77 66 55` (the byte oracle: `tools/pipe-logic-tests` `abi_byte_oracle`, which checks the
+  kernel's packer and libneo's `pipe_abi.rs` against those bytes). `PIPE_NONBLOCK` is bit 0 of `flags`; other bits are ignored.
+- A handle carries every meta right (`USE`, `GRANT`, `DERIVE`, `REVOKE`) and only its end's semantic right
+  (`READ` = bit 0 on a read end, `WRITE` = bit 1 on a write end); the wrong end is `EPERM`.
+- A write of at most 512 bytes (`PIPE_ATOMIC`) that fits the capacity is atomic. A `SYS_WAIT_ANY` item of
+  kind 4 (`WAIT_KIND_PIPE`) on a write end is ready when a write of `min(512, capacity)` bytes would fit,
+  or no reader is left; on a read end, when bytes are buffered or no writer is left.
+- A timed read is `SYS_WAIT_ANY` with a deadline, then a `PIPE_NONBLOCK` read.
+- The capacity is at least 512 (`PIPE_ATOMIC`), so a write of at most 512 bytes is always atomic; a smaller
+  capacity is `EINVAL`.
+- A read checks each chunk's destination before taking its bytes. If a sibling thread unmaps the buffer between
+  that check and the copy, the read returns the bytes that reached the buffer (`EFAULT` only if none did), and
+  the rest of that chunk (at most 512 bytes) is lost, as with stdin (`docs/concurrency-pitfalls.md` CP-99).
+
 ### Installer (0x1C0–0x1C1)
 
 | # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
@@ -473,6 +501,7 @@ Nested structs (no independent version, inherit the parent's versioning):
 | 0x100–0x17F | AI: tensors, models, inference (Bible Article 6.1) | **Formally reserved**; 0x100–0x123 populated |
 | 0x180–0x190 | Network: sockets, TCP, DNS, TLS, CSPRNG | Populated |
 | 0x1A0–0x1B9 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
+| 0x1BA–0x1BF | Pipes; 0x1BA–0x1BC populated under `pipe` | 0x1BD–0x1BF empty |
 | 0x1C0–0x1C1 | Installer | Populated under `installer` |
 | 0xF00–0xF0A | Test-only probes | **Never ships** |
 | 0x4E, 0x1AC | Test-only probes in production ranges | **Never ships** |

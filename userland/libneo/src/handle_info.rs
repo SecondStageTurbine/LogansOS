@@ -34,6 +34,8 @@ pub enum HandleKind {
     SystemStore,
     /// Dexter #187 item 3a: the mount authority (the session root's).
     MountAuthority,
+    /// L1a.1 step 2a: one end of a byte pipe (its rights say which end).
+    Pipe,
     /// A code this decoder does not know (a newer kernel).
     Unknown(u32),
 }
@@ -59,6 +61,7 @@ impl HandleKind {
             16 => Self::Installer,
             17 => Self::SystemStore,
             18 => Self::MountAuthority,
+            19 => Self::Pipe,
             other => Self::Unknown(other),
         }
     }
