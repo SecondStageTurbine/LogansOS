@@ -2485,18 +2485,13 @@ mod wallclock {
         t
     }
 
-    /// The probe. Samples the clocks across monotonic ticks: monotonic must
-    /// never go back and must advance; the base (realtime - monotonic) must
-    /// stay within one tick (10 ms) across every sample. Seeded: the boot
-    /// instant formats, through libneo::civil (the Atrium's formatter), as
-    /// the pinned QEMU RTC (Wednesday, October 21, 2026, 5:48 PM). Fallback:
-    /// the base is 0 (realtime == monotonic: boot-relative).
+    /// The probe's sampling: monotonic must never go back and must advance 5
+    /// ticks. `(first, last, lowest base, highest base)`, or the exit code.
     #[cfg(feature = "wallclock-probe")]
-    pub fn probe() -> i32 {
-        say(&[b"[ wallclock ] OT-85 wall-clock probe\n"]);
+    fn sample_ticks() -> Result<(Sample, Sample, u64, u64), i32> {
         let Some(first) = sample() else {
             say(&[b"[ wallclock ] FAIL: clocks never read inside one tick\n"]);
-            return 2;
+            return Err(2);
         };
         let (mut lo, mut hi) = (first.base_ns, first.base_ns);
         let mut last_mono = first.monotonic_ns;
@@ -2504,11 +2499,11 @@ mod wallclock {
         let mut last = first;
         for _ in 0..5_000_000u64 {
             let Some(s) = sample() else {
-                return 3;
+                return Err(3);
             };
             if s.monotonic_ns < last_mono {
                 say(&[b"[ wallclock ] FAIL: monotonic went backwards\n"]);
-                return 4;
+                return Err(4);
             }
             if s.monotonic_ns > last_mono {
                 ticks_seen += 1;
@@ -2523,8 +2518,47 @@ mod wallclock {
         }
         if ticks_seen < 5 {
             say(&[b"[ wallclock ] FAIL: monotonic did not advance 5 ticks\n"]);
-            return 5;
+            return Err(5);
         }
+        Ok((first, last, lo, hi))
+    }
+
+    /// The probe. Samples the clocks across monotonic ticks: monotonic must
+    /// never go back and must advance; the base (realtime - monotonic) must
+    /// stay within one tick (10 ms) across every sample. Seeded: the boot
+    /// instant formats, through libneo::civil (the Atrium's formatter), as
+    /// the pinned QEMU RTC (Wednesday, October 21, 2026, 5:48 PM). Fallback:
+    /// the base is 0 (realtime == monotonic: boot-relative).
+    /// The pinned QEMU RTC, 2026-10-21T17:48:00 counted as UTC (day 20747).
+    #[cfg(all(feature = "wallclock-probe", not(feature = "wallclock-probe-fallback")))]
+    const PINNED_RTC_S: i64 = 20_747 * 86_400 + 17 * 3_600 + 48 * 60;
+
+    #[cfg(feature = "wallclock-probe")]
+    pub fn probe() -> i32 {
+        say(&[b"[ wallclock ] OT-85 wall-clock probe\n"]);
+        // THINK-2026-11-02-time-zones: a session may confirm realtime as UTC
+        // (`rtc-offset`, write-once), which moves the base once. Sample with
+        // the status read before and after; if it changed, the base moved
+        // for that reason, so sample again (it can't change twice).
+        let status = libneo::sys_clock_realtime_status;
+        let mut sampled = None;
+        for _ in 0..2 {
+            let before = status();
+            let s = match sample_ticks() {
+                Ok(s) => s,
+                Err(code) => return code,
+            };
+            if status() == before {
+                sampled = Some((s, before));
+                break;
+            }
+            say(&[b"[ wallclock ] realtime confirmed as UTC while sampling; sampling again\n"]);
+        }
+        let Some(((first, last, lo, hi), status)) = sampled else {
+            say(&[b"[ wallclock ] FAIL: the confirmation status changed twice\n"]);
+            return 10;
+        };
+        let confirmed = status == Ok(true);
         let spread = hi - lo;
         say(&[
             b"[ wallclock ] base_ns=",
@@ -2543,6 +2577,11 @@ mod wallclock {
                 say(&[b"[ wallclock ] FAIL: realtime not boot-relative after a fallback\n"]);
                 return 7;
             }
+            // No epoch, nothing to confirm (`rtc::confirm` refuses NotSeeded).
+            if confirmed {
+                say(&[b"[ wallclock ] FAIL: realtime confirmed without an epoch\n"]);
+                return 12;
+            }
             say(&[
                 b"[ wallclock ] realtime=boot-relative realtime_ns=",
                 num(last.realtime_ns).as_bytes(),
@@ -2555,7 +2594,34 @@ mod wallclock {
         #[cfg(not(feature = "wallclock-probe-fallback"))]
         {
             use libneo::civil;
-            let boot = civil::from_realtime_ns(first.base_ns);
+            // Unconfirmed (or a kernel without `rtc-offset`): realtime is the
+            // RTC's reading, so the boot instant is the pinned wall time.
+            // Confirmed: realtime is UTC, the pinned reading less the offset
+            // the session confirmed. Every zone offset is a multiple of 15
+            // minutes, and the RTC had run under 2 minutes past the pin when
+            // it was read, so the offset is pinned - boot rounded up to 900 s;
+            // the boot instant plus it must be the pinned wall time again.
+            let base_s = (first.base_ns / civil::NS_PER_SECOND) as i64;
+            let offset_s = if confirmed {
+                let behind = PINNED_RTC_S - base_s;
+                let offset = (behind + 899).div_euclid(900) * 900;
+                say(&[
+                    b"[ wallclock ] realtime confirmed as UTC; offset_s=",
+                    if offset < 0 { b"-" } else { b"" },
+                    num(offset.unsigned_abs()).as_bytes(),
+                    b"\n",
+                ]);
+                if offset.abs() > 86_400 || offset - behind >= 120 {
+                    say(&[b"[ wallclock ] FAIL: confirmed boot instant is not the pinned RTC less a zone offset\n"]);
+                    return 11;
+                }
+                offset
+            } else {
+                0
+            };
+            let wall_ns =
+                (first.base_ns as i64 + offset_s * civil::NS_PER_SECOND as i64).max(0) as u64;
+            let boot = civil::from_realtime_ns(wall_ns);
             let now = civil::from_realtime_ns(last.realtime_ns);
             say(&[
                 b"[ wallclock ] boot date=\"",

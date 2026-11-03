@@ -45,6 +45,7 @@ fn r0() -> Record<'static> {
         path: "/neofs/notes.txt",
         intent: "read /neofs/notes.txt",
         prev: [0; 16],
+        flags: 0,
     }
 }
 
@@ -58,6 +59,72 @@ fn r1() -> Record<'static> {
         path: "/neofs/notes.txt",
         intent: "",
         prev: L0,
+        flags: 0,
+    }
+}
+
+/// Record 2 (THINK-2026-11-02 §2.7): done, read, seq 2, 1793618940 s
+/// (2026-11-02T11:29:00Z), detail 0, the path, no intent, prev = L1, flags
+/// = TIME_UTC (byte 48 = 0x01). Laid out by the same separate script.
+const R2: [u8; 80] = [
+    0x4e, 0x41, 0x4c, 0x31, 0x01, 0x00, 0x07, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0xfc, 0x73, 0xe8, 0x6a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00,
+    0x6d, 0xb5, 0x1f, 0xe5, 0xd2, 0x96, 0x86, 0xe0, 0x58, 0xdd, 0x78, 0x79, 0x77, 0xe0, 0x12, 0xca,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x2f, 0x6e, 0x65, 0x6f, 0x66, 0x73, 0x2f, 0x6e, 0x6f, 0x74, 0x65, 0x73, 0x2e, 0x74, 0x78, 0x74,
+];
+/// BLAKE3(R2)[..16].
+const L2: [u8; 16] = [
+    0x6b, 0x72, 0x3e, 0x0e, 0x33, 0xe2, 0x4d, 0xbf, 0x53, 0x2a, 0x84, 0x71, 0x55, 0x33, 0xbb, 0x5c,
+];
+
+fn r2() -> Record<'static> {
+    Record {
+        kind: Kind::Done,
+        action: 1,
+        seq: 2,
+        time_s: 1_793_618_940,
+        detail: 0,
+        path: "/neofs/notes.txt",
+        intent: "",
+        prev: L1,
+        flags: TIME_UTC,
+    }
+}
+
+/// The time-basis flag: written at byte 48, read back, chained like any
+/// field. Records 0 and 1 (flags 0) are the bytes they always were.
+#[test]
+fn the_utc_flag_is_byte_48() {
+    assert_eq!(encode(&r2()).unwrap(), R2);
+    assert_eq!(decode(&R2), Some((r2(), R2.len())));
+    assert_eq!(link(&R2), L2);
+    let mut three = log();
+    three.extend_from_slice(&R2);
+    let head = verify(&three);
+    assert_eq!((head.records, head.link, head.broken_at), (3, L2, None));
+}
+
+/// A flag this version doesn't define, or a non-zero byte after the flags,
+/// is not a record; `encode` refuses to write an undefined flag.
+#[test]
+fn undefined_flags_and_reserved_bytes_are_refused() {
+    for bit in 1..8 {
+        let mut bad = R2;
+        bad[48] |= 1 << bit;
+        assert_eq!(decode(&bad), None, "flag bit {bit}");
+        assert_eq!(
+            encode(&Record {
+                flags: TIME_UTC | 1 << bit,
+                ..r2()
+            }),
+            None
+        );
+    }
+    for at in 49..64 {
+        let mut bad = R2;
+        bad[at] = 1;
+        assert_eq!(decode(&bad), None, "reserved byte {at}");
     }
 }
 
@@ -162,6 +229,7 @@ fn a_rotated_log_verifies_from_its_marker() {
         path: "",
         intent: "",
         prev: L0,
+        flags: 0,
     };
     let m = encode(&marker).unwrap();
     // Record 0 dropped; record 1 kept as it was.

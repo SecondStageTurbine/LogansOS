@@ -85,6 +85,13 @@ The PM chose Dexter's option 3 for the RTC-mode contradiction in revision 1 (§7
   "zone not set" (§2.7). That's correct for the wall time, honest about UTC, and fixed by `timezone <name>`, which
   confirms at once.
 
+**After the confirm (Janus, #60 review).** Realtime is UTC from then on, and only display code applies the zone:
+- a later `timezone <name>` changes what Home shows, never the instant;
+- a later `rtc local`/`rtc utc`, or a zone that would have read the RTC differently, is saved, and the card says
+  "Restart to read this computer's clock this way". The confirm is write-once, so a restart applies it.
+- With a kernel that lacks `rtc-offset` (the status call fails), Home shows realtime exactly as before: no zone, no
+  marker.
+
 When NTP lands, it sets realtime from a UTC source and marks it confirmed, and this step becomes a fallback.
 
 ### 2.2 The conversion lives in `libneo`
@@ -180,7 +187,7 @@ Until the Settings app exists:
 - `timezone utc` resets to the default.
 - An unknown name gets the same card, naming the nearest matches, found by case-insensitive prefix (`timezone new_y` →
   `America/New_York`), and nothing changes.
-- `rtc local` and `rtc utc` set `RtcLocal`.
+- `rtc local` and `rtc utc` set `RtcLocal`. Once the clock is confirmed, they take effect at the next restart (§2.1).
 
 The WM handles these (it owns the store) before an intent goes to Arthur, the same as other Home verbs.
 

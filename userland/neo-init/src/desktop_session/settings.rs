@@ -39,6 +39,8 @@ fn pack(s: &Settings) -> u64 {
     u64::from(s.get(sc::Key::ReduceTransparency))
         | u64::from(s.get(sc::Key::ReduceMotion)) << 8
         | u64::from(s.get(sc::Key::IdleLockMinutes)) << 16
+        | u64::from(s.get(sc::Key::TimeZone)) << 32
+        | u64::from(s.get(sc::Key::RtcLocal)) << 48
 }
 
 fn unpack(v: u64) -> Settings {
@@ -46,6 +48,8 @@ fn unpack(v: u64) -> Settings {
         .with(1, (v & 0xff) as u32)
         .and_then(|s| s.with(2, (v >> 8 & 0xff) as u32))
         .and_then(|s| s.with(3, (v >> 16 & 0xffff) as u32))
+        .and_then(|s| s.with(4, (v >> 32 & 0xffff) as u32))
+        .and_then(|s| s.with(5, (v >> 48 & 0xff) as u32))
         .unwrap_or_default()
 }
 
