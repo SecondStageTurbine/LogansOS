@@ -19029,9 +19029,11 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP arthur hanging reply=never-received",
                 // His owed reply untaken past the deadline: he alone ends.
                 "DESKTOP apps client hung client=0",
-                // Killed (the kill itself completes at his reap), then the
-                // WM's line with its wait's result.
-                "[ kernel ] proc: kill of pid=",
+                // Killed, then the WM's line with its wait's result. (The
+                // kernel's "terminated ... via sys_kill" is printed inside
+                // the kill, before it returns to the WM; its later "kill
+                // completed at its last reap" can land after the WM's line.)
+                " via sys_kill",
                 "DESKTOP apps arthur failed code=24 wait=",
                 // The probe app is still served: its key, its exit, its
                 // release.
@@ -19070,7 +19072,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 // there, the chord would wait until after he is ended).
                 "DESKTOP apps front client=0 via=sak-tab",
                 "DESKTOP apps client hung client=0",
-                "[ kernel ] proc: kill of pid=",
+                " via sys_kill",
                 "DESKTOP apps arthur failed code=24 wait=",
                 "DESKTOP apps front client=1 via=arthur-failed",
                 "PROBEAPP key code=4 count=1",
