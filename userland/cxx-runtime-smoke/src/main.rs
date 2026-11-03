@@ -37,6 +37,7 @@ unsafe extern "C" {
     fn crt_check_alloc() -> i32;
     fn crt_check_clock() -> i32;
     fn crt_check_stdout() -> i32;
+    fn crt_check_entropy() -> i32;
     fn crt_errno_probe(id: i32) -> i32;
     fn crt_malloc_stress(id: i32) -> i32;
     fn cxx_check_globals() -> i32;
@@ -233,6 +234,11 @@ pub extern "C" fn _start() -> ! {
         18,
         "a failing write returns -1 with its own errno",
         write_errors_keep_their_errno(),
+    );
+    c_check(
+        19,
+        "arc4random_buf and page-aligned posix_memalign (C3c-1 prerequisites)",
+        crt_check_entropy,
     );
     println!("{TAG} PASS");
     std::process::exit(0)

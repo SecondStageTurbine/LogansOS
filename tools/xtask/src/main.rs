@@ -14118,6 +14118,8 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // OT-61 C2.4: std's RandomState (any std HashMap in the closure)
             // seeds from the kernel CSPRNG, as std_entropy.
             | "stylo_smoke"
+            // OT-61 C3c-1: neo-crt's arc4random_buf reads the kernel CSPRNG.
+            | "cxx_runtime_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -18576,6 +18578,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] ok(19) arc4random_buf and page-aligned posix_memalign (C3c-1 prerequisites)",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
