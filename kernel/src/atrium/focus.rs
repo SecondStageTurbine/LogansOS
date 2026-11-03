@@ -365,6 +365,7 @@ pub fn route_event(event: InputEventV1) -> bool {
 /// where every route change bumps it, so the check and the enqueue are one
 /// atomic decision: a repeat checked before a focus change or lock is
 /// dropped, never given to the new owner.
+#[cfg(feature = "key-autorepeat")]
 pub fn route_event_at(event: InputEventV1, epoch: u64) -> bool {
     route_event_checked(event, Some(epoch))
 }
@@ -419,32 +420,19 @@ fn route_event_checked(event: InputEventV1, epoch: Option<u64>) -> bool {
 /// changed since the batch began; otherwise the old batch (decoded for the
 /// previous owner) is discarded first.
 pub fn stage_event(stage: &mut Stage, event: InputEventV1) {
-    stage_event_at(stage, event, ACTIVATION_EPOCH.load(Ordering::Acquire));
+    stage_at(stage, event, ACTIVATION_EPOCH.load(Ordering::Acquire));
 }
 
-/// [`stage_event`] for an event already checked against an activation epoch
-/// (a key repeat: Jarvis, #61). It is staged under `epoch`, never the epoch
-/// read now, so a focus change or lock between the check and this call
-/// drops it, and one between this call and the flush discards it there
-/// (`flush` compares under `DELIVERY`). Returns whether it was staged.
-pub fn stage_event_at(stage: &mut Stage, event: InputEventV1, epoch: u64) -> bool {
-    use super::key_repeat_logic::{StageAction, stage_action};
+/// Stage `event` under `epoch`: a stage holding an earlier epoch's batch is
+/// discarded first.
+fn stage_at(stage: &mut Stage, event: InputEventV1, epoch: u64) {
     #[cfg(feature = "freeze-watchdog")]
     crate::watchdog::note_key_produced(&event);
     #[cfg(feature = "sak-lock")]
     note_activity();
-    match stage_action(stage.epoch, epoch, ACTIVATION_EPOCH.load(Ordering::Acquire)) {
-        StageAction::Drop => {
-            #[cfg(feature = "freeze-watchdog")]
-            crate::watchdog::note_key_dropped(&event);
-            STAGE_STALE.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        StageAction::Restart => {
-            stage.discard();
-            stage.epoch = epoch;
-        }
-        StageAction::Append => {}
+    if stage.epoch != epoch {
+        stage.discard();
+        stage.epoch = epoch;
     }
     if !matches!(
         stage.queue.enqueue(event),
@@ -452,7 +440,33 @@ pub fn stage_event_at(stage: &mut Stage, event: InputEventV1, epoch: u64) -> boo
     ) {
         STAGE_DROPPED.fetch_add(1, Ordering::Relaxed);
     }
-    true
+}
+
+/// [`stage_event`] for an event already checked against an activation epoch
+/// (a key repeat: Jarvis, #61). It is staged under `epoch`, never the epoch
+/// read now, so a focus change or lock between the check and this call
+/// drops it, and one between this call and the flush discards it there
+/// (`flush` compares under `DELIVERY`). Returns whether it was staged.
+#[cfg(feature = "key-autorepeat")]
+pub fn stage_event_at(stage: &mut Stage, event: InputEventV1, epoch: u64) -> bool {
+    use super::key_repeat_logic::{StageAction, stage_action};
+    match stage_action(stage.epoch, epoch, ACTIVATION_EPOCH.load(Ordering::Acquire)) {
+        StageAction::Drop => {
+            #[cfg(feature = "freeze-watchdog")]
+            {
+                crate::watchdog::note_key_produced(&event);
+                crate::watchdog::note_key_dropped(&event);
+            }
+            #[cfg(feature = "sak-lock")]
+            note_activity();
+            STAGE_STALE.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+        StageAction::Restart | StageAction::Append => {
+            stage_at(stage, event, epoch);
+            true
+        }
+    }
 }
 
 /// Events checked under an activation epoch that had moved on by the time
