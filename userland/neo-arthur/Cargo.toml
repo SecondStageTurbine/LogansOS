@@ -64,6 +64,9 @@ desktop-session = ["arthur-compositor", "libneo/atrium-damage", "arthur-clock"]
 # the user's zone (the zone id rides the WM's `K`), before the model. Off:
 # the model answers, as before.
 arthur-clock = []
+# F8's scenario (`desktop_clock_boot`): three answers before the session ends
+# (the time, the date, and a time question the clock leaves to the model).
+arthur-clock-boot-test = ["desktop-session-boot-test", "arthur-clock"]
 desktop-session-boot-test = ["desktop-session"]
 # DS-1: the WM sends the Home intent field's line after the session handshake;
 # Arthur answers it as its first input line.

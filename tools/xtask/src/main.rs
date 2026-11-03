@@ -957,6 +957,16 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     CHIP1_TAB,
     step(b"DESKTOP home chip selected=0", b"what's the date?"),
     step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
+    // The PM (#68): a question the phrase table doesn't hold still goes to
+    // the model (here, its no-model line).
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    step(
+        b"DESKTOP home chip selected=0",
+        b"what time is it in tokyo?",
+    ),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
@@ -7545,13 +7555,19 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-resize",
         ],
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
-        Some("desktop-intro-boot-test")
-        | Some("install-atrium-boot-test")
-        | Some("desktop-clock-boot-test") => vec![
+        Some("desktop-intro-boot-test") | Some("install-atrium-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
             "desktop-resize",
+        ],
+        // F8: Arthur's third round (a question the clock leaves alone).
+        Some("desktop-clock-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-clock-boot-test",
         ],
         // OT-22: the parked session parks Arthur too; the control spins both.
         Some("desktop-park") => vec!["desktop-session", "desktop-home", "desktop-park"],
@@ -19171,6 +19187,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP arthur clock question=time basis=utc zone=288 realtime_s=",
                 "DESKTOP arthur line=what's the date?",
                 "DESKTOP arthur clock question=date basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what time is it in tokyo?",
                 "DESKTOP view switch=home residue_pixels=0",
                 "DESKTOP home return client=arthur exit=0 focus=wm-home",
                 "DESKTOP clock readback box=642,285,720,84 ink_pixels=",
@@ -21332,6 +21349,18 @@ fn require_arthur_clock_answers(
     if seen != 2 {
         return Err(format!(
             "`{}` expected Arthur's time and date answers, saw {seen}",
+            scenario.name
+        ));
+    }
+    // A time question outside the phrase table is the model's: no clock
+    // answer between its line and the end of the session.
+    let tokyo = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .nth(1)
+        .ok_or_else(|| format!("`{}` Arthur never got the Tokyo question", scenario.name))?;
+    if tokyo.contains("DESKTOP arthur clock question=") {
+        return Err(format!(
+            "`{}` the clock answered \"what time is it in tokyo?\"; it is the model's",
             scenario.name
         ));
     }

@@ -1316,7 +1316,14 @@ fn run_desktop_session(
                     feature = "desktop-session-boot-test",
                     not(feature = "desktop-home-cycle-test")
                 ))]
-                let session_done = answers >= 2;
+                // F8's scenario asks a third question (one the clock must
+                // leave to the model).
+                let session_done = answers
+                    >= if cfg!(feature = "arthur-clock-boot-test") {
+                        3
+                    } else {
+                        2
+                    };
                 #[cfg(feature = "desktop-home-cycle-test")]
                 let session_done = answers >= 2 || cycle_round;
                 #[cfg(all(feature = "desktop-session-boot-test", not(feature = "desktop-home")))]
