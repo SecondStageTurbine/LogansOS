@@ -644,23 +644,42 @@ fn show_code(scene: &mut Scene, focus: &HomeFocus, code: &[u8; CODE_LEN]) -> Res
 }
 
 /// §7: the account, created on the installed system's first boot.
+/// L7.1 (`boot-time`): the card's boot-time row for the screen `what`,
+/// read once when that screen first shows (and logged as `BOOT-TIME`).
+/// Without `boot-time`, or on a kernel without it: none.
+fn boot_row(what: &str) -> Option<String> {
+    #[cfg(feature = "boot-time")]
+    {
+        let line = libneo::boot_milestone_line(what)?;
+        Line::new()
+            .s(b"BOOT-TIME ")
+            .s(line.as_bytes())
+            .s(b"\n")
+            .emit();
+        Some(line)
+    }
+    #[cfg(not(feature = "boot-time"))]
+    {
+        let _ = what;
+        None
+    }
+}
+
 fn first_boot(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
     Line::new().s(b"LOGIN first-boot shown\n").emit();
     // The below-floor check ends once the record has been refused.
     if cfg!(feature = "login-below-floor-test") {
         return Err(0);
     }
+    let boot = boot_row("Setup screen");
     let name = loop {
-        show(
-            scene,
-            b"name",
-            &[
-                "Welcome to LogansOS.",
-                "What should I call you?",
-                "Type your name, then press Enter.",
-            ],
-            false,
-        )?;
+        let mut rows = alloc::vec![
+            "Welcome to LogansOS.",
+            "What should I call you?",
+            "Type your name, then press Enter.",
+        ];
+        rows.extend(boot.as_deref());
+        show(scene, b"name", &rows, false)?;
         if let Answer::Text(text) = answer(scene, focus, false, false)?
             && let Ok(name) = core::str::from_utf8(&text)
             && let Some(meta) = lc::encode_meta(name)
@@ -701,13 +720,16 @@ fn sign_in(scene: &mut Scene, focus: &HomeFocus, mut current: Current) -> Result
         .s(b"\n")
         .emit();
     let mut note: Option<&str> = None;
+    let boot = boot_row("Sign-in");
     loop {
         let mut rows = alloc::vec![
             name.as_str(),
             "Enter your password.",
             "Forgot it? Press Tab for your recovery code."
         ];
-        // F9: the note is the last row, the one nearest the field.
+        // L7.1's boot summary, then (F9) the note: the last row, the one
+        // nearest the field.
+        rows.extend(boot.as_deref());
         rows.extend(note);
         show(scene, b"password", &rows, true)?;
         match answer(scene, focus, false, true)? {

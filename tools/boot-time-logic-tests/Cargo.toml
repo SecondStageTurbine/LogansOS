@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "boot-time-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+
+[dev-dependencies]
+# The real response type, for the field-order KAT (efi_memmap_fields).
+limine = "=0.6.3"
