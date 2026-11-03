@@ -4713,3 +4713,30 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   - `ok(17)`: six threads print 600-byte runs with no newline at once (the bounce's repro).
 - **Source.** The PM's AAG on #261 (2026-10-31). Principle: musl's `__stdio_*` locking and `libc.threaded`
   (`src/thread/pthread_create.c`), read for the design only.
+
+### CP-107 — A sequence condvar that wakes after dropping its lock, on a futex that wakes the lowest slot first
+
+- **Shape.**
+  - A condvar built as "a sequence number under a lock, plus a wait queue": a waiter records the number, releases
+    the caller's mutex, and sleeps until the number changes; `signal` bumps the number and wakes one sleeper.
+  - If `signal` releases the lock **before** it wakes, a thread can arrive in the gap, record the *new* number and
+    start sleeping. If the wake can reach that late thread, it sees no change and sleeps again. The signal is
+    spent, and the waiter it was for (asleep at the time of the call, as POSIX requires) sleeps on.
+  - Whether the late thread can be woken first depends on the wait queue. Our futex puts a waiter in the first free
+    queue slot and wakes the lowest slot first (`kernel/src/sched/futex.rs`), so a late waiter can take a slot
+    freed by an unrelated waiter and be first in line. A FIFO queue hides the bug.
+- **Guard (#67, C3b).** `neo-crt/src/seqcond.rs`: `signal` and `broadcast` wake while holding the sequence lock. A
+  thread can only record a number while holding that lock, so every thread the wake can reach recorded the old
+  number and returns to its caller.
+- **Discriminators.**
+  - Host KAT `tools/neo-crt-logic-tests`, `signal_reaches_the_waiter_it_was_for`. A model condvar wakes the newest
+    waiter first and, inside `notify_one`, waits for one more waiter to register. Waiter A waits; the producer
+    signals; waiter B starts waiting during the wake. A must get the signal.
+  - Its control, `control_waking_after_unlock_loses_the_signal`, runs the old order (bump, unlock, wake), and A
+    must **not** get the signal. That keeps the model honest: if the control ever passes, the KAT no longer
+    reproduces the race.
+  - On target, `cxx_runtime_smoke` items 22 and 27 (condvar wake and timeout, pthread and libc++).
+- **Source.** Chad's cross-family review of #67 (relay 299, item 2): a deterministic scheduling model of the first
+  version reproduced both waiters asleep after `signal` returned. Principle: the standard "signal under the
+  condvar's internal lock" rule for sequence-counter condvars (as in std's own futex condvar, which bumps and wakes
+  in one step on the futex word).

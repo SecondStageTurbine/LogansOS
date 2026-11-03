@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 #[path = "../../../kernel/src/drivers/block/gpt_logic.rs"]
 #[allow(dead_code)]
 mod gpt_logic;
+mod tzdata;
 /// Zenbook lane: the block write guard's sealed markers (scratch sector, log
 /// sink header), one source of truth with the kernel.
 #[path = "../../../kernel/src/drivers/block/write_guard_logic.rs"]
@@ -6085,6 +6086,7 @@ fn main() -> ExitCode {
         "vm-image" => cmd_vm_image(&args[1..]),
         "vm-run" => cmd_vm_run(&args[1..]),
         "neo-test" => cmd_neo_test(&args[1..]),
+        "tzdata" => tzdata::cmd_tzdata(&args[1..], &workspace_root()),
         "product-elf-check" => cmd_product_elf_check(&args[1..]),
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
@@ -18263,6 +18265,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
+            "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
+            "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {

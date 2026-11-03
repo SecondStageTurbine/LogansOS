@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-crt-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
