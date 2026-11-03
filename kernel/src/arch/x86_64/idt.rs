@@ -15,6 +15,8 @@
 //! Phase 1.1+ will add hardware IRQ vectors (timer, keyboard, etc.); Phase 1.3
 //! adds the syscall vector (or moves to SYSCALL/SYSRET).
 
+#[cfg(feature = "power-stop-cpus")]
+use crate::arch::x86_64::cpu_stop::stop_ipi;
 use core::arch::global_asm;
 #[cfg(feature = "neo-test")]
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -296,6 +298,10 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     unsafe { double_fault_options.set_stack_index(DOUBLE_FAULT_IST_INDEX) };
     let nmi_options = set_exception_entry!(idt.non_maskable_interrupt, nmi);
     unsafe { nmi_options.set_stack_index(NMI_IST_INDEX) };
+    // OT-90 P3b: the shutdown's STOP IPI (an interrupt gate: IF clears on
+    // entry, and the handler never returns).
+    #[cfg(feature = "power-stop-cpus")]
+    set_exception_entry!(idt[apic::STOP_IPI_VECTOR], stop_ipi);
     // SAFETY: as above for the timer's IST slot; every address below is a
     // hand-written entry stub that preserves the interrupted context.
     unsafe {
@@ -666,6 +672,20 @@ pub fn reschedule_ipi_ring3_entries_for_test() -> u64 {
     IRQ_RING3_ENTRIES[IRQ_RING3_RESCHEDULE].load(Ordering::Relaxed)
 }
 
+/// The kernel's link-time base (`linker.ld`): KASLR slides the image by
+/// whole pages from here.
+const KERNEL_LINK_BASE: u64 = 0xffff_ffff_8000_0000;
+
+/// `rip` as the kernel ELF's own address (KASLR slide removed), so a fault
+/// line on screen maps straight to `objdump` output; `rip` itself when it
+/// isn't in the kernel image (or the slide is unknown).
+fn link_rip(rip: u64) -> u64 {
+    match crate::executable_address() {
+        Some((_, virt)) if rip >= virt => KERNEL_LINK_BASE.wrapping_add(rip - virt),
+        _ => rip,
+    }
+}
+
 fn dump(name: &str, sf: &InterruptStackFrame) {
     serial_println!("[ trap  ] {} {:?}", name, sf);
 }
@@ -701,8 +721,21 @@ fn contain_user_fault(vector: Vector, sf: &InterruptStackFrame, detail: u64) {
 fn halt_kernel_fault(vector: Vector) -> ! {
     #[cfg(feature = "neo-test-ring0-fault-halts")]
     crate::test_harness::ring0_fault_reached_halt(vector);
-    let _ = vector;
-    halt_forever();
+    // A kernel-mode CPU exception is fatal. Outside the test harness, end in
+    // the panic handler, which paints the KERNEL PANIC bar (and, with the
+    // progress console, keeps the trap lines above on screen) instead of
+    // halting behind a log that just stops (the preview's WHPX #GP,
+    // 2026-11-02). The trap lines are already on serial and the console.
+    #[cfg(not(feature = "neo-test"))]
+    panic!(
+        "fatal CPU exception in kernel mode: {:?} (trap lines above)",
+        vector
+    );
+    #[cfg(feature = "neo-test")]
+    {
+        let _ = vector;
+        halt_forever();
+    }
 }
 
 extern "x86-interrupt" fn divide_error(sf: InterruptStackFrame) {
@@ -815,12 +848,13 @@ extern "C" fn general_protection_fault(f: &ErrorCodeFrame) -> ! {
         f.error_code
     );
     serial_println!(
-        "[ trap  ] #GP rip=0x{:016x} rsp=0x{:016x} cs=0x{:04x} ss=0x{:04x} rflags=0x{:016x}",
+        "[ trap  ] #GP rip=0x{:016x} rsp=0x{:016x} cs=0x{:04x} ss=0x{:04x} rflags=0x{:016x} link_rip=0x{:016x}",
         sf.instruction_pointer.as_u64(),
         sf.stack_pointer.as_u64(),
         sf.code_segment.0,
         sf.stack_segment.0,
-        sf.cpu_flags.bits()
+        sf.cpu_flags.bits(),
+        link_rip(sf.instruction_pointer.as_u64())
     );
     dump("GENERAL_PROTECTION_FAULT (#GP)", sf);
     halt_kernel_fault(Vector::GeneralProtection);
@@ -1250,6 +1284,10 @@ extern "C" fn spurious_interrupt_body(from_ring3: u64) {
 /// NMI runs on IST 1 so a corrupted thread stack can't wedge it. Phase 1.3
 /// has no real NMI source we expect — this handler exists as defense-in-depth.
 extern "x86-interrupt" fn nmi(sf: InterruptStackFrame) {
+    // OT-90 P3b: during a shutdown, a CPU that never took the STOP IPI is
+    // parked here, quietly (no dump: it would take the serial lock).
+    #[cfg(feature = "power-stop-cpus")]
+    crate::arch::x86_64::cpu_stop::park_from_nmi();
     dump("NMI", &sf);
     // NMI is non-fatal in principle; for Phase 1.3 we have no recovery story
     // so we halt to avoid silently masking a hardware fault.

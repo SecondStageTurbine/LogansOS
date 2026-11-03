@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "fat-logic-tests"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+publish = false
+
+[dev-dependencies]
+# Real FAT images for the KATs, made by the same vendored library the kernel
+# mounts with (third_party/fatfs, MIT).
+fatfs = { path = "../../third_party/fatfs", default-features = false, features = ["std", "alloc", "lfn"] }

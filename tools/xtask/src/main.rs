@@ -72,11 +72,15 @@ mod install_bundle_logic;
 mod vendor_verify;
 
 #[cfg(test)]
+mod batch_scripts_tests;
+#[cfg(test)]
 mod build_id_tests;
 #[cfg(test)]
 mod ci_memory_floor_tests;
 #[cfg(test)]
 mod i8042_tests;
+#[cfg(test)]
+mod keymap_tests;
 #[cfg(test)]
 mod ot61_c05_tests;
 mod ot61_tls_gate;
@@ -1091,7 +1095,27 @@ const DESKTOP_FULL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
 /// Must match the kernel's `run_ps2_keyboard` EXPECTED list.
 const PS2_KEYBOARD_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
     prompt: b"PS2KBD ready",
-    command: b"a1\x82\x83\x84\x85\n",
+    command: &[
+        b'a',
+        b'1',
+        0x82,
+        0x83,
+        0x84,
+        0x85,
+        b'\n',
+        b':',
+        HMP_RSHIFT_QUOTE,
+        HMP_CAPS_LOCK,
+        b'a',
+        HMP_CAPS_LOCK,
+        HMP_KP_7,
+        HMP_KP_MULTIPLY,
+        HMP_KP_DIVIDE,
+        HMP_KP_ENTER,
+        HMP_NUM_LOCK,
+        HMP_KP_8,
+        HMP_NUM_LOCK,
+    ],
 }];
 /// Key auto-repeat: Backspace held 1.5 s, then Escape held 1.5 s, then 'x'
 /// (the end marker), 2 s apart (`HMP_PAUSE_1S`) so no two holds overlap:
@@ -1968,6 +1992,24 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 4 (SWGL S1): upstream SWGL clears an asymmetric pattern
+        // into a caller-owned padded-stride buffer, byte-compared on-target.
+        name: "swgl_smoke",
+        feature: "neo-test-swgl-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
+        // musl's portable C over a std bottom half) in a real-std process.
+        name: "cxx_runtime_smoke",
+        feature: "neo-test-cxx-runtime-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // A socket's last handle leaving (exit, kill, revoke) closes it: the
         // port is free again and the net tables are back to their baseline.
         name: "socket_teardown",
@@ -2383,6 +2425,18 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "xsave_ymm_context_switch",
         feature: "neo-test-xsave-ymm-context-switch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The preview's WHPX boot #GP: CPUID.(0DH,0):EBX understates the
+        // XSAVE area (576 with AVX enabled). The area must be sized from the
+        // per-component leaves. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ebx-understated-control
+        // (EBX trusted, as before: the first tick's iretq takes a #GP).
+        name: "xsave_ebx_understated",
+        feature: "neo-test-xsave-ebx-understated",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -5080,6 +5134,55 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // L3a (G7): the FAT32 volume as MBR partition 1, mounted as
+    // `device1:p1`; `-off` is the kill-switch (no `mbr-partitions`: the
+    // source is refused, as before).
+    TestScenario {
+        name: "phase3_fat32_mbr_mount_read",
+        feature: "neo-test-phase3-fat32-mbr-mount-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_mbr_off",
+        feature: "neo-test-phase3-fat32-mbr-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L3a-2: what rust-fatfs (`fat-fs`) adds over the native driver (a FAT16
+    // volume), the T4/T5 no-write proof on a dirty volume, and the
+    // kill-switch control (the native driver reads the fixture, as before).
+    TestScenario {
+        name: "phase3_fat32_fat16_read",
+        feature: "neo-test-phase3-fat32-fat16-read",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_readonly_no_write",
+        feature: "neo-test-phase3-fat32-readonly-no-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Chad's #18 review: looping file and directory chains are errors.
+    TestScenario {
+        name: "phase3_fat32_loop_chain",
+        feature: "neo-test-phase3-fat32-loop-chain",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_fat32_native_control",
+        feature: "neo-test-phase3-fat32-native-control",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // Phase 3 BUILD-4D: ext4 read-only foreign filesystem.
     TestScenario {
         name: "phase3_ext4_mount_readonly",
@@ -5465,6 +5568,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "phase3_neofs_cache_evict_off",
         feature: "neo-test-phase3-neofs-cache-evict-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // L7.1: the boot-time stamps, QEMU's no-FPDT path, the record, and
+    // SYS_BOOT_TIMES's checks.
+    TestScenario {
+        name: "boot_time",
+        feature: "neo-test-boot-time",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -5894,6 +6006,39 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P3b: K4 parks every AP (STOP IPI; `-holdout`: one by NMI) and
+    // K5 masks the interrupt sources, before S5. Needs NEO_SMP >= 2.
+    TestScenario {
+        name: "ot90_stop_cpus",
+        feature: "neo-test-ot90-stop-cpus",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_holdout",
+        feature: "neo-test-ot90-stop-holdout",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Review #6: K4 while every AP storms TLB shootdowns (CP-64); and a
+    // wedged AP (no STOP, no NMI, holding the UART lock) with a frozen PM
+    // timer, which K4 reports as a holdout before S5.
+    TestScenario {
+        name: "ot90_stop_shootdown",
+        feature: "neo-test-ot90-stop-shootdown",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "ot90_stop_wedged",
+        feature: "neo-test-ot90-stop-wedged",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -5934,7 +6079,10 @@ fn main() -> ExitCode {
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
+        "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
+        "ot61-swgl-build" => cmd_ot61_swgl_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
+        "gate-plan" => cmd_gate_plan(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
         "vocab-bin" => cmd_vocab_bin(&args[1..]),
         "icons" => cmd_icons(&args[1..]),
@@ -6122,6 +6270,12 @@ fn print_help() {
     println!("    neo-test-build build one scenario ISO + disk bundle without launching QEMU");
     println!(
         "    ot61-closure-build  build the OT-61 C2.3b html5ever/selectors smoke (overlay std, A4 checks)"
+    );
+    println!(
+        "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
+    );
+    println!(
+        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
     );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
@@ -6340,10 +6494,13 @@ fn product_image_ub_checks_on() -> bool {
 }
 
 fn build_product_image_kernel() -> Result<(), String> {
-    let kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
+    let mut kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
         .iter()
         .map(|f| f.to_string())
         .collect();
+    if boot_time_image() {
+        kernel_features.push("boot-time".to_string());
+    }
     let ub_checks_on = product_image_ub_checks_on();
     eprintln!(
         "[xtask] product image kernel: opt-level={} ub-checks={} ({}=on keeps them)",
@@ -6367,11 +6524,27 @@ fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     build_product_image_kernel()
 }
 
-/// The product-image flags: the old `--hwp-performance` and `--perf-probes`,
-/// both no-ops now (each feature is in image A).
+/// L7.1: `--boot-time` builds image A with the boot-time numbers: the
+/// kernel's `boot-time`, the sign-in card's row (neo-init `boot-time`) and
+/// Arthur's summary line (`arthur-boot-time`), for a Zenbook run's evidence
+/// (`docs/runbook-baremetal-zenbook-s14.md`). Image A without it is unchanged.
+const BOOT_TIME_FLAG: &str = "--boot-time";
+static BOOT_TIME_IMAGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn boot_time_image() -> bool {
+    BOOT_TIME_IMAGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The product-image flags: `--boot-time` (L7.1), and the old
+/// `--hwp-performance` and `--perf-probes`, both no-ops now (each feature is
+/// in image A).
 fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
+    BOOT_TIME_IMAGE.store(false, std::sync::atomic::Ordering::Relaxed);
     for arg in args {
-        if arg == HWP_PERFORMANCE_FLAG {
+        if arg == BOOT_TIME_FLAG {
+            BOOT_TIME_IMAGE.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!("[xtask] {command}: {BOOT_TIME_FLAG}: image A with the boot-time numbers");
+        } else if arg == HWP_PERFORMANCE_FLAG {
             eprintln!(
                 "[xtask] {command}: {HWP_PERFORMANCE_FLAG} is the default now (hwp-performance is in image A)"
             );
@@ -6381,7 +6554,7 @@ fn parse_image_flags(args: &[String], command: &str) -> Result<(), String> {
             );
         } else {
             return Err(format!(
-                "{command} takes no options (got {args:?}); it builds the product image"
+                "{command} takes only {BOOT_TIME_FLAG} (got {args:?}); it builds the product image"
             ));
         }
     }
@@ -6535,6 +6708,8 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
+        "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        "swgl_smoke" => &[SWGL_BIN],
         _ => &[],
     }
 }
@@ -7348,6 +7523,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         init_features.push("cap-rooted-open");
         shell_features.push("cap-rooted-open");
     }
+    // L7.1: `iso --with-model --boot-time`.
+    let mut arthur_features = arthur_features;
+    if boot_time_image() && feature == Some("desktop-with-model") {
+        init_features.push("boot-time");
+        arthur_features.push("arthur-boot-time");
+    }
     build_user_members(
         init_features.as_slice(),
         worker_features.as_slice(),
@@ -7515,7 +7696,13 @@ fn build_user_members(
             build_servo_closure_smoke()?;
         }
         if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
-            build_closure_smoke(STYLO_SMOKE_BIN, STYLO_SMOKE_DIR)?;
+            build_standalone_std_smoke(STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR)?;
+        }
+        if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
+            build_cxx_runtime_smoke()?;
+        }
+        if std_real_staged_bins().contains(&SWGL_BIN) {
+            build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
         }
     }
     Ok(())
@@ -7529,37 +7716,164 @@ const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
 /// OT-61 C2.4: upstream Stylo over the same vendored tree, its own crate.
 const STYLO_SMOKE_BIN: &str = "stylo-smoke";
 const STYLO_SMOKE_DIR: &str = "userland/stylo-smoke";
+/// OT-61 C3a: the private C/C++ runtime smoke (`userland/neo-crt` under
+/// `userland/cxx-runtime-smoke`). Its own crate and target dir for the same
+/// reason as the closure smokes: only its scenario compiles the C runtime
+/// (and needs clang).
+const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
+const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
+/// Its hardening twin, in the same crate (`src/trap.rs`).
+const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
+/// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
+const SWGL_BIN: &str = "swgl-smoke";
+const SWGL_DIR: &str = "userland/swgl-smoke";
 
-/// The std crates with their own target dir (the vendored-closure smokes),
-/// each built as a known target (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`).
-fn is_closure_smoke_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR
+/// The std crates with their own target dir that build std as a known target
+/// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
+/// vendored-closure smokes and the C/C++ runtime smoke.
+fn standalone_std_dir(bin: &str) -> Option<&'static str> {
+    match bin {
+        SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
+        STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
+        CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
+        SWGL_BIN => Some(SWGL_DIR),
+        _ => None,
+    }
+}
+
+fn is_standalone_std_dir(subdir: &str) -> bool {
+    subdir == SERVO_CLOSURE_DIR
+        || subdir == STYLO_SMOKE_DIR
+        || subdir == CXX_RUNTIME_DIR
+        || subdir == SWGL_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
-    build_closure_smoke(SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR)
+    build_standalone_std_smoke(SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR)
 }
 
-/// Build a closure smoke (the overlay must already be applied) and run the
-/// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
-/// read of their own.
-fn build_closure_smoke(bin: &str, dir: &str) -> Result<(), String> {
+fn build_cxx_runtime_smoke() -> Result<(), String> {
+    build_standalone_std_smoke(
+        CXX_RUNTIME_BIN,
+        &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        CXX_RUNTIME_DIR,
+    )
+}
+
+/// SWGL's build script compiles `gl.cc` and its translated shaders with the
+/// `cc` crate's defaults for the target, which knows nothing of ours. These
+/// are `cc`'s per-target variables: no default flags, clang, our target
+/// flags and neo-crt's headers (libc++ first, then musl, then clang's own),
+/// and no host C++ library to link (`CXXSTDLIB` empty; libc++ comes from
+/// neo-crt). The same flags neo-crt uses for its own objects.
+fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
+    let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let out = Command::new(&clang)
+        .arg("-print-resource-dir")
+        .output()
+        .map_err(|e| format!("{clang} -print-resource-dir: {e} (SWGL needs clang >= 18)"))?;
+    if !out.status.success() {
+        return Err(format!("{clang} -print-resource-dir failed"));
+    }
+    let builtin = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("include");
+    let root = workspace_root();
+    let crt = root.join("third_party/ot61-crt/vendor");
+    let flags = [
+        "--target=x86_64-unknown-none-elf".to_string(),
+        "-mno-red-zone".into(),
+        "-mcmodel=small".into(),
+        "-fno-pic".into(),
+        "-fno-pie".into(),
+        "-fno-stack-protector".into(),
+        "-O2".into(),
+        "-ffunction-sections".into(),
+        "-fdata-sections".into(),
+        "-nostdinc".into(),
+        "-nostdinc++".into(),
+        "-D_XOPEN_SOURCE=700".into(),
+        format!("-I{}", root.join("userland/neo-crt/cxx").display()),
+        format!("-I{}", crt.join("libcxx/include").display()),
+        format!("-I{}", crt.join("musl-generated").display()),
+        format!("-I{}", crt.join("musl/arch/x86_64").display()),
+        format!("-I{}", crt.join("musl/arch/generic").display()),
+        format!("-I{}", crt.join("musl/include").display()),
+        format!("-isystem{}", builtin.display()),
+    ]
+    .join(" ");
+    let t = "x86_64_unknown_neoplutarch";
+    cmd.env("CRATE_CC_NO_DEFAULTS", "1")
+        .env(format!("CC_{t}"), &clang)
+        .env(format!("CXX_{t}"), &clang)
+        .env(format!("CXXFLAGS_{t}"), &flags)
+        .env(format!("CXXSTDLIB_{t}"), "");
+    Ok(())
+}
+
+/// `cargo xtask ot61-swgl-build`: apply the std overlay and build the SWGL S1
+/// smoke, with its A4 checks, without a QEMU run (the CI job that runs SWGL's
+/// build script and shader translator first, per J.c.'s C2.3b ruling).
+fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-swgl-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+    let elf = std_real_bin_path(SWGL_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
+}
+
+/// Build one standalone std smoke (the overlay must already be applied) and
+/// run the A4 checks on it: nothing it links (the vendored crates, the C
+/// runtime) may add a `syscall` site or a TCB read of its own.
+fn build_standalone_std_smoke(package: &str, bins: &[&str], dir: &str) -> Result<(), String> {
     invalidate_stale_overlay_std_in(
         &workspace_root().join(dir).join("target"),
         "RUSTC_BOOTSTRAP_SYNTHETIC_TARGET=1",
     )?;
-    build_member(
-        &format!("userspace {bin}"),
-        bin,
-        bin,
-        dir,
-        "x86_64-unknown-neoplutarch",
-        &[],
-        false,
-    )?;
-    let elf = std_real_bin_path(bin);
-    verify_std_real_syscall_sites(&elf)?;
-    verify_std_real_tcb_reads(&elf)
+    for bin in bins {
+        build_member(
+            &format!("userspace {bin}"),
+            package,
+            bin,
+            dir,
+            "x86_64-unknown-neoplutarch",
+            &[],
+            false,
+        )?;
+        let elf = std_real_bin_path(bin);
+        verify_std_real_syscall_sites(&elf)?;
+        verify_std_real_tcb_reads(&elf)?;
+    }
+    Ok(())
+}
+
+/// `cargo xtask ot61-crt-build`: apply the std overlay and build the C3a
+/// C/C++ runtime smoke, with its A4 checks, without a QEMU run (the CI job
+/// that builds the runtime).
+fn cmd_ot61_crt_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-crt-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_cxx_runtime_smoke()?;
+    let elf = std_real_bin_path(CXX_RUNTIME_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-crt-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
 }
 
 /// `cargo xtask ot61-closure-build`: apply the std overlay and build the C2.3b
@@ -7576,7 +7890,7 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_closure_smoke(bin, dir)?;
+    build_standalone_std_smoke(bin, &[bin], dir)?;
     let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
@@ -8002,12 +8316,7 @@ fn std_real_smoke_path() -> PathBuf {
 /// The built ELF of a staged std bin: the closure smoke from its own crate,
 /// every other one from `userland/std-real-smoke`.
 fn std_real_bin_path(bin: &str) -> PathBuf {
-    if bin == SERVO_CLOSURE_BIN || bin == STYLO_SMOKE_BIN {
-        let dir = if bin == STYLO_SMOKE_BIN {
-            STYLO_SMOKE_DIR
-        } else {
-            SERVO_CLOSURE_DIR
-        };
+    if let Some(dir) = standalone_std_dir(bin) {
         workspace_root()
             .join(dir)
             .join("target/x86_64-unknown-neoplutarch/debug")
@@ -8088,11 +8397,14 @@ fn build_member_at_opt_level(
         eprintln!("[xtask] building {label} with dev opt-level=2");
         cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "2");
     }
-    if subdir == "userland/std-real-smoke" || is_closure_smoke_dir(subdir) {
+    if subdir == "userland/std-real-smoke" || is_standalone_std_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if is_closure_smoke_dir(subdir) {
+    if subdir == SWGL_DIR {
+        swgl_cc_env(&mut cmd)?;
+    }
+    if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
         // list (JSON targets included), and then every crate that uses std
         // needs `#![feature(restricted_std)]`: the vendored closure would need
@@ -8771,6 +9083,9 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     let mut bare_metal_mode = false;
     let mut include_explicit = false;
     let mut keep_going = false;
+    let mut rerun_timeouts = false;
+    let mut quick_tier = false;
+    let mut changed_from: Option<String> = None;
     let mut shard: Option<ShardSpec> = None;
     let mut requested: Vec<&str> = Vec::new();
 
@@ -8784,6 +9099,25 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
             "--build-only" => build_only = true,
             "--bare-metal-mode" => bare_metal_mode = true,
             "--keep-going" => keep_going = true,
+            "--rerun-timeouts" => rerun_timeouts = true,
+            "--tier" => {
+                idx += 1;
+                match args.get(idx).map(String::as_str) {
+                    Some("quick") => quick_tier = true,
+                    Some("full") => quick_tier = false,
+                    other => {
+                        return Err(format!("--tier takes `quick` or `full`, got {other:?}"));
+                    }
+                }
+            }
+            "--changed-from" => {
+                idx += 1;
+                changed_from = Some(
+                    args.get(idx)
+                        .ok_or_else(|| "--changed-from requires a git ref".to_string())?
+                        .clone(),
+                );
+            }
             "all" => include_explicit = true,
             "-h" | "--help" => {
                 print_neo_test_help();
@@ -8831,7 +9165,53 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
         );
     }
 
-    let mut scenarios = select_test_scenarios(&requested, include_ignored, include_explicit)?;
+    if quick_tier
+        && (shard.is_some()
+            || !requested.is_empty()
+            || build_only
+            || bare_metal_mode
+            || include_ignored)
+    {
+        return Err(
+            "--tier quick selects its own set; it cannot be combined with --shard, named scenarios, \
+             --build-only, --bare-metal-mode, or --include-ignored"
+                .to_string(),
+        );
+    }
+    if changed_from.is_some() && !quick_tier {
+        return Err("--changed-from only applies to --tier quick".to_string());
+    }
+    if rerun_timeouts && !keep_going {
+        return Err("--rerun-timeouts only applies with --keep-going".to_string());
+    }
+
+    let mut scenarios = if quick_tier {
+        let added = match &changed_from {
+            Some(base) => git_diff_added_lines(base)?,
+            None => Vec::new(),
+        };
+        let suite = select_test_scenarios(&[], false, false)?;
+        let (picked, full_only) = quick_tier_scenarios(&suite, &added);
+        eprintln!(
+            "[xtask] neo-test tier quick: {} scenario(s): {}",
+            picked.len(),
+            picked.iter().map(|s| s.name).collect::<Vec<_>>().join(" ")
+        );
+        for (name, why) in FULL_TIER_ONLY_EXCLUDED {
+            eprintln!(
+                "[xtask] neo-test tier quick: `{name}` runs in the full tier only ({why}; over the cost rule)"
+            );
+        }
+        if !full_only.is_empty() {
+            eprintln!(
+                "[xtask] neo-test tier quick: changed but over the quick budget (full tier only): {}",
+                full_only.join(" ")
+            );
+        }
+        picked
+    } else {
+        select_test_scenarios(&requested, include_ignored, include_explicit)?
+    };
     if let Some(spec) = shard {
         scenarios = shard_partition(&scenarios, spec);
         eprintln!(
@@ -8875,11 +9255,20 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     };
     let label = match shard {
         Some(spec) => format!("shard {}/{}", spec.index, spec.count),
+        None if quick_tier => "tier quick".to_string(),
         None => "run".to_string(),
     };
-    run_scenarios_timed(&scenarios, &label, keep_going, |scenario| {
-        run_test_scenario_with_retries(scenario, mode)
-    })?;
+    let policy = RunPolicy {
+        keep_going,
+        rerun_timeouts,
+    };
+    run_scenarios_timed(
+        &scenarios,
+        &label,
+        policy,
+        |scenario| run_test_scenario_with_retries(scenario, mode),
+        take_qemu_runs,
+    )?;
 
     // The deliberate-failure meta-test is a runner self-check that the
     // un-sharded suite runs exactly once at the end. Under sharding it must
@@ -8907,24 +9296,79 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
 /// through `run_with_timeout_and_dump`).
 static QEMU_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static QEMU_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Whether the most recent QEMU run hit its timeout (OT-58 THINK 2.5: a
+/// timeout is classified apart from a scenario failure, and re-run once).
+static QEMU_LAST_TIMED_OUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-fn record_qemu_run(elapsed: Duration) {
+fn record_qemu_run(elapsed: Duration, timed_out: bool) {
     use std::sync::atomic::Ordering;
     QEMU_MILLIS.fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
     QEMU_RUNS.fetch_add(1, Ordering::Relaxed);
+    QEMU_LAST_TIMED_OUT.store(timed_out, Ordering::Relaxed);
 }
 
-fn take_qemu_runs() -> (Duration, u32) {
+/// What the QEMU runs of one scenario add up to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct QemuTally {
+    qemu: Duration,
+    runs: u32,
+    last_timed_out: bool,
+}
+
+fn take_qemu_runs() -> QemuTally {
     use std::sync::atomic::Ordering;
-    (
-        Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
-        QEMU_RUNS.swap(0, Ordering::Relaxed),
-    )
+    QemuTally {
+        qemu: Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
+        runs: QEMU_RUNS.swap(0, Ordering::Relaxed),
+        last_timed_out: QEMU_LAST_TIMED_OUT.swap(false, Ordering::Relaxed),
+    }
 }
 
 const TIMINGS_TSV_REL: &str = "target/neo-test/timings.tsv";
 const TIMINGS_SUMMARY_REL: &str = "target/neo-test/timings-summary.md";
 const TIMINGS_TSV_HEADER: &str = "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n";
+
+/// A scenario's outcome, as the timing table's `result` column records it
+/// (OT-58 THINK 2.5, the classification `batch-report` sorts by):
+/// - `pass`;
+/// - `FAIL`: QEMU ran and the scenario failed (an assertion, an exit status);
+/// - `FAIL-build`: it failed before any QEMU run (its kernel, userland or
+///   image build);
+/// - `FAIL-timeout`: its last QEMU run hit the scenario's timeout.
+///
+/// A row for a `--rerun-timeouts` re-run carries the same word after
+/// `rerun-` (`rerun-pass`, `rerun-FAIL-timeout`, ...).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScenarioOutcome {
+    Pass,
+    Fail,
+    BuildFail,
+    Timeout,
+}
+
+impl ScenarioOutcome {
+    fn classify(ok: bool, tally: QemuTally) -> Self {
+        if ok {
+            Self::Pass
+        } else if tally.runs == 0 {
+            Self::BuildFail
+        } else if tally.last_timed_out {
+            Self::Timeout
+        } else {
+            Self::Fail
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "FAIL",
+            Self::BuildFail => "FAIL-build",
+            Self::Timeout => "FAIL-timeout",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct ScenarioTiming {
@@ -8932,13 +9376,27 @@ struct ScenarioTiming {
     wall: Duration,
     qemu: Duration,
     qemu_runs: u32,
-    passed: bool,
+    outcome: ScenarioOutcome,
+    /// This row is a `--rerun-timeouts` re-run.
+    rerun: bool,
 }
 
 impl ScenarioTiming {
     /// Everything that isn't QEMU: the kernel and userland builds, the image.
     fn build(&self) -> Duration {
         self.wall.saturating_sub(self.qemu)
+    }
+
+    fn passed(&self) -> bool {
+        self.outcome == ScenarioOutcome::Pass
+    }
+
+    fn result(&self) -> String {
+        if self.rerun {
+            format!("rerun-{}", self.outcome.word())
+        } else {
+            self.outcome.word().to_string()
+        }
     }
 }
 
@@ -8950,7 +9408,7 @@ fn timings_tsv_row(t: &ScenarioTiming) -> String {
         t.qemu.as_secs_f64(),
         t.build().as_secs_f64(),
         t.qemu_runs,
-        if t.passed { "pass" } else { "FAIL" }
+        t.result()
     )
 }
 
@@ -8961,7 +9419,7 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
     sorted.sort_by(|a, b| b.wall.cmp(&a.wall).then_with(|| a.name.cmp(b.name)));
     let wall: Duration = rows.iter().map(|t| t.wall).sum();
     let qemu: Duration = rows.iter().map(|t| t.qemu).sum();
-    let failed = rows.iter().filter(|t| !t.passed).count();
+    let failed = rows.iter().filter(|t| !t.passed()).count();
     let mut out = String::new();
     if markdown {
         out.push_str(&format!(
@@ -8980,7 +9438,7 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
                 t.qemu.as_secs_f64(),
                 t.build().as_secs_f64(),
                 t.qemu_runs,
-                if t.passed { "pass" } else { "FAIL" }
+                t.result()
             ));
         }
     } else {
@@ -8999,15 +9457,29 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
     out
 }
 
-/// Run `scenarios` in order through `run`, timing each one. Without
-/// `keep_going`, stop at the first failure and return its error (the behaviour
-/// before S0). With it, run them all and fail with the list of failures. The
-/// timings are written either way.
+/// How `run_scenarios_timed` treats failures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RunPolicy {
+    /// Run every scenario, then fail with the list (OT-58 S0).
+    keep_going: bool,
+    /// With `keep_going`: re-run each scenario whose last QEMU run timed out,
+    /// once, after the others (OT-58 THINK 2.5; hosted TCG time varies, #19).
+    /// A timeout that passes on its re-run is not a failure, but it is
+    /// reported, since its timeout needs raising.
+    rerun_timeouts: bool,
+}
+
+/// Run `scenarios` in order through `run`, timing each one; `take` reads (and
+/// resets) the QEMU time the scenario used. Without `keep_going`, stop at the
+/// first failure and return its error (the behaviour before S0). With it, run
+/// them all and fail with the list of failures. The timings are written either
+/// way.
 fn run_scenarios_timed(
     scenarios: &[TestScenario],
     label: &str,
-    keep_going: bool,
+    policy: RunPolicy,
     mut run: impl FnMut(TestScenario) -> Result<(), String>,
+    mut take: impl FnMut() -> QemuTally,
 ) -> Result<(), String> {
     let root = workspace_root();
     let tsv_path = root.join(TIMINGS_TSV_REL);
@@ -9015,32 +9487,66 @@ fn run_scenarios_timed(
     let _ = fs::write(&tsv_path, TIMINGS_TSV_HEADER);
     let mut rows: Vec<ScenarioTiming> = Vec::new();
     let mut failures: Vec<(&'static str, String)> = Vec::new();
-    for &scenario in scenarios {
-        let _ = take_qemu_runs();
+    let mut timed_out: Vec<TestScenario> = Vec::new();
+    let mut timed_one = |scenario: TestScenario, rerun: bool, rows: &mut Vec<ScenarioTiming>| {
+        let _ = take();
         let start = Instant::now();
         let result = run(scenario);
-        let (qemu, qemu_runs) = take_qemu_runs();
+        let tally = take();
         let row = ScenarioTiming {
             name: scenario.name,
             wall: start.elapsed(),
-            qemu,
-            qemu_runs,
-            passed: result.is_ok(),
+            qemu: tally.qemu,
+            qemu_runs: tally.runs,
+            outcome: ScenarioOutcome::classify(result.is_ok(), tally),
+            rerun,
         };
         if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&tsv_path) {
             let _ = f.write_all(timings_tsv_row(&row).as_bytes());
         }
+        let outcome = row.outcome;
         rows.push(row);
+        (result, outcome)
+    };
+    for &scenario in scenarios {
+        let (result, outcome) = timed_one(scenario, false, &mut rows);
         if let Err(e) = result {
-            if !keep_going {
+            if !policy.keep_going {
                 emit_timings_summary(label, &rows);
                 return Err(e);
             }
             eprintln!(
-                "[xtask] neo-test: `{}` FAILED (keep-going): {e}",
-                scenario.name
+                "[xtask] neo-test: `{}` {} (keep-going): {e}",
+                scenario.name,
+                outcome.word()
             );
+            if policy.rerun_timeouts && outcome == ScenarioOutcome::Timeout {
+                timed_out.push(scenario);
+            }
             failures.push((scenario.name, e));
+        }
+    }
+    for scenario in timed_out {
+        eprintln!(
+            "[xtask] neo-test: `{}` timed out; re-running it once (--rerun-timeouts)",
+            scenario.name
+        );
+        let (result, outcome) = timed_one(scenario, true, &mut rows);
+        match result {
+            Ok(()) => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` passed on its re-run: a hosted-time timeout, not a \
+                     failure. Raise its timeout, with the elapsed time in the commit.",
+                    scenario.name
+                );
+                failures.retain(|(n, _)| *n != scenario.name);
+            }
+            Err(e) => {
+                let msg = format!("re-run {}: {e}", outcome.word());
+                if let Some(f) = failures.iter_mut().find(|(n, _)| *n == scenario.name) {
+                    f.1 = format!("{}; {msg}", f.1);
+                }
+            }
         }
     }
     emit_timings_summary(label, &rows);
@@ -9420,6 +9926,12 @@ fn print_neo_test_help() {
     println!(
         "    cargo neo-test ... --keep-going run every selected scenario, then fail with the list"
     );
+    println!(
+        "    cargo neo-test ... --keep-going --rerun-timeouts  re-run each timed-out scenario once at the end"
+    );
+    println!(
+        "    cargo neo-test --tier quick [--changed-from REF]  the smoke list, plus scenarios the diff adds or edits"
+    );
     println!("    cargo neo-test SCENARIO --bare-metal-mode");
     println!("    cargo neo-test --build-only SCENARIO");
     println!("    cargo neo-test --build-only SCENARIO --bare-metal-mode");
@@ -9705,6 +10217,601 @@ fn is_hardware_only_scenario(scenario: TestScenario) -> bool {
             | "mt7601u_scan_baremetal"
             | "mt7601u_assoc_baremetal"
     )
+}
+
+// === tiered gate (OT-58 S1) ===
+//
+// The quick tier (every PR) runs SMOKE_SCENARIOS plus the scenarios a diff adds
+// or edits, within the same cost budget. `gate-plan` decides whether a diff may
+// take the quick tier or must get the full tier on its own: the SMP/concurrency
+// core, the test machinery, the workflow, the build configuration, or anything
+// under `kernel/` it can't classify. Spec:
+// docs/THINK-2026-11-01-ot58-tiered-gate.md, sections 2.2 and 2.3.
+
+/// Per-scenario cost on GitHub-hosted runners: `scenario<TAB>wall_s<TAB>qemu_s`
+/// rows, from S0's timing table. `#` lines are comments.
+const HOSTED_TIMINGS_TSV: &str = include_str!("../data/hosted-timings.tsv");
+
+/// The quick tier's cost rule: measured hosted wall time (build + image +
+/// QEMU), seconds.
+const QUICK_WALL_BUDGET_S: f64 = 35.0;
+
+/// The quick tier's fixed QEMU set (THINK section 2.2). Every entry is in the
+/// default suite and meets QUICK_WALL_BUDGET_S in HOSTED_TIMINGS_TSV (host
+/// tests check both). Promotion of an escaped scenario adds a line here.
+const SMOKE_SCENARIOS: &[&str] = &[
+    // The boot and capability floor.
+    "kaslr_smoke",
+    "smp_same_cpu_ipc",
+    "cap_mint_and_use",
+    "cap_grant_basic",
+    "cap_revoke_descendants_walk",
+    "boot_neofs_userland_persistence",
+    "ring3_fault_de",
+    "ring3_fault_db",
+    "ring3_fault_ud",
+    "ring3_fault_gp",
+    "ring3_fault_mf",
+    // Entry paths and context.
+    "exception_entry_flags",
+    "syscall_return_clean_regs",
+    "smap_policy",
+    "user_copy_bounds",
+    "irq_xmm_preserve",
+    "kaslr_heap_contract",
+    "xsave_ymm_context_switch",
+    // Containment and disk safety.
+    "dma_arena_fence",
+    "vtd_fence",
+    "block_write_guard",
+    // Lifecycle and SMP.
+    "kill_at_exit",
+    "exit_codes_bounded",
+    "threads_futex",
+    "smp_per_cpu_scheduler_smoke",
+    "smp_cross_cpu_migration_reap",
+    "wait_any_core",
+    "sys_wait_blocking",
+    // Escaped defects (OT-59, OT-59 #2, CP-97).
+    "swapgs_irq_ring3",
+    "virtio_blk_io_gate_contention",
+    "lock_route_races",
+];
+
+/// Discriminators that belong in the quick tier but break the cost rule, so
+/// they run in the full tier only (THINK 2.2's table).
+const FULL_TIER_ONLY_EXCLUDED: &[(&str, &str)] = &[
+    ("login_lock_park", "CP-97's second discriminator"),
+    (
+        "kill_ready_in_kernel",
+        "CP-95, a kill of a thread Ready inside a syscall",
+    ),
+];
+
+/// THINK 2.3.1: a diff that only adds a new scenario (its feature in
+/// kernel/Cargo.toml, its TestScenario block, and harness code gated on its
+/// feature) keeps the quick tier. Off: any change to the harness or xtask is
+/// full-alone.
+const SCENARIO_ONLY_EXCEPTION: bool = true;
+
+fn hosted_wall_s(name: &str) -> Option<f64> {
+    HOSTED_TIMINGS_TSV
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .skip(1)
+        .find_map(|l| {
+            let mut cols = l.split('\t');
+            (cols.next() == Some(name)).then(|| cols.next()?.parse().ok())?
+        })
+}
+
+/// Whether a scenario the diff adds or edits may run in the quick tier: within
+/// the cost rule if measured; if new, only with the default timeout and not an
+/// install scenario (the smoke job's own budget check catches the rest).
+fn changed_scenario_quick_ok(scenario: TestScenario) -> bool {
+    match hosted_wall_s(scenario.name) {
+        Some(wall) => wall <= QUICK_WALL_BUDGET_S,
+        None => {
+            scenario_timeout(scenario.name) == TEST_TIMEOUT && !is_install_scenario(scenario.name)
+        }
+    }
+}
+
+/// The quick tier: the smoke list, then every other default-suite scenario a
+/// diff's added lines name that meets the budget. Returns that set and the
+/// named scenarios left to the full tier.
+fn quick_tier_scenarios(
+    suite: &[TestScenario],
+    added_lines: &[String],
+) -> (Vec<TestScenario>, Vec<&'static str>) {
+    let mut quick: Vec<TestScenario> = SMOKE_SCENARIOS
+        .iter()
+        .filter_map(|name| suite.iter().find(|s| s.name == *name).copied())
+        .collect();
+    let mut full_only = Vec::new();
+    for scenario in suite {
+        if quick.iter().any(|s| s.name == scenario.name) {
+            continue;
+        }
+        if added_lines
+            .iter()
+            .any(|line| line_names_scenario(line, *scenario))
+        {
+            if changed_scenario_quick_ok(*scenario) {
+                quick.push(*scenario);
+            } else {
+                full_only.push(scenario.name);
+            }
+        }
+    }
+    (quick, full_only)
+}
+
+fn line_names_scenario(line: &str, scenario: TestScenario) -> bool {
+    line.contains(&format!("\"{}\"", scenario.name))
+        || contains_token(line, scenario.feature)
+        || scenario
+            .user_feature
+            .is_some_and(|feature| contains_token(line, feature))
+}
+
+/// `token` occurs in `line` with no feature-name character (`[A-Za-z0-9_-]`)
+/// on either side, so `neo-test-x` does not match `neo-test-x-control`.
+fn contains_token(line: &str, token: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut from = 0;
+    while let Some(pos) = line[from..].find(token) {
+        let at = from + pos;
+        let before = line[..at].chars().next_back();
+        let after = line[at + token.len()..].chars().next();
+        if !before.is_some_and(is_word) && !after.is_some_and(is_word) {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// What a diff needs (THINK section 2.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GateTier {
+    Quick,
+    /// The full tier on this change alone, with the reasons.
+    FullAlone(Vec<String>),
+}
+
+/// Paths that take the full tier alone (THINK 2.3 items 1-7). An entry ending
+/// in `/` is a directory. The longest matching entry across this list and
+/// NON_CORE_PATHS decides, so a non-core file inside a core directory (or a
+/// core file inside a non-core directory) is named exactly.
+const CORE_PATHS: &[&str] = &[
+    // 1. Scheduler, threads, kill, futex, wait.
+    "kernel/src/sched/",
+    // 2. Locks.
+    "kernel/src/sync/",
+    // 3. Memory: buddy/frame (CP-29), slab, heap, TLB shootdown, pmap.
+    "kernel/src/mm/",
+    // 4. Per-CPU, AP bring-up, entry paths, IPIs, timers, SMAP window, FPU.
+    "kernel/src/arch/",
+    "kernel/src/main.rs",
+    "kernel/src/panic.rs",
+    // 5. Cross-CPU work in other directories.
+    "kernel/src/ai/par_matmul.rs",
+    "kernel/src/ipc/",
+    "kernel/src/watchdog.rs",
+    "kernel/src/drivers/block/virtio_blk.rs",
+    // 6. Build configuration (kernel/Cargo.toml is special-cased).
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "Dockerfile",
+    "docker-compose.yml",
+    ".cargo/",
+    "kernel/.cargo/",
+    "kernel/build.rs",
+    "kernel/linker.ld",
+    "kernel/x86_64-neoplutarch.json",
+    // 7. The test machinery and the workflow.
+    "kernel/src/test_harness.rs",
+    "kernel/src/test_harness_latency_oracle.rs",
+    "tools/xtask/",
+    "scripts/",
+    ".github/workflows/",
+];
+
+/// Paths under `kernel/` that may take the quick tier. Together with
+/// CORE_PATHS this covers every file under `kernel/` (a host test checks); a
+/// `kernel/` path on neither list is full-alone.
+const NON_CORE_PATHS: &[&str] = &[
+    "kernel/assets/",
+    "kernel/src/acpi/",
+    "kernel/src/ai/",
+    "kernel/src/atrium/",
+    "kernel/src/drivers/",
+    "kernel/src/fs/",
+    "kernel/src/init/",
+    "kernel/src/loader/",
+    "kernel/src/log/",
+    "kernel/src/net/",
+    "kernel/src/rng/",
+    "kernel/src/scenario/",
+    "kernel/src/boot_model_logic.rs",
+    "kernel/src/boot_modules.rs",
+    // #16 (L7.1): write-once TSC stamps and firmware-table reads; no lock,
+    // scheduler or per-CPU state.
+    "kernel/src/boot_time.rs",
+    "kernel/src/boot_time_logic.rs",
+    "kernel/src/errno.rs",
+    "kernel/src/install_bundle_logic.rs",
+    "kernel/src/install_ui_logic.rs",
+    "kernel/src/installer.rs",
+    "kernel/src/installer_ui.rs",
+    "kernel/src/limine_file_logic.rs",
+    "kernel/src/neofs_model.rs",
+    "kernel/src/observability.rs",
+    "kernel/src/user_fault_logic.rs",
+    "kernel/src/watchdog_timeline_logic.rs",
+    // Pure logic helpers inside the core directories.
+    "kernel/src/sched/cap_graph_logic.rs",
+    "kernel/src/sched/file_cap_logic.rs",
+    "kernel/src/sched/gpu_compute_cap_logic.rs",
+    "kernel/src/sched/gpu_submit_cap_logic.rs",
+    "kernel/src/sched/handle_info_logic.rs",
+    "kernel/src/sched/net_dial_cap_logic.rs",
+    "kernel/src/sched/wait_any_logic.rs",
+    "kernel/src/mm/hhdm_requirements.rs",
+    "kernel/src/mm/inference_stack_logic.rs",
+    "kernel/src/mm/mem_account_logic.rs",
+    "kernel/src/mm/module_reclaim_logic.rs",
+    "kernel/src/arch/x86_64/cpufreq.rs",
+    "kernel/src/arch/x86_64/cpufreq_logic.rs",
+    "kernel/src/arch/x86_64/ioapic_logic.rs",
+    "kernel/src/arch/x86_64/lapic_timer_logic.rs",
+    "kernel/src/arch/x86_64/pit.rs",
+    "kernel/src/arch/x86_64/refclock.rs",
+    "kernel/src/arch/x86_64/rtc.rs",
+    "kernel/src/arch/x86_64/rtc_logic.rs",
+];
+
+/// How one path classifies: `Some(true)` core, `Some(false)` non-core, `None`
+/// on neither list.
+fn path_is_core(path: &str) -> Option<bool> {
+    let longest = |list: &[&str]| {
+        list.iter()
+            .filter(|entry| {
+                if entry.ends_with('/') {
+                    path.starts_with(**entry)
+                } else {
+                    path == **entry
+                }
+            })
+            .map(|e| e.len())
+            .max()
+    };
+    let core = longest(CORE_PATHS);
+    let non_core = longest(NON_CORE_PATHS);
+    match (core, non_core) {
+        (None, None) => None,
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        (Some(c), Some(n)) => Some(c > n),
+    }
+}
+
+/// One file's part of a `git diff -U0`: its path and its added and removed
+/// lines (without the `+`/`-`), grouped by hunk.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FileDiff {
+    path: String,
+    hunks: Vec<Hunk>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Hunk {
+    added: Vec<String>,
+    removed: Vec<String>,
+}
+
+impl FileDiff {
+    fn added(&self) -> impl Iterator<Item = &String> {
+        self.hunks.iter().flat_map(|h| h.added.iter())
+    }
+    fn removes_anything(&self) -> bool {
+        self.hunks.iter().any(|h| !h.removed.is_empty())
+    }
+}
+
+/// Parse `git diff --no-color -U0 --no-renames` output. `---`/`+++` are file
+/// headers only between `diff --git` and the file's first `@@`, so a removed
+/// line whose text starts with `-- ` is not taken for one. A deleted file's
+/// path is its old path; every other file's is its new path.
+fn parse_unified_diff(diff: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut in_header = false;
+    let mut old_path = String::new();
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            in_header = true;
+            old_path.clear();
+            // Fallback for a binary or mode-only change, which has no `+++`.
+            let path = rest.rsplit(" b/").next().unwrap_or_default().to_string();
+            files.push(FileDiff {
+                path,
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
+        if line.starts_with("@@") {
+            in_header = false;
+            file.hunks.push(Hunk::default());
+        } else if in_header {
+            if let Some(p) = line.strip_prefix("--- ") {
+                old_path = p.strip_prefix("a/").unwrap_or(p).to_string();
+            } else if let Some(p) = line.strip_prefix("+++ ") {
+                file.path = if p == "/dev/null" {
+                    old_path.clone()
+                } else {
+                    p.strip_prefix("b/").unwrap_or(p).to_string()
+                };
+            }
+        } else if let Some(hunk) = file.hunks.last_mut() {
+            if let Some(a) = line.strip_prefix('+') {
+                hunk.added.push(a.to_string());
+            } else if let Some(r) = line.strip_prefix('-') {
+                hunk.removed.push(r.to_string());
+            }
+        }
+    }
+    files
+}
+
+fn is_comment_or_blank(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty() || t.starts_with("//") || t.starts_with('#') && !t.starts_with("#[")
+}
+
+/// The `neo-test-*` features a kernel/Cargo.toml diff adds, if every changed
+/// line there is such an addition (or a comment); `None` otherwise.
+fn cargo_toml_test_feature_additions(file: &FileDiff) -> Option<Vec<String>> {
+    if file.removes_anything() {
+        return None;
+    }
+    let mut features = Vec::new();
+    for line in file.added() {
+        if is_comment_or_blank(line) {
+            continue;
+        }
+        let (name, rest) = line.split_once('=')?;
+        let name = name.trim();
+        if !name.starts_with("neo-test-")
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || !rest.trim().starts_with('[')
+        {
+            return None;
+        }
+        features.push(name.to_string());
+    }
+    Some(features)
+}
+
+/// THINK 2.3.1 for test_harness.rs: only added lines, each a feature-list arm
+/// for a new feature, a comment, or inside an item opened by
+/// `#[cfg(feature = "<new>")]` (tracked by brace depth within each hunk).
+fn harness_diff_is_scenario_only(file: &FileDiff, new_features: &[String]) -> bool {
+    if file.removes_anything() || new_features.is_empty() {
+        return false;
+    }
+    let is_new = |line: &str, prefix: &str, suffix: &str| {
+        new_features
+            .iter()
+            .any(|f| line == format!("{prefix}{f}{suffix}"))
+    };
+    for hunk in &file.hunks {
+        let mut gated = false;
+        let mut depth: i64 = 0;
+        for line in &hunk.added {
+            let t = line.trim();
+            if gated {
+                depth += t.matches('{').count() as i64 - t.matches('}').count() as i64;
+                if depth <= 0 && (t.ends_with(';') || t.ends_with('}') || t.ends_with(',')) {
+                    gated = false;
+                    depth = 0;
+                }
+                continue;
+            }
+            if is_comment_or_blank(t) || is_new(t, "feature = \"", "\",") {
+                continue;
+            }
+            if is_new(t, "#[cfg(feature = \"", "\")]") {
+                gated = true;
+                depth = 0;
+                continue;
+            }
+            return false;
+        }
+        if gated {
+            return false;
+        }
+    }
+    true
+}
+
+/// THINK 2.3.1 for xtask's main.rs: only added lines, forming whole
+/// `TestScenario { … }` blocks (in any alignment the diff picked) whose
+/// feature is a new one.
+fn xtask_diff_is_scenario_only(file: &FileDiff, new_features: &[String]) -> bool {
+    if file.removes_anything() || new_features.is_empty() {
+        return false;
+    }
+    let mut opens = 0;
+    let mut closes = 0;
+    let mut new_feature_lines = 0;
+    for line in file.added() {
+        let t = line.trim();
+        if is_comment_or_blank(t) {
+            continue;
+        }
+        if t == "TestScenario {" {
+            opens += 1;
+        } else if t == "}," {
+            closes += 1;
+        } else if let Some(f) = t
+            .strip_prefix("feature: \"")
+            .and_then(|r| r.strip_suffix("\","))
+        {
+            if !new_features.iter().any(|n| n == f) {
+                return false;
+            }
+            new_feature_lines += 1;
+        } else if !(t.starts_with("name: \"")
+            || t.starts_with("user_feature: ")
+            || t.starts_with("ignored: ")
+            || t.starts_with("limine_kaslr: "))
+        {
+            return false;
+        }
+    }
+    opens > 0 && opens == closes && new_feature_lines == opens
+}
+
+/// Decide the tier from a parsed diff (THINK 2.3). Fail safe: a `kernel/` path
+/// on neither list is full-alone.
+fn classify_gate_tier(files: &[FileDiff]) -> GateTier {
+    let new_features = files
+        .iter()
+        .find(|f| f.path == "kernel/Cargo.toml")
+        .map(cargo_toml_test_feature_additions);
+    let mut reasons = Vec::new();
+    for file in files {
+        let path = file.path.as_str();
+        if path == "kernel/Cargo.toml" {
+            if !matches!(new_features, Some(Some(_))) {
+                reasons.push(format!(
+                    "build configuration {path} (changes beyond adding neo-test-* features)"
+                ));
+            }
+            continue;
+        }
+        let scenario_only = SCENARIO_ONLY_EXCEPTION
+            && match (&new_features, path) {
+                (Some(Some(new)), "kernel/src/test_harness.rs") => {
+                    harness_diff_is_scenario_only(file, new)
+                }
+                (Some(Some(new)), "tools/xtask/src/main.rs") => {
+                    xtask_diff_is_scenario_only(file, new)
+                }
+                _ => false,
+            };
+        if scenario_only {
+            continue;
+        }
+        match path_is_core(path) {
+            Some(true) => reasons.push(format!("core path {path}")),
+            Some(false) => {}
+            None if path.starts_with("kernel/") => {
+                reasons.push(format!("unclassified path {path}"))
+            }
+            None => {}
+        }
+    }
+    if reasons.is_empty() {
+        GateTier::Quick
+    } else {
+        GateTier::FullAlone(reasons)
+    }
+}
+
+fn git_capture(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("git {}: {e}", args.join(" ")))
+}
+
+/// `base...head`, parsed.
+fn git_diff_files(base: &str, head: &str) -> Result<Vec<FileDiff>, String> {
+    let range = format!("{base}...{head}");
+    let diff = git_capture(&["diff", "--no-color", "-U0", "--no-renames", &range])?;
+    Ok(parse_unified_diff(&diff))
+}
+
+/// The added lines of `base...HEAD`.
+fn git_diff_added_lines(base: &str) -> Result<Vec<String>, String> {
+    Ok(git_diff_files(base, "HEAD")?
+        .iter()
+        .flat_map(|f| f.added().cloned().collect::<Vec<_>>())
+        .collect())
+}
+
+/// `cargo xtask gate-plan --base REF [--head REF]`: print `tier=quick` or `tier=full-alone`
+/// with its reasons, the non-smoke scenarios the quick tier adds, and those the
+/// diff names that go to the full tier only, as one-line `key=value` lines for
+/// `$GITHUB_OUTPUT`. Any git failure (no merge base, a shallow fetch) gives
+/// `full-alone`, never `quick`.
+fn cmd_gate_plan(args: &[String]) -> Result<(), String> {
+    let usage = || "usage: cargo xtask gate-plan --base REF [--head REF]".to_string();
+    let (base, head) = match args {
+        [b, base] if b == "--base" => (base.clone(), "HEAD".to_string()),
+        [b, base, h, head] if b == "--base" && h == "--head" => (base.clone(), head.clone()),
+        _ => return Err(usage()),
+    };
+    let (tier, changed, full_only) = match git_diff_files(&base, &head) {
+        Ok(files) => {
+            let added: Vec<String> = files.iter().flat_map(|f| f.added().cloned()).collect();
+            let suite = select_test_scenarios(&[], false, false)?;
+            let (quick, full_only) = quick_tier_scenarios(&suite, &added);
+            let changed: Vec<&str> = quick
+                .iter()
+                .map(|s| s.name)
+                .filter(|n| !SMOKE_SCENARIOS.contains(n))
+                .collect();
+            (classify_gate_tier(&files), changed, full_only)
+        }
+        Err(e) => (
+            GateTier::FullAlone(vec![format!("diff unavailable: {e}")]),
+            Vec::new(),
+            Vec::new(),
+        ),
+    };
+    print!("{}", gate_plan_output(&tier, &changed, &full_only));
+    if let GateTier::FullAlone(reasons) = &tier {
+        for r in reasons {
+            eprintln!("[xtask] gate-plan: {r}");
+        }
+    }
+    Ok(())
+}
+
+/// `key=value` lines for `$GITHUB_OUTPUT`, one line each: any newline in a
+/// reason (a git error) is flattened.
+fn gate_plan_output(tier: &GateTier, changed: &[&str], full_only: &[&str]) -> String {
+    let mut out = String::new();
+    match tier {
+        GateTier::Quick => out.push_str("tier=quick\n"),
+        GateTier::FullAlone(reasons) => {
+            let flat: Vec<String> = reasons
+                .iter()
+                .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            out.push_str("tier=full-alone\n");
+            out.push_str(&format!("reasons={}\n", flat.join("; ")));
+        }
+    }
+    out.push_str(&format!("changed_scenarios={}\n", changed.join(" ")));
+    out.push_str(&format!("changed_full_only={}\n", full_only.join(" ")));
+    out
 }
 
 /// `cargo xtask shard-coverage N` — the sharding analog of a byte-oracle.
@@ -10070,7 +11177,11 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_s5_durability"
         | "ot90_straggler_forced"
         | "ot90_stuck_disk"
-        | "ot90_stuck_sink_off" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stuck_sink_off"
+        | "ot90_stop_cpus"
+        | "ot90_stop_holdout"
+        | "ot90_stop_shootdown"
+        | "ot90_stop_wedged" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -10172,10 +11283,157 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             ));
         }
     }
+    // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
+    // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
+    if scenario.name == "ot90_stop_cpus"
+        || scenario.name == "ot90_stop_holdout"
+        || scenario.name == "ot90_stop_shootdown"
+    {
+        let mut want = vec!["[ power ] K3 log flushed"];
+        if scenario.name == "ot90_stop_shootdown" {
+            want.insert(0, "stage=storm_ready ap=");
+        }
+        want.push("[ power ] K4 start");
+        if scenario.name == "ot90_stop_shootdown" {
+            want.push("[ power ] test: storm sent=");
+        }
+        want.extend([
+            "[ power ] K4 targets=",
+            "[ power ] K5 lapic_timer=",
+            "power: S5 PM1a=",
+        ]);
+        ot90_require_in_order(scenario.name, &serial, &want)?;
+        ot90_check_k5(&serial).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+        if serial.contains("tlb_shootdown_timeout") {
+            return Err(format!(
+                "`{}`: a TLB shootdown timed out; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(scenario.name == "ot90_stop_holdout", k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
+    if scenario.name == "ot90_stop_wedged" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 start",
+                "[ power ] K4 targets=",
+                "[ power ] K5 skipped: holdouts=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_wedged(k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    }
     eprintln!(
         "[xtask] neo-test: `{}` PASS on QMP {:?}",
         scenario.name, events
     );
+    Ok(())
+}
+
+/// Review #6 item 3: K5's line shows the PCI pass ran and left no function
+/// with MSI enabled or MSI-X unmasked, and names the I/O APIC result.
+fn ot90_check_k5(serial: &str) -> Result<(), String> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K5 lapic_timer="))
+        .ok_or("no K5 line")?;
+    let field = |key: &str| -> Option<u64> {
+        let at = line.find(key)? + key.len();
+        line[at..].split_whitespace().next()?.parse().ok()
+    };
+    if field("pci_functions=").unwrap_or(0) == 0 {
+        return Err(format!("K5 found no PCI function: {line}"));
+    }
+    if field("msi_left_on=") != Some(0) {
+        return Err(format!("K5 left MSI/MSI-X open: {line}"));
+    }
+    if !line.contains("ioapic=masked=") {
+        return Err(format!("K5 masked no I/O APIC (QEMU has a MADT): {line}"));
+    }
+    Ok(())
+}
+
+/// Review #6 item 2 `ot90_stop_wedged`: the highest AP is the one holdout,
+/// the rest parked by the STOP IPI, K5 skipped, and S5 still reached.
+fn ot90_check_wedged([targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets.count_ones() < 2 {
+        return Err("needs at least two APs (NEO_SMP >= 3)".into());
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    if holdouts != highest || ipi != targets & !highest || nmi != 0 {
+        return Err(format!(
+            "K4 ipi={ipi:#x} nmi={nmi:#x} holdouts={holdouts:#x}; expected ipi={:#x} nmi=0 holdouts={highest:#x}",
+            targets & !highest
+        ));
+    }
+    Ok(())
+}
+
+/// OT-90 P3b: K4's line, `targets parked_by_ipi parked_by_nmi holdouts`.
+fn ot90_k4_report(serial: &str) -> Option<[u64; 4]> {
+    let line = serial
+        .lines()
+        .find(|l| l.contains("[ power ] K4 targets="))?;
+    let mut out = [0u64; 4];
+    for (slot, key) in
+        out.iter_mut()
+            .zip(["targets=", "parked_by_ipi=", "parked_by_nmi=", "holdouts="])
+    {
+        let at = line.find(key)? + key.len();
+        let hex = line[at..]
+            .split_whitespace()
+            .next()?
+            .trim_start_matches("0x");
+        *slot = u64::from_str_radix(hex, 16).ok()?;
+    }
+    Some(out)
+}
+
+/// OT-90 P3b: every AP parked, none held out. `holdout`: the highest AP by
+/// NMI, the rest by the STOP IPI; else all by the STOP IPI.
+fn ot90_check_k4(holdout: bool, [targets, ipi, nmi, holdouts]: [u64; 4]) -> Result<(), String> {
+    if targets == 0 {
+        return Err("K4 had no AP to stop (run with NEO_SMP >= 2)".into());
+    }
+    if holdouts != 0 {
+        return Err(format!("K4 left CPUs {holdouts:#x} running"));
+    }
+    let highest = 1u64 << (63 - targets.leading_zeros());
+    let (want_ipi, want_nmi) = if holdout {
+        (targets & !highest, highest)
+    } else {
+        (targets, 0)
+    };
+    if ipi != want_ipi || nmi != want_nmi {
+        return Err(format!(
+            "K4 parked by IPI {ipi:#x} and by NMI {nmi:#x}; expected {want_ipi:#x} and {want_nmi:#x} of {targets:#x}"
+        ));
+    }
     Ok(())
 }
 
@@ -12437,6 +13695,7 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "arthur_memory_delegation"
             | "arthur_memory_forgetting"
             | "xsave_ymm_context_switch"
+            | "xsave_ebx_understated"
             // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
             // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
             | "irq_xmm_preserve"
@@ -13628,6 +14887,18 @@ const HMP_SUPER_ESCAPE: u8 = 0x9F;
 /// OT-66 L2: a screendump to `cap<N>.ppm` in [`HMP_CAPTURE_DIR`], N =
 /// byte - [`HMP_CAPTURE_0`] (0 to 4).
 const HMP_CAPTURE_0: u8 = 0x97;
+/// `ps2_keyboard`: press and release Caps Lock.
+const HMP_CAPS_LOCK: u8 = 0xA2;
+/// `ps2_keyboard`: `"` typed with the right Shift.
+const HMP_RSHIFT_QUOTE: u8 = 0xA3;
+/// `ps2_keyboard`, the keypad: keypad 7, `*` (0x37), `/` (`E0 35`), Enter
+/// (`E0 1C`), Num Lock (0x45), keypad 8.
+const HMP_KP_7: u8 = 0xA4;
+const HMP_KP_MULTIPLY: u8 = 0xA5;
+const HMP_KP_DIVIDE: u8 = 0xA6;
+const HMP_KP_ENTER: u8 = 0xA7;
+const HMP_NUM_LOCK: u8 = 0xA8;
+const HMP_KP_8: u8 = 0xA9;
 const HMP_CAPTURES: u8 = 5;
 /// Where the script's numbered captures go (the scenario sets it per boot).
 static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -13724,6 +14995,14 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         0x83 => Some("sendkey up\n"),
         0x84 => Some("sendkey ctrl_r-c\n"),
         0x85 => Some("sendkey pause\n"),
+        HMP_CAPS_LOCK => Some("sendkey caps_lock\n"),
+        HMP_RSHIFT_QUOTE => Some("sendkey shift_r-apostrophe\n"),
+        HMP_KP_7 => Some("sendkey kp_7\n"),
+        HMP_KP_MULTIPLY => Some("sendkey kp_multiply\n"),
+        HMP_KP_DIVIDE => Some("sendkey kp_divide\n"),
+        HMP_KP_ENTER => Some("sendkey kp_enter\n"),
+        HMP_NUM_LOCK => Some("sendkey num_lock\n"),
+        HMP_KP_8 => Some("sendkey kp_8\n"),
         HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
         HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
         HMP_PGUP => Some("sendkey pgup\n"),
@@ -13826,6 +15105,38 @@ fn hmp_key_for_byte(byte: u8) -> Option<&'static str> {
         b'[' => Some("bracket_left"),
         b']' => Some("bracket_right"),
         b'\\' => Some("backslash"),
+        b'`' => Some("grave_accent"),
+        // Shifted keys: QEMU presses Shift, the key, then releases both.
+        b'A'..=b'Z' => {
+            const KEYS: [&str; 26] = [
+                "shift-a", "shift-b", "shift-c", "shift-d", "shift-e", "shift-f", "shift-g",
+                "shift-h", "shift-i", "shift-j", "shift-k", "shift-l", "shift-m", "shift-n",
+                "shift-o", "shift-p", "shift-q", "shift-r", "shift-s", "shift-t", "shift-u",
+                "shift-v", "shift-w", "shift-x", "shift-y", "shift-z",
+            ];
+            Some(KEYS[(byte - b'A') as usize])
+        }
+        b'!' => Some("shift-1"),
+        b'@' => Some("shift-2"),
+        b'#' => Some("shift-3"),
+        b'$' => Some("shift-4"),
+        b'%' => Some("shift-5"),
+        b'^' => Some("shift-6"),
+        b'&' => Some("shift-7"),
+        b'*' => Some("shift-8"),
+        b'(' => Some("shift-9"),
+        b')' => Some("shift-0"),
+        b'_' => Some("shift-minus"),
+        b'+' => Some("shift-equal"),
+        b'{' => Some("shift-bracket_left"),
+        b'}' => Some("shift-bracket_right"),
+        b'|' => Some("shift-backslash"),
+        b':' => Some("shift-semicolon"),
+        b'"' => Some("shift-apostrophe"),
+        b'~' => Some("shift-grave_accent"),
+        b'<' => Some("shift-comma"),
+        b'>' => Some("shift-dot"),
+        b'?' => Some("shift-slash"),
         _ => None,
     }
 }
@@ -14245,7 +15556,21 @@ fn prepare_storage_disks(scenario_name: &str) -> Result<Vec<PathBuf>, String> {
         let device0 = output_dir.join(format!("{scenario_name}.device0.raw"));
         let device1 = output_dir.join(format!("{scenario_name}.fat32.raw"));
         let device0 = prepare_raw_storage_disk(&device0)?;
-        let device1 = prepare_fat32_storage_disk(&device1)?;
+        // L3a (G7): the same volume inside an MBR partition at LBA 2048.
+        let device1 = if scenario_uses_fat32_mbr_disk(scenario_name) {
+            prepare_fat32_mbr_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_fat16_read" {
+            // L3a-2: the same fixture on a FAT16 volume.
+            prepare_fat16_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_readonly_no_write" {
+            // L3a-2 (T4/T5): the FAT32 fixture, marked dirty.
+            prepare_fat32_dirty_storage_disk(&device1)?
+        } else if scenario_name == "phase3_fat32_loop_chain" {
+            // Chad's #18 review: looping chains.
+            prepare_fat32_loop_storage_disk(&device1)?
+        } else {
+            prepare_fat32_storage_disk(&device1)?
+        };
         return Ok(vec![device0, device1]);
     }
 
@@ -16053,6 +17378,67 @@ fn model_vocab_sidecar(
 }
 
 fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, FAT32_DISK_SIZE, &["-F", "-v", "NEOFAT32"])
+}
+
+/// L3a-2: the fixture on a 32 MiB volume `mformat` makes FAT16 (one-sector
+/// clusters, 65020 of them, under FAT16's 65525). The native driver refuses
+/// it; rust-fatfs reads it.
+fn prepare_fat16_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat_fixture_disk(path, 32 * 1024 * 1024, &["-v", "NEOFAT16"])?;
+    let mut boot = [0u8; 62];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut boot))
+        .map_err(|e| format!("read FAT16 boot sector {}: {e}", path.display()))?;
+    if &boot[54..62] != b"FAT16   " {
+        return Err(format!(
+            "mformat did not make FAT16 for {} (type field {:?})",
+            path.display(),
+            String::from_utf8_lossy(&boot[54..62])
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// L3a-2 (traps T4/T5): the FAT32 fixture, left as a stick pulled without
+/// unmounting: the BPB's status byte (0x41 on FAT32) has its dirty bit set,
+/// and FSInfo's free-cluster count (sector 1, byte 488) is out of range, so
+/// the mount's FSInfo check runs. A read-only mount must change neither.
+fn prepare_fat32_dirty_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("open FAT32 disk {}: {e}", path.display()))?;
+    let mut lead = [0u8; 4];
+    file.seek(SeekFrom::Start(512))
+        .and_then(|_| file.read_exact(&mut lead))
+        .map_err(|e| format!("read FSInfo {}: {e}", path.display()))?;
+    if &lead != b"RRaA" {
+        return Err(format!("{}: FSInfo is not at sector 1", path.display()));
+    }
+    let mut flags = [0u8; 1];
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.read_exact(&mut flags))
+        .map_err(|e| format!("read FAT32 status byte {}: {e}", path.display()))?;
+    file.seek(SeekFrom::Start(0x41))
+        .and_then(|_| file.write_all(&[flags[0] | 1]))
+        .and_then(|_| file.seek(SeekFrom::Start(512 + 488)))
+        .and_then(|_| file.write_all(&0xffff_fff0u32.to_le_bytes()))
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("mark FAT32 disk dirty {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// A blank `size`-byte image formatted by `mformat <format_args>`, holding
+/// the FAT fixture tree (hello, readme, subdir/nested, an LFN file, a
+/// `.neom` that must import as Regular).
+fn prepare_fat_fixture_disk(
+    path: &Path,
+    size: u64,
+    format_args: &[&str],
+) -> Result<PathBuf, String> {
     match fs::remove_file(path) {
         Ok(()) => {}
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
@@ -16061,14 +17447,17 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
 
     let file =
         fs::File::create(path).map_err(|e| format!("create FAT32 disk {}: {e}", path.display()))?;
-    file.set_len(FAT32_DISK_SIZE)
+    file.set_len(size)
         .map_err(|e| format!("size FAT32 disk {}: {e}", path.display()))?;
     file.sync_all()
         .map_err(|e| format!("sync empty FAT32 disk {}: {e}", path.display()))?;
     drop(file);
 
     let image = path.display().to_string();
-    run_mtools("mformat", &["-i", &image, "-F", "-v", "NEOFAT32", "::"])?;
+    let mut args = vec!["-i", image.as_str()];
+    args.extend_from_slice(format_args);
+    args.push("::");
+    run_mtools("mformat", &args)?;
 
     let fixture_dir = workspace_root()
         .join(TEST_OUTPUT_REL)
@@ -16104,6 +17493,141 @@ fn prepare_fat32_storage_disk(path: &Path) -> Result<PathBuf, String> {
     )?;
     run_mtools("mcopy", &["-i", &image, &weights_path, "::/weights.neom"])?;
 
+    Ok(path.to_path_buf())
+}
+
+/// Chad's #18 review: the FAT32 fixture plus `loop.bin` (three clusters) and
+/// `loopdir` (its first cluster filled with 8.3 entries, so it has no end
+/// marker), then both chains patched by hand in every FAT copy: the file's
+/// second cluster points back at its first (`A -> B -> A`), the directory's
+/// first cluster at itself.
+fn prepare_fat32_loop_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    prepare_fat32_storage_disk(path)?;
+    let image = path.display().to_string();
+    let mut img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let u16_at = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]) as usize;
+    let u32_at = |b: &[u8], at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+    let bps = u16_at(&img, 11);
+    let cluster = bps * img[13] as usize;
+    let fixture_dir = workspace_root()
+        .join(TEST_OUTPUT_REL)
+        .join("fat32-fixtures");
+    let loop_file = fixture_dir.join("loop.bin");
+    fs::write(&loop_file, vec![0x5au8; cluster * 3])
+        .map_err(|e| format!("write {}: {e}", loop_file.display()))?;
+    run_mtools(
+        "mcopy",
+        &[
+            "-i",
+            &image,
+            &loop_file.display().to_string(),
+            "::/LOOP.BIN",
+        ],
+    )?;
+    run_mtools("mmd", &["-i", &image, "::/LOOPDIR"])?;
+    let tiny = write_fat32_fixture(&fixture_dir, "tiny.txt", b"x")?;
+    for i in 0..cluster / 32 - 2 {
+        run_mtools(
+            "mcopy",
+            &[
+                "-i",
+                &image,
+                &tiny.display().to_string(),
+                &format!("::/LOOPDIR/F{i:04}.TXT"),
+            ],
+        )?;
+    }
+    img = fs::read(path).map_err(|e| format!("read FAT32 disk {}: {e}", path.display()))?;
+    let reserved = u16_at(&img, 14);
+    let fats = img[16] as usize;
+    let per_fat = u32_at(&img, 36) as usize;
+    let root_cluster = u32_at(&img, 44);
+    let fat_at = |c: u32| reserved * bps + c as usize * 4;
+    let data_at = |c: u32| (reserved + fats * per_fat) * bps + (c as usize - 2) * cluster;
+    let next = |img: &[u8], c: u32| u32_at(img, fat_at(c)) & 0x0fff_ffff;
+    // Find a short entry in the root directory (following its chain, bounded).
+    let find = |img: &[u8], name: &[u8; 11]| -> Result<u32, String> {
+        let mut c = root_cluster;
+        for _ in 0..64 {
+            let base = data_at(c);
+            for i in 0..cluster / 32 {
+                let e = &img[base + i * 32..base + i * 32 + 32];
+                if &e[0..11] == name {
+                    return Ok(((u16_at(e, 20) as u32) << 16) | u16_at(e, 26) as u32);
+                }
+            }
+            c = next(img, c);
+            if c >= 0x0fff_fff8 {
+                break;
+            }
+        }
+        Err(format!(
+            "{}: no {:?} in the root",
+            path.display(),
+            String::from_utf8_lossy(name)
+        ))
+    };
+    let file_first = find(&img, b"LOOP    BIN")?;
+    let dir_first = find(&img, b"LOOPDIR    ")?;
+    let file_second = next(&img, file_first);
+    if !(2..0x0fff_fff7).contains(&file_second) {
+        return Err(format!(
+            "{}: loop.bin has no second cluster",
+            path.display()
+        ));
+    }
+    for f in 0..fats {
+        let off = f * per_fat * bps;
+        let put = |img: &mut Vec<u8>, c: u32, v: u32| {
+            let at = off + fat_at(c);
+            img[at..at + 4].copy_from_slice(&v.to_le_bytes());
+        };
+        put(&mut img, file_second, file_first);
+        put(&mut img, dir_first, dir_first);
+    }
+    let dir_base = data_at(dir_first);
+    if (0..cluster / 32).any(|i| img[dir_base + i * 32] == 0) {
+        return Err(format!(
+            "{}: loopdir's first cluster is not full",
+            path.display()
+        ));
+    }
+    fs::write(path, &img).map_err(|e| format!("write FAT32 disk {}: {e}", path.display()))?;
+    Ok(path.to_path_buf())
+}
+
+/// L3a (G7): the `phase3_fat32_mbr_*` scenarios' device1 is an MBR disk.
+fn scenario_uses_fat32_mbr_disk(scenario_name: &str) -> bool {
+    scenario_name.starts_with("phase3_fat32_mbr_")
+}
+
+/// The first LBA of the FAT32 partition on the L3a (G7) MBR disk: 1 MiB in,
+/// where every current partitioning tool puts it.
+const FAT32_MBR_FIRST_LBA: u32 = 2048;
+
+/// L3a (G7): the FAT32 fixture volume ([`prepare_fat32_storage_disk`]) as
+/// partition 1 of an MBR disk. Sector 0 is an MBR laid out here by hand:
+/// zero boot code, one FAT32-LBA (`0x0C`) entry at LBA 2048 covering the
+/// volume, `55 AA`. The 1 MiB gap before the volume is zero.
+fn prepare_fat32_mbr_storage_disk(path: &Path) -> Result<PathBuf, String> {
+    let volume_path = path.with_extension("volume.raw");
+    prepare_fat32_storage_disk(&volume_path)?;
+    let volume = fs::read(&volume_path)
+        .map_err(|e| format!("read FAT32 volume {}: {e}", volume_path.display()))?;
+    let sectors = u32::try_from(volume.len() / 512)
+        .map_err(|_| format!("FAT32 volume {} too large for MBR", volume_path.display()))?;
+    let mut mbr = [0u8; 512];
+    let entry = &mut mbr[446..462];
+    entry[4] = 0x0c;
+    entry[8..12].copy_from_slice(&FAT32_MBR_FIRST_LBA.to_le_bytes());
+    entry[12..16].copy_from_slice(&sectors.to_le_bytes());
+    mbr[510] = 0x55;
+    mbr[511] = 0xaa;
+    let mut disk = vec![0u8; FAT32_MBR_FIRST_LBA as usize * 512];
+    disk[..512].copy_from_slice(&mbr);
+    disk.extend_from_slice(&volume);
+    fs::write(path, &disk).map_err(|e| format!("write MBR disk {}: {e}", path.display()))?;
+    let _ = fs::remove_file(&volume_path);
     Ok(path.to_path_buf())
 }
 
@@ -16350,7 +17874,7 @@ fn run_with_timeout_and_dump(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("[xtask] qemu stderr for `{label}`:\n{stderr}");
             }
-            record_qemu_run(start.elapsed());
+            record_qemu_run(start.elapsed(), false);
             eprintln!(
                 "[xtask] neo-test: `{label}` qemu elapsed={:.1}s status={} budget={}s",
                 start.elapsed().as_secs_f64(),
@@ -16362,7 +17886,7 @@ fn run_with_timeout_and_dump(
 
         if start.elapsed() >= timeout {
             let elapsed = start.elapsed();
-            record_qemu_run(elapsed);
+            record_qemu_run(elapsed, true);
             if let Some(dump_path) = dump_target {
                 attempt_timeout_monitor_dump(label, dump_path);
             }
@@ -16645,6 +18169,41 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "Stylo must style the document sequentially and match every hand-derived value",
+            )?;
+        }
+    }
+    if scenario.name == "swgl_smoke" {
+        for needle in [
+            "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
+            "[ swgl-smoke ] ok(3) every byte == the hand-laid pattern (BGRA, no flip, padding and canaries untouched)",
+            "[ swgl-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SWGL must raster the hand-laid pattern into the caller's buffer",
+            )?;
+        }
+    }
+    if scenario.name == "cxx_runtime_smoke" {
+        // The smoke's own lines: the musl printf path reached the console, and
+        // every check passed (the kernel's PASS line covers the exit code).
+        for needle in [
+            "[ crt-smoke ] stdout via musl printf: ok 7",
+            "[ crt-smoke ] ok(9) malloc/free from 6 threads at once, contents intact",
+            "[ crt-smoke ] ok(15) C++: one function-local static, 6 threads, built once",
+            "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
+            "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
+            "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] PASS",
+            "[ crt-trap ] reading std::vector<int>(4)[4]",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the C/C++ runtime smoke must print through musl's stdout and pass every check, and its twin must reach the out-of-bounds read",
             )?;
         }
     }
@@ -21635,8 +23194,421 @@ mod tests {
             wall: Duration::from_millis(wall_ms),
             qemu: Duration::from_millis(qemu_ms),
             qemu_runs: runs,
-            passed,
+            outcome: if passed {
+                ScenarioOutcome::Pass
+            } else {
+                ScenarioOutcome::Fail
+            },
+            rerun: false,
         }
+    }
+
+    /// OT-58 S1: every smoke scenario is a default-suite scenario QEMU can run,
+    /// listed once, measured, and within the quick tier's cost rule; every
+    /// full-tier-only exclusion exists and is over it.
+    #[test]
+    fn smoke_scenarios_are_measured_and_within_the_cost_rule() {
+        let suite = canonical_suite();
+        let mut seen = BTreeSet::new();
+        for name in SMOKE_SCENARIOS {
+            assert!(
+                seen.insert(*name),
+                "`{name}` is listed twice in SMOKE_SCENARIOS"
+            );
+            let scenario = suite
+                .iter()
+                .find(|s| s.name == *name)
+                .unwrap_or_else(|| panic!("smoke scenario `{name}` is not in the default suite"));
+            assert!(
+                !is_hardware_only_scenario(*scenario),
+                "`{name}` is hardware-only"
+            );
+            let wall = hosted_wall_s(name).unwrap_or_else(|| {
+                panic!("smoke scenario `{name}` has no row in hosted-timings.tsv")
+            });
+            assert!(
+                wall <= QUICK_WALL_BUDGET_S,
+                "smoke scenario `{name}` takes {wall} s on hosted runners, over the {QUICK_WALL_BUDGET_S} s rule"
+            );
+        }
+        assert_eq!(SMOKE_SCENARIOS.len(), 31);
+        for (name, _) in FULL_TIER_ONLY_EXCLUDED {
+            assert!(
+                suite.iter().any(|s| s.name == *name),
+                "excluded `{name}` is not in the suite"
+            );
+            assert!(!SMOKE_SCENARIOS.contains(name));
+            assert!(hosted_wall_s(name).is_some_and(|w| w > QUICK_WALL_BUDGET_S));
+        }
+        let (quick, full_only) = quick_tier_scenarios(&suite, &[]);
+        assert_eq!(
+            quick.iter().map(|s| s.name).collect::<Vec<_>>(),
+            SMOKE_SCENARIOS.to_vec(),
+            "with no diff the quick tier is exactly the smoke list, in order"
+        );
+        assert!(full_only.is_empty());
+    }
+
+    /// The timing table parses: every data row has a known scenario and two
+    /// numbers. A scenario added since the table was taken has no row (that is
+    /// expected: changed_scenario_quick_ok handles it).
+    #[test]
+    fn hosted_timings_table_is_well_formed() {
+        let suite = canonical_suite();
+        let mut rows = 0;
+        for line in HOSTED_TIMINGS_TSV
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .skip(1)
+        {
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 3, "row `{line}`");
+            assert!(
+                cols[1].parse::<f64>().is_ok() && cols[2].parse::<f64>().is_ok(),
+                "row `{line}`"
+            );
+            assert!(
+                TEST_SCENARIOS.iter().any(|s| s.name == cols[0]),
+                "timing row for unknown scenario `{}`",
+                cols[0]
+            );
+            rows += 1;
+        }
+        assert!(rows >= 400, "only {rows} timing rows");
+        assert!(suite.len() >= rows - 10);
+        assert_eq!(hosted_wall_s("wait_any_core"), Some(33.9));
+        assert_eq!(hosted_wall_s("no_such_scenario"), None);
+    }
+
+    /// OT-58 S1 fail-safe (THINK 2.3, "totality"): every file under `kernel/`
+    /// classifies as core or non-core, and every listed path exists.
+    #[test]
+    fn gate_plan_classifies_every_kernel_file() {
+        let root = workspace_root();
+        let mut stack = vec![root.join("kernel")];
+        let mut seen = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    if path.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
+                    stack.push(path);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel == "kernel/Cargo.toml" {
+                    continue; // special-cased by classify_gate_tier
+                }
+                assert!(
+                    path_is_core(&rel).is_some(),
+                    "`{rel}` is on neither CORE_PATHS nor NON_CORE_PATHS: classify it"
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen > 250, "walked only {seen} files");
+        for path in CORE_PATHS.iter().chain(NON_CORE_PATHS) {
+            assert!(
+                root.join(path).exists(),
+                "listed path `{path}` does not exist"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_plan_path_classes() {
+        // Core directories, with longer non-core entries inside them.
+        assert_eq!(path_is_core("kernel/src/sched/scheduler.rs"), Some(true));
+        assert_eq!(path_is_core("kernel/src/sched/wake_trace.rs"), Some(true));
+        assert_eq!(
+            path_is_core("kernel/src/sched/wait_any_logic.rs"),
+            Some(false)
+        );
+        assert_eq!(path_is_core("kernel/src/mm/frame.rs"), Some(true));
+        assert_eq!(
+            path_is_core("kernel/src/mm/mem_account_logic.rs"),
+            Some(false)
+        );
+        assert_eq!(path_is_core("kernel/src/arch/x86_64/gdt.rs"), Some(true));
+        assert_eq!(path_is_core("kernel/src/arch/x86_64/rtc.rs"), Some(false));
+        // A core file inside a non-core directory.
+        assert_eq!(
+            path_is_core("kernel/src/drivers/block/virtio_blk.rs"),
+            Some(true)
+        );
+        assert_eq!(
+            path_is_core("kernel/src/drivers/block/nvme.rs"),
+            Some(false)
+        );
+        assert_eq!(path_is_core("kernel/src/ai/par_matmul.rs"), Some(true));
+        assert_eq!(path_is_core("kernel/src/ai/generate.rs"), Some(false));
+        // Build configuration and test machinery.
+        assert_eq!(path_is_core("Cargo.lock"), Some(true));
+        assert_eq!(path_is_core("rust-toolchain.toml"), Some(true));
+        assert_eq!(path_is_core("scripts/worker-close-gate.sh"), Some(true));
+        assert_eq!(path_is_core("tools/xtask/src/vendor_verify.rs"), Some(true));
+        // Outside kernel/, unlisted is quick; inside, unlisted is unknown.
+        assert_eq!(path_is_core("userland/neo-init/src/main.rs"), None);
+        assert_eq!(path_is_core("kernel/src/brand_new_dir/x.rs"), None);
+    }
+
+    fn file(path: &str, added: &[&str], removed: &[&str]) -> FileDiff {
+        FileDiff {
+            path: path.to_string(),
+            hunks: vec![Hunk {
+                added: added.iter().map(|s| s.to_string()).collect(),
+                removed: removed.iter().map(|s| s.to_string()).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn parse_unified_diff_reads_paths_hunks_and_dash_lines() {
+        let diff = "diff --git a/docs/a.md b/docs/a.md\n\
+                    index 1..2 100644\n\
+                    --- a/docs/a.md\n\
+                    +++ b/docs/a.md\n\
+                    @@ -3 +3 @@\n\
+                    --- an old line that began with two dashes\n\
+                    ++++ a new line that began with three pluses\n\
+                    @@ -9,0 +10 @@\n\
+                    +x\n\
+                    diff --git a/kernel/src/gone.rs b/kernel/src/gone.rs\n\
+                    deleted file mode 100644\n\
+                    --- a/kernel/src/gone.rs\n\
+                    +++ /dev/null\n\
+                    @@ -1 +0,0 @@\n\
+                    -fn f() {}\n\
+                    diff --git a/blob.png b/blob.png\n\
+                    Binary files a/blob.png and b/blob.png differ\n";
+        let files = parse_unified_diff(diff);
+        assert_eq!(
+            files,
+            vec![
+                FileDiff {
+                    path: "docs/a.md".into(),
+                    hunks: vec![
+                        Hunk {
+                            added: vec!["+++ a new line that began with three pluses".into()],
+                            removed: vec!["-- an old line that began with two dashes".into()],
+                        },
+                        Hunk {
+                            added: vec!["x".into()],
+                            removed: vec![]
+                        },
+                    ],
+                },
+                FileDiff {
+                    path: "kernel/src/gone.rs".into(),
+                    hunks: vec![Hunk {
+                        added: vec![],
+                        removed: vec!["fn f() {}".into()]
+                    }],
+                },
+                FileDiff {
+                    path: "blob.png".into(),
+                    hunks: vec![]
+                },
+            ]
+        );
+    }
+
+    /// THINK 2.3: the tier for fixture diffs, including the scenario-only
+    /// exception (2.3.1) and its near-misses.
+    #[test]
+    fn gate_plan_tier_for_fixture_diffs() {
+        let quick = |files: &[FileDiff]| classify_gate_tier(files) == GateTier::Quick;
+        // Non-core kernel, userland, docs.
+        assert!(quick(&[
+            file("kernel/src/fs/mod.rs", &["x"], &["y"]),
+            file("userland/neo-init/src/main.rs", &["x"], &[]),
+            file("docs/x.md", &["x"], &[]),
+        ]));
+        // Core paths, unknown kernel paths, build configuration.
+        assert_eq!(
+            classify_gate_tier(&[file("kernel/src/arch/x86_64/syscall.rs", &["x"], &[])]),
+            GateTier::FullAlone(vec!["core path kernel/src/arch/x86_64/syscall.rs".into()])
+        );
+        assert_eq!(
+            classify_gate_tier(&[file("kernel/src/brand_new/x.rs", &["x"], &[])]),
+            GateTier::FullAlone(vec!["unclassified path kernel/src/brand_new/x.rs".into()])
+        );
+        assert!(!quick(&[file(
+            "kernel/Cargo.toml",
+            &["default = [\"a\"]"],
+            &["default = []"]
+        )]));
+        assert!(!quick(&[file(
+            "kernel/Cargo.toml",
+            &["lapic-timer = []"],
+            &[]
+        )]));
+
+        // A #13-shaped new scenario: the feature, the xtask block, gated harness code.
+        let cargo = file(
+            "kernel/Cargo.toml",
+            &[
+                "# a comment",
+                "neo-test-shiny = [\"neo-test\", \"browser-runtime\"]",
+            ],
+            &[],
+        );
+        let xtask = file(
+            "tools/xtask/src/main.rs",
+            &[
+                "    TestScenario {",
+                "        // what it proves",
+                "        name: \"shiny\",",
+                "        feature: \"neo-test-shiny\",",
+                "        user_feature: Some(\"shiny-test\"),",
+                "        ignored: false,",
+                "        limine_kaslr: None,",
+                "    },",
+            ],
+            &[],
+        );
+        // The same block as git may align it: starting inside the previous one.
+        let xtask_shifted = file(
+            "tools/xtask/src/main.rs",
+            &[
+                "        name: \"shiny\",",
+                "        feature: \"neo-test-shiny\",",
+                "        user_feature: None,",
+                "        ignored: false,",
+                "        limine_kaslr: None,",
+                "    },",
+                "    TestScenario {",
+            ],
+            &[],
+        );
+        let harness = FileDiff {
+            path: "kernel/src/test_harness.rs".into(),
+            hunks: vec![
+                Hunk {
+                    added: vec![
+                        "#[cfg(feature = \"neo-test-shiny\")]".into(),
+                        "const SCENARIO: &str = \"shiny\";".into(),
+                    ],
+                    removed: vec![],
+                },
+                Hunk {
+                    added: vec!["    feature = \"neo-test-shiny\",".into()],
+                    removed: vec![],
+                },
+                Hunk {
+                    added: vec![
+                        "    // shiny: neo-init's legs.".into(),
+                        "    #[cfg(feature = \"neo-test-shiny\")]".into(),
+                        "    {".into(),
+                        "        let exit_code = _ipc_smoke();".into(),
+                        "        if exit_code == 0 {".into(),
+                        "            pass(\"shiny=ok\");".into(),
+                        "        }".into(),
+                        "        debug_exit(EXIT_FAILURE);".into(),
+                        "    }".into(),
+                    ],
+                    removed: vec![],
+                },
+            ],
+        };
+        let userland = file(
+            "userland/neo-init/src/main.rs",
+            &["mod shiny_tests {}"],
+            &[],
+        );
+        assert!(quick(&[
+            cargo.clone(),
+            harness.clone(),
+            xtask.clone(),
+            userland.clone()
+        ]));
+        assert!(quick(&[
+            cargo.clone(),
+            harness.clone(),
+            xtask_shifted.clone()
+        ]));
+
+        // Near-misses: a removed harness line; an ungated harness line; a block
+        // gated on an existing feature; an xtask line outside a block; no new
+        // feature at all.
+        let mut removed = harness.clone();
+        removed.hunks[0].removed.push("const OLD: u8 = 0;".into());
+        assert!(!quick(&[cargo.clone(), removed, xtask.clone()]));
+        let mut ungated = harness.clone();
+        ungated.hunks[1]
+            .added
+            .push("static EVERYONE: u8 = 1;".into());
+        assert!(!quick(&[cargo.clone(), ungated, xtask.clone()]));
+        let mut old_feature = harness.clone();
+        old_feature.hunks[2].added[1] =
+            "    #[cfg(feature = \"neo-test-user-copy-bounds\")]".into();
+        assert!(!quick(&[cargo.clone(), old_feature, xtask.clone()]));
+        let mut xtask_extra = xtask.clone();
+        xtask_extra.hunks[0]
+            .added
+            .push("        \"shiny\" => Duration::from_secs(900),".into());
+        assert!(!quick(&[cargo.clone(), harness.clone(), xtask_extra]));
+        assert!(!quick(&[harness.clone(), xtask.clone()]));
+        // An unterminated gated block (the hunk ends inside it).
+        let mut open = harness.clone();
+        open.hunks[2].added.truncate(5);
+        assert!(!quick(&[cargo, open, xtask]));
+    }
+
+    #[test]
+    fn gate_plan_output_is_one_line_per_key() {
+        assert_eq!(
+            gate_plan_output(&GateTier::Quick, &["a", "b"], &["c"]),
+            "tier=quick\nchanged_scenarios=a b\nchanged_full_only=c\n"
+        );
+        assert_eq!(
+            gate_plan_output(
+                &GateTier::FullAlone(vec![
+                    "diff unavailable: fatal:\nline two\n".to_string(),
+                    "core path x".to_string()
+                ]),
+                &[],
+                &[]
+            ),
+            "tier=full-alone\nreasons=diff unavailable: fatal: line two; core path x\nchanged_scenarios=\nchanged_full_only=\n"
+        );
+    }
+
+    /// THINK 2.2.1: a scenario a diff names joins the quick tier only within
+    /// the budget; `-control` features don't match their base feature.
+    #[test]
+    fn quick_tier_adds_changed_scenarios_within_the_budget() {
+        assert!(contains_token("neo-test-x = [\"neo-test\"]", "neo-test-x"));
+        assert!(!contains_token("neo-test-x-control = []", "neo-test-x"));
+        assert!(contains_token("a = [\"neo-test-x\"]", "neo-test-x"));
+        assert!(!contains_token("aneo-test-x", "neo-test-x"));
+
+        let suite = canonical_suite();
+        let lines = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // mount_authority: measured 15.3 s, so it joins.
+        let (quick, full_only) = quick_tier_scenarios(
+            &suite,
+            &lines(&["neo-test-mount-authority = [\"neo-test\"]"]),
+        );
+        assert_eq!(
+            &quick.iter().map(|s| s.name).collect::<Vec<_>>()[SMOKE_SCENARIOS.len()..],
+            &["mount_authority"]
+        );
+        assert!(full_only.is_empty());
+        // install_fresh: measured 478 s, so full tier only.
+        let (quick, full_only) = quick_tier_scenarios(&suite, &lines(&["\"install_fresh\""]));
+        assert_eq!(quick.len(), SMOKE_SCENARIOS.len());
+        assert_eq!(full_only, vec!["install_fresh"]);
+        // A smoke scenario the diff names is not added twice.
+        let (quick, _) = quick_tier_scenarios(&suite, &lines(&["\"kill_at_exit\""]));
+        assert_eq!(quick.len(), SMOKE_SCENARIOS.len());
     }
 
     /// OT-58 S0: the TSV row and both summary forms, against hand-written bytes.
@@ -21684,28 +23656,45 @@ mod tests {
         assert_eq!(picked.len(), 4);
         let fail_on = |s: TestScenario| s.name == picked[1].name || s.name == picked[3].name;
 
+        let stop = RunPolicy::default();
+        let keep = RunPolicy {
+            keep_going: true,
+            rerun_timeouts: false,
+        };
         let mut ran = Vec::new();
-        let err = run_scenarios_timed(&picked, "test", false, |s| {
-            ran.push(s.name);
-            if fail_on(s) {
-                Err(format!("boom {}", s.name))
-            } else {
-                Ok(())
-            }
-        })
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            stop,
+            |s| {
+                ran.push(s.name);
+                if fail_on(s) {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            QemuTally::default,
+        )
         .unwrap_err();
         assert_eq!(ran, vec![picked[0].name, picked[1].name]);
         assert_eq!(err, format!("boom {}", picked[1].name));
 
         let mut ran = Vec::new();
-        let err = run_scenarios_timed(&picked, "test", true, |s| {
-            ran.push(s.name);
-            if fail_on(s) {
-                Err(format!("boom {}", s.name))
-            } else {
-                Ok(())
-            }
-        })
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            keep,
+            |s| {
+                ran.push(s.name);
+                if fail_on(s) {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            QemuTally::default,
+        )
         .unwrap_err();
         assert_eq!(ran, picked.iter().map(|s| s.name).collect::<Vec<_>>());
         assert_eq!(
@@ -21717,7 +23706,130 @@ mod tests {
             )
         );
 
-        assert!(run_scenarios_timed(&picked, "test", true, |_| Ok(())).is_ok());
+        assert!(run_scenarios_timed(&picked, "test", keep, |_| Ok(()), QemuTally::default).is_ok());
+    }
+
+    /// OT-58 THINK 2.5 (Dexter #47 item 2.4): the timing table tells a build
+    /// failure (no QEMU run), a timeout (the last QEMU run hit its limit) and
+    /// a scenario failure apart.
+    #[test]
+    fn scenario_outcome_classifies_build_timeout_and_scenario_failures() {
+        let ran = |runs, last_timed_out| QemuTally {
+            qemu: Duration::from_secs(1),
+            runs,
+            last_timed_out,
+        };
+        assert_eq!(
+            ScenarioOutcome::classify(true, ran(1, false)),
+            ScenarioOutcome::Pass
+        );
+        // A retry that timed out, then passed, is a pass.
+        assert_eq!(
+            ScenarioOutcome::classify(true, ran(2, false)),
+            ScenarioOutcome::Pass
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, QemuTally::default()),
+            ScenarioOutcome::BuildFail
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, ran(4, true)),
+            ScenarioOutcome::Timeout
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, ran(4, false)),
+            ScenarioOutcome::Fail
+        );
+
+        let mut row = timing("gamma", 5_000, 0, 0, false);
+        row.outcome = ScenarioOutcome::BuildFail;
+        assert_eq!(
+            timings_tsv_row(&row),
+            "gamma\t5.0\t0.0\t5.0\t0\tFAIL-build\n"
+        );
+        row.outcome = ScenarioOutcome::Timeout;
+        row.rerun = true;
+        assert!(timings_tsv_row(&row).ends_with("\trerun-FAIL-timeout\n"));
+    }
+
+    /// OT-58 THINK 2.5 (Dexter #47 item 2.4): `--rerun-timeouts` re-runs each
+    /// timed-out scenario once, after the others. A re-run pass clears the
+    /// failure; a scenario failure or build failure is never re-run; a
+    /// timeout that fails again stays a failure.
+    #[test]
+    fn rerun_timeouts_reruns_each_timeout_once() {
+        let suite = canonical_suite();
+        let picked: Vec<TestScenario> = suite.iter().copied().take(4).collect();
+        // [0] passes; [1] fails in QEMU; [2] times out, then passes;
+        // [3] times out twice.
+        let policy = RunPolicy {
+            keep_going: true,
+            rerun_timeouts: true,
+        };
+        let mut ran: Vec<&str> = Vec::new();
+        let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+        let last = std::cell::Cell::new(QemuTally::default());
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            policy,
+            |s| {
+                ran.push(s.name);
+                let n = seen.entry(s.name).or_insert(0);
+                *n += 1;
+                let timed_out = s.name == picked[3].name || (s.name == picked[2].name && *n == 1);
+                last.set(QemuTally {
+                    qemu: Duration::from_secs(1),
+                    runs: 1,
+                    last_timed_out: timed_out,
+                });
+                if timed_out || s.name == picked[1].name {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            || last.replace(QemuTally::default()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            ran,
+            vec![
+                picked[0].name,
+                picked[1].name,
+                picked[2].name,
+                picked[3].name,
+                picked[2].name,
+                picked[3].name,
+            ]
+        );
+        assert!(err.starts_with(&format!(
+            "2 scenario(s) failed: {} {}",
+            picked[1].name, picked[3].name
+        )));
+        assert!(err.contains("re-run FAIL-timeout"));
+
+        // Without the flag, a timeout is not re-run.
+        let mut ran = 0;
+        let _ = run_scenarios_timed(
+            &picked[..1],
+            "test",
+            RunPolicy {
+                keep_going: true,
+                rerun_timeouts: false,
+            },
+            |_| {
+                ran += 1;
+                last.set(QemuTally {
+                    qemu: Duration::from_secs(1),
+                    runs: 1,
+                    last_timed_out: true,
+                });
+                Err("slow".to_string())
+            },
+            || last.replace(QemuTally::default()),
+        );
+        assert_eq!(ran, 1);
     }
 
     /// S2-F1: every licence file the ISO stages exists and is non-empty, and
@@ -22615,10 +24727,19 @@ mod tests {
         let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
             .expect("read CI workflow");
         let qemu_start = workflow.find("\n  neo-test:\n").expect("neo-test job");
-        let qemu_end = workflow.find("\n  spdx-lint:\n").expect("SPDX job");
+        let qemu_end = workflow
+            .find("\n  rng-seed-boot:\n")
+            .expect("RNG seed boot job");
         let qemu = &workflow[qemu_start..qemu_end];
-        assert!(qemu.contains("needs: [nightly-skip, host-checks, product-build]"));
-        assert!(qemu.contains("timeout-minutes: 240"));
+        // OT-58 S2 (THINK 2.1, approved): the QEMU job waits only for the
+        // plan job, so the quick tier's critical path is its smoke job. The
+        // shards keep their 240-minute cold-cache headroom.
+        assert!(qemu.contains("needs: [nightly-skip]\n"));
+        assert!(qemu.contains("timeout-minutes: ${{ matrix.shard == 'quick' && 45 || 240 }}"));
+        assert!(qemu.contains("fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}"));
+        // The smoke job uses the plan job's base; it does not plan again.
+        assert!(qemu.contains("GATE_BASE=\"${{ needs.nightly-skip.outputs.gate_base }}\""));
+        assert!(!qemu.contains("cargo xtask gate-plan"));
 
         let host_start = workflow
             .find("\n  host-checks:\n")
@@ -22627,16 +24748,37 @@ mod tests {
         assert!(!host.contains("needs: product-build"));
         assert!(host.contains("timeout-minutes: 60"));
 
+        // OT-58 (THINK 2.1, 3; Dexter #45 item 4): every build-only check is
+        // one job, and the fuzz targets are one job.
+        for gone in [
+            "\n  product-build:\n",
+            "\n  spdx-lint:\n",
+            "\n  monolithic-identity:\n",
+            "\n  feature-gated-coverage:\n",
+        ] {
+            assert!(
+                !workflow.contains(gone),
+                "{gone:?} is folded into build-checks"
+            );
+        }
         let product_start = workflow
-            .find("\n  product-build:\n")
-            .expect("blocking product build job");
+            .find("\n  build-checks:\n")
+            .expect("blocking build-checks job");
+        // The job ends at the next job (`batch-report` once S2b lands) or EOF.
         let product_end = workflow[product_start + 1..]
-            .find("\n  # OT-69:")
-            .map(|offset| product_start + 1 + offset)
-            .expect("end of product build job");
+            .find("\n  batch-report:\n")
+            .map_or(workflow.len(), |offset| product_start + 1 + offset);
         let product = &workflow[product_start..product_end];
         assert!(product.contains("--features product"));
         assert!(product.contains("--bin kernel --no-default-features\n"));
+        assert!(product.contains("every feature-gated configuration"));
+        assert!(product.contains("Check SPDX headers on source files"));
+        assert!(product.contains("scripts/check-monolithic-identity.sh"));
+        assert!(!product.contains("strategy:"));
+        let fuzz_start = workflow.find("\n  decoder-fuzz:\n").expect("fuzz job");
+        let fuzz = &workflow[fuzz_start..product_start];
+        assert!(!fuzz.contains("strategy:"));
+        assert!(fuzz.contains("needs.nightly-skip.outputs.full == 'true'"));
         assert!(!product.contains("continue-on-error: true"));
     }
 

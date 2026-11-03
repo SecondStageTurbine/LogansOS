@@ -1,0 +1,50 @@
+diff -ruN -x .cargo-checksum.json ../vendor/swgl-0.70.0/src/gl.cc swgl-0.70.0/src/gl.cc
+--- ../vendor/swgl-0.70.0/src/gl.cc	2026-10-31 03:11:47.269855500 +0000
++++ swgl-0.70.0/src/gl.cc	2026-10-31 03:51:41.304537015 +0000
+@@ -2476,6 +2476,22 @@
+   }
+   int num_masks = (y1 + 31) / 32;
+   uint32_t* rows = t.cleared_rows;
++  // LogansOS patch (OT-61 rung 4): the skip's x-range applies only to rows
++  // inside the skip's y-range. Upstream applied it to every not-yet-cleared
++  // row in the same 32-row mask word and then marked them all cleared, so a
++  // scissored clear spanning less than a whole word left the skipped columns
++  // of the other rows never cleared (third_party/ot61-swgl/VENDORED.md).
++  auto clear_rows = [&](int start, int end) {
++    int a = start, b = min(end, y0);
++    if (a < b) clear_buffer<T>(t, t.clear_val, IntRect{0, a, t.width, b});
++    a = max(start, y0), b = min(end, y1);
++    if (a < b)
++      clear_buffer<T>(t, t.clear_val, IntRect{0, a, t.width, b}, skip_start,
++                      skip_end);
++    a = max(start, y1), b = end;
++    if (a < b) clear_buffer<T>(t, t.clear_val, IntRect{0, a, t.width, b});
++    t.delay_clear -= end - start;
++  };
+   for (int i = y0 / 32; i < num_masks; i++) {
+     uint32_t mask = rows[i];
+     if (mask != ~0U) {
+@@ -2484,10 +2500,7 @@
+       while (mask) {
+         int count = __builtin_ctz(mask);
+         if (count > 0) {
+-          clear_buffer<T>(t, t.clear_val,
+-                          IntRect{0, start, t.width, start + count}, skip_start,
+-                          skip_end);
+-          t.delay_clear -= count;
++          clear_rows(start, start + count);
+           start += count;
+           mask >>= count;
+         }
+@@ -2497,10 +2510,7 @@
+       }
+       int count = (i + 1) * 32 - start;
+       if (count > 0) {
+-        clear_buffer<T>(t, t.clear_val,
+-                        IntRect{0, start, t.width, start + count}, skip_start,
+-                        skip_end);
+-        t.delay_clear -= count;
++        clear_rows(start, start + count);
+       }
+     }
+   }

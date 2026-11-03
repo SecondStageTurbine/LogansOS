@@ -76,11 +76,12 @@ Past K = 8, `install_stop_finish` alone (31 min) is the floor, so the next lever
 
 ## 2. The two tiers
 
-### 2.1 Quick tier: every PR, 3 jobs, no `needs`
+### 2.1 Quick tier: every PR, 3 jobs, no `needs` between them
 
-Every quick job runs `cargo xtask gate-plan` as its first step (about 1 minute, including the xtask build), so there
-is no separate `plan` job. A job whose plan says `full-alone` stops at once with a notice: the PR needs a batch of
-one.
+*As built (S2a):* a small plan job runs `cargo xtask gate-plan` once, before the three, and its output is the single
+source of the tier: `["quick"]` gives the smoke job, and `full-alone` (or a plan that fails) gives the 4 shards and
+the full-tier jobs on the same run, so a full-alone PR gets its full tier without a separate dispatch. The three
+jobs below need only the plan job, not each other. Section 3 counts the plan job.
 
 The three jobs start together:
 
@@ -229,7 +230,11 @@ a removed line, an ungated line, and a block gated on an existing feature.
 **Inputs** (`workflow_dispatch`):
 - `batch`: PR numbers, in landing order;
 - `base_sha` (optional): defaults to main's tip at plan time;
-- `prefix` (optional): run only the first N members, for bisecting.
+- `prefix` (optional): run only the first N members, for bisecting;
+- `scenarios` (with `prefix` only): the failing scenarios a bisect leg runs.
+
+*As built (S2b):* a batch is always the full tier. The plan job fails a batch dispatched with `tier: quick`, and
+`batch-report` says "merge evidence: yes" only for the full tier with all 4 shards and every other job green.
 
 **Quick-green, by machine rule (F7).** For each member, `batch-plan` resolves the head SHA once. It then reads
 `GET /repos/{owner}/{repo}/commits/{sha}/check-runs` and requires each of `Quick: host-checks`,
@@ -290,32 +295,47 @@ Each job prints the tree hash; `batch-report` checks they are all equal and prin
   - The first prefix that fails names the PR that introduced the failure, even when the cause is an interaction with
     an earlier member.
   - `prefix=0` is the base alone. A failure there is a `main` problem, handled by the escaped-defect contract.
+- *As built (S2b):* the timing table's `result` column is `pass`, `FAIL` (QEMU ran), `FAIL-build` (no QEMU run: a
+  kernel, userland or image build failed) or `FAIL-timeout` (the last QEMU run hit its limit). A batch shard runs
+  `--keep-going --rerun-timeouts`: every timeout runs once more at the end of its shard, as a `rerun-…` row, and only a
+  re-run failure stays a failure. `batch-report` sorts the rows into those classes, counts K from the plan's shard
+  list (not a fixed 4), and prints the failing names for the next `prefix` leg. A bisect leg is one QEMU job,
+  `cargo neo-test <scenarios> --keep-going --rerun-timeouts`, with no host, build, RNG or fuzz job.
 - **Owner (F10).** The PM names the owner: the author of the first failing prefix's last member. That PR is bounced,
   and the batch re-forms without it. If an interaction failure has no single owner, the batch is not landed. Nothing
   is on `main` to revert, because nothing lands red.
 
 ## 3. Throughput (free tier: 20 jobs at once, account-wide)
 
-Counted as jobs running at the same time:
+**As built (S2a, Dexter's #45 item 4).** The quick tier keeps one small plan job ahead of the three in 2.1: a GitHub
+matrix can only come from an earlier job's output, and the plan job is what picks `["quick"]` or the 4 shards. Every
+other job `needs` it, so it runs **alone, before** them (about 2 min), and never adds to a seat's peak. Counted as
+job instances, and as jobs running at the same time:
 
-| What is running | Jobs |
-|---|---|
-| One seat's quick tier | 3 (critical path about 13 min) |
-| A batch, K = 6 | 2 + 6 shards = 8, then `batch-report` (1, about 1 min, after the shards) |
-| `main`'s post-landing push run | 2 (S2 folds it to host-checks + build-checks; no QEMU, as today) |
+| What is running | Job instances | At once | Jobs |
+|---|---|---|---|
+| One seat's quick tier | 4 | 3 | plan; then `host-checks`, `build-checks`, the smoke shard |
+| A full tier: a dispatch, a full-alone PR's own run, or a batch (K = 4 today) | 8 + K = 12 | 4 + K = 8 | plan; then `host-checks`, `build-checks`, the RNG seed boot, decoder fuzz (one job), K shards; then `batch-report` for a batch (about 1 min, after the shards) |
+| `main`'s post-landing push run | 3 | 2 | plan (seconds: no checkout on a push); then `host-checks`, `build-checks`. No QEMU, no RNG boot, no fuzz: the batch ran them (section 4). |
 
-| Mix | Jobs | Fits 20? |
+`build-checks` is the product build, the 13 feature-gated clippy configurations (one job, one target dir), SPDX and
+the identity guard. Decoder fuzz runs its four 60 s targets in turn in one job. Both were 1 + 13 + 4 + 2 separate
+jobs before S2a. The RNG seed boot (#43) and the fuzz job run only in the full tier.
+
+| Mix (jobs at once) | At once | Fits 20? |
 |---|---|---|
 | 4 seats' quick tiers | 12 | yes |
-| 4 seats + a batch (K = 6) | 20 | yes, exactly |
-| 5 seats + a batch (K = 6) | 23 | no: 3 jobs queue |
-| 5 seats + a batch (K = 5) | 22 | no: 2 queue |
+| 4 seats + a batch, K = 4 | 20 | yes, exactly |
+| 5 seats + a batch, K = 4 | 23 | no: 3 jobs queue, for at most one smoke duration |
+| 3 seats + a batch, K = 6 (after S3) | 19 | yes |
+| 4 seats + a batch, K = 6 (after S3) | 22 | no: 2 jobs queue. S3 either keeps K = 4 while four seats gate, or accepts the queue. |
 | A landing's `main` run + 4 seats | 14 | yes. The batch has finished before it lands, so the two never overlap. |
 
 **Scheduling rule (F19, F20):**
-- The PM dispatches a batch only when at most 4 quick tiers are running.
+- The PM dispatches a batch only when at most 4 quick tiers are running (4 × 3 + 8 = 20 at K = 4).
 - While a batch runs, a fifth seat's quick tier queues for at most one smoke duration (about 13 min). That is
-  acceptable, and the PM sizes K to the free slots.
+  acceptable, and the PM sizes K to the free slots (20 − 3 × running quick tiers − 4).
+- A queue here costs minutes, not correctness: GitHub starts queued jobs as slots free.
 - `ot61-closure.yml` also runs on dispatch, and on pushes to `claude/ot61-**` branches and `main` that touch the
   browser paths, `tools/xtask/**` or `rust-toolchain.toml`. Its jobs count toward the 20, so a batch can be squeezed
   by a browser push. Seat D's pushes are the main source; the PM can see them in the run list before dispatching a
@@ -424,3 +444,19 @@ Commits and licenses were read from shallow clones (`git log -1`, the license fi
 | F29 | Same as F9. |
 | F30 `main` push is host-only | Section 4. |
 | F31 S0 status | Marked done (section 5). |
+
+## 10. Review resolution (Dexter, relay 271, on #45 `e4dd26e2` / #47 `7c932271`)
+
+| Finding | Resolution |
+|---|---|
+| #45 item 4: 7 / 11 jobs, not 3 / 2 | `build-checks` folds product build, the feature clippy configurations, SPDX and identity; decoder fuzz is one job; `main`'s push run is host-only. Quick PR 4 jobs (3 at once), `main` push 3 (2 at once). Section 3 has the arithmetic: 4 seats + a K = 4 batch = 20. |
+| #45 note 1: the smoke job re-plans | It takes the plan job's base SHA (`gate_base`) and no longer runs `gate-plan`. A failing or tier-less plan is full-alone (the last `tier=` line). |
+| #45 note 2: `SCENARIO_ONLY_EXCEPTION` | Unchanged here; it is the PM's question 3 (section 8). |
+| 2.1 evidence not tied to tier; `base_sha` unchecked; no pagination; prefix without batch | `batch-plan.sh` asks `gate-plan` first and demands the smoke job for `quick`, the 4 shards for `full-alone`; the base must be on `main`; `gh api --paginate`; the plan job rejects `prefix` or `scenarios` without `batch`. |
+| 2.3 a quick batch passes for a full one | 2.4 above: rejected by the plan job, and not evidence in `batch-report`. |
+| 2.4 a prefix leg runs 4 full shards | One job, the named failing scenarios (2.5). |
+| 2.5 no build/timeout classification; timeout re-run procedural; K hard-coded | 2.5 above: the `result` classes, `--rerun-timeouts`, K from the plan. |
+| 2.6 the revert takes other merges | `revert-batch.sh` takes only the first `batch: member 1, 2, …` run after the base, each merge's second parent checked; a host test reproduces Dexter's case plus a later batch. |
+| 2.7 a failed plan hides behind `tee` | The step runs under `bash -o pipefail` and writes the plan to a file first. |
+| 2.8 token scope | A top-level `permissions: contents: read`; only the plan job adds reads. |
+| Section 6 rows in CLAUDE.md | "At most 4 quick tiers" now matches section 3; the invariant is stated; a full-alone PR's merge evidence is its batch-of-one run. |
