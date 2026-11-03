@@ -29,6 +29,11 @@ style = { package = "stylo", version = "=0.22.0" }
 url = "=2.5.8"
 layout = { package = "servo-layout", version = "=0.7.0" }
 neo-layout-dom = { path = "../neo-layout-dom" }
+# OT-61 L3: the page's display list rendered by WebRender 0.70 on SWGL (#25's
+# recipe and versions).
+webrender = { version = "=0.70.0", default-features = false, features = ["sw_compositor"] }
+swgl = "=0.70.0"
+gleam = "=0.15.1"
 # OT-61 L2: the static-page driver (one reflow) and its hand-worked oracle.
 neo-static-page = { path = "../neo-static-page" }
 # servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
@@ -436,6 +441,9 @@ zune-core = { path = "../../third_party/ot61-browser/vendor/zune-core-0.5.3" }
 zune-jpeg = { path = "../../third_party/ot61-browser/vendor/zune-jpeg-0.5.15" }
 # #25's patched copy (byte-identical, same path as on #25).
 wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
+# #25's patched copies (L3), at the same paths as on #25.
+swgl = { path = "../../third_party/ot61-swgl/patched/swgl-0.70.0" }
+webrender = { path = "../../third_party/ot61-swgl/patched/webrender-0.70.0" }
 
 # The on-target binary carries no debuginfo: with it, the linked ELF was 575 MB;
 # without it, 12.9 MB (5.3 MB of text), the size of the other gated smokes.

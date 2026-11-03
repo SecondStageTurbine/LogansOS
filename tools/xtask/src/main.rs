@@ -18293,6 +18293,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ layout-smoke ] ok(54) #b border box = [8, 90, 114, 54] (x, y, w, h px)",
             "[ layout-smoke ] ok(55) #c border box = [8, 159, 784, 25] (x, y, w, h px)",
             "[ layout-smoke ] ok(56) layout sent a display list to the in-process paint host",
+            "[ layout-smoke ] ok(60) layout's display list was taken for WebRender",
+            "[ layout-smoke ] ok(61) WebRender starts on SWGL and renders the page's frame",
+            "[ layout-smoke ] ok(62) every pixel == the hand-derived frame (white; #b's 2 px border black)",
             "[ layout-smoke ] ok(57) the static-page thread finished",
             "[ layout-smoke ] PASS",
         ] {
