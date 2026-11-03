@@ -1262,7 +1262,15 @@ fn run_desktop_session(
                 // the model (which has none).
                 #[cfg(feature = "arthur-clock")]
                 let handled = handled || clock_reply(surface, &input[..input_len], clock_zone);
+                // OT-88 A1a boot test: open the probe app, a second client.
+                #[cfg(feature = "atrium-apps-probe")]
+                let probe_app = &input[..input_len] == b"open probe app";
+                #[cfg(not(feature = "atrium-apps-probe"))]
+                let probe_app = false;
                 if handled {
+                } else if probe_app {
+                    #[cfg(feature = "atrium-apps-probe")]
+                    open_probe_app(surface, launch_cap);
                 } else if action {
                     #[cfg(feature = "desktop-lens")]
                     {
@@ -1313,8 +1321,9 @@ fn run_desktop_session(
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
+                // (Opening the probe app is not one of the boot test's answers.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                {
+                if !probe_app {
                     answers += 1;
                 }
                 #[cfg(all(
@@ -1441,6 +1450,68 @@ fn run_desktop_session(
             log_desktop_keystroke(byte);
         }
     }
+}
+
+/// OT-88 A1a boot test: launch the probe app through the LaunchCap. The WM
+/// brings it to the front before it answers, so the next keys are its.
+#[cfg(feature = "atrium-apps-probe")]
+fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Handle) {
+    const TOKEN: u64 = 0x5052_4F42_4150_544B;
+    let module = libneo::atrium_launch::MODULE_PROBE_APP;
+    match surface.launch(cap, module, TOKEN, Some(TOKEN)) {
+        Ok(()) => {
+            stage_b_log_line(b"DESKTOP arthur probe app opened");
+            surface.write_text(b"I opened the probe app.");
+            #[cfg(feature = "atrium-apps-arthur-flood")]
+            arthur_flood(surface);
+            #[cfg(feature = "atrium-apps-arthur-hang")]
+            surface.commit_and_hang();
+            #[cfg(feature = "atrium-apps-arthur-yield-hang")]
+            surface.yield_and_hang();
+        }
+        Err(_) => {
+            stage_b_log_line(b"DESKTOP arthur probe app refused");
+            surface.write_text(b"I could not open the probe app.");
+        }
+    }
+}
+
+/// PR #15 review item 3 boot test: commit back to back for `FLOOD_NS`, each
+/// commit a request the WM must serve and reply to, so a request of Arthur's
+/// is ready at nearly every poll. The probe app (in front) still gets its keys.
+#[cfg(feature = "atrium-apps-arthur-flood")]
+fn arthur_flood(surface: &mut showcase_surface::ArthurSurface) {
+    const FLOOD_NS: u64 = 10_000_000_000;
+    let now = || libneo::sys_clock_gettime(libneo::CLOCK_MONOTONIC).unwrap_or(u64::MAX);
+    let until = now().saturating_add(FLOOD_NS);
+    let mut commits = 0u64;
+    while now() < until {
+        if surface.commit_next().is_err() {
+            break;
+        }
+        commits += 1;
+    }
+    let mut line = [0u8; 64];
+    let head = b"DESKTOP arthur flood done commits=";
+    line[..head.len()].copy_from_slice(head);
+    let mut len = head.len();
+    let mut digits = [0u8; 20];
+    let mut n = commits;
+    let mut d = 0;
+    loop {
+        digits[d] = b'0' + (n % 10) as u8;
+        d += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    while d > 0 {
+        d -= 1;
+        line[len] = digits[d];
+        len += 1;
+    }
+    stage_b_log_line(&line[..len]);
 }
 
 /// DS-1c: the first token Arthur's Lens requests count up from.
