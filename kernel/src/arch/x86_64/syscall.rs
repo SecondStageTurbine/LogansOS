@@ -7272,6 +7272,18 @@ fn sys_file_write_impl(fd: u32, buf: *const u8, len: usize) -> i64 {
 }
 
 fn sys_close_impl(fd: u32) -> i64 {
+    // L1a.1 step 2a: a pipe end in slot 0 or 1 (where a fresh process's first
+    // installs land) closes too, as #29 lets a NetDial cap in slot 1 close.
+    // The stdio paths don't use the table, so stdin and stdout are
+    // unaffected; any other handle in those slots is refused as before.
+    #[cfg(feature = "pipe")]
+    if fd <= STDOUT_FD {
+        if let Ok(proc) = current_process_for_syscall() {
+            if process::close_handle(&proc, fd, |h| matches!(h, Handle::Pipe { .. })).is_ok() {
+                return 0;
+            }
+        }
+    }
     #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
     if fd == STDIN_FD {
         return EBADF;

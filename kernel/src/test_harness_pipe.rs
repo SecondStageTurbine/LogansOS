@@ -236,7 +236,11 @@ extern "C" fn pt_create_caller() -> ! {
     let r = sys(SYS_PIPE_READ, rd, buf + 0x80, 16, 0);
     // The read end can't write (rights).
     let wrong = sys(SYS_PIPE_WRITE, rd, buf, 1, 0);
-    // SYS_CLOSE closes a pipe end: the last write end gone, a read is EOF.
+    // SYS_CLOSE closes a pipe end, even in slot 0 or 1 (a fresh process's
+    // first two installs: these ends): the last write end gone, a read is EOF.
+    if rd > 1 || wr > 1 {
+        crate::serial_println!("PIPE create note: ends not in slots 0/1 (rd={rd} wr={wr})");
+    }
     let closed = sys(SYS_CLOSE, wr, 0, 0, 0);
     let eof = sys(SYS_PIPE_READ, rd, buf + 0x80, 16, 0);
     crate::arch::x86_64::without_interrupts(|| {
