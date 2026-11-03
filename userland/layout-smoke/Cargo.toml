@@ -38,69 +38,397 @@ ipc-channel = { version = "=0.23.1", features = ["force-inprocess"] }
 libz-sys = { version = "1", features = ["static"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
 
+# Every crate comes from third_party/ot61-browser: vendor/ (as published),
+# patched/ (with a <crate>-<version>-neoplutarch.patch beside it), or stubs/
+# (empty stand-ins for crates the target never compiles; VENDORED.md, "The
+# stubs for other platforms"). The table below is generated, never typed:
+#   python3 ../../third_party/ot61-browser/gen-patch-table.py ../../third_party/ot61-browser Cargo.lock
+# WIP until #66 and #25 land: the 36 crates they vendor under
+# third_party/ot61-swgl/vendor (webrender 0.70.0 and SWGL's closure) still
+# resolve from crates.io here, and get their entries when #55 rebases onto them.
 [patch.crates-io]
-libc = { path = "../../third_party/ot61-browser/patched/libc-0.2.191" }
-parking_lot_core = { path = "../../third_party/ot61-browser/patched/parking_lot_core-0.9.12" }
-servo-base = { path = "../../third_party/ot61-browser/patched/servo-base-0.7.0" }
-servo-url = { path = "../../third_party/ot61-browser/patched/servo-url-0.7.0" }
-servo-fonts-traits = { path = "../../third_party/ot61-browser/patched/servo-fonts-traits-0.7.0" }
-servo-fonts = { path = "../../third_party/ot61-browser/patched/servo-fonts-0.7.0" }
-servo-allocator = { path = "../../third_party/ot61-browser/patched/servo-allocator-0.7.0" }
-servo-embedder-traits = { path = "../../third_party/ot61-browser/patched/servo-embedder-traits-0.7.0" }
-servo-layout = { path = "../../third_party/ot61-browser/patched/servo-layout-0.7.0" }
-servo-paint-api = { path = "../../third_party/ot61-browser/patched/servo-paint-api-0.7.0" }
-stylo = { path = "../../third_party/ot61-browser/patched/stylo-0.22.0" }
-hyper-util = { path = "../../third_party/ot61-browser/stubs/hyper-util-0.1.21" }
-windows-sys = { path = "../../third_party/ot61-browser/stubs/windows-sys-0.61.2" }
-# #25's patched copy (byte-identical, same path as on #25).
-wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
-# Empty stand-ins for crates the lockfile names but no LogansOS build compiles
-# (other platforms' bindings, fuzz/dev tooling, and Servo's script engine, which
-# option A takes out of the target graph): third_party/ot61-browser/VENDORED.md,
-# "The stubs for other platforms".
+accesskit = { path = "../../third_party/ot61-browser/vendor/accesskit-0.24.1" }
+adler2 = { path = "../../third_party/ot61-browser/vendor/adler2-2.0.1" }
+aho-corasick = { path = "../../third_party/ot61-browser/vendor/aho-corasick-1.1.5" }
+alloc-no-stdlib = { path = "../../third_party/ot61-browser/vendor/alloc-no-stdlib-2.0.4" }
+app_units = { path = "../../third_party/ot61-browser/vendor/app_units-0.7.8" }
+arrayref = { path = "../../third_party/ot61-browser/vendor/arrayref-0.3.9" }
+arrayvec = { path = "../../third_party/ot61-browser/vendor/arrayvec-0.7.8" }
+atomic_refcell = { path = "../../third_party/ot61-browser/vendor/atomic_refcell-0.1.14" }
+autocfg = { path = "../../third_party/ot61-browser/vendor/autocfg-1.5.1" }
+base64 = { path = "../../third_party/ot61-browser/vendor/base64-0.22.1" }
+base64_0_23_1 = { package = "base64", path = "../../third_party/ot61-browser/vendor/base64-0.23.1" }
+bitflags = { path = "../../third_party/ot61-browser/vendor/bitflags-2.13.2" }
+block-buffer = { path = "../../third_party/ot61-browser/vendor/block-buffer-0.10.4" }
+brotli-decompressor = { path = "../../third_party/ot61-browser/vendor/brotli-decompressor-5.0.3" }
+bs58 = { path = "../../third_party/ot61-browser/stubs/bs58-0.5.1" }
+byte-slice-cast = { path = "../../third_party/ot61-browser/vendor/byte-slice-cast-1.2.3" }
+byteorder = { path = "../../third_party/ot61-browser/vendor/byteorder-1.5.0" }
+byteorder-lite = { path = "../../third_party/ot61-browser/vendor/byteorder-lite-0.1.0" }
+bytes = { path = "../../third_party/ot61-browser/vendor/bytes-1.12.1" }
+cc = { path = "../../third_party/ot61-browser/vendor/cc-1.11.0" }
+cfg-if = { path = "../../third_party/ot61-browser/vendor/cfg-if-1.0.5" }
+chacha20 = { path = "../../third_party/ot61-browser/vendor/chacha20-0.10.2" }
+chrono = { path = "../../third_party/ot61-browser/stubs/chrono-0.4.45" }
+cobs = { path = "../../third_party/ot61-browser/vendor/cobs-0.3.0" }
+color = { path = "../../third_party/ot61-browser/vendor/color-0.3.3" }
+color_quant = { path = "../../third_party/ot61-browser/vendor/color_quant-1.1.0" }
+content-security-policy = { path = "../../third_party/ot61-browser/vendor/content-security-policy-0.9.0" }
+cookie = { path = "../../third_party/ot61-browser/vendor/cookie-0.16.2" }
+cookie_0_18_2 = { package = "cookie", path = "../../third_party/ot61-browser/vendor/cookie-0.18.2" }
 core-foundation = { path = "../../third_party/ot61-browser/stubs/core-foundation-0.9.4" }
 core-graphics = { path = "../../third_party/ot61-browser/stubs/core-graphics-0.23.2" }
 core-text = { path = "../../third_party/ot61-browser/stubs/core-text-20.1.0" }
+core_detect = { path = "../../third_party/ot61-browser/vendor/core_detect-1.0.0" }
+core_maths = { path = "../../third_party/ot61-browser/vendor/core_maths-0.1.1" }
+cpufeatures = { path = "../../third_party/ot61-browser/vendor/cpufeatures-0.2.17" }
+cpufeatures_0_3_1 = { package = "cpufeatures", path = "../../third_party/ot61-browser/vendor/cpufeatures-0.3.1" }
+crc32fast = { path = "../../third_party/ot61-browser/vendor/crc32fast-1.5.4" }
+crossbeam-deque = { path = "../../third_party/ot61-browser/vendor/crossbeam-deque-0.8.8" }
+crossbeam-epoch = { path = "../../third_party/ot61-browser/vendor/crossbeam-epoch-0.9.21" }
+crossbeam-utils = { path = "../../third_party/ot61-browser/vendor/crossbeam-utils-0.8.23" }
+crypto-common = { path = "../../third_party/ot61-browser/vendor/crypto-common-0.1.7" }
+cssparser = { path = "../../third_party/ot61-browser/vendor/cssparser-0.38.0" }
+cssparser-macros = { path = "../../third_party/ot61-browser/vendor/cssparser-macros-0.7.1" }
+darling = { path = "../../third_party/ot61-browser/vendor/darling-0.20.11" }
+darling_0_24_1 = { package = "darling", path = "../../third_party/ot61-browser/vendor/darling-0.24.1" }
+darling_core = { path = "../../third_party/ot61-browser/vendor/darling_core-0.20.11" }
+darling_core_0_24_1 = { package = "darling_core", path = "../../third_party/ot61-browser/vendor/darling_core-0.24.1" }
+darling_macro = { path = "../../third_party/ot61-browser/vendor/darling_macro-0.20.11" }
+darling_macro_0_24_1 = { package = "darling_macro", path = "../../third_party/ot61-browser/vendor/darling_macro-0.24.1" }
+data-url = { path = "../../third_party/ot61-browser/vendor/data-url-0.3.2" }
+deranged = { path = "../../third_party/ot61-browser/vendor/deranged-0.5.9" }
+derive_more = { path = "../../third_party/ot61-browser/vendor/derive_more-2.1.1" }
+derive_more-impl = { path = "../../third_party/ot61-browser/vendor/derive_more-impl-2.1.1" }
+digest = { path = "../../third_party/ot61-browser/vendor/digest-0.10.7" }
+displaydoc = { path = "../../third_party/ot61-browser/vendor/displaydoc-0.2.7" }
+dpi = { path = "../../third_party/ot61-browser/vendor/dpi-0.1.2" }
+dtoa = { path = "../../third_party/ot61-browser/vendor/dtoa-1.0.11" }
+dtoa-short = { path = "../../third_party/ot61-browser/vendor/dtoa-short-0.3.5" }
 dwrote = { path = "../../third_party/ot61-browser/stubs/dwrote-0.11.5" }
+either = { path = "../../third_party/ot61-browser/vendor/either-1.19.0" }
+embedded-io = { path = "../../third_party/ot61-browser/stubs/embedded-io-0.4.0" }
+embedded-io_0_6_1 = { package = "embedded-io", path = "../../third_party/ot61-browser/stubs/embedded-io-0.6.1" }
+encoding_rs = { path = "../../third_party/ot61-browser/vendor/encoding_rs-0.8.44" }
+enumn = { path = "../../third_party/ot61-browser/vendor/enumn-0.1.14" }
+equivalent = { path = "../../third_party/ot61-browser/vendor/equivalent-1.0.3" }
+euclid = { path = "../../third_party/ot61-browser/vendor/euclid-0.22.14" }
+exr = { path = "../../third_party/ot61-browser/stubs/exr-1.74.2" }
+fastrand = { path = "../../third_party/ot61-browser/vendor/fastrand-2.5.0" }
+fdeflate = { path = "../../third_party/ot61-browser/vendor/fdeflate-0.3.7" }
+fearless_simd = { path = "../../third_party/ot61-browser/vendor/fearless_simd-0.4.1" }
+fixedbitset = { path = "../../third_party/ot61-browser/vendor/fixedbitset-0.5.7" }
+flate2 = { path = "../../third_party/ot61-browser/vendor/flate2-1.1.10" }
+float-cmp = { path = "../../third_party/ot61-browser/vendor/float-cmp-0.9.0" }
+fnv = { path = "../../third_party/ot61-browser/vendor/fnv-1.0.7" }
+foldhash = { path = "../../third_party/ot61-browser/vendor/foldhash-0.1.5" }
 fontconfig-parser = { path = "../../third_party/ot61-browser/stubs/fontconfig-parser-0.5.8" }
+fontdb = { path = "../../third_party/ot61-browser/vendor/fontdb-0.24.0" }
+fontsan = { path = "../../third_party/ot61-browser/vendor/fontsan-0.7.0" }
+form_urlencoded = { path = "../../third_party/ot61-browser/vendor/form_urlencoded-1.2.2" }
 freetype = { path = "../../third_party/ot61-browser/stubs/freetype-0.8.0" }
+freetype-sys = { path = "../../third_party/ot61-browser/stubs/freetype-sys-0.23.0" }
+generic-array = { path = "../../third_party/ot61-browser/vendor/generic-array-0.14.7" }
+getrandom = { path = "../../third_party/ot61-browser/vendor/getrandom-0.2.17" }
+gif = { path = "../../third_party/ot61-browser/vendor/gif-0.14.2" }
+glifo = { path = "../../third_party/ot61-browser/vendor/glifo-0.3.0" }
+glob = { path = "../../third_party/ot61-browser/vendor/glob-0.3.4" }
+glow = { path = "../../third_party/ot61-browser/vendor/glow-0.17.0" }
+guillotiere = { path = "../../third_party/ot61-browser/vendor/guillotiere-0.7.0" }
+harfbuzz-sys = { path = "../../third_party/ot61-browser/vendor/harfbuzz-sys-0.8.0" }
+harfrust = { path = "../../third_party/ot61-browser/vendor/harfrust-0.12.0" }
+hashbrown = { path = "../../third_party/ot61-browser/vendor/hashbrown-0.15.5" }
+hashbrown_0_17_1 = { package = "hashbrown", path = "../../third_party/ot61-browser/vendor/hashbrown-0.17.1" }
+headers = { path = "../../third_party/ot61-browser/vendor/headers-0.4.2" }
+headers-core = { path = "../../third_party/ot61-browser/vendor/headers-core-0.3.0" }
+heck = { path = "../../third_party/ot61-browser/vendor/heck-0.5.0" }
 hermit-abi = { path = "../../third_party/ot61-browser/stubs/hermit-abi-0.5.3" }
+hex = { path = "../../third_party/ot61-browser/stubs/hex-0.4.3" }
+html5ever = { path = "../../third_party/ot61-browser/vendor/html5ever-0.40.1" }
+http = { path = "../../third_party/ot61-browser/vendor/http-1.5.0" }
+http-body = { path = "../../third_party/ot61-browser/vendor/http-body-1.1.0" }
+httpdate = { path = "../../third_party/ot61-browser/vendor/httpdate-1.0.3" }
+hyper = { path = "../../third_party/ot61-browser/vendor/hyper-1.12.0" }
+hyper-util = { path = "../../third_party/ot61-browser/stubs/hyper-util-0.1.21" }
+icu_collections = { path = "../../third_party/ot61-browser/vendor/icu_collections-2.4.0" }
+icu_locale_core = { path = "../../third_party/ot61-browser/vendor/icu_locale_core-2.4.0" }
+icu_locale_fallback = { path = "../../third_party/ot61-browser/vendor/icu_locale_fallback-2.4.0" }
+icu_locale_fallback_data = { path = "../../third_party/ot61-browser/vendor/icu_locale_fallback_data-2.4.0" }
+icu_normalizer = { path = "../../third_party/ot61-browser/vendor/icu_normalizer-2.4.0" }
+icu_normalizer_data = { path = "../../third_party/ot61-browser/vendor/icu_normalizer_data-2.4.0" }
+icu_properties = { path = "../../third_party/ot61-browser/vendor/icu_properties-2.4.0" }
+icu_properties_data = { path = "../../third_party/ot61-browser/vendor/icu_properties_data-2.4.0" }
+icu_provider = { path = "../../third_party/ot61-browser/vendor/icu_provider-2.4.0" }
+icu_segmenter = { path = "../../third_party/ot61-browser/vendor/icu_segmenter-2.4.0" }
+icu_segmenter_data = { path = "../../third_party/ot61-browser/vendor/icu_segmenter_data-2.4.0" }
+ident_case = { path = "../../third_party/ot61-browser/vendor/ident_case-1.0.1" }
+idna = { path = "../../third_party/ot61-browser/vendor/idna-1.1.0" }
+idna_adapter = { path = "../../third_party/ot61-browser/vendor/idna_adapter-1.2.2" }
+image = { path = "../../third_party/ot61-browser/vendor/image-0.25.10" }
+image-webp = { path = "../../third_party/ot61-browser/vendor/image-webp-0.2.4" }
+imagesize = { path = "../../third_party/ot61-browser/vendor/imagesize-0.15.0" }
+indexmap = { path = "../../third_party/ot61-browser/stubs/indexmap-1.9.3" }
+indexmap_2_14_2 = { package = "indexmap", path = "../../third_party/ot61-browser/vendor/indexmap-2.14.2" }
+inventory = { path = "../../third_party/ot61-browser/vendor/inventory-0.3.25" }
+ipc-channel = { path = "../../third_party/ot61-browser/vendor/ipc-channel-0.23.1" }
+itertools = { path = "../../third_party/ot61-browser/vendor/itertools-0.14.0" }
+itertools_0_15_0 = { package = "itertools", path = "../../third_party/ot61-browser/vendor/itertools-0.15.0" }
+itoa = { path = "../../third_party/ot61-browser/vendor/itoa-1.0.18" }
+jiff = { path = "../../third_party/ot61-browser/stubs/jiff-0.2.39" }
 js-sys = { path = "../../third_party/ot61-browser/stubs/js-sys-0.3.107" }
+keyboard-types = { path = "../../third_party/ot61-browser/vendor/keyboard-types-0.8.3" }
+kurbo = { path = "../../third_party/ot61-browser/vendor/kurbo-0.13.1" }
+libc = { path = "../../third_party/ot61-browser/patched/libc-0.2.191" }
+libm = { path = "../../third_party/ot61-browser/vendor/libm-0.2.16" }
+libz-sys = { path = "../../third_party/ot61-browser/vendor/libz-sys-1.1.31" }
+linebender_resource_handle = { path = "../../third_party/ot61-browser/vendor/linebender_resource_handle-0.1.1" }
+litemap = { path = "../../third_party/ot61-browser/vendor/litemap-0.8.3" }
+lock_api = { path = "../../third_party/ot61-browser/vendor/lock_api-0.4.14" }
+log = { path = "../../third_party/ot61-browser/vendor/log-0.4.35" }
 mach2 = { path = "../../third_party/ot61-browser/stubs/mach2-0.7.0" }
+malloc_size_of_derive = { path = "../../third_party/ot61-browser/vendor/malloc_size_of_derive-0.1.3" }
+markup5ever = { path = "../../third_party/ot61-browser/vendor/markup5ever-0.40.0" }
+memchr = { path = "../../third_party/ot61-browser/vendor/memchr-2.8.3" }
+memmap2 = { path = "../../third_party/ot61-browser/vendor/memmap2-0.9.12" }
+mime = { path = "../../third_party/ot61-browser/vendor/mime-0.3.17" }
+miniz_oxide = { path = "../../third_party/ot61-browser/vendor/miniz_oxide-0.8.9" }
+miniz_oxide_0_9_1 = { package = "miniz_oxide", path = "../../third_party/ot61-browser/vendor/miniz_oxide-0.9.1" }
 mio = { path = "../../third_party/ot61-browser/stubs/mio-1.2.4" }
+moxcms = { path = "../../third_party/ot61-browser/vendor/moxcms-0.8.1" }
+multiversion_no_op = { path = "../../third_party/ot61-browser/vendor/multiversion_no_op-1.0.0" }
+new_debug_unreachable = { path = "../../third_party/ot61-browser/vendor/new_debug_unreachable-1.0.6" }
+num-complex = { path = "../../third_party/ot61-browser/vendor/num-complex-0.4.6" }
+num-conv = { path = "../../third_party/ot61-browser/vendor/num-conv-0.2.2" }
+num-derive = { path = "../../third_party/ot61-browser/vendor/num-derive-0.4.2" }
+num-integer = { path = "../../third_party/ot61-browser/vendor/num-integer-0.1.47" }
+num-traits = { path = "../../third_party/ot61-browser/vendor/num-traits-0.2.19" }
+num_cpus = { path = "../../third_party/ot61-browser/vendor/num_cpus-1.17.0" }
+num_enum = { path = "../../third_party/ot61-browser/vendor/num_enum-0.7.6" }
+num_enum_derive = { path = "../../third_party/ot61-browser/vendor/num_enum_derive-0.7.6" }
 num_threads = { path = "../../third_party/ot61-browser/stubs/num_threads-0.1.8" }
 objc = { path = "../../third_party/ot61-browser/stubs/objc-0.2.7" }
 objc2 = { path = "../../third_party/ot61-browser/stubs/objc2-0.6.5" }
 objc2-core-foundation = { path = "../../third_party/ot61-browser/stubs/objc2-core-foundation-0.3.2" }
 objc2-core-graphics = { path = "../../third_party/ot61-browser/stubs/objc2-core-graphics-0.3.2" }
 objc2-core-text = { path = "../../third_party/ot61-browser/stubs/objc2-core-text-0.3.2" }
+ohos-deviceinfo = { path = "../../third_party/ot61-browser/vendor/ohos-deviceinfo-0.1.0" }
+ohos-deviceinfo-sys = { path = "../../third_party/ot61-browser/vendor/ohos-deviceinfo-sys-0.1.8" }
+ordered-channel = { path = "../../third_party/ot61-browser/vendor/ordered-channel-1.2.0" }
+parking_lot = { path = "../../third_party/ot61-browser/vendor/parking_lot-0.12.5" }
+parking_lot_core = { path = "../../third_party/ot61-browser/patched/parking_lot_core-0.9.12" }
+peniko = { path = "../../third_party/ot61-browser/vendor/peniko-0.6.1" }
+percent-encoding = { path = "../../third_party/ot61-browser/vendor/percent-encoding-2.3.2" }
+petgraph = { path = "../../third_party/ot61-browser/vendor/petgraph-0.8.3" }
+phf = { path = "../../third_party/ot61-browser/vendor/phf-0.14.0" }
+phf_codegen = { path = "../../third_party/ot61-browser/vendor/phf_codegen-0.14.0" }
+phf_generator = { path = "../../third_party/ot61-browser/vendor/phf_generator-0.14.0" }
+phf_macros = { path = "../../third_party/ot61-browser/vendor/phf_macros-0.14.0" }
+phf_shared = { path = "../../third_party/ot61-browser/vendor/phf_shared-0.14.0" }
+pico-args = { path = "../../third_party/ot61-browser/vendor/pico-args-0.5.0" }
+pin-project-lite = { path = "../../third_party/ot61-browser/vendor/pin-project-lite-0.2.17" }
+pkg-config = { path = "../../third_party/ot61-browser/vendor/pkg-config-0.3.34" }
+png = { path = "../../third_party/ot61-browser/vendor/png-0.18.1" }
+polycool = { path = "../../third_party/ot61-browser/vendor/polycool-0.4.0" }
+postcard = { path = "../../third_party/ot61-browser/vendor/postcard-1.1.3" }
+potential_utf = { path = "../../third_party/ot61-browser/vendor/potential_utf-0.1.6" }
+powerfmt = { path = "../../third_party/ot61-browser/vendor/powerfmt-0.2.1" }
+precomputed-hash = { path = "../../third_party/ot61-browser/vendor/precomputed-hash-0.1.1" }
+primal-check = { path = "../../third_party/ot61-browser/vendor/primal-check-0.3.4" }
+proc-macro-crate = { path = "../../third_party/ot61-browser/vendor/proc-macro-crate-3.5.0" }
+proc-macro2 = { path = "../../third_party/ot61-browser/vendor/proc-macro2-1.0.107" }
+pxfm = { path = "../../third_party/ot61-browser/vendor/pxfm-0.1.30" }
+quick-error = { path = "../../third_party/ot61-browser/vendor/quick-error-2.0.1" }
+quote = { path = "../../third_party/ot61-browser/vendor/quote-1.0.47" }
 r-efi = { path = "../../third_party/ot61-browser/stubs/r-efi-6.0.0" }
+rand = { path = "../../third_party/ot61-browser/vendor/rand-0.10.3" }
+rand_core = { path = "../../third_party/ot61-browser/vendor/rand_core-0.10.1" }
+ravif = { path = "../../third_party/ot61-browser/stubs/ravif-0.13.0" }
+raw-window-handle = { path = "../../third_party/ot61-browser/vendor/raw-window-handle-0.6.2" }
+rayon = { path = "../../third_party/ot61-browser/vendor/rayon-1.12.0" }
+rayon-core = { path = "../../third_party/ot61-browser/vendor/rayon-core-1.13.0" }
+read-fonts = { path = "../../third_party/ot61-browser/vendor/read-fonts-0.41.0" }
+read-fonts_0_43_3 = { package = "read-fonts", path = "../../third_party/ot61-browser/vendor/read-fonts-0.43.3" }
+realfft = { path = "../../third_party/ot61-browser/vendor/realfft-3.5.1" }
+regex = { path = "../../third_party/ot61-browser/vendor/regex-1.13.1" }
+regex-automata = { path = "../../third_party/ot61-browser/vendor/regex-automata-0.4.18" }
+regex-syntax = { path = "../../third_party/ot61-browser/vendor/regex-syntax-0.8.11" }
+resvg = { path = "../../third_party/ot61-browser/vendor/resvg-0.48.1" }
+rgb = { path = "../../third_party/ot61-browser/vendor/rgb-0.8.53" }
+ring = { path = "../../third_party/ot61-browser/stubs/ring-0.17.14" }
+roxmltree = { path = "../../third_party/ot61-browser/vendor/roxmltree-0.21.2" }
+rustc-hash = { path = "../../third_party/ot61-browser/vendor/rustc-hash-2.1.3" }
+rustc_version = { path = "../../third_party/ot61-browser/stubs/rustc_version-0.4.1" }
+rustfft = { path = "../../third_party/ot61-browser/vendor/rustfft-6.4.1" }
+rustls = { path = "../../third_party/ot61-browser/vendor/rustls-0.23.46" }
+rustls-pki-types = { path = "../../third_party/ot61-browser/vendor/rustls-pki-types-1.15.1" }
+rustls-webpki = { path = "../../third_party/ot61-browser/vendor/rustls-webpki-0.103.16" }
+rustversion = { path = "../../third_party/ot61-browser/vendor/rustversion-1.0.23" }
+same-file = { path = "../../third_party/ot61-browser/vendor/same-file-1.0.6" }
+schemars = { path = "../../third_party/ot61-browser/stubs/schemars-0.9.0" }
+schemars_1_2_3 = { package = "schemars", path = "../../third_party/ot61-browser/stubs/schemars-1.2.3" }
+scopeguard = { path = "../../third_party/ot61-browser/vendor/scopeguard-1.2.0" }
+selectors = { path = "../../third_party/ot61-browser/vendor/selectors-0.41.0" }
+serde = { path = "../../third_party/ot61-browser/vendor/serde-1.0.229" }
+serde_core = { path = "../../third_party/ot61-browser/vendor/serde_core-1.0.229" }
+serde_derive = { path = "../../third_party/ot61-browser/vendor/serde_derive-1.0.229" }
+serde_json = { path = "../../third_party/ot61-browser/vendor/serde_json-1.0.154" }
+serde_spanned = { path = "../../third_party/ot61-browser/vendor/serde_spanned-1.1.2" }
+serde_with = { path = "../../third_party/ot61-browser/vendor/serde_with-3.24.0" }
+serde_with_macros = { path = "../../third_party/ot61-browser/vendor/serde_with_macros-3.24.0" }
+servo-allocator = { path = "../../third_party/ot61-browser/patched/servo-allocator-0.7.0" }
+servo-background-hang-monitor-api = { path = "../../third_party/ot61-browser/vendor/servo-background-hang-monitor-api-0.7.0" }
+servo-base = { path = "../../third_party/ot61-browser/patched/servo-base-0.7.0" }
+servo-canvas-traits = { path = "../../third_party/ot61-browser/vendor/servo-canvas-traits-0.7.0" }
+servo-config = { path = "../../third_party/ot61-browser/vendor/servo-config-0.7.0" }
+servo-config-macro = { path = "../../third_party/ot61-browser/vendor/servo-config-macro-0.7.0" }
+servo-constellation-traits = { path = "../../third_party/ot61-browser/vendor/servo-constellation-traits-0.7.0" }
+servo-devtools-traits = { path = "../../third_party/ot61-browser/vendor/servo-devtools-traits-0.7.0" }
+servo-embedder-traits = { path = "../../third_party/ot61-browser/patched/servo-embedder-traits-0.7.0" }
+servo-fonts = { path = "../../third_party/ot61-browser/patched/servo-fonts-0.7.0" }
+servo-fonts-traits = { path = "../../third_party/ot61-browser/patched/servo-fonts-traits-0.7.0" }
+servo-geometry = { path = "../../third_party/ot61-browser/vendor/servo-geometry-0.7.0" }
+servo-hyper-serde = { path = "../../third_party/ot61-browser/vendor/servo-hyper-serde-0.7.0" }
+servo-layout = { path = "../../third_party/ot61-browser/patched/servo-layout-0.7.0" }
+servo-layout-api = { path = "../../third_party/ot61-browser/vendor/servo-layout-api-0.7.0" }
+servo-malloc-size-of = { path = "../../third_party/ot61-browser/vendor/servo-malloc-size-of-0.7.0" }
+servo-media = { path = "../../third_party/ot61-browser/vendor/servo-media-0.7.0" }
+servo-media-audio = { path = "../../third_party/ot61-browser/vendor/servo-media-audio-0.7.0" }
+servo-media-derive = { path = "../../third_party/ot61-browser/vendor/servo-media-derive-0.7.0" }
+servo-media-player = { path = "../../third_party/ot61-browser/vendor/servo-media-player-0.7.0" }
+servo-media-streams = { path = "../../third_party/ot61-browser/vendor/servo-media-streams-0.7.0" }
+servo-media-thread = { path = "../../third_party/ot61-browser/vendor/servo-media-thread-0.7.0" }
+servo-media-traits = { path = "../../third_party/ot61-browser/vendor/servo-media-traits-0.7.0" }
+servo-media-webrtc = { path = "../../third_party/ot61-browser/vendor/servo-media-webrtc-0.7.0" }
+servo-net-traits = { path = "../../third_party/ot61-browser/vendor/servo-net-traits-0.7.0" }
+servo-paint-api = { path = "../../third_party/ot61-browser/patched/servo-paint-api-0.7.0" }
+servo-pixels = { path = "../../third_party/ot61-browser/vendor/servo-pixels-0.7.0" }
+servo-profile-traits = { path = "../../third_party/ot61-browser/vendor/servo-profile-traits-0.7.0" }
 servo-script = { path = "../../third_party/ot61-browser/stubs/servo-script-0.7.0" }
+servo-script-traits = { path = "../../third_party/ot61-browser/vendor/servo-script-traits-0.7.0" }
+servo-storage-traits = { path = "../../third_party/ot61-browser/vendor/servo-storage-traits-0.7.0" }
+servo-tracing = { path = "../../third_party/ot61-browser/vendor/servo-tracing-0.7.0" }
+servo-url = { path = "../../third_party/ot61-browser/patched/servo-url-0.7.0" }
+servo-webxr-api = { path = "../../third_party/ot61-browser/vendor/servo-webxr-api-0.7.0" }
+servo_arc = { path = "../../third_party/ot61-browser/vendor/servo_arc-0.5.0" }
+sha1 = { path = "../../third_party/ot61-browser/vendor/sha1-0.10.7" }
+sha1_smol = { path = "../../third_party/ot61-browser/vendor/sha1_smol-1.0.1" }
+sha2 = { path = "../../third_party/ot61-browser/vendor/sha2-0.10.9" }
+simd-adler32 = { path = "../../third_party/ot61-browser/vendor/simd-adler32-0.3.10" }
+simdutf8 = { path = "../../third_party/ot61-browser/vendor/simdutf8-0.1.5" }
+simplecss = { path = "../../third_party/ot61-browser/vendor/simplecss-0.2.2" }
+siphasher = { path = "../../third_party/ot61-browser/vendor/siphasher-1.0.4" }
+skrifa = { path = "../../third_party/ot61-browser/vendor/skrifa-0.44.0" }
+skrifa_0_46_2 = { package = "skrifa", path = "../../third_party/ot61-browser/vendor/skrifa-0.46.2" }
+slotmap = { path = "../../third_party/ot61-browser/vendor/slotmap-1.1.1" }
+smallbitvec = { path = "../../third_party/ot61-browser/vendor/smallbitvec-2.6.1" }
+smallvec = { path = "../../third_party/ot61-browser/vendor/smallvec-1.16.4" }
+speexdsp-resampler = { path = "../../third_party/ot61-browser/vendor/speexdsp-resampler-0.1.0" }
+stable_deref_trait = { path = "../../third_party/ot61-browser/vendor/stable_deref_trait-1.2.1" }
+static_assertions = { path = "../../third_party/ot61-browser/vendor/static_assertions-1.1.0" }
+strength_reduce = { path = "../../third_party/ot61-browser/vendor/strength_reduce-0.2.4" }
+strict-num = { path = "../../third_party/ot61-browser/vendor/strict-num-0.1.1" }
+string_cache = { path = "../../third_party/ot61-browser/vendor/string_cache-0.11.0" }
+string_cache_codegen = { path = "../../third_party/ot61-browser/vendor/string_cache_codegen-0.11.2" }
+strsim = { path = "../../third_party/ot61-browser/vendor/strsim-0.11.1" }
+strum = { path = "../../third_party/ot61-browser/vendor/strum-0.28.0" }
+strum_macros = { path = "../../third_party/ot61-browser/vendor/strum_macros-0.28.0" }
+stylo = { path = "../../third_party/ot61-browser/patched/stylo-0.22.0" }
+stylo_atoms = { path = "../../third_party/ot61-browser/vendor/stylo_atoms-0.22.0" }
+stylo_derive = { path = "../../third_party/ot61-browser/vendor/stylo_derive-0.22.0" }
+stylo_dom = { path = "../../third_party/ot61-browser/vendor/stylo_dom-0.22.0" }
+stylo_malloc_size_of = { path = "../../third_party/ot61-browser/vendor/stylo_malloc_size_of-0.22.0" }
+stylo_static_prefs = { path = "../../third_party/ot61-browser/vendor/stylo_static_prefs-0.22.0" }
+stylo_traits = { path = "../../third_party/ot61-browser/vendor/stylo_traits-0.22.0" }
+subtle = { path = "../../third_party/ot61-browser/vendor/subtle-2.6.1" }
 surfman = { path = "../../third_party/ot61-browser/stubs/surfman-0.14.0" }
+svgtypes = { path = "../../third_party/ot61-browser/vendor/svgtypes-0.16.1" }
+syn = { path = "../../third_party/ot61-browser/vendor/syn-2.0.119" }
+syn_3_0_9 = { package = "syn", path = "../../third_party/ot61-browser/vendor/syn-3.0.9" }
+synstructure = { path = "../../third_party/ot61-browser/vendor/synstructure-0.13.2" }
+synstructure_0_14_0 = { package = "synstructure", path = "../../third_party/ot61-browser/vendor/synstructure-0.14.0" }
+sys-locale = { path = "../../third_party/ot61-browser/vendor/sys-locale-0.3.2" }
+taffy = { path = "../../third_party/ot61-browser/vendor/taffy-0.14.0" }
 tempfile = { path = "../../third_party/ot61-browser/stubs/tempfile-3.27.0" }
+tendril = { path = "../../third_party/ot61-browser/vendor/tendril-0.5.1" }
+thin-vec = { path = "../../third_party/ot61-browser/vendor/thin-vec-0.2.21" }
+thiserror = { path = "../../third_party/ot61-browser/vendor/thiserror-1.0.69" }
+thiserror_2_0_21 = { package = "thiserror", path = "../../third_party/ot61-browser/vendor/thiserror-2.0.21" }
+thiserror-impl = { path = "../../third_party/ot61-browser/vendor/thiserror-impl-1.0.69" }
+thiserror-impl_2_0_21 = { package = "thiserror-impl", path = "../../third_party/ot61-browser/vendor/thiserror-impl-2.0.21" }
+thread_local = { path = "../../third_party/ot61-browser/vendor/thread_local-1.1.10" }
+time = { path = "../../third_party/ot61-browser/vendor/time-0.3.55" }
+time-core = { path = "../../third_party/ot61-browser/vendor/time-core-0.1.9" }
+time-macros = { path = "../../third_party/ot61-browser/vendor/time-macros-0.2.32" }
+tiny-skia = { path = "../../third_party/ot61-browser/vendor/tiny-skia-0.12.0" }
+tiny-skia-path = { path = "../../third_party/ot61-browser/vendor/tiny-skia-path-0.12.0" }
+tinystr = { path = "../../third_party/ot61-browser/vendor/tinystr-0.8.5" }
+tinyvec = { path = "../../third_party/ot61-browser/vendor/tinyvec-1.13.3" }
+to_shmem = { path = "../../third_party/ot61-browser/vendor/to_shmem-0.6.0" }
+to_shmem_derive = { path = "../../third_party/ot61-browser/vendor/to_shmem_derive-0.2.0" }
+tokio = { path = "../../third_party/ot61-browser/vendor/tokio-1.54.1" }
+toml = { path = "../../third_party/ot61-browser/vendor/toml-1.1.8+spec-1.1.0" }
+toml_datetime = { path = "../../third_party/ot61-browser/vendor/toml_datetime-1.1.2+spec-1.1.0" }
+toml_edit = { path = "../../third_party/ot61-browser/vendor/toml_edit-0.25.17+spec-1.1.0" }
+toml_parser = { path = "../../third_party/ot61-browser/vendor/toml_parser-1.1.5+spec-1.1.0" }
+toml_writer = { path = "../../third_party/ot61-browser/vendor/toml_writer-1.1.3+spec-1.1.0" }
+transpose = { path = "../../third_party/ot61-browser/vendor/transpose-0.2.3" }
+typenum = { path = "../../third_party/ot61-browser/vendor/typenum-1.20.1" }
+uluru = { path = "../../third_party/ot61-browser/vendor/uluru-3.1.0" }
+unic-char-property = { path = "../../third_party/ot61-browser/vendor/unic-char-property-0.9.0" }
+unic-char-range = { path = "../../third_party/ot61-browser/vendor/unic-char-range-0.9.0" }
+unic-common = { path = "../../third_party/ot61-browser/vendor/unic-common-0.9.0" }
+unic-ucd-ident = { path = "../../third_party/ot61-browser/vendor/unic-ucd-ident-0.9.0" }
+unic-ucd-version = { path = "../../third_party/ot61-browser/vendor/unic-ucd-version-0.9.0" }
+unicode-bidi = { path = "../../third_party/ot61-browser/vendor/unicode-bidi-0.3.18" }
+unicode-ident = { path = "../../third_party/ot61-browser/vendor/unicode-ident-1.0.27" }
+unicode-properties = { path = "../../third_party/ot61-browser/vendor/unicode-properties-0.1.5" }
+unicode-script = { path = "../../third_party/ot61-browser/vendor/unicode-script-0.5.9" }
+unicode-segmentation = { path = "../../third_party/ot61-browser/vendor/unicode-segmentation-1.13.3" }
+unicode-vo = { path = "../../third_party/ot61-browser/vendor/unicode-vo-0.1.0" }
+unicode_categories = { path = "../../third_party/ot61-browser/vendor/unicode_categories-0.1.1" }
+untrusted = { path = "../../third_party/ot61-browser/vendor/untrusted-0.9.0" }
+url = { path = "../../third_party/ot61-browser/vendor/url-2.5.8" }
+urlpattern = { path = "../../third_party/ot61-browser/vendor/urlpattern-0.3.0" }
+usvg = { path = "../../third_party/ot61-browser/vendor/usvg-0.48.1" }
+utf8_iter = { path = "../../third_party/ot61-browser/vendor/utf8_iter-1.1.0" }
+utf_types = { path = "../../third_party/ot61-browser/vendor/utf_types-1.0.0" }
+uuid = { path = "../../third_party/ot61-browser/vendor/uuid-0.8.2" }
+uuid_1_29_0 = { package = "uuid", path = "../../third_party/ot61-browser/vendor/uuid-1.29.0" }
+vcpkg = { path = "../../third_party/ot61-browser/vendor/vcpkg-0.2.15" }
+vello_common = { path = "../../third_party/ot61-browser/vendor/vello_common-0.2.0" }
+vello_cpu = { path = "../../third_party/ot61-browser/vendor/vello_cpu-0.2.0" }
+version_check = { path = "../../third_party/ot61-browser/vendor/version_check-0.9.5" }
+void = { path = "../../third_party/ot61-browser/vendor/void-1.0.2" }
+walkdir = { path = "../../third_party/ot61-browser/vendor/walkdir-2.5.0" }
 wasi = { path = "../../third_party/ot61-browser/stubs/wasi-0.11.1+wasi-snapshot-preview1" }
+wasm-bindgen = { path = "../../third_party/ot61-browser/stubs/wasm-bindgen-0.2.130" }
 web-sys = { path = "../../third_party/ot61-browser/stubs/web-sys-0.3.107" }
+web_atoms = { path = "../../third_party/ot61-browser/vendor/web_atoms-0.3.0" }
+webdriver = { path = "../../third_party/ot61-browser/vendor/webdriver-0.54.0" }
+weezl = { path = "../../third_party/ot61-browser/vendor/weezl-0.1.12" }
 winapi = { path = "../../third_party/ot61-browser/stubs/winapi-0.3.9" }
 winapi-util = { path = "../../third_party/ot61-browser/stubs/winapi-util-0.1.11" }
 windows = { path = "../../third_party/ot61-browser/stubs/windows-0.62.2" }
+windows-sys = { path = "../../third_party/ot61-browser/stubs/windows-sys-0.61.2" }
+winnow = { path = "../../third_party/ot61-browser/vendor/winnow-1.0.4" }
+writeable = { path = "../../third_party/ot61-browser/vendor/writeable-0.6.4" }
+wuff = { path = "../../third_party/ot61-browser/vendor/wuff-0.2.9" }
+wuff-capi = { path = "../../third_party/ot61-browser/vendor/wuff-capi-0.2.0" }
 xml = { path = "../../third_party/ot61-browser/stubs/xml-1.4.0" }
+xmlwriter = { path = "../../third_party/ot61-browser/vendor/xmlwriter-0.1.0" }
 yeslogic-fontconfig-sys = { path = "../../third_party/ot61-browser/stubs/yeslogic-fontconfig-sys-6.0.1" }
-# Crates.io crates the lock names only through optional features our target
-# build doesn't turn on (image's AVIF/EXR codecs, serde_with's chrono/hex/
-# schemars/jiff, rustls-webpki's ring, HarfBuzz's FreeType): same stubs.
-bs58 = { path = "../../third_party/ot61-browser/stubs/bs58-0.5.1" }
-chrono = { path = "../../third_party/ot61-browser/stubs/chrono-0.4.45" }
-embedded-io-04 = { package = "embedded-io", path = "../../third_party/ot61-browser/stubs/embedded-io-0.4.0" }
-embedded-io = { path = "../../third_party/ot61-browser/stubs/embedded-io-0.6.1" }
-exr = { path = "../../third_party/ot61-browser/stubs/exr-1.74.2" }
-freetype-sys = { path = "../../third_party/ot61-browser/stubs/freetype-sys-0.23.0" }
-hex = { path = "../../third_party/ot61-browser/stubs/hex-0.4.3" }
-indexmap-1 = { package = "indexmap", path = "../../third_party/ot61-browser/stubs/indexmap-1.9.3" }
-jiff = { path = "../../third_party/ot61-browser/stubs/jiff-0.2.39" }
-ravif = { path = "../../third_party/ot61-browser/stubs/ravif-0.13.0" }
-ring = { path = "../../third_party/ot61-browser/stubs/ring-0.17.14" }
-rustc_version = { path = "../../third_party/ot61-browser/stubs/rustc_version-0.4.1" }
-schemars-09 = { package = "schemars", path = "../../third_party/ot61-browser/stubs/schemars-0.9.0" }
-schemars = { path = "../../third_party/ot61-browser/stubs/schemars-1.2.3" }
-wasm-bindgen = { path = "../../third_party/ot61-browser/stubs/wasm-bindgen-0.2.130" }
+yoke = { path = "../../third_party/ot61-browser/vendor/yoke-0.8.4" }
+yoke-derive = { path = "../../third_party/ot61-browser/vendor/yoke-derive-0.8.4" }
+zerofrom = { path = "../../third_party/ot61-browser/vendor/zerofrom-0.1.8" }
+zerofrom-derive = { path = "../../third_party/ot61-browser/vendor/zerofrom-derive-0.1.8" }
+zeroize = { path = "../../third_party/ot61-browser/vendor/zeroize-1.9.1" }
+zeroize_derive = { path = "../../third_party/ot61-browser/vendor/zeroize_derive-1.5.0" }
+zerotrie = { path = "../../third_party/ot61-browser/vendor/zerotrie-0.2.5" }
+zerovec = { path = "../../third_party/ot61-browser/vendor/zerovec-0.11.9" }
+zerovec-derive = { path = "../../third_party/ot61-browser/vendor/zerovec-derive-0.11.7" }
 zlib-rs = { path = "../../third_party/ot61-browser/stubs/zlib-rs-0.6.8" }
+zmij = { path = "../../third_party/ot61-browser/vendor/zmij-1.0.23" }
+zune-core = { path = "../../third_party/ot61-browser/vendor/zune-core-0.5.3" }
+zune-jpeg = { path = "../../third_party/ot61-browser/vendor/zune-jpeg-0.5.15" }
+# #25's patched copy (byte-identical, same path as on #25).
+wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
