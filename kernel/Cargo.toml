@@ -245,6 +245,9 @@ desktop = [
     "desktop-session",
     "usb-hotplug",
     "rtc-epoch",
+    # F10 (J.c., 2026-11-02): held keys repeat, in every desktop kernel the
+    # gate boots as in the product image.
+    "key-autorepeat",
     "kernel-sysstat",
     "phase9-real-quant",
     "threaded-matmul",
@@ -939,6 +942,13 @@ neo-test-lock-route-races = ["neo-test", "sak-lock-route", "neo-test-atrium-runt
 # else EAGAIN with nothing changed; a 200-round race against a receiver on
 # CPU 1 delivers every message exactly once.
 neo-test-ipc-try-send = ["neo-test", "ipc-try-send"]
+# Jarvis (#61): a key repeat checked under one activation epoch is never
+# delivered under another (focus change, or Super+L, between the check and the
+# stage, or between the stage and the flush).
+neo-test-key-repeat-epoch = ["neo-test", "key-autorepeat", "sak-lock-route", "neo-test-atrium-runtime"]
+# Control: the repeat staged under a fresh epoch read (the pre-fix shape).
+# Must FAIL reason=repeat_crossed_focus_change.
+neo-test-key-repeat-epoch-control = ["neo-test-key-repeat-epoch"]
 # Control for hid_contention's mixed-IF phase: `PRIMARY` taken with the
 # caller's IF (main's pre-fix shape). Must FAIL reason=hid_primary_mixed_if_deadlock.
 neo-test-hid-mixed-if-control = ["neo-test-hid-contention"]

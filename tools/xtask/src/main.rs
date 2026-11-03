@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 #[path = "../../../kernel/src/drivers/block/gpt_logic.rs"]
 #[allow(dead_code)]
 mod gpt_logic;
+mod tzdata;
 /// Zenbook lane: the block write guard's sealed markers (scratch sector, log
 /// sink header), one source of truth with the kernel.
 #[path = "../../../kernel/src/drivers/block/write_guard_logic.rs"]
@@ -496,6 +497,41 @@ const DESKTOP_HOME_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     CHIP0_AGAIN,
     AGAIN_ENTER,
 ];
+/// F10: `desktop_home_boot`'s script, with a held Backspace first.
+const DESKTOP_HOME_REPEAT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    // F10 (J.c., 2026-11-02): Backspace held 5 s on Home's field empties
+    // all 13 bytes (software auto-repeat: 500 ms, then up to 30/s; under
+    // TCG each repaint takes ~150 ms and a repeat waits for the last to be
+    // read, so ~8/s); one press alone would leave 12. Then the intent is
+    // typed again.
+    step(
+        b"DESKTOP home keystroke ascii=112\n",
+        &[
+            HMP_HOLD_BACKSPACE_5S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+        ],
+    ),
+    step(
+        b"DESKTOP home keystroke backspace len=0\n",
+        b"hello desktop",
+    ),
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP view switch=window residue_pixels=0", b"x\x08"),
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"\x1bzz\x08\x08",
+    ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
 
 /// DI-1a: DS-1's script with the pointer exercised while Arthur holds the
 /// keyboard after its first answer: Super+Escape (the SAK) moves the keyboard
@@ -864,7 +900,7 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
         band: Some(true),
         ..desktop(
             "desktop_home_boot",
-            DESKTOP_HOME_BOOT_HID_STEPS,
+            DESKTOP_HOME_REPEAT_HID_STEPS,
             DESKTOP_HOME_BOOT_CAPTURE_REL,
             b"\n",
         )
@@ -4578,6 +4614,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // Jarvis (#61): a key repeat is staged under the epoch it was checked
+    // against; a focus change or Super+L in between drops it.
+    TestScenario {
+        name: "key_repeat_epoch",
+        feature: "neo-test-key-repeat-epoch",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     TestScenario {
         name: "hid_contention",
         feature: "neo-test-hid-contention",
@@ -6431,6 +6476,7 @@ fn main() -> ExitCode {
         "vm-image" => cmd_vm_image(&args[1..]),
         "vm-run" => cmd_vm_run(&args[1..]),
         "neo-test" => cmd_neo_test(&args[1..]),
+        "tzdata" => tzdata::cmd_tzdata(&args[1..], &workspace_root()),
         "product-elf-check" => cmd_product_elf_check(&args[1..]),
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
@@ -6746,7 +6792,8 @@ const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
     // Zenbook freeze lane: the lock-free corner status overlay. Image only:
     // the desktop scenarios read back every pixel.
     "freeze-watchdog",
-    // Software key auto-repeat (every keyboard).
+    // Software key auto-repeat (every keyboard); also in `desktop` (F10), so
+    // the desktop scenarios run it too.
     "key-autorepeat",
     // Zenbook touchpad (I2C-HID, rung 1): inert on any machine its quirk
     // entry does not match.
@@ -15175,6 +15222,8 @@ const USB_STORAGE_UNPLUG_HMP_STEPS: &[SerialScriptStep] = &[
 /// when the hold time ends).
 const HMP_HOLD_BACKSPACE: u8 = 0x89;
 const HMP_HOLD_ESCAPE: u8 = 0x8A;
+/// F10 (`desktop_home_boot`): Backspace held 5 s.
+const HMP_HOLD_BACKSPACE_5S: u8 = 0xAB;
 
 /// A9-C: the transcript's scroll keys (Up is the i8042 lane's 0x83).
 const HMP_PGUP: u8 = 0x8B;
@@ -15331,6 +15380,7 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         HMP_KP_8 => Some("sendkey kp_8\n"),
         HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
         HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
+        HMP_HOLD_BACKSPACE_5S => Some("sendkey backspace 5000\n"),
         HMP_PGUP => Some("sendkey pgup\n"),
         HMP_PGDN => Some("sendkey pgdn\n"),
         HMP_WHEEL_A => Some("mouse_move 0 0 1\n"),
@@ -19341,6 +19391,30 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         // next turn — never replayed into Arthur after it resumes.
         if scenario.name == "desktop_home_boot" {
             let serial = read_serial(observed)?;
+            // F10: one held Backspace took the field from 13 bytes to 0, one
+            // byte per press or repeat, each logged in order.
+            let backspaces: Vec<&str> = serial
+                .lines()
+                .filter(|l| l.contains("DESKTOP home keystroke backspace len="))
+                // The first 13: the round's later `zz` and Backspaces are
+                // Home's too.
+                .take(13)
+                .collect();
+            let want: Vec<String> = (0..13)
+                .rev()
+                .map(|n| format!("DESKTOP home keystroke backspace len={n}"))
+                .collect();
+            if backspaces.len() != 13
+                || backspaces
+                    .iter()
+                    .zip(&want)
+                    .any(|(l, w)| !l.contains(w.as_str()))
+            {
+                return Err(format!(
+                    "`{}` held Backspace must empty the field one byte per repeat (F10); saw {backspaces:?}",
+                    scenario.name
+                ));
+            }
             let after_yield = serial
                 .split("DESKTOP arthur yield focus=home held=true")
                 .nth(1)

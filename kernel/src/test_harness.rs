@@ -786,6 +786,8 @@ const SCENARIO: &str = "wait_any_core";
 const SCENARIO: &str = "lock_route_races";
 #[cfg(feature = "neo-test-ipc-try-send")]
 const SCENARIO: &str = "ipc_try_send";
+#[cfg(feature = "neo-test-key-repeat-epoch")]
+const SCENARIO: &str = "key_repeat_epoch";
 #[cfg(feature = "neo-test-di1-forward")]
 const SCENARIO: &str = "di1_forward";
 #[cfg(feature = "neo-test-ipc-rendezvous-translate-fault")]
@@ -1465,6 +1467,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-di1-forward",
     feature = "neo-test-lock-route-races",
     feature = "neo-test-ipc-try-send",
+    feature = "neo-test-key-repeat-epoch",
     feature = "neo-test-ipc-rendezvous-translate-fault",
     feature = "neo-test-phase3-pci-virtio-blk-probe-smoke",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
@@ -4723,6 +4726,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     run_lock_route_races();
     #[cfg(feature = "neo-test-ipc-try-send")]
     run_ipc_try_send();
+
+    #[cfg(feature = "neo-test-key-repeat-epoch")]
+    run_key_repeat_epoch();
 
     #[cfg(feature = "neo-test-phase3-pci-virtio-blk-probe-smoke")]
     run_phase3_pci_virtio_blk_probe_smoke();
@@ -28756,6 +28762,139 @@ fn run_ipc_try_send() -> ! {
     }
     pass(
         "ipc_try_send idle=eagain parked=delivered race=exactly_once sending=eagain grant=one_or_none recv_grant=one_or_none ro_dest=efault closed=epipe",
+    )
+}
+
+/// Jarvis (#61): a key repeat is checked against the activation epoch, then
+/// staged; the focus can move, or Super+L engage the lock, in between (on
+/// another CPU). Each leg runs that other CPU's step on this CPU at the exact
+/// point, through the same `key_repeat::poll` / `deliver` the pumps call.
+/// No repeat checked under one owner may reach another, or the lock screen.
+/// The control (`neo-test-key-repeat-epoch-control`) stages with a fresh
+/// epoch read, the pre-fix shape, and must FAIL
+/// `reason=repeat_crossed_focus_change`.
+#[cfg(feature = "neo-test-key-repeat-epoch")]
+fn run_key_repeat_epoch() -> ! {
+    use crate::arch::x86_64::without_interrupts as off;
+    use crate::atrium::focus::{self, InputFocus, Stage};
+    use crate::atrium::key_repeat;
+    use crate::atrium::key_repeat_logic::{KEY_REPEAT, KeyRepeat};
+    use alloc::sync::Arc;
+
+    const BACKSPACE: u8 = 0x2a;
+    const T0: u64 = 1_000_000_000;
+    const DUE: u64 = T0 + 500_000_000;
+    // A held key, pressed under the current epoch, with a repeat due.
+    let held = || {
+        let mut r = KeyRepeat::new();
+        r.on_key(BACKSPACE, 0, true, T0, focus::activation_epoch());
+        r
+    };
+    let none = |f: &Arc<InputFocus>, why: &str| {
+        if let Some(e) = off(|| f.try_recv()) {
+            serial_println!("KEYREPEAT got code={:#x} flags={:#x}", e.code, e.flags);
+            fail(why);
+        }
+    };
+
+    let a = Arc::new(InputFocus::new());
+    let b = Arc::new(InputFocus::new());
+    let lock = Arc::new(InputFocus::new());
+    if !off(|| a.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    if !off(|| focus::register_lock_route(&lock)) {
+        fail("reason=repeat_epoch_register_failed");
+    }
+    let mut stage = Stage::with_capacity(focus::INPUT_STAGE_CAPACITY);
+
+    // Non-vacuity: nothing moves, the repeat reaches the owner.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    match off(|| a.try_recv()) {
+        Some(e) if e.code == BACKSPACE as u16 && e.flags & KEY_REPEAT != 0 => {}
+        _ => fail("reason=repeat_epoch_repeat_lost"),
+    }
+    serial_println!("KEYREPEAT baseline delivered=owner");
+
+    // Focus moves to B between the check (poll) and the stage.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !off(|| b.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    none(&b, "reason=repeat_crossed_focus_change");
+    none(&a, "reason=repeat_reached_old_owner_after_change");
+    serial_println!("KEYREPEAT focus_change between_check_and_stage delivered=none");
+
+    // Super+L between the check and the stage.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !focus::engage_lock_route() {
+        fail("reason=repeat_epoch_engage_failed");
+    }
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    none(&lock, "reason=repeat_reached_lock_screen");
+    if !off(|| focus::release_lock_route(&b)) {
+        fail("reason=repeat_epoch_release_failed");
+    }
+    none(&b, "reason=repeat_crossed_lock");
+    serial_println!("KEYREPEAT lock between_check_and_stage delivered=none");
+
+    // Super+L between the stage and the flush.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    key_repeat::deliver(&mut stage, event, epoch);
+    if !focus::engage_lock_route() {
+        fail("reason=repeat_epoch_engage_failed");
+    }
+    focus::flush_staged(&mut stage);
+    none(&lock, "reason=staged_repeat_reached_lock_screen");
+    if !off(|| focus::release_lock_route(&b)) {
+        fail("reason=repeat_epoch_release_failed");
+    }
+    focus::flush_staged(&mut stage);
+    none(&b, "reason=staged_repeat_crossed_lock");
+    serial_println!("KEYREPEAT lock between_stage_and_flush delivered=none");
+
+    // The legacy routed path: the epoch is compared under DELIVERY.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !off(|| a.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    if off(|| focus::route_event_at(event, epoch)) {
+        fail("reason=legacy_repeat_routed_after_focus_change");
+    }
+    none(&a, "reason=legacy_repeat_crossed_focus_change");
+    // And its non-vacuity: the current epoch routes.
+    if !off(|| focus::route_event_at(event, focus::activation_epoch())) {
+        fail("reason=legacy_repeat_not_routed");
+    }
+    if off(|| a.try_recv()).is_none() {
+        fail("reason=legacy_repeat_lost");
+    }
+    serial_println!(
+        "KEYREPEAT legacy route_checked_under_delivery stale={}",
+        focus::debug_stage_stale()
+    );
+    pass(
+        "key_repeat_epoch baseline=delivered focus_change=dropped lock_before_stage=dropped lock_before_flush=discarded legacy=dropped",
     )
 }
 

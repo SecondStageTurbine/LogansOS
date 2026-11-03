@@ -62,6 +62,7 @@ pub mod civil;
 pub mod grant_store;
 /// OT-61 C2.1: the `SYS_HANDLE_INFO` record (pure).
 pub mod handle_info;
+pub mod tz;
 /// Lane 2b: host-only image decode (`png` + `zune-jpeg`), bytes in, RGBA out.
 /// The implementation is the `neo-image-decode` crate; this re-export is the
 /// libneo-level API the OS's future image consumers call.
