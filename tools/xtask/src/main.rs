@@ -1214,6 +1214,13 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
+/// OT-90 P5: type `shut down` at Home, Enter; Enter on the confirm card.
+const OT90_POWER_MENU_STEPS: &[SerialScriptStep] = &[
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"shut down"),
+    step(b"DESKTOP home keystroke ascii=110\n", b"\r"),
+    step(b"DESKTOP power confirm shown action=shut-down", b"\r"),
+];
+
 /// The intro's start line on a machine without NeoFS (QEMU: no disk).
 const DESKTOP_INTRO_SHOWN_PROMPT: &[u8] =
     b"DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0";
@@ -6454,6 +6461,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P5: `shut down` typed at Home, confirmed: SYS_POWER from neo-init
+    // (the cap's holder), the clean shutdown, S5.
+    TestScenario {
+        name: "ot90_power_menu",
+        feature: "neo-test-ot90-power-menu",
+        user_feature: Some("power-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
     // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
     TestScenario {
         name: "ot90_cap",
@@ -6900,6 +6916,12 @@ const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
     // contains the path. neo-init holds `/`; Arthur only `/neofs/.arthur`
     // and `/boot`; with the WM's `cap-rooted-open`.
     "cap-rooted-open",
+    // OT-90 (L1.4): Shut down and Restart from Home, behind a confirm, with
+    // the WM's `power-menu`. The clean shutdown (K1-K7) stops the apps, NeoFS,
+    // the other CPUs and device DMA first; SYS_POWER is the session root's
+    // PowerControl cap's alone. K6 stops only disks the write guard armed, so
+    // the Zenbook's Windows NVMe is never touched.
+    "power-cap",
 ];
 
 /// The product image's kernel opt-level (Arthur latency NOTE, fix 1). The
@@ -7494,6 +7516,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             // OT-66 K1b (L1.1): the WM spawns Arthur with his scopes only;
             // with the kernel's `cap-rooted-open`.
             "cap-rooted-open",
+            // OT-90 (L1.4): Shut down / Restart from Home, with the kernel's
+            // `power-cap`.
+            "power-menu",
             // THINK-2026-11-02-time-zones: the settings store (OT-88 S1)
             // keeps the zone and the RTC mode across boots (Home's
             // `timezone` / `rtc` verbs); with the kernel's `rtc-offset`.
@@ -7563,6 +7588,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // Installer cap. The installed disk runs the same userland.
         Some("install-console") => vec!["arthur-console", "installer"],
         Some("install-atrium-boot-test") => vec!["desktop-intro-boot-test", "installer"],
+        // OT-90 P5: the intro session with the power card.
+        Some("power-menu-boot-test") => vec!["power-menu-boot-test"],
         Some("arthur-real-brain-boot-15b") => vec!["arthur-console"],
         Some("arthur-real-brain-boot-3b") => vec!["arthur-console"],
         Some("arthur-real-brain-boot-qwen35") => vec!["arthur-console"],
@@ -7701,6 +7728,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-intro")
         | Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
+        | Some("power-menu-boot-test")
         | Some("desktop-clock-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
@@ -7991,6 +8019,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
         Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
+        | Some("power-menu-boot-test")
         | Some("desktop-clock-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
@@ -11598,6 +11627,7 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_wedged"
         | "ot90_quiesce"
         | "ot90_cap"
+        | "ot90_power_menu"
         | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
@@ -11700,6 +11730,30 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         if !serial.contains("survivors=0 ticks=") || serial.contains("K1 terminated=0 ") {
             return Err(format!(
                 "`{}`: K1 did not terminate the straggler within its bound; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    // OT-90 P5: the WM's card, then SYS_POWER from neo-init (0), the
+    // shutdown sparing it in K1, K4, S5.
+    if scenario.name == "ot90_power_menu" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "DESKTOP power confirm shown action=shut-down",
+                "DESKTOP power stage=power_off_requested",
+                "[ power ] shutdown: started kind=PowerOff keep=",
+                "DESKTOP power requested action=shut-down status=0",
+                "[ power ] K1 terminated=",
+                "[ power ] K4 targets=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        if serial.contains("shutdown: started kind=PowerOff keep=0 ") {
+            return Err(format!(
+                "`{}`: the shutdown spared no process (neo-init's pid expected); serial={}",
                 scenario.name,
                 observed.serial_log.display()
             ));
@@ -13122,10 +13176,14 @@ fn scenario_desktop_resolution(scenario_name: &str) -> Option<(u32, u32)> {
 }
 
 /// Scenarios that boot the desktop session's machine (its mode, CPU and
-/// input devices): the [`DESKTOP_SCENARIOS`] table and OT-66 L1's sign-in
-/// scenarios (`login_*`), which carry their own scripts and checks.
+/// input devices): the [`DESKTOP_SCENARIOS`] table, OT-66 L1's sign-in
+/// scenarios (`login_*`) and OT-90 P5's `ot90_power_menu`, which carry their
+/// own scripts and checks.
 fn is_desktop_kernel_scenario(scenario_name: &str) -> bool {
-    is_desktop_session_scenario(scenario_name) || scenario_name.starts_with("login_")
+    is_desktop_session_scenario(scenario_name)
+        || scenario_name.starts_with("login_")
+        // OT-90 P5: the intro desktop, powered off from Home.
+        || scenario_name == "ot90_power_menu"
 }
 
 /// The desktop-session gate scenarios ([`DESKTOP_SCENARIOS`]).
@@ -14875,6 +14933,13 @@ fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
         });
     }
     match scenario_name {
+        // OT-90 P5: `shut down` at Home, then Enter on the confirm card.
+        "ot90_power_menu" => Some(ScenarioScript {
+            steps: OT90_POWER_MENU_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
         "neo_shell_repl" => Some(ScenarioScript {
             steps: NEO_SHELL_REPL_SERIAL_STEPS,
             transport: ScriptTransport::Serial,
@@ -24891,6 +24956,21 @@ mod tests {
             .unwrap();
         assert!(init.contains("\"login\""), "{init}");
         assert!(init.contains("\"cap-rooted-open\""), "{init}");
+    }
+
+    /// OT-90 (L1.4): the product image's WM offers Shut down and Restart, so
+    /// its kernel has the PowerControl cap; `power-menu` without `power-cap`
+    /// would get ENOSYS on every confirm.
+    #[test]
+    fn product_image_pairs_power_menu_with_power_cap() {
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"power-cap"));
+        let src = include_str!("main.rs");
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"power-menu\""), "{init}");
     }
 
     /// A9-C2: the wheel check wants both forwards to Arthur and a
