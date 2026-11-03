@@ -46,6 +46,7 @@ members = [
     "tools/fb-progress-logic-tests",
     "tools/apic-logic-tests",
     "tools/fpu-logic-tests",
+    "tools/neo-crt-logic-tests",
     "tools/pipe-logic-tests",
     "tools/lapic-timer-logic-tests",
     "tools/acpi-timer-logic-tests",

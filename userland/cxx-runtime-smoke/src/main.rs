@@ -18,7 +18,7 @@
 
 use std::ffi::c_void;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -65,6 +65,35 @@ unsafe extern "C" {
     fn cxx_check_threads() -> i32;
     fn cxx_check_condition_variable() -> i32;
     fn cxx_check_sync() -> i32;
+    fn pthread_key_create(key: *mut u32, dtor: Option<unsafe extern "C" fn(*mut c_void)>) -> i32;
+    fn pthread_key_delete(key: u32) -> i32;
+    fn pthread_setspecific(key: u32, value: *const c_void) -> i32;
+}
+
+static STD_THREAD_DTORS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn count_std_thread_dtor(v: *mut c_void) {
+    if v as usize == 0x5eed {
+        STD_THREAD_DTORS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// #67 review (Chad), item 3: a key set on a thread that `pthread_create` didn't
+/// make (a plain `std::thread`) has its destructor run once, with the value
+/// set, when that thread exits. Before the fix the count stayed 0: only
+/// `pthread_create`'s threads ran key destructors.
+fn std_thread_runs_key_destructors() -> bool {
+    let mut key = 0u32;
+    if unsafe { pthread_key_create(&mut key, Some(count_std_thread_dtor)) } != 0 {
+        return false;
+    }
+    STD_THREAD_DTORS.store(0, Ordering::SeqCst);
+    let set = thread::spawn(move || unsafe { pthread_setspecific(key, 0x5eed as *const c_void) })
+        .join()
+        .unwrap_or(-1);
+    let ran = STD_THREAD_DTORS.load(Ordering::SeqCst);
+    unsafe { pthread_key_delete(key) };
+    set == 0 && ran == 1
 }
 
 fn check(n: i32, what: &str, ok: bool) {
@@ -280,6 +309,11 @@ pub extern "C" fn _start() -> ! {
         28,
         "C++: call_once, shared_mutex, atomic wait/notify",
         cxx_check_sync,
+    );
+    check(
+        29,
+        "pthread: a std::thread's key destructor runs at its exit",
+        std_thread_runs_key_destructors(),
     );
     println!("{TAG} PASS");
     std::process::exit(0)

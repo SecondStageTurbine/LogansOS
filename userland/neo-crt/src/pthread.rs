@@ -27,6 +27,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
+use crate::seqcond::SeqCond;
 use crate::{Timespec, monotonic_epoch};
 
 // musl's values (include/bits/errno.h, include/pthread.h, include/time.h).
@@ -459,8 +460,7 @@ pub unsafe extern "C" fn pthread_mutex_unlock(m: *mut PthreadMutex) -> c_int {
 
 struct CondState {
     clock: c_int,
-    seq: Mutex<u64>,
-    cv: Condvar,
+    sc: SeqCond<Condvar>,
 }
 
 #[repr(C)]
@@ -480,8 +480,7 @@ unsafe fn cond_state(c: *mut PthreadCond) -> &'static CondState {
     unsafe {
         state(core::ptr::addr_of_mut!((*c).state).cast(), || CondState {
             clock,
-            seq: Mutex::new(0),
-            cv: Condvar::new(),
+            sc: SeqCond::new(Condvar::new()),
         })
     }
 }
@@ -533,31 +532,18 @@ pub unsafe extern "C" fn pthread_cond_destroy(c: *mut PthreadCond) -> c_int {
     0
 }
 
+/// The sequence logic (and why signalling wakes under the sequence lock) is
+/// `seqcond.rs`; this adds the caller's mutex around it.
 unsafe fn cond_wait(c: *mut PthreadCond, m: *mut PthreadMutex, until: Option<Instant>) -> c_int {
     let s = unsafe { cond_state(c) };
-    let mut g = lock(&s.seq);
-    let seen = *g;
-    let r = unsafe { pthread_mutex_unlock(m) };
-    if r != 0 {
-        return r;
-    }
-    let mut timed_out = false;
-    while *g == seen {
-        g = match until {
-            None => s.cv.wait(g).unwrap_or_else(|e| e.into_inner()),
-            Some(t) => {
-                let now = Instant::now();
-                if now >= t {
-                    timed_out = true;
-                    break;
-                }
-                s.cv.wait_timeout(g, t - now)
-                    .unwrap_or_else(|e| e.into_inner())
-                    .0
-            }
-        };
-    }
-    drop(g);
+    let release = || match unsafe { pthread_mutex_unlock(m) } {
+        0 => Ok(()),
+        r => Err(r),
+    };
+    let timed_out = match s.sc.wait(release, until) {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
     let r = unsafe { pthread_mutex_lock(m) };
     if r != 0 {
         return r;
@@ -612,17 +598,13 @@ pub unsafe extern "C" fn pthread_cond_clockwait(
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_cond_signal(c: *mut PthreadCond) -> c_int {
-    let s = unsafe { cond_state(c) };
-    *lock(&s.seq) += 1;
-    s.cv.notify_one();
+    unsafe { cond_state(c) }.sc.signal();
     0
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pthread_cond_broadcast(c: *mut PthreadCond) -> c_int {
-    let s = unsafe { cond_state(c) };
-    *lock(&s.seq) += 1;
-    s.cv.notify_all();
+    unsafe { cond_state(c) }.sc.broadcast();
     0
 }
 
@@ -646,6 +628,34 @@ static KEYS: Mutex<Keys> = Mutex::new(Keys {
 
 struct Slots {
     values: [(u32, usize); KEYS_MAX],
+}
+
+/// Any thread that touched a key, however it was made (a `std::thread`, or
+/// libc++ through `pthread_create`), runs its key destructors when std tears
+/// its TLS down: std registers this `Drop` on the thread's first key access.
+/// Threads made by `pthread_create` have already run them
+/// (`run_key_destructors`, with every slot still reachable), so this finds
+/// nothing left there. Here the slots are being destroyed, so a destructor
+/// that sets a value again gets `ENOMEM` and there is one round, not
+/// `PTHREAD_DESTRUCTOR_ITERATIONS`. The main thread returning from `main`
+/// runs none, as POSIX has it for `exit`.
+impl Drop for Slots {
+    fn drop(&mut self) {
+        let values = &mut self.values;
+        destructor_rounds(|i, g| take_value(&mut values[i], g));
+    }
+}
+
+/// Clear one slot if it holds a non-null value under generation `g`, and
+/// return that value (0 if there is none).
+fn take_value(slot: &mut (u32, usize), g: u32) -> usize {
+    let (sg, v) = *slot;
+    if sg == g && v != 0 {
+        *slot = (g, 0);
+        v
+    } else {
+        0
+    }
 }
 
 std::thread_local! {
@@ -723,6 +733,17 @@ pub extern "C" fn pthread_setspecific(key: u32, value: *const c_void) -> c_int {
 /// passing it to its key's destructor (POSIX). Called when a thread made by
 /// `pthread_create` returns from its start routine.
 pub fn run_key_destructors() {
+    destructor_rounds(|i, g| {
+        SLOTS
+            .try_with(|s| take_value(&mut s.borrow_mut().values[i], g))
+            .unwrap_or(0)
+    });
+}
+
+/// Up to `PTHREAD_DESTRUCTOR_ITERATIONS` rounds: each takes every live key's
+/// non-null value through `take(index, generation)` (which clears it) and
+/// passes it to the key's destructor; stop after a round that ran none.
+fn destructor_rounds(mut take: impl FnMut(usize, u32) -> usize) {
     for _ in 0..DESTRUCTOR_ITERATIONS {
         let mut ran = false;
         for i in 0..KEYS_MAX {
@@ -734,18 +755,7 @@ pub fn run_key_destructors() {
                 (k.generation[i], k.dtor[i])
             };
             let Some(dtor) = dtor else { continue };
-            let v = SLOTS
-                .try_with(|s| {
-                    let mut s = s.borrow_mut();
-                    let (sg, v) = s.values[i];
-                    if sg == g && v != 0 {
-                        s.values[i] = (g, 0);
-                        v
-                    } else {
-                        0
-                    }
-                })
-                .unwrap_or(0);
+            let v = take(i, g);
             if v != 0 {
                 unsafe { dtor(v as *mut c_void) };
                 ran = true;

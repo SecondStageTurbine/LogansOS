@@ -26,6 +26,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod pthread;
+mod seqcond;
 
 use core::ffi::{c_char, c_int, c_long, c_void};
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
