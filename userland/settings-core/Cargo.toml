@@ -7,3 +7,8 @@ license.workspace = true
 
 [dependencies]
 blake3 = { version = "1.8.2", default-features = false }
+
+[features]
+# F11 S2 (setup-menu THINK §2.2): keys 6 (Language) and 7 (KeyboardLayout).
+# Off: today's five keys, and the record is byte-identical to before.
+setup-keys = []
