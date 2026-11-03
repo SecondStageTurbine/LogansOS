@@ -36,8 +36,8 @@ use fonts::platform::font::PlatformFont;
 use fonts_traits::LocalFontIdentifier;
 use style::Atom;
 
-// The heap is servo-allocator's global allocator, std's `System`, which this
-// target's std overlay implements on SYS_MAP_REGION.
+// The heap is servo-allocator's global allocator, which on this target is
+// neo-std-pal's `SyscallHeap` (its patch, OT-61 L3).
 const TAG: &str = "[ layout-smoke ]";
 
 const ROBOTO_SLAB: &str = "neo-font:/robotoslab/RobotoSlab-wght.ttf";

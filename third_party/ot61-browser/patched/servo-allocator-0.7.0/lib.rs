@@ -223,12 +223,33 @@ mod platform {
     }
 }
 
-// LogansOS: std's allocator on target_os = "neoplutarch". There is no
-// usable-size query here, so Servo's memory reports count 0 for heap blocks.
+// LogansOS: neo-std-pal's `SyscallHeap` on target_os = "neoplutarch", not
+// std's `System`. `System` maps one region per allocation and never frees, and
+// a map is capped at 16 MiB, so SWGL's 2048x2048 RGBA texture (16 MiB plus
+// neo-crt's header) could not be allocated (OT-61 L3). `SyscallHeap` reuses
+// freed blocks and grows in joined 16 MiB maps. There is no usable-size query
+// here, so Servo's memory reports count 0 for heap blocks.
 #[cfg(target_os = "neoplutarch")]
 mod platform {
-    pub use std::alloc::System as Allocator;
+    use std::alloc::{GlobalAlloc, Layout};
     use std::os::raw::c_void;
+
+    static HEAP: neo_std_pal::SyscallHeap = neo_std_pal::SyscallHeap::new();
+
+    /// Forwards to the process's one `SyscallHeap`.
+    pub struct Allocator;
+
+    // SAFETY: every call forwards unchanged to `SyscallHeap`, which upholds
+    // the `GlobalAlloc` contract.
+    unsafe impl GlobalAlloc for Allocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            unsafe { HEAP.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { HEAP.dealloc(ptr, layout) }
+        }
+    }
+
     /// # Safety
     /// Any pointer; the size is not known on this target.
     pub unsafe extern "C" fn usable_size(_ptr: *const c_void) -> usize {

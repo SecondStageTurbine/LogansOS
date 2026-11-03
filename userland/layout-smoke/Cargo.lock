@@ -1964,6 +1964,7 @@ name = "servo-allocator"
 version = "0.7.0"
 dependencies = [
  "libc",
+ "neo-std-pal",
  "windows-sys",
 ]
 
