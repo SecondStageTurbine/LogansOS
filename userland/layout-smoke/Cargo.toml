@@ -29,6 +29,8 @@ style = { package = "stylo", version = "=0.22.0" }
 url = "=2.5.8"
 layout = { package = "servo-layout", version = "=0.7.0" }
 neo-layout-dom = { path = "../neo-layout-dom" }
+# OT-61 L2: the static-page driver (one reflow) and its hand-worked oracle.
+neo-static-page = { path = "../neo-static-page" }
 # servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
 # `derive` feature; upstream gets it through servo-script's half of the graph.
 zeroize = { version = "1", features = ["derive"] }
@@ -37,6 +39,8 @@ ipc-channel = { version = "=0.23.1", features = ["force-inprocess"] }
 # zlib for fontsan, built from libz-sys's bundled source (there is no system zlib).
 libz-sys = { version = "1", features = ["static"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+# Only for the custom backend's Error type (main.rs, __getrandom_v03_custom).
+getrandom04 = { package = "getrandom", version = "=0.4.3" }
 
 # Every crate comes from third_party/ot61-browser: vendor/ (as published),
 # patched/ (with a <crate>-<version>-neoplutarch.patch beside it), or stubs/

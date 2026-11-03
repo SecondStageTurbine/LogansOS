@@ -18245,6 +18245,13 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ layout-smoke ] ok(30) U+6C34 (not in the font) has no glyph",
             "[ layout-smoke ] ok(31) em size = 960 Au",
             "[ layout-smoke ] ok(44) zero advance = 548 Au",
+            "[ layout-smoke ] ok(50) one reflow of the oracle page produced a result",
+            "[ layout-smoke ] ok(51) #html border box = [0, 0, 800, 199] (x, y, w, h px)",
+            "[ layout-smoke ] ok(52) #body border box = [8, 10, 784, 174] (x, y, w, h px)",
+            "[ layout-smoke ] ok(53) #a border box = [28, 10, 200, 50] (x, y, w, h px)",
+            "[ layout-smoke ] ok(54) #b border box = [8, 90, 114, 54] (x, y, w, h px)",
+            "[ layout-smoke ] ok(55) #c border box = [8, 159, 784, 25] (x, y, w, h px)",
+            "[ layout-smoke ] ok(56) layout sent a display list to the in-process paint host",
             "[ layout-smoke ] PASS",
         ] {
             require_serial_contains(

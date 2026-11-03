@@ -1089,10 +1089,12 @@ version = "0.0.1"
 dependencies = [
  "app_units",
  "getrandom 0.2.17",
+ "getrandom 0.4.3",
  "ipc-channel",
  "libz-sys",
  "neo-crt",
  "neo-layout-dom",
+ "neo-static-page",
  "neo-std-pal",
  "servo-fonts",
  "servo-fonts-traits",
@@ -1249,6 +1251,40 @@ dependencies = [
  "servo_arc",
  "stylo",
  "stylo_dom",
+]
+
+[[package]]
+name = "neo-static-page"
+version = "0.1.0"
+dependencies = [
+ "app_units",
+ "content-security-policy",
+ "crossbeam-channel",
+ "euclid",
+ "getrandom 0.2.17",
+ "ipc-channel",
+ "libz-sys",
+ "malloc_size_of_derive",
+ "neo-layout-dom",
+ "parking_lot",
+ "servo-base",
+ "servo-embedder-traits",
+ "servo-fonts",
+ "servo-layout",
+ "servo-layout-api",
+ "servo-malloc-size-of",
+ "servo-net-traits",
+ "servo-paint-api",
+ "servo-pixels",
+ "servo-profile-traits",
+ "servo-script-traits",
+ "servo-url",
+ "servo_arc",
+ "stylo",
+ "url",
+ "uuid 1.29.0",
+ "webrender_api",
+ "zeroize",
 ]
 
 [[package]]

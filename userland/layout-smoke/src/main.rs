@@ -26,6 +26,7 @@
 //! Exit 0 on a pass; a failed check prints `FAIL(n)` and exits `n`.
 
 #![no_main]
+#![feature(random)]
 
 use app_units::Au;
 use fonts::PlatformFontMethods;
@@ -71,8 +72,27 @@ fn au(v: Au) -> i32 {
     v.0
 }
 
+/// getrandom 0.4's custom backend (`.cargo/config.toml` sets
+/// `getrandom_backend="custom"`; uuid and rand take this path): the kernel
+/// CSPRNG through std's own entropy source, as neo-crt's `arc4random_buf`
+/// does, so it adds no syscall site.
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom04::Error> {
+    use std::random::{DefaultRandomSource, RandomSource};
+    if len != 0 {
+        DefaultRandomSource.fill_bytes(unsafe { std::slice::from_raw_parts_mut(dest, len) });
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    // The C/C++ runtime HarfBuzz, OTS and zlib run on (and the reason it's
+    // linked at all: an unnamed dependency would be dropped).
+    neo_crt::init();
     println!("{TAG} start: servo-layout 0.7.0 over neo-layout-dom, no servo-script");
 
     // L0: layout's entry point and the host DOM are linked in.
@@ -165,6 +185,32 @@ pub extern "C" fn _start() -> ! {
         45,
         "no U+6C34 advance (the glyph isn't there)",
         m.ic_horizontal_advance.is_none(),
+    );
+
+    // L2: one reflow of a block-only page through neo-static-page (layout
+    // driven without script), its border boxes checked against the
+    // hand-worked oracle (neo-static-page/src/oracle.rs, CSS 2.1 8.3.1 and
+    // 10.3.3; no text, so no font metric enters the numbers).
+    let (w, h) = neo_static_page::oracle::VIEWPORT;
+    let mut page = neo_static_page::StaticPage::new(neo_static_page::oracle::PAGE, w, h);
+    check(
+        50,
+        "one reflow of the oracle page produced a result",
+        page.reflow(w, h),
+    );
+    for (i, &(id, want)) in neo_static_page::oracle::EXPECT.iter().enumerate() {
+        let got = page.border_box(id);
+        println!("{TAG} #{id} border box: {got:?}");
+        check(
+            51 + i as i32,
+            &format!("#{id} border box = {want:?} (x, y, w, h px)"),
+            got == Some(want),
+        );
+    }
+    check(
+        56,
+        "layout sent a display list to the in-process paint host",
+        page.display_lists() >= 1,
     );
 
     println!("{TAG} PASS");
