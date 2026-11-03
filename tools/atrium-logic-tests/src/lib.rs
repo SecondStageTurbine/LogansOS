@@ -96,6 +96,13 @@ mod atrium_handoff;
 #[cfg(test)]
 mod handoff_kats;
 
+// PR #15 re-check item 3 (input B): a lend over a client's channel by tries.
+#[cfg(test)]
+#[path = "../../../userland/libneo/src/atrium_lend.rs"]
+mod atrium_lend;
+#[cfg(test)]
+mod lend_kats;
+
 // OT-22: the SYS_WAIT_ANY item ABI: the kernel's decoder (its own KATs) and
 // libneo's layout, each against the same hand-laid bytes.
 #[cfg(test)]

@@ -167,6 +167,8 @@ const SCENARIO: &str = "servo_closure_smoke";
 const SCENARIO: &str = "stylo_smoke";
 #[cfg(feature = "neo-test-servo-closure-smoke-avx")]
 const SCENARIO: &str = "servo_closure_smoke_avx";
+#[cfg(feature = "neo-test-cxx-runtime-smoke")]
+const SCENARIO: &str = "cxx_runtime_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -555,6 +557,29 @@ const SCENARIO: &str = "desktop_pointer_boot";
 const SCENARIO: &str = "desktop_drag_perf_boot";
 #[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
 const SCENARIO: &str = "desktop_drag_perf_control_boot";
+/// OT-88 A1a: the pointer session with the probe app as a second client.
+#[cfg(feature = "neo-test-desktop-apps-boot")]
+const SCENARIO: &str = "desktop_apps_boot";
+#[cfg(feature = "neo-test-desktop-apps-fault-boot")]
+const SCENARIO: &str = "desktop_apps_fault_boot";
+#[cfg(feature = "neo-test-desktop-apps-hang-boot")]
+const SCENARIO: &str = "desktop_apps_hang_boot";
+#[cfg(feature = "neo-test-desktop-apps-stall-boot")]
+const SCENARIO: &str = "desktop_apps_stall_boot";
+#[cfg(feature = "neo-test-desktop-apps-drop-boot")]
+const SCENARIO: &str = "desktop_apps_drop_boot";
+#[cfg(feature = "neo-test-desktop-apps-handoff-death-boot")]
+const SCENARIO: &str = "desktop_apps_handoff_death_boot";
+#[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
+const SCENARIO: &str = "desktop_apps_reuse_boot";
+#[cfg(feature = "neo-test-desktop-apps-flood-boot")]
+const SCENARIO: &str = "desktop_apps_flood_boot";
+#[cfg(feature = "neo-test-desktop-apps-arthur-hang-boot")]
+const SCENARIO: &str = "desktop_apps_arthur_hang_boot";
+#[cfg(feature = "neo-test-desktop-apps-arthur-yield-hang-boot")]
+const SCENARIO: &str = "desktop_apps_arthur_yield_hang_boot";
+#[cfg(feature = "neo-test-desktop-apps-grab-boot")]
+const SCENARIO: &str = "desktop_apps_grab_boot";
 /// DL-1: every desktop feature on — the Lens docked to a window that moves
 /// and resizes (same oracle, same Home end view).
 #[cfg(feature = "neo-test-desktop-full-boot")]
@@ -604,6 +629,29 @@ const DESKTOP_PASS: &str = "desktop_arthur_scope=ok view=home scene=independent_
 const DESKTOP_PASS: &str = "desktop_drag_perf_boot=ok view=home drag=measured damage=edges";
 #[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
 const DESKTOP_PASS: &str = "desktop_drag_perf_control_boot=ok view=home drag=measured damage=union";
+#[cfg(feature = "neo-test-desktop-apps-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
+#[cfg(feature = "neo-test-desktop-apps-fault-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_fault_boot=ok view=home clients=arthur,probe_app probe_app_exit=7 fault=ends_that_client_only front=back_to_arthur";
+#[cfg(feature = "neo-test-desktop-apps-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_hang_boot=ok view=home probe_app=never_receives_reply wm=live sak_tab=served probe_app_end=hung_then_killed";
+#[cfg(feature = "neo-test-desktop-apps-stall-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_stall_boot=ok view=home probe_app=never_finishes_handshake launch=refused wm=live";
+#[cfg(feature = "neo-test-desktop-apps-drop-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_drop_boot=ok view=home probe_app=exits_before_reply ends=that_client_only front=back_to_arthur";
+#[cfg(feature = "neo-test-desktop-apps-handoff-death-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_handoff_death_boot=ok view=home probe_app=dies_mid_handoff route=back_to_arthur handles=released";
+#[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_reuse_boot=ok view=home slot=reused generation=new handles=released stale_activator=refused";
+#[cfg(feature = "neo-test-desktop-apps-arthur-yield-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_arthur_yield_hang_boot=ok view=home arthur=yield_unreceived sak_tab=served_during_settle ended=arthur_only";
+#[cfg(feature = "neo-test-desktop-apps-arthur-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_arthur_hang_boot=ok view=home arthur=hung ended=arthur_only probe_app=kept_served wm=live";
+#[cfg(feature = "neo-test-desktop-apps-flood-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_apps_flood_boot=ok view=home arthur=floods probe_app_keys=served sak_tab=served";
+#[cfg(feature = "neo-test-desktop-apps-grab-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_grab_boot=ok view=home grab=consumed_on_switch_and_death";
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const DESKTOP_PASS: &str = "desktop_pointer_boot=ok view=home scene=independent_oracle_digest sprite=hidden_on_home pointer=b_ref_forward sak=escape click=refocus_then_forward";
 #[cfg(feature = "neo-test-desktop-lens-fault-boot")]
@@ -744,6 +792,10 @@ const SCENARIO: &str = "hid_contention";
 const SCENARIO: &str = "wait_any_core";
 #[cfg(feature = "neo-test-lock-route-races")]
 const SCENARIO: &str = "lock_route_races";
+#[cfg(feature = "neo-test-ipc-try-send")]
+const SCENARIO: &str = "ipc_try_send";
+#[cfg(feature = "neo-test-key-repeat-epoch")]
+const SCENARIO: &str = "key_repeat_epoch";
 #[cfg(feature = "neo-test-di1-forward")]
 const SCENARIO: &str = "di1_forward";
 #[cfg(feature = "neo-test-ipc-rendezvous-translate-fault")]
@@ -1259,6 +1311,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-servo-host-smoke",
     feature = "neo-test-servo-closure-smoke",
     feature = "neo-test-stylo-smoke",
+    feature = "neo-test-cxx-runtime-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -1421,6 +1474,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-wait-any-core",
     feature = "neo-test-di1-forward",
     feature = "neo-test-lock-route-races",
+    feature = "neo-test-ipc-try-send",
+    feature = "neo-test-key-repeat-epoch",
     feature = "neo-test-ipc-rendezvous-translate-fault",
     feature = "neo-test-phase3-pci-virtio-blk-probe-smoke",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
@@ -2858,6 +2913,85 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         #[cfg(feature = "xsave-fpu")]
         pass(
             "servo_closure_smoke_avx=ran exit=100 html5ever=parsed selectors=matched parking_lot=parked memchr=avx2 xsave=live frames_returned=1",
+        );
+    }
+
+    // OT-61 C3a: cxx-runtime-smoke, the private C/C++ runtime on-target. The
+    // smoke runs its libc and libc++ checks, then errno, malloc and a
+    // function-local static from several threads at once, and exits 0 only if
+    // all pass. Its twin reads a std::vector out of bounds: libc++'s hardening
+    // must trap (ud2), killing only that process with 128 + SIGILL. Every
+    // frame of both must come back.
+    #[cfg(feature = "neo-test-cxx-runtime-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 64 * 256; // 64 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=cxx_runtime_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke =
+            process::spawn_user_by_name_budgeted("cxx-runtime-smoke", &handles, SMOKE_FRAMES)
+                .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!(
+            "[ kernel ] proc: cxx-runtime-smoke pid={} (64 MiB)",
+            smoke.0
+        );
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: cxx-runtime-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        let trap =
+            process::spawn_user_by_name_budgeted("cxx-hardening-trap", &handles, SMOKE_FRAMES)
+                .unwrap_or_else(|_| fail_with("spawn_trap", 0, 0));
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let trap_code = process::take_spawned_exit_code(trap).unwrap_or(255);
+        let want_trap = 128 + crate::user_fault_logic::SIGILL;
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: cxx-hardening-trap exit {} (want {}), root used {} (baseline {})",
+            trap_code,
+            want_trap,
+            used,
+            baseline
+        );
+        if trap_code != want_trap {
+            fail_with("hardening_did_not_trap", trap_code as i64, want_trap as i64);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("trap_frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "cxx_runtime_smoke=ran exit=0 libc=oracle libcxx=checked errno=per_thread malloc=threads static_guard=once hardening=trap frames_returned=1",
         );
     }
 
@@ -4598,6 +4732,11 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-lock-route-races")]
     run_lock_route_races();
+    #[cfg(feature = "neo-test-ipc-try-send")]
+    run_ipc_try_send();
+
+    #[cfg(feature = "neo-test-key-repeat-epoch")]
+    run_key_repeat_epoch();
 
     #[cfg(feature = "neo-test-phase3-pci-virtio-blk-probe-smoke")]
     run_phase3_pci_virtio_blk_probe_smoke();
@@ -28238,6 +28377,535 @@ fn run_lock_route_races() -> ! {
     pass("lock_route_races recv=closed forward=closed queued=closed drop=closed")
 }
 
+/// OT-88 A0k (`ipc-try-send`): `try_send` and `try_grant` complete only with
+/// the peer already parked in its receive, and otherwise change nothing.
+/// - idle: an idle peer is EAGAIN; nothing parks on either side;
+/// - parked: a receiver parked on CPU 1 gets the bytes;
+/// - race: CPU 1 receives 200 times in a row while the BSP retries each send
+///   until it lands; every message arrives exactly once, in order;
+/// - sending: a peer parked in its own send is EAGAIN, and its send is still
+///   there for a receive;
+/// - grant: an idle peer is EAGAIN with nothing installed; a parked
+///   `recv_grant` gets exactly one handle;
+/// - closed: EPIPE.
+#[cfg(feature = "neo-test-ipc-try-send")]
+mod ipc_try_send {
+    use super::*;
+    pub static FIXTURE: spin::Mutex<Option<SmpRendezvousFixture>> = spin::Mutex::new(None);
+    pub static ROUNDS_DONE: AtomicU64 = AtomicU64::new(0);
+    pub static FAILED: AtomicU64 = AtomicU64::new(0);
+    pub static SENT: AtomicU64 = AtomicU64::new(0);
+    pub static GRANT_CHANNEL: spin::Mutex<Option<alloc::sync::Arc<crate::ipc::Channel>>> =
+        spin::Mutex::new(None);
+    pub static GRANT_RECIPIENT: AtomicU64 = AtomicU64::new(0);
+    pub static GRANT_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+    pub const ROUNDS: u64 = 201;
+    pub static GRANTOR_PAYLOAD: spin::Mutex<Option<crate::ipc::GrantPayload>> =
+        spin::Mutex::new(None);
+    pub static GRANTOR_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+
+    /// CPU 1: one `grant` from side B (parks until the BSP takes it).
+    pub extern "C" fn grantor() -> ! {
+        let channel = GRANT_CHANNEL
+            .lock()
+            .clone()
+            .unwrap_or_else(|| fail("reason=grant_channel_missing"));
+        let payload = GRANTOR_PAYLOAD
+            .lock()
+            .unwrap_or_else(|| fail("reason=grantor_payload_missing"));
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            channel.grant(crate::ipc::EndpointSide::B, payload)
+        });
+        GRANTOR_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+
+    pub fn fixture() -> SmpRendezvousFixture {
+        FIXTURE
+            .lock()
+            .clone()
+            .unwrap_or_else(|| fail("reason=try_send_fixture_missing"))
+    }
+
+    /// CPU 1: receive ROUNDS messages; round r carries sequence r.
+    pub extern "C" fn receiver() -> ! {
+        let f = fixture();
+        for seq in 0..ROUNDS {
+            let n = crate::arch::x86_64::without_interrupts(|| {
+                f.channel.recv(
+                    crate::ipc::EndpointSide::B,
+                    f.recv_va,
+                    f.len,
+                    f.receiver_pmap.clone(),
+                )
+            });
+            if n != f.len as i64 {
+                FAILED.store(1, Ordering::Release);
+                break;
+            }
+            verify_rendezvous_payload(&f, seq as u32, 0);
+            ROUNDS_DONE.store(seq + 1, Ordering::Release);
+            // A delivery runs this thread on the sender's CPU at once
+            // (consumer-first), so it re-parks before the sender tries again.
+            // Yield first on two rounds in three, so tries also land while it
+            // is between receives.
+            for _ in 0..(seq % 3) {
+                crate::sched::yield_now();
+            }
+        }
+        crate::sched::exit();
+    }
+
+    /// PR #15 review item 1: the receiver's read-only destination page.
+    pub const RO_VA: u64 = 0x0000_0000_00b0_0000;
+    pub static RO_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+
+    /// CPU 1: one `recv` on side B into the receiver's read-only page.
+    pub extern "C" fn ro_receiver() -> ! {
+        let f = fixture();
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            f.channel.recv(
+                crate::ipc::EndpointSide::B,
+                RO_VA,
+                f.len,
+                f.receiver_pmap.clone(),
+            )
+        });
+        RO_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+
+    /// CPU 1: one ordinary send from side B (the receiver page carries it).
+    pub extern "C" fn sender() -> ! {
+        let f = fixture();
+        let n = crate::arch::x86_64::without_interrupts(|| {
+            f.channel.send(
+                crate::ipc::EndpointSide::B,
+                f.recv_va,
+                f.len,
+                f.receiver_pmap.clone(),
+            )
+        });
+        SENT.store(if n == f.len as i64 { 1 } else { 2 }, Ordering::Release);
+        crate::sched::exit();
+    }
+
+    /// CPU 1: one `recv_grant` on side B for the fixture recipient.
+    pub extern "C" fn grant_receiver() -> ! {
+        let channel = GRANT_CHANNEL
+            .lock()
+            .clone()
+            .unwrap_or_else(|| fail("reason=grant_channel_missing"));
+        let pid = crate::sched::process::ProcessId(GRANT_RECIPIENT.load(Ordering::Acquire) as u32);
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            channel.recv_grant(
+                crate::ipc::EndpointSide::B,
+                pid,
+                crate::sched::process::full_channel_rights(),
+            )
+        });
+        GRANT_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+}
+
+#[cfg(feature = "neo-test-ipc-try-send")]
+fn run_ipc_try_send() -> ! {
+    const A: crate::ipc::EndpointSide = crate::ipc::EndpointSide::A;
+    const B: crate::ipc::EndpointSide = crate::ipc::EndpointSide::B;
+    use crate::sched::process::{self, Handle, Process};
+    use ipc_try_send::*;
+    use x86_64::instructions::interrupts::without_interrupts;
+
+    let spin_until = |what: &str, cond: &dyn Fn() -> bool| {
+        for _ in 0..2_000_000u64 {
+            if cond() {
+                return;
+            }
+            crate::sched::yield_now();
+            crate::sched::reap();
+        }
+        serial_println!("TRYSEND timeout waiting for {}", what);
+        fail("reason=try_send_timeout");
+    };
+    spin_until("cpu1", &|| crate::sched::scheduler::cpu_scheduler_ready(1));
+    let f = create_rendezvous_fixture();
+    *FIXTURE.lock() = Some(f.clone());
+    let try_send = || {
+        without_interrupts(|| {
+            f.channel
+                .try_send(A, f.send_va, f.len, f.sender_pmap.clone())
+        })
+    };
+
+    // idle.
+    write_rendezvous_payload(&f, 0, 0);
+    if try_send() != crate::errno::EAGAIN {
+        fail("reason=try_send_idle_not_eagain");
+    }
+    if f.channel.debug_endpoint_is_send_blocked(A) || f.channel.debug_endpoint_is_recv_blocked(B) {
+        fail("reason=try_send_idle_parked");
+    }
+
+    // parked.
+    let t = crate::sched::thread::Thread::new("try-send-recv", receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_receiver");
+    }
+    spin_until("receiver parked", &|| {
+        f.channel.debug_endpoint_is_recv_blocked(B)
+    });
+    if try_send() != f.len as i64 {
+        fail("reason=try_send_parked_not_delivered");
+    }
+    spin_until("round 0", &|| ROUNDS_DONE.load(Ordering::Acquire) >= 1);
+    serial_println!("TRYSEND idle=eagain parked=delivered");
+
+    // race.
+    let mut eagain = 0u64;
+    for seq in 1..ROUNDS {
+        write_rendezvous_payload(&f, seq as u32, 0);
+        loop {
+            let r = try_send();
+            if r == f.len as i64 {
+                break;
+            }
+            if r != crate::errno::EAGAIN {
+                fail_with_hex("reason=try_send_race_error r", r as u64);
+            }
+            eagain += 1;
+            if FAILED.load(Ordering::Acquire) != 0 {
+                fail("reason=try_send_receiver_failed");
+            }
+            core::hint::spin_loop();
+        }
+        // No wait for the receiver here: the next try lands while it is
+        // between receives (EAGAIN) or parked again. The sender page is
+        // copied at each delivery, so rewriting it can't change a message.
+    }
+    spin_until("last round", &|| {
+        ROUNDS_DONE.load(Ordering::Acquire) >= ROUNDS || FAILED.load(Ordering::Acquire) != 0
+    });
+    if FAILED.load(Ordering::Acquire) != 0 || ROUNDS_DONE.load(Ordering::Acquire) != ROUNDS {
+        fail("reason=try_send_race_lost_or_duplicated");
+    }
+    serial_println!(
+        "TRYSEND race rounds={} eagain_retries={}",
+        ROUNDS - 1,
+        eagain
+    );
+    // Non-vacuity: the race met the window between receives.
+    if eagain == 0 {
+        fail("reason=try_send_race_vacuous");
+    }
+
+    // sending: B parks in its own send; A's try is EAGAIN and leaves it.
+    let t = crate::sched::thread::Thread::new("try-send-send", sender);
+    {
+        // The receiver page carries B's payload.
+        let base =
+            crate::mm::phys_to_virt(x86_64::PhysAddr::new(f.receiver_phys)).as_mut_ptr::<u8>();
+        let payload = make_rendezvous_payload(999, 1);
+        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), base, payload.len()) };
+    }
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_sender");
+    }
+    spin_until("sender parked", &|| {
+        f.channel.debug_endpoint_is_send_blocked(B)
+    });
+    if try_send() != crate::errno::EAGAIN {
+        fail("reason=try_send_vs_sender_not_eagain");
+    }
+    if !f.channel.debug_endpoint_is_send_blocked(B) {
+        fail("reason=try_send_disturbed_parked_sender");
+    }
+    let n = without_interrupts(|| f.channel.recv(A, f.send_va, f.len, f.sender_pmap.clone()));
+    if n != f.len as i64 {
+        fail("reason=try_send_parked_sender_lost");
+    }
+    let got = unsafe {
+        let base = crate::mm::phys_to_virt(x86_64::PhysAddr::new(f.sender_phys)).as_ptr::<u8>();
+        core::slice::from_raw_parts(base, f.len).to_vec()
+    };
+    if got != make_rendezvous_payload(999, 1) {
+        fail("reason=try_send_parked_sender_bytes");
+    }
+    spin_until("sender done", &|| SENT.load(Ordering::Acquire) != 0);
+    serial_println!("TRYSEND sending_peer=eagain its_send=kept");
+
+    // grant.
+    let grantor = process::register(Process::new_user(
+        "try-grantor",
+        crate::mm::pmap::Pmap::new().unwrap_or_else(|_| fail("reason=try_grant_pmap")),
+    ));
+    let recipient = process::register(Process::new_user(
+        "try-recipient",
+        crate::mm::pmap::Pmap::new().unwrap_or_else(|_| fail("reason=try_grant_pmap")),
+    ));
+    let source_cap = process::alloc_cap_id();
+    process::install_cap(
+        &grantor,
+        Handle::Channel {
+            channel: crate::ipc::Channel::new(),
+            side: A,
+            cap_id: source_cap,
+            rights: process::full_channel_rights(),
+        },
+        None,
+    )
+    .unwrap_or_else(|_| fail("reason=try_grant_source"));
+    let channel = crate::ipc::Channel::new();
+    *GRANT_CHANNEL.lock() = Some(channel.clone());
+    GRANT_RECIPIENT.store(recipient.pid.0 as u64, Ordering::Release);
+    let payload = crate::ipc::GrantPayload {
+        grantor_pid: grantor.pid,
+        source_cap_id: source_cap,
+        offered: process::full_channel_rights(),
+    };
+    let held = || without_interrupts(|| recipient.handles.lock().live_count());
+    if without_interrupts(|| channel.try_grant(A, payload)) != crate::errno::EAGAIN {
+        fail("reason=try_grant_idle_not_eagain");
+    }
+    if held() != 0 || channel.debug_endpoint_is_grant_blocked(A) {
+        fail("reason=try_grant_idle_changed_something");
+    }
+    let t = crate::sched::thread::Thread::new("try-grant-recv", grant_receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_grant_place");
+    }
+    spin_until("recv_grant parked", &|| {
+        channel.debug_endpoint_is_recv_grant_blocked(B)
+    });
+    if without_interrupts(|| channel.try_grant(A, payload)) != 0 {
+        fail("reason=try_grant_parked_not_installed");
+    }
+    spin_until("grant result", &|| {
+        GRANT_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if GRANT_RESULT.load(Ordering::Acquire) < 0 || held() != 1 {
+        fail("reason=try_grant_not_exactly_one_handle");
+    }
+    serial_println!("TRYSEND grant idle=eagain parked=one_handle");
+
+    // recv grant: idle is EAGAIN with nothing installed; a grantor parked
+    // in its grant on CPU 1 is taken, and exactly one handle arrives.
+    let channel = crate::ipc::Channel::new();
+    *GRANT_CHANNEL.lock() = Some(channel.clone());
+    *GRANTOR_PAYLOAD.lock() = Some(payload);
+    let all = process::full_channel_rights();
+    if without_interrupts(|| channel.try_recv_grant(A, recipient.pid, all)) != crate::errno::EAGAIN
+    {
+        fail("reason=try_recv_grant_idle_not_eagain");
+    }
+    if held() != 1 || channel.debug_endpoint_is_recv_grant_blocked(A) {
+        fail("reason=try_recv_grant_idle_changed_something");
+    }
+    let t = crate::sched::thread::Thread::new("try-grantor", ipc_try_send::grantor);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_recv_grant_place");
+    }
+    spin_until("grantor parked", &|| {
+        channel.debug_endpoint_is_grant_blocked(B)
+    });
+    if without_interrupts(|| channel.try_recv_grant(A, recipient.pid, all)) < 0 {
+        fail("reason=try_recv_grant_parked_not_taken");
+    }
+    spin_until("grantor done", &|| {
+        GRANTOR_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if GRANTOR_RESULT.load(Ordering::Acquire) != 0 || held() != 2 {
+        fail("reason=try_recv_grant_not_exactly_one_handle");
+    }
+    serial_println!("TRYSEND recv_grant idle=eagain parked=one_handle");
+
+    // read-only destination (PR #15 review item 1): a receiver parked on a
+    // MAP_READ-only page gets EFAULT, and the page is not written.
+    let ro_frame = {
+        use x86_64::structures::paging::FrameAllocator;
+        crate::mm::with_frame_alloc(|fa| fa.allocate_frame())
+            .unwrap_or_else(|| fail("reason=try_send_ro_frame"))
+    };
+    let ro_base = crate::mm::phys_to_virt(ro_frame.start_address()).as_mut_ptr::<u8>();
+    unsafe { core::ptr::write_bytes(ro_base, 0x5A, 4096) };
+    f.receiver_pmap
+        .map_user(
+            x86_64::VirtAddr::new(RO_VA),
+            ro_frame,
+            crate::mm::pmap::flags::USER_DATA_RO,
+        )
+        .unwrap_or_else(|_| fail("reason=try_send_ro_map"));
+    write_rendezvous_payload(&f, 7, 0);
+    let t = crate::sched::thread::Thread::new("try-send-ro", ro_receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_ro");
+    }
+    spin_until("ro receiver parked", &|| {
+        f.channel.debug_endpoint_is_recv_blocked(B)
+    });
+    if try_send() != crate::errno::EFAULT {
+        fail("reason=try_send_ro_dest_not_efault");
+    }
+    spin_until("ro receiver done", &|| {
+        RO_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if RO_RESULT.load(Ordering::Acquire) != crate::errno::EFAULT {
+        fail("reason=try_send_ro_receiver_not_efault");
+    }
+    let untouched = unsafe { core::slice::from_raw_parts(ro_base, f.len) }
+        .iter()
+        .all(|&b| b == 0x5A);
+    if !untouched {
+        fail("reason=try_send_ro_dest_written");
+    }
+    serial_println!("TRYSEND ro_dest=efault untouched=yes");
+
+    // closed.
+    f.channel.close_peer(A, process::ProcessId(u32::MAX));
+    if try_send() != crate::errno::EPIPE {
+        fail("reason=try_send_closed_not_epipe");
+    }
+    pass(
+        "ipc_try_send idle=eagain parked=delivered race=exactly_once sending=eagain grant=one_or_none recv_grant=one_or_none ro_dest=efault closed=epipe",
+    )
+}
+
+/// Jarvis (#61): a key repeat is checked against the activation epoch, then
+/// staged; the focus can move, or Super+L engage the lock, in between (on
+/// another CPU). Each leg runs that other CPU's step on this CPU at the exact
+/// point, through the same `key_repeat::poll` / `deliver` the pumps call.
+/// No repeat checked under one owner may reach another, or the lock screen.
+/// The control (`neo-test-key-repeat-epoch-control`) stages with a fresh
+/// epoch read, the pre-fix shape, and must FAIL
+/// `reason=repeat_crossed_focus_change`.
+#[cfg(feature = "neo-test-key-repeat-epoch")]
+fn run_key_repeat_epoch() -> ! {
+    use crate::arch::x86_64::without_interrupts as off;
+    use crate::atrium::focus::{self, InputFocus, Stage};
+    use crate::atrium::key_repeat;
+    use crate::atrium::key_repeat_logic::{KEY_REPEAT, KeyRepeat};
+    use alloc::sync::Arc;
+
+    const BACKSPACE: u8 = 0x2a;
+    const T0: u64 = 1_000_000_000;
+    const DUE: u64 = T0 + 500_000_000;
+    // A held key, pressed under the current epoch, with a repeat due.
+    let held = || {
+        let mut r = KeyRepeat::new();
+        r.on_key(BACKSPACE, 0, true, T0, focus::activation_epoch());
+        r
+    };
+    let none = |f: &Arc<InputFocus>, why: &str| {
+        if let Some(e) = off(|| f.try_recv()) {
+            serial_println!("KEYREPEAT got code={:#x} flags={:#x}", e.code, e.flags);
+            fail(why);
+        }
+    };
+
+    let a = Arc::new(InputFocus::new());
+    let b = Arc::new(InputFocus::new());
+    let lock = Arc::new(InputFocus::new());
+    if !off(|| a.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    if !off(|| focus::register_lock_route(&lock)) {
+        fail("reason=repeat_epoch_register_failed");
+    }
+    let mut stage = Stage::with_capacity(focus::INPUT_STAGE_CAPACITY);
+
+    // Non-vacuity: nothing moves, the repeat reaches the owner.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    match off(|| a.try_recv()) {
+        Some(e) if e.code == BACKSPACE as u16 && e.flags & KEY_REPEAT != 0 => {}
+        _ => fail("reason=repeat_epoch_repeat_lost"),
+    }
+    serial_println!("KEYREPEAT baseline delivered=owner");
+
+    // Focus moves to B between the check (poll) and the stage.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !off(|| b.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    none(&b, "reason=repeat_crossed_focus_change");
+    none(&a, "reason=repeat_reached_old_owner_after_change");
+    serial_println!("KEYREPEAT focus_change between_check_and_stage delivered=none");
+
+    // Super+L between the check and the stage.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !focus::engage_lock_route() {
+        fail("reason=repeat_epoch_engage_failed");
+    }
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    none(&lock, "reason=repeat_reached_lock_screen");
+    if !off(|| focus::release_lock_route(&b)) {
+        fail("reason=repeat_epoch_release_failed");
+    }
+    none(&b, "reason=repeat_crossed_lock");
+    serial_println!("KEYREPEAT lock between_check_and_stage delivered=none");
+
+    // Super+L between the stage and the flush.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    key_repeat::deliver(&mut stage, event, epoch);
+    if !focus::engage_lock_route() {
+        fail("reason=repeat_epoch_engage_failed");
+    }
+    focus::flush_staged(&mut stage);
+    none(&lock, "reason=staged_repeat_reached_lock_screen");
+    if !off(|| focus::release_lock_route(&b)) {
+        fail("reason=repeat_epoch_release_failed");
+    }
+    focus::flush_staged(&mut stage);
+    none(&b, "reason=staged_repeat_crossed_lock");
+    serial_println!("KEYREPEAT lock between_stage_and_flush delivered=none");
+
+    // The legacy routed path: the epoch is compared under DELIVERY.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !off(|| a.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    if off(|| focus::route_event_at(event, epoch)) {
+        fail("reason=legacy_repeat_routed_after_focus_change");
+    }
+    none(&a, "reason=legacy_repeat_crossed_focus_change");
+    // And its non-vacuity: the current epoch routes.
+    if !off(|| focus::route_event_at(event, focus::activation_epoch())) {
+        fail("reason=legacy_repeat_not_routed");
+    }
+    if off(|| a.try_recv()).is_none() {
+        fail("reason=legacy_repeat_lost");
+    }
+    serial_println!(
+        "KEYREPEAT legacy route_checked_under_delivery stale={}",
+        focus::debug_stage_stale()
+    );
+    pass(
+        "key_repeat_epoch baseline=delivered focus_change=dropped lock_before_stage=dropped lock_before_flush=discarded legacy=dropped",
+    )
+}
+
 #[cfg(feature = "neo-test-di1-forward")]
 fn run_di1_forward() -> ! {
     use crate::atrium::focus::{ForwardError, InputFocus, claim_pointer_route, forward_record};
@@ -30129,7 +30797,8 @@ fn run_smp_grant_cross_cpu() -> ! {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 #[derive(Clone)]
 struct SmpRendezvousFixture {
@@ -30146,14 +30815,16 @@ struct SmpRendezvousFixture {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 const SMP_RENDEZVOUS_PAYLOAD_LEN: usize = 8;
 
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn make_rendezvous_payload(seq: u32, pair: usize) -> [u8; SMP_RENDEZVOUS_PAYLOAD_LEN] {
     [
@@ -30171,7 +30842,8 @@ fn make_rendezvous_payload(seq: u32, pair: usize) -> [u8; SMP_RENDEZVOUS_PAYLOAD
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn create_rendezvous_fixture() -> SmpRendezvousFixture {
     use x86_64::structures::paging::FrameAllocator;
@@ -30222,7 +30894,8 @@ fn create_rendezvous_fixture() -> SmpRendezvousFixture {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn write_rendezvous_payload(fixture: &SmpRendezvousFixture, seq: u32, pair: usize) {
     let payload = make_rendezvous_payload(seq, pair);
@@ -30238,7 +30911,8 @@ fn write_rendezvous_payload(fixture: &SmpRendezvousFixture, seq: u32, pair: usiz
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn clear_rendezvous_receiver(fixture: &SmpRendezvousFixture) {
     let base =
@@ -30251,7 +30925,8 @@ fn clear_rendezvous_receiver(fixture: &SmpRendezvousFixture) {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn verify_rendezvous_payload(fixture: &SmpRendezvousFixture, seq: u32, pair: usize) {
     let expected = make_rendezvous_payload(seq, pair);

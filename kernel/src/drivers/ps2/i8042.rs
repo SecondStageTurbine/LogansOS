@@ -544,12 +544,10 @@ pub fn pump_routed_events() {
         // delivered. It carries that press's modifiers, so it needs no SAK
         // filter (a modifier change has already ended it).
         #[cfg(feature = "key-autorepeat")]
-        if routing && let Some(event) = crate::atrium::key_repeat::poll(&mut state.repeat, now_ns) {
-            if cfg!(feature = "atrium-input-stage-legacy") {
-                crate::atrium::focus::route_event(event);
-            } else {
-                crate::atrium::focus::stage_event(&mut state.stage, event);
-            }
+        if routing
+            && let Some((event, epoch)) = crate::atrium::key_repeat::poll(&mut state.repeat, now_ns)
+        {
+            crate::atrium::key_repeat::deliver(&mut state.stage, event, epoch);
         }
         crate::atrium::focus::flush_staged(&mut state.stage);
     }
@@ -597,7 +595,7 @@ pub fn drain_events_stamped(
             crate::atrium::key_repeat::on_event(&mut state.repeat, event, now_ns);
             out.push((event, now_ns));
         });
-        if let Some(event) = crate::atrium::key_repeat::poll(&mut state.repeat, now_ns) {
+        if let Some((event, _epoch)) = crate::atrium::key_repeat::poll(&mut state.repeat, now_ns) {
             out.push((event, now_ns));
         }
     }

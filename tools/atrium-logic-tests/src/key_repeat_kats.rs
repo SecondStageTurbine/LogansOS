@@ -6,7 +6,9 @@
 
 use super::input_logic::{InputEventV1, decode_event, encode_event};
 use super::input_queue_logic::{Enqueued, InputQueue};
-use super::key_repeat_logic::{KEY_REPEAT, KeyRepeat, is_repeat, repeats};
+use super::key_repeat_logic::{
+    KEY_REPEAT, KeyRepeat, StageAction, is_repeat, repeats, stage_action,
+};
 
 const MS: u64 = 1_000_000;
 const T0: u64 = 1_000 * MS;
@@ -274,4 +276,41 @@ fn repeat_k_never_before_500_ms_plus_k_thirtieths() {
             assert!(gaps.iter().all(|g| *g == 30 || *g == 40), "{gaps:?}");
         }
     }
+}
+
+/// Jarvis (#61): a repeat is staged with the epoch it was checked under. The
+/// table, by hand: (stage epoch, checked epoch, current epoch) -> action.
+#[test]
+fn a_repeat_checked_under_an_old_epoch_is_dropped_not_restamped() {
+    use StageAction::{Append, Drop, Restart};
+    let cases = [
+        // Nothing moved.
+        (7, 7, 7, Append),
+        // The stage holds an older batch; the repeat is current.
+        (6, 7, 7, Restart),
+        // Focus moved (or a lock engaged) after the check: dropped, and the
+        // stage, which may already hold the new owner's keys, is untouched.
+        (7, 7, 8, Drop),
+        (8, 7, 8, Drop),
+        (6, 7, 9, Drop),
+    ];
+    for (stage, checked, current, want) in cases {
+        assert_eq!(
+            stage_action(stage, checked, current),
+            want,
+            "{stage} {checked} {current}"
+        );
+    }
+}
+
+/// The epoch a repeat is staged with is the press's, the one `poll` checked.
+#[test]
+fn a_polled_repeat_carries_the_press_epoch() {
+    let mut r = held(BACKSPACE, 0);
+    assert_eq!(r.epoch(), EPOCH);
+    assert!(r.poll(T0 + 500 * MS, EPOCH).is_some());
+    assert_eq!(r.epoch(), EPOCH);
+    // Polled under a later epoch: no repeat at all (the run ended).
+    assert_eq!(r.poll(T0 + 600 * MS, EPOCH + 1), None);
+    assert_eq!(r.key(), None);
 }

@@ -572,4 +572,40 @@ mod tests {
         }
         assert_eq!(days, last + 1);
     }
+
+    /// `rtc-offset` (THINK-2026-11-02-time-zones §2.1): the base moves by the
+    /// RTC's offset from UTC. The RTC in New York reads 2026-11-02 01:29 EST
+    /// (UTC-5): as UTC that wall time is day 20759 * 86400 + 5340 s =
+    /// 1793581740 s; the true instant is 5 h later, 1793599740 s (06:29 UTC).
+    #[test]
+    fn confirmed_base_moves_by_the_offset() {
+        use super::rtc_logic::{MAX_OFFSET_S, confirmed_base_ns};
+        const NS: u64 = 1_000_000_000;
+        assert_eq!(
+            confirmed_base_ns(1_793_581_740 * NS, -18_000),
+            Some(1_793_599_740 * NS)
+        );
+        // East of UTC (Sydney, AEDT +11 h) subtracts.
+        assert_eq!(
+            confirmed_base_ns(1_000_000 * NS, 39_600),
+            Some(960_400 * NS)
+        );
+        // Offset 0 (an RTC that holds UTC) is the base unchanged: the
+        // kill-switch's arithmetic.
+        assert_eq!(
+            confirmed_base_ns(1_793_599_740 * NS, 0),
+            Some(1_793_599_740 * NS)
+        );
+        // Past ±24 h is refused; exactly 24 h is accepted.
+        assert_eq!(MAX_OFFSET_S, 86_400);
+        assert_eq!(confirmed_base_ns(1_000_000 * NS, 86_401), None);
+        assert_eq!(confirmed_base_ns(1_000_000 * NS, -86_401), None);
+        assert_eq!(
+            confirmed_base_ns(1_000_000 * NS, 86_400),
+            Some(913_600 * NS)
+        );
+        // A base smaller than the offset (no epoch) is refused, not wrapped.
+        assert_eq!(confirmed_base_ns(3_599 * NS, 3_600), None);
+        assert_eq!(confirmed_base_ns(u64::MAX, -1), None);
+    }
 }

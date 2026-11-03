@@ -329,13 +329,9 @@ impl Inner {
         // Key auto-repeat: the repeat due now (see the i8042 pump).
         #[cfg(feature = "key-autorepeat")]
         if crate::atrium::input_routing_enabled()
-            && let Some(event) = crate::atrium::key_repeat::poll(&mut self.repeat, now_ns)
+            && let Some((event, epoch)) = crate::atrium::key_repeat::poll(&mut self.repeat, now_ns)
         {
-            if cfg!(feature = "atrium-input-stage-legacy") {
-                crate::atrium::focus::route_event(event);
-            } else {
-                crate::atrium::focus::stage_event(&mut self.stage, event);
-            }
+            crate::atrium::key_repeat::deliver(&mut self.stage, event, epoch);
         }
         // Every pump retries what an earlier contended flush left staged.
         #[cfg(feature = "atrium-input-routing")]

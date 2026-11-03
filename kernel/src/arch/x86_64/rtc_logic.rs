@@ -253,3 +253,23 @@ pub const fn base_ns(unix_s: u64, monotonic_ns: u64) -> u64 {
         .saturating_mul(1_000_000_000)
         .saturating_sub(monotonic_ns)
 }
+
+/// `rtc-offset` (`docs/THINK-2026-11-02-time-zones.md` §2.1): the most a
+/// confirmed UTC offset may be, in seconds (real zones span -12 h..+14 h).
+pub const MAX_OFFSET_S: i64 = 86_400;
+
+/// The realtime base once the session confirms the RTC's offset from UTC:
+/// the RTC read local wall time, which is UTC + `offset_s`, so UTC is the
+/// base less the offset. `None` past [`MAX_OFFSET_S`] or out of range (a
+/// base below the offset); offset 0 is the base unchanged.
+pub const fn confirmed_base_ns(base_ns: u64, offset_s: i64) -> Option<u64> {
+    if offset_s > MAX_OFFSET_S || offset_s < -MAX_OFFSET_S {
+        return None;
+    }
+    let delta = offset_s.unsigned_abs() * 1_000_000_000;
+    if offset_s >= 0 {
+        base_ns.checked_sub(delta)
+    } else {
+        base_ns.checked_add(delta)
+    }
+}
