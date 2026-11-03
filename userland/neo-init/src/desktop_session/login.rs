@@ -706,6 +706,10 @@ fn first_boot(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
 }
 
 /// §5.1: the password, or Tab for the recovery code.
+/// F9 (J.c., 2026-11-02): what a wrong password shows, at sign-in and on the
+/// lock screen. It says nothing about which part was wrong.
+pub(super) const WRONG_PASSWORD: &str = "Incorrect password. Try again.";
+
 fn sign_in(scene: &mut Scene, focus: &HomeFocus, mut current: Current) -> Result<(), i32> {
     let name = display_name().unwrap_or_else(|| String::from("LogansOS"));
     // Dexter #186 item 2: the count a reboot doesn't reset.
@@ -718,10 +722,15 @@ fn sign_in(scene: &mut Scene, focus: &HomeFocus, mut current: Current) -> Result
     let mut note: Option<&str> = None;
     let boot = boot_row("Sign-in");
     loop {
-        let mut rows = alloc::vec![name.as_str(), "Enter your password."];
-        rows.extend(note);
-        rows.push("Forgot it? Press Tab for your recovery code.");
+        let mut rows = alloc::vec![
+            name.as_str(),
+            "Enter your password.",
+            "Forgot it? Press Tab for your recovery code."
+        ];
+        // L7.1's boot summary, then (F9) the note: the last row, the one
+        // nearest the field.
         rows.extend(boot.as_deref());
+        rows.extend(note);
         show(scene, b"password", &rows, true)?;
         match answer(scene, focus, false, true)? {
             Answer::Tab => {
@@ -748,7 +757,13 @@ fn sign_in(scene: &mut Scene, focus: &HomeFocus, mut current: Current) -> Result
                     return Ok(());
                 }
                 log_failure(b"password", attempts.failures());
-                note = Some("That password isn't right.");
+                note = Some(WRONG_PASSWORD);
+                #[cfg(feature = "desktop-session-boot-test")]
+                Line::new()
+                    .s(b"LOGIN note=\"")
+                    .s(WRONG_PASSWORD.as_bytes())
+                    .s(b"\" row=last\n")
+                    .emit();
                 #[cfg(feature = "login-backoff-test")]
                 if attempts.failures() == BACKOFF_TEST_STOP {
                     Line::new().s(b"LOGIN backoff test stop\n").emit();
@@ -782,9 +797,8 @@ fn recover(
 ) -> Result<bool, i32> {
     let mut note: Option<&str> = None;
     loop {
-        let mut rows = alloc::vec!["Type your recovery code."];
+        let mut rows = alloc::vec!["Type your recovery code.", "Press Tab to go back."];
         rows.extend(note);
-        rows.push("Press Tab to go back.");
         show(scene, b"recovery", &rows, false)?;
         let Answer::Text(typed) = answer(scene, focus, false, true)? else {
             return Ok(false);
@@ -802,7 +816,7 @@ fn recover(
         };
         if !accepted {
             log_failure(b"recovery", attempts.failures());
-            note = Some("That code isn't right.");
+            note = Some("Incorrect recovery code. Try again.");
             continue;
         }
         attempts.reset(b"recovery");

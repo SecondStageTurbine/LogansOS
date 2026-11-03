@@ -72,13 +72,29 @@ fn set_last(next: u64, link: [u8; alc::PREV_LEN]) {
     LAST_NEXT.store(next + 1, Ordering::Release);
 }
 
-/// The wall clock, in seconds (0 when unknown). The boot test pins 0, so
-/// its records' bytes are fixed.
-fn now_s() -> u64 {
+/// The wall clock in seconds (0 when unknown) and the record's flags: with
+/// [`alc::TIME_UTC`] only if the kernel had confirmed realtime as UTC
+/// (THINK-2026-11-02 §2.7). Before that, it's the computer's clock as read,
+/// which may be local wall time. The status is read before and after the
+/// clock: a confirm in between (the base moved) reads again, so a flagged
+/// time is always a confirmed one. The boot test pins 0, so its records'
+/// bytes are fixed.
+fn now_s() -> (u64, u8) {
     if cfg!(feature = "arthur-actions-test") {
-        return 0;
+        return (0, 0);
     }
-    libneo::sys_clock_gettime(libneo::CLOCK_REALTIME).map_or(0, |ns| ns / 1_000_000_000)
+    let utc = || libneo::sys_clock_realtime_status() == Ok(true);
+    let read =
+        || libneo::sys_clock_gettime(libneo::CLOCK_REALTIME).map_or(0, |ns| ns / 1_000_000_000);
+    for _ in 0..4 {
+        let before = utc();
+        let s = read();
+        if utc() == before {
+            return (s, if before { alc::TIME_UTC } else { 0 });
+        }
+    }
+    // Confirmed while reading: it stays confirmed (write-once).
+    (read(), alc::TIME_UTC)
 }
 
 /// The log's printable form of `text`: each byte, or `?` for one that isn't
@@ -145,15 +161,17 @@ impl Pending {
         } else {
             self.link
         };
+        let (time_s, flags) = now_s();
         let Some(bytes) = alc::encode(&Record {
             kind,
             action,
             seq: self.next,
-            time_s: now_s(),
+            time_s,
             detail,
             path,
             intent,
             prev,
+            flags,
         }) else {
             return false;
         };
@@ -179,15 +197,17 @@ fn rotated(log: &[u8], len: usize) -> Option<Vec<u8>> {
         at += n;
     }
     let (first, _) = alc::decode(&log[at..len])?;
+    let (time_s, flags) = now_s();
     let mut out = alc::encode(&Record {
         kind: Kind::Refused,
         action: 0,
         seq: first.seq,
-        time_s: now_s(),
+        time_s,
         detail: alc::REFUSED_ROTATED,
         path: "",
         intent: "",
         prev: first.prev,
+        flags,
     })?;
     out.extend_from_slice(&log[at..len]);
     Line::new()

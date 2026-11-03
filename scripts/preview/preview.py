@@ -64,6 +64,10 @@ def machine_args():
         "-m", "4096M",
         "-smp", "4",
         "-vga", "std",
+        # THINK-2026-11-02-time-zones: the RTC holds the host's local time, as
+        # a Windows PC's does, so the product's default (`RtcLocal` = 1) reads
+        # it right; Home's `timezone Area/City` then shows the zone.
+        "-rtc", "base=localtime",
         "-no-reboot",
         "-monitor", "none",
         "-serial", "file:" + SERIAL_LOG,
