@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "indexmap"
+version = "1.9.3"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/bluss/indexmap"
+description = "LogansOS empty stand-in for indexmap 1.9.3 (never compiled for LogansOS)"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+"serde-1" = []
+"std" = []
+"test_debug" = []
+"test_low_transition_point" = []
+"arbitrary" = []
+"quickcheck" = []
+"rayon" = []
+"rustc-rayon" = []
+"serde" = []
