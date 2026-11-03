@@ -72,6 +72,8 @@ mod install_bundle_logic;
 mod vendor_verify;
 
 #[cfg(test)]
+mod batch_scripts_tests;
+#[cfg(test)]
 mod build_id_tests;
 #[cfg(test)]
 mod ci_memory_floor_tests;
@@ -6093,6 +6095,7 @@ fn main() -> ExitCode {
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
+        "gate-plan" => cmd_gate_plan(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
         "vocab-bin" => cmd_vocab_bin(&args[1..]),
         "icons" => cmd_icons(&args[1..]),
@@ -8967,6 +8970,9 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     let mut bare_metal_mode = false;
     let mut include_explicit = false;
     let mut keep_going = false;
+    let mut rerun_timeouts = false;
+    let mut quick_tier = false;
+    let mut changed_from: Option<String> = None;
     let mut shard: Option<ShardSpec> = None;
     let mut requested: Vec<&str> = Vec::new();
 
@@ -8980,6 +8986,25 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
             "--build-only" => build_only = true,
             "--bare-metal-mode" => bare_metal_mode = true,
             "--keep-going" => keep_going = true,
+            "--rerun-timeouts" => rerun_timeouts = true,
+            "--tier" => {
+                idx += 1;
+                match args.get(idx).map(String::as_str) {
+                    Some("quick") => quick_tier = true,
+                    Some("full") => quick_tier = false,
+                    other => {
+                        return Err(format!("--tier takes `quick` or `full`, got {other:?}"));
+                    }
+                }
+            }
+            "--changed-from" => {
+                idx += 1;
+                changed_from = Some(
+                    args.get(idx)
+                        .ok_or_else(|| "--changed-from requires a git ref".to_string())?
+                        .clone(),
+                );
+            }
             "all" => include_explicit = true,
             "-h" | "--help" => {
                 print_neo_test_help();
@@ -9027,7 +9052,53 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
         );
     }
 
-    let mut scenarios = select_test_scenarios(&requested, include_ignored, include_explicit)?;
+    if quick_tier
+        && (shard.is_some()
+            || !requested.is_empty()
+            || build_only
+            || bare_metal_mode
+            || include_ignored)
+    {
+        return Err(
+            "--tier quick selects its own set; it cannot be combined with --shard, named scenarios, \
+             --build-only, --bare-metal-mode, or --include-ignored"
+                .to_string(),
+        );
+    }
+    if changed_from.is_some() && !quick_tier {
+        return Err("--changed-from only applies to --tier quick".to_string());
+    }
+    if rerun_timeouts && !keep_going {
+        return Err("--rerun-timeouts only applies with --keep-going".to_string());
+    }
+
+    let mut scenarios = if quick_tier {
+        let added = match &changed_from {
+            Some(base) => git_diff_added_lines(base)?,
+            None => Vec::new(),
+        };
+        let suite = select_test_scenarios(&[], false, false)?;
+        let (picked, full_only) = quick_tier_scenarios(&suite, &added);
+        eprintln!(
+            "[xtask] neo-test tier quick: {} scenario(s): {}",
+            picked.len(),
+            picked.iter().map(|s| s.name).collect::<Vec<_>>().join(" ")
+        );
+        for (name, why) in FULL_TIER_ONLY_EXCLUDED {
+            eprintln!(
+                "[xtask] neo-test tier quick: `{name}` runs in the full tier only ({why}; over the cost rule)"
+            );
+        }
+        if !full_only.is_empty() {
+            eprintln!(
+                "[xtask] neo-test tier quick: changed but over the quick budget (full tier only): {}",
+                full_only.join(" ")
+            );
+        }
+        picked
+    } else {
+        select_test_scenarios(&requested, include_ignored, include_explicit)?
+    };
     if let Some(spec) = shard {
         scenarios = shard_partition(&scenarios, spec);
         eprintln!(
@@ -9071,11 +9142,20 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
     };
     let label = match shard {
         Some(spec) => format!("shard {}/{}", spec.index, spec.count),
+        None if quick_tier => "tier quick".to_string(),
         None => "run".to_string(),
     };
-    run_scenarios_timed(&scenarios, &label, keep_going, |scenario| {
-        run_test_scenario_with_retries(scenario, mode)
-    })?;
+    let policy = RunPolicy {
+        keep_going,
+        rerun_timeouts,
+    };
+    run_scenarios_timed(
+        &scenarios,
+        &label,
+        policy,
+        |scenario| run_test_scenario_with_retries(scenario, mode),
+        take_qemu_runs,
+    )?;
 
     // The deliberate-failure meta-test is a runner self-check that the
     // un-sharded suite runs exactly once at the end. Under sharding it must
@@ -9103,24 +9183,79 @@ fn cmd_neo_test(args: &[String]) -> Result<(), String> {
 /// through `run_with_timeout_and_dump`).
 static QEMU_MILLIS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static QEMU_RUNS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Whether the most recent QEMU run hit its timeout (OT-58 THINK 2.5: a
+/// timeout is classified apart from a scenario failure, and re-run once).
+static QEMU_LAST_TIMED_OUT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-fn record_qemu_run(elapsed: Duration) {
+fn record_qemu_run(elapsed: Duration, timed_out: bool) {
     use std::sync::atomic::Ordering;
     QEMU_MILLIS.fetch_add(elapsed.as_millis() as u64, Ordering::Relaxed);
     QEMU_RUNS.fetch_add(1, Ordering::Relaxed);
+    QEMU_LAST_TIMED_OUT.store(timed_out, Ordering::Relaxed);
 }
 
-fn take_qemu_runs() -> (Duration, u32) {
+/// What the QEMU runs of one scenario add up to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct QemuTally {
+    qemu: Duration,
+    runs: u32,
+    last_timed_out: bool,
+}
+
+fn take_qemu_runs() -> QemuTally {
     use std::sync::atomic::Ordering;
-    (
-        Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
-        QEMU_RUNS.swap(0, Ordering::Relaxed),
-    )
+    QemuTally {
+        qemu: Duration::from_millis(QEMU_MILLIS.swap(0, Ordering::Relaxed)),
+        runs: QEMU_RUNS.swap(0, Ordering::Relaxed),
+        last_timed_out: QEMU_LAST_TIMED_OUT.swap(false, Ordering::Relaxed),
+    }
 }
 
 const TIMINGS_TSV_REL: &str = "target/neo-test/timings.tsv";
 const TIMINGS_SUMMARY_REL: &str = "target/neo-test/timings-summary.md";
 const TIMINGS_TSV_HEADER: &str = "scenario\twall_s\tqemu_s\tbuild_s\tqemu_runs\tresult\n";
+
+/// A scenario's outcome, as the timing table's `result` column records it
+/// (OT-58 THINK 2.5, the classification `batch-report` sorts by):
+/// - `pass`;
+/// - `FAIL`: QEMU ran and the scenario failed (an assertion, an exit status);
+/// - `FAIL-build`: it failed before any QEMU run (its kernel, userland or
+///   image build);
+/// - `FAIL-timeout`: its last QEMU run hit the scenario's timeout.
+///
+/// A row for a `--rerun-timeouts` re-run carries the same word after
+/// `rerun-` (`rerun-pass`, `rerun-FAIL-timeout`, ...).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScenarioOutcome {
+    Pass,
+    Fail,
+    BuildFail,
+    Timeout,
+}
+
+impl ScenarioOutcome {
+    fn classify(ok: bool, tally: QemuTally) -> Self {
+        if ok {
+            Self::Pass
+        } else if tally.runs == 0 {
+            Self::BuildFail
+        } else if tally.last_timed_out {
+            Self::Timeout
+        } else {
+            Self::Fail
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "FAIL",
+            Self::BuildFail => "FAIL-build",
+            Self::Timeout => "FAIL-timeout",
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct ScenarioTiming {
@@ -9128,13 +9263,27 @@ struct ScenarioTiming {
     wall: Duration,
     qemu: Duration,
     qemu_runs: u32,
-    passed: bool,
+    outcome: ScenarioOutcome,
+    /// This row is a `--rerun-timeouts` re-run.
+    rerun: bool,
 }
 
 impl ScenarioTiming {
     /// Everything that isn't QEMU: the kernel and userland builds, the image.
     fn build(&self) -> Duration {
         self.wall.saturating_sub(self.qemu)
+    }
+
+    fn passed(&self) -> bool {
+        self.outcome == ScenarioOutcome::Pass
+    }
+
+    fn result(&self) -> String {
+        if self.rerun {
+            format!("rerun-{}", self.outcome.word())
+        } else {
+            self.outcome.word().to_string()
+        }
     }
 }
 
@@ -9146,7 +9295,7 @@ fn timings_tsv_row(t: &ScenarioTiming) -> String {
         t.qemu.as_secs_f64(),
         t.build().as_secs_f64(),
         t.qemu_runs,
-        if t.passed { "pass" } else { "FAIL" }
+        t.result()
     )
 }
 
@@ -9157,7 +9306,7 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
     sorted.sort_by(|a, b| b.wall.cmp(&a.wall).then_with(|| a.name.cmp(b.name)));
     let wall: Duration = rows.iter().map(|t| t.wall).sum();
     let qemu: Duration = rows.iter().map(|t| t.qemu).sum();
-    let failed = rows.iter().filter(|t| !t.passed).count();
+    let failed = rows.iter().filter(|t| !t.passed()).count();
     let mut out = String::new();
     if markdown {
         out.push_str(&format!(
@@ -9176,7 +9325,7 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
                 t.qemu.as_secs_f64(),
                 t.build().as_secs_f64(),
                 t.qemu_runs,
-                if t.passed { "pass" } else { "FAIL" }
+                t.result()
             ));
         }
     } else {
@@ -9195,15 +9344,29 @@ fn timings_summary(label: &str, rows: &[ScenarioTiming], markdown: bool) -> Stri
     out
 }
 
-/// Run `scenarios` in order through `run`, timing each one. Without
-/// `keep_going`, stop at the first failure and return its error (the behaviour
-/// before S0). With it, run them all and fail with the list of failures. The
-/// timings are written either way.
+/// How `run_scenarios_timed` treats failures.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct RunPolicy {
+    /// Run every scenario, then fail with the list (OT-58 S0).
+    keep_going: bool,
+    /// With `keep_going`: re-run each scenario whose last QEMU run timed out,
+    /// once, after the others (OT-58 THINK 2.5; hosted TCG time varies, #19).
+    /// A timeout that passes on its re-run is not a failure, but it is
+    /// reported, since its timeout needs raising.
+    rerun_timeouts: bool,
+}
+
+/// Run `scenarios` in order through `run`, timing each one; `take` reads (and
+/// resets) the QEMU time the scenario used. Without `keep_going`, stop at the
+/// first failure and return its error (the behaviour before S0). With it, run
+/// them all and fail with the list of failures. The timings are written either
+/// way.
 fn run_scenarios_timed(
     scenarios: &[TestScenario],
     label: &str,
-    keep_going: bool,
+    policy: RunPolicy,
     mut run: impl FnMut(TestScenario) -> Result<(), String>,
+    mut take: impl FnMut() -> QemuTally,
 ) -> Result<(), String> {
     let root = workspace_root();
     let tsv_path = root.join(TIMINGS_TSV_REL);
@@ -9211,32 +9374,66 @@ fn run_scenarios_timed(
     let _ = fs::write(&tsv_path, TIMINGS_TSV_HEADER);
     let mut rows: Vec<ScenarioTiming> = Vec::new();
     let mut failures: Vec<(&'static str, String)> = Vec::new();
-    for &scenario in scenarios {
-        let _ = take_qemu_runs();
+    let mut timed_out: Vec<TestScenario> = Vec::new();
+    let mut timed_one = |scenario: TestScenario, rerun: bool, rows: &mut Vec<ScenarioTiming>| {
+        let _ = take();
         let start = Instant::now();
         let result = run(scenario);
-        let (qemu, qemu_runs) = take_qemu_runs();
+        let tally = take();
         let row = ScenarioTiming {
             name: scenario.name,
             wall: start.elapsed(),
-            qemu,
-            qemu_runs,
-            passed: result.is_ok(),
+            qemu: tally.qemu,
+            qemu_runs: tally.runs,
+            outcome: ScenarioOutcome::classify(result.is_ok(), tally),
+            rerun,
         };
         if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&tsv_path) {
             let _ = f.write_all(timings_tsv_row(&row).as_bytes());
         }
+        let outcome = row.outcome;
         rows.push(row);
+        (result, outcome)
+    };
+    for &scenario in scenarios {
+        let (result, outcome) = timed_one(scenario, false, &mut rows);
         if let Err(e) = result {
-            if !keep_going {
+            if !policy.keep_going {
                 emit_timings_summary(label, &rows);
                 return Err(e);
             }
             eprintln!(
-                "[xtask] neo-test: `{}` FAILED (keep-going): {e}",
-                scenario.name
+                "[xtask] neo-test: `{}` {} (keep-going): {e}",
+                scenario.name,
+                outcome.word()
             );
+            if policy.rerun_timeouts && outcome == ScenarioOutcome::Timeout {
+                timed_out.push(scenario);
+            }
             failures.push((scenario.name, e));
+        }
+    }
+    for scenario in timed_out {
+        eprintln!(
+            "[xtask] neo-test: `{}` timed out; re-running it once (--rerun-timeouts)",
+            scenario.name
+        );
+        let (result, outcome) = timed_one(scenario, true, &mut rows);
+        match result {
+            Ok(()) => {
+                eprintln!(
+                    "[xtask] neo-test: `{}` passed on its re-run: a hosted-time timeout, not a \
+                     failure. Raise its timeout, with the elapsed time in the commit.",
+                    scenario.name
+                );
+                failures.retain(|(n, _)| *n != scenario.name);
+            }
+            Err(e) => {
+                let msg = format!("re-run {}: {e}", outcome.word());
+                if let Some(f) = failures.iter_mut().find(|(n, _)| *n == scenario.name) {
+                    f.1 = format!("{}; {msg}", f.1);
+                }
+            }
         }
     }
     emit_timings_summary(label, &rows);
@@ -9616,6 +9813,12 @@ fn print_neo_test_help() {
     println!(
         "    cargo neo-test ... --keep-going run every selected scenario, then fail with the list"
     );
+    println!(
+        "    cargo neo-test ... --keep-going --rerun-timeouts  re-run each timed-out scenario once at the end"
+    );
+    println!(
+        "    cargo neo-test --tier quick [--changed-from REF]  the smoke list, plus scenarios the diff adds or edits"
+    );
     println!("    cargo neo-test SCENARIO --bare-metal-mode");
     println!("    cargo neo-test --build-only SCENARIO");
     println!("    cargo neo-test --build-only SCENARIO --bare-metal-mode");
@@ -9901,6 +10104,601 @@ fn is_hardware_only_scenario(scenario: TestScenario) -> bool {
             | "mt7601u_scan_baremetal"
             | "mt7601u_assoc_baremetal"
     )
+}
+
+// === tiered gate (OT-58 S1) ===
+//
+// The quick tier (every PR) runs SMOKE_SCENARIOS plus the scenarios a diff adds
+// or edits, within the same cost budget. `gate-plan` decides whether a diff may
+// take the quick tier or must get the full tier on its own: the SMP/concurrency
+// core, the test machinery, the workflow, the build configuration, or anything
+// under `kernel/` it can't classify. Spec:
+// docs/THINK-2026-11-01-ot58-tiered-gate.md, sections 2.2 and 2.3.
+
+/// Per-scenario cost on GitHub-hosted runners: `scenario<TAB>wall_s<TAB>qemu_s`
+/// rows, from S0's timing table. `#` lines are comments.
+const HOSTED_TIMINGS_TSV: &str = include_str!("../data/hosted-timings.tsv");
+
+/// The quick tier's cost rule: measured hosted wall time (build + image +
+/// QEMU), seconds.
+const QUICK_WALL_BUDGET_S: f64 = 35.0;
+
+/// The quick tier's fixed QEMU set (THINK section 2.2). Every entry is in the
+/// default suite and meets QUICK_WALL_BUDGET_S in HOSTED_TIMINGS_TSV (host
+/// tests check both). Promotion of an escaped scenario adds a line here.
+const SMOKE_SCENARIOS: &[&str] = &[
+    // The boot and capability floor.
+    "kaslr_smoke",
+    "smp_same_cpu_ipc",
+    "cap_mint_and_use",
+    "cap_grant_basic",
+    "cap_revoke_descendants_walk",
+    "boot_neofs_userland_persistence",
+    "ring3_fault_de",
+    "ring3_fault_db",
+    "ring3_fault_ud",
+    "ring3_fault_gp",
+    "ring3_fault_mf",
+    // Entry paths and context.
+    "exception_entry_flags",
+    "syscall_return_clean_regs",
+    "smap_policy",
+    "user_copy_bounds",
+    "irq_xmm_preserve",
+    "kaslr_heap_contract",
+    "xsave_ymm_context_switch",
+    // Containment and disk safety.
+    "dma_arena_fence",
+    "vtd_fence",
+    "block_write_guard",
+    // Lifecycle and SMP.
+    "kill_at_exit",
+    "exit_codes_bounded",
+    "threads_futex",
+    "smp_per_cpu_scheduler_smoke",
+    "smp_cross_cpu_migration_reap",
+    "wait_any_core",
+    "sys_wait_blocking",
+    // Escaped defects (OT-59, OT-59 #2, CP-97).
+    "swapgs_irq_ring3",
+    "virtio_blk_io_gate_contention",
+    "lock_route_races",
+];
+
+/// Discriminators that belong in the quick tier but break the cost rule, so
+/// they run in the full tier only (THINK 2.2's table).
+const FULL_TIER_ONLY_EXCLUDED: &[(&str, &str)] = &[
+    ("login_lock_park", "CP-97's second discriminator"),
+    (
+        "kill_ready_in_kernel",
+        "CP-95, a kill of a thread Ready inside a syscall",
+    ),
+];
+
+/// THINK 2.3.1: a diff that only adds a new scenario (its feature in
+/// kernel/Cargo.toml, its TestScenario block, and harness code gated on its
+/// feature) keeps the quick tier. Off: any change to the harness or xtask is
+/// full-alone.
+const SCENARIO_ONLY_EXCEPTION: bool = true;
+
+fn hosted_wall_s(name: &str) -> Option<f64> {
+    HOSTED_TIMINGS_TSV
+        .lines()
+        .filter(|l| !l.starts_with('#'))
+        .skip(1)
+        .find_map(|l| {
+            let mut cols = l.split('\t');
+            (cols.next() == Some(name)).then(|| cols.next()?.parse().ok())?
+        })
+}
+
+/// Whether a scenario the diff adds or edits may run in the quick tier: within
+/// the cost rule if measured; if new, only with the default timeout and not an
+/// install scenario (the smoke job's own budget check catches the rest).
+fn changed_scenario_quick_ok(scenario: TestScenario) -> bool {
+    match hosted_wall_s(scenario.name) {
+        Some(wall) => wall <= QUICK_WALL_BUDGET_S,
+        None => {
+            scenario_timeout(scenario.name) == TEST_TIMEOUT && !is_install_scenario(scenario.name)
+        }
+    }
+}
+
+/// The quick tier: the smoke list, then every other default-suite scenario a
+/// diff's added lines name that meets the budget. Returns that set and the
+/// named scenarios left to the full tier.
+fn quick_tier_scenarios(
+    suite: &[TestScenario],
+    added_lines: &[String],
+) -> (Vec<TestScenario>, Vec<&'static str>) {
+    let mut quick: Vec<TestScenario> = SMOKE_SCENARIOS
+        .iter()
+        .filter_map(|name| suite.iter().find(|s| s.name == *name).copied())
+        .collect();
+    let mut full_only = Vec::new();
+    for scenario in suite {
+        if quick.iter().any(|s| s.name == scenario.name) {
+            continue;
+        }
+        if added_lines
+            .iter()
+            .any(|line| line_names_scenario(line, *scenario))
+        {
+            if changed_scenario_quick_ok(*scenario) {
+                quick.push(*scenario);
+            } else {
+                full_only.push(scenario.name);
+            }
+        }
+    }
+    (quick, full_only)
+}
+
+fn line_names_scenario(line: &str, scenario: TestScenario) -> bool {
+    line.contains(&format!("\"{}\"", scenario.name))
+        || contains_token(line, scenario.feature)
+        || scenario
+            .user_feature
+            .is_some_and(|feature| contains_token(line, feature))
+}
+
+/// `token` occurs in `line` with no feature-name character (`[A-Za-z0-9_-]`)
+/// on either side, so `neo-test-x` does not match `neo-test-x-control`.
+fn contains_token(line: &str, token: &str) -> bool {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-';
+    let mut from = 0;
+    while let Some(pos) = line[from..].find(token) {
+        let at = from + pos;
+        let before = line[..at].chars().next_back();
+        let after = line[at + token.len()..].chars().next();
+        if !before.is_some_and(is_word) && !after.is_some_and(is_word) {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
+/// What a diff needs (THINK section 2.3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GateTier {
+    Quick,
+    /// The full tier on this change alone, with the reasons.
+    FullAlone(Vec<String>),
+}
+
+/// Paths that take the full tier alone (THINK 2.3 items 1-7). An entry ending
+/// in `/` is a directory. The longest matching entry across this list and
+/// NON_CORE_PATHS decides, so a non-core file inside a core directory (or a
+/// core file inside a non-core directory) is named exactly.
+const CORE_PATHS: &[&str] = &[
+    // 1. Scheduler, threads, kill, futex, wait.
+    "kernel/src/sched/",
+    // 2. Locks.
+    "kernel/src/sync/",
+    // 3. Memory: buddy/frame (CP-29), slab, heap, TLB shootdown, pmap.
+    "kernel/src/mm/",
+    // 4. Per-CPU, AP bring-up, entry paths, IPIs, timers, SMAP window, FPU.
+    "kernel/src/arch/",
+    "kernel/src/main.rs",
+    "kernel/src/panic.rs",
+    // 5. Cross-CPU work in other directories.
+    "kernel/src/ai/par_matmul.rs",
+    "kernel/src/ipc/",
+    "kernel/src/watchdog.rs",
+    "kernel/src/drivers/block/virtio_blk.rs",
+    // 6. Build configuration (kernel/Cargo.toml is special-cased).
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "Dockerfile",
+    "docker-compose.yml",
+    ".cargo/",
+    "kernel/.cargo/",
+    "kernel/build.rs",
+    "kernel/linker.ld",
+    "kernel/x86_64-neoplutarch.json",
+    // 7. The test machinery and the workflow.
+    "kernel/src/test_harness.rs",
+    "kernel/src/test_harness_latency_oracle.rs",
+    "tools/xtask/",
+    "scripts/",
+    ".github/workflows/",
+];
+
+/// Paths under `kernel/` that may take the quick tier. Together with
+/// CORE_PATHS this covers every file under `kernel/` (a host test checks); a
+/// `kernel/` path on neither list is full-alone.
+const NON_CORE_PATHS: &[&str] = &[
+    "kernel/assets/",
+    "kernel/src/acpi/",
+    "kernel/src/ai/",
+    "kernel/src/atrium/",
+    "kernel/src/drivers/",
+    "kernel/src/fs/",
+    "kernel/src/init/",
+    "kernel/src/loader/",
+    "kernel/src/log/",
+    "kernel/src/net/",
+    "kernel/src/rng/",
+    "kernel/src/scenario/",
+    "kernel/src/boot_model_logic.rs",
+    "kernel/src/boot_modules.rs",
+    // #16 (L7.1): write-once TSC stamps and firmware-table reads; no lock,
+    // scheduler or per-CPU state.
+    "kernel/src/boot_time.rs",
+    "kernel/src/boot_time_logic.rs",
+    "kernel/src/errno.rs",
+    "kernel/src/install_bundle_logic.rs",
+    "kernel/src/install_ui_logic.rs",
+    "kernel/src/installer.rs",
+    "kernel/src/installer_ui.rs",
+    "kernel/src/limine_file_logic.rs",
+    "kernel/src/neofs_model.rs",
+    "kernel/src/observability.rs",
+    "kernel/src/user_fault_logic.rs",
+    "kernel/src/watchdog_timeline_logic.rs",
+    // Pure logic helpers inside the core directories.
+    "kernel/src/sched/cap_graph_logic.rs",
+    "kernel/src/sched/file_cap_logic.rs",
+    "kernel/src/sched/gpu_compute_cap_logic.rs",
+    "kernel/src/sched/gpu_submit_cap_logic.rs",
+    "kernel/src/sched/handle_info_logic.rs",
+    "kernel/src/sched/net_dial_cap_logic.rs",
+    "kernel/src/sched/wait_any_logic.rs",
+    "kernel/src/mm/hhdm_requirements.rs",
+    "kernel/src/mm/inference_stack_logic.rs",
+    "kernel/src/mm/mem_account_logic.rs",
+    "kernel/src/mm/module_reclaim_logic.rs",
+    "kernel/src/arch/x86_64/cpufreq.rs",
+    "kernel/src/arch/x86_64/cpufreq_logic.rs",
+    "kernel/src/arch/x86_64/ioapic_logic.rs",
+    "kernel/src/arch/x86_64/lapic_timer_logic.rs",
+    "kernel/src/arch/x86_64/pit.rs",
+    "kernel/src/arch/x86_64/refclock.rs",
+    "kernel/src/arch/x86_64/rtc.rs",
+    "kernel/src/arch/x86_64/rtc_logic.rs",
+];
+
+/// How one path classifies: `Some(true)` core, `Some(false)` non-core, `None`
+/// on neither list.
+fn path_is_core(path: &str) -> Option<bool> {
+    let longest = |list: &[&str]| {
+        list.iter()
+            .filter(|entry| {
+                if entry.ends_with('/') {
+                    path.starts_with(**entry)
+                } else {
+                    path == **entry
+                }
+            })
+            .map(|e| e.len())
+            .max()
+    };
+    let core = longest(CORE_PATHS);
+    let non_core = longest(NON_CORE_PATHS);
+    match (core, non_core) {
+        (None, None) => None,
+        (Some(_), None) => Some(true),
+        (None, Some(_)) => Some(false),
+        (Some(c), Some(n)) => Some(c > n),
+    }
+}
+
+/// One file's part of a `git diff -U0`: its path and its added and removed
+/// lines (without the `+`/`-`), grouped by hunk.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct FileDiff {
+    path: String,
+    hunks: Vec<Hunk>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Hunk {
+    added: Vec<String>,
+    removed: Vec<String>,
+}
+
+impl FileDiff {
+    fn added(&self) -> impl Iterator<Item = &String> {
+        self.hunks.iter().flat_map(|h| h.added.iter())
+    }
+    fn removes_anything(&self) -> bool {
+        self.hunks.iter().any(|h| !h.removed.is_empty())
+    }
+}
+
+/// Parse `git diff --no-color -U0 --no-renames` output. `---`/`+++` are file
+/// headers only between `diff --git` and the file's first `@@`, so a removed
+/// line whose text starts with `-- ` is not taken for one. A deleted file's
+/// path is its old path; every other file's is its new path.
+fn parse_unified_diff(diff: &str) -> Vec<FileDiff> {
+    let mut files: Vec<FileDiff> = Vec::new();
+    let mut in_header = false;
+    let mut old_path = String::new();
+    for line in diff.lines() {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            in_header = true;
+            old_path.clear();
+            // Fallback for a binary or mode-only change, which has no `+++`.
+            let path = rest.rsplit(" b/").next().unwrap_or_default().to_string();
+            files.push(FileDiff {
+                path,
+                hunks: Vec::new(),
+            });
+            continue;
+        }
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
+        if line.starts_with("@@") {
+            in_header = false;
+            file.hunks.push(Hunk::default());
+        } else if in_header {
+            if let Some(p) = line.strip_prefix("--- ") {
+                old_path = p.strip_prefix("a/").unwrap_or(p).to_string();
+            } else if let Some(p) = line.strip_prefix("+++ ") {
+                file.path = if p == "/dev/null" {
+                    old_path.clone()
+                } else {
+                    p.strip_prefix("b/").unwrap_or(p).to_string()
+                };
+            }
+        } else if let Some(hunk) = file.hunks.last_mut() {
+            if let Some(a) = line.strip_prefix('+') {
+                hunk.added.push(a.to_string());
+            } else if let Some(r) = line.strip_prefix('-') {
+                hunk.removed.push(r.to_string());
+            }
+        }
+    }
+    files
+}
+
+fn is_comment_or_blank(line: &str) -> bool {
+    let t = line.trim();
+    t.is_empty() || t.starts_with("//") || t.starts_with('#') && !t.starts_with("#[")
+}
+
+/// The `neo-test-*` features a kernel/Cargo.toml diff adds, if every changed
+/// line there is such an addition (or a comment); `None` otherwise.
+fn cargo_toml_test_feature_additions(file: &FileDiff) -> Option<Vec<String>> {
+    if file.removes_anything() {
+        return None;
+    }
+    let mut features = Vec::new();
+    for line in file.added() {
+        if is_comment_or_blank(line) {
+            continue;
+        }
+        let (name, rest) = line.split_once('=')?;
+        let name = name.trim();
+        if !name.starts_with("neo-test-")
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            || !rest.trim().starts_with('[')
+        {
+            return None;
+        }
+        features.push(name.to_string());
+    }
+    Some(features)
+}
+
+/// THINK 2.3.1 for test_harness.rs: only added lines, each a feature-list arm
+/// for a new feature, a comment, or inside an item opened by
+/// `#[cfg(feature = "<new>")]` (tracked by brace depth within each hunk).
+fn harness_diff_is_scenario_only(file: &FileDiff, new_features: &[String]) -> bool {
+    if file.removes_anything() || new_features.is_empty() {
+        return false;
+    }
+    let is_new = |line: &str, prefix: &str, suffix: &str| {
+        new_features
+            .iter()
+            .any(|f| line == format!("{prefix}{f}{suffix}"))
+    };
+    for hunk in &file.hunks {
+        let mut gated = false;
+        let mut depth: i64 = 0;
+        for line in &hunk.added {
+            let t = line.trim();
+            if gated {
+                depth += t.matches('{').count() as i64 - t.matches('}').count() as i64;
+                if depth <= 0 && (t.ends_with(';') || t.ends_with('}') || t.ends_with(',')) {
+                    gated = false;
+                    depth = 0;
+                }
+                continue;
+            }
+            if is_comment_or_blank(t) || is_new(t, "feature = \"", "\",") {
+                continue;
+            }
+            if is_new(t, "#[cfg(feature = \"", "\")]") {
+                gated = true;
+                depth = 0;
+                continue;
+            }
+            return false;
+        }
+        if gated {
+            return false;
+        }
+    }
+    true
+}
+
+/// THINK 2.3.1 for xtask's main.rs: only added lines, forming whole
+/// `TestScenario { … }` blocks (in any alignment the diff picked) whose
+/// feature is a new one.
+fn xtask_diff_is_scenario_only(file: &FileDiff, new_features: &[String]) -> bool {
+    if file.removes_anything() || new_features.is_empty() {
+        return false;
+    }
+    let mut opens = 0;
+    let mut closes = 0;
+    let mut new_feature_lines = 0;
+    for line in file.added() {
+        let t = line.trim();
+        if is_comment_or_blank(t) {
+            continue;
+        }
+        if t == "TestScenario {" {
+            opens += 1;
+        } else if t == "}," {
+            closes += 1;
+        } else if let Some(f) = t
+            .strip_prefix("feature: \"")
+            .and_then(|r| r.strip_suffix("\","))
+        {
+            if !new_features.iter().any(|n| n == f) {
+                return false;
+            }
+            new_feature_lines += 1;
+        } else if !(t.starts_with("name: \"")
+            || t.starts_with("user_feature: ")
+            || t.starts_with("ignored: ")
+            || t.starts_with("limine_kaslr: "))
+        {
+            return false;
+        }
+    }
+    opens > 0 && opens == closes && new_feature_lines == opens
+}
+
+/// Decide the tier from a parsed diff (THINK 2.3). Fail safe: a `kernel/` path
+/// on neither list is full-alone.
+fn classify_gate_tier(files: &[FileDiff]) -> GateTier {
+    let new_features = files
+        .iter()
+        .find(|f| f.path == "kernel/Cargo.toml")
+        .map(cargo_toml_test_feature_additions);
+    let mut reasons = Vec::new();
+    for file in files {
+        let path = file.path.as_str();
+        if path == "kernel/Cargo.toml" {
+            if !matches!(new_features, Some(Some(_))) {
+                reasons.push(format!(
+                    "build configuration {path} (changes beyond adding neo-test-* features)"
+                ));
+            }
+            continue;
+        }
+        let scenario_only = SCENARIO_ONLY_EXCEPTION
+            && match (&new_features, path) {
+                (Some(Some(new)), "kernel/src/test_harness.rs") => {
+                    harness_diff_is_scenario_only(file, new)
+                }
+                (Some(Some(new)), "tools/xtask/src/main.rs") => {
+                    xtask_diff_is_scenario_only(file, new)
+                }
+                _ => false,
+            };
+        if scenario_only {
+            continue;
+        }
+        match path_is_core(path) {
+            Some(true) => reasons.push(format!("core path {path}")),
+            Some(false) => {}
+            None if path.starts_with("kernel/") => {
+                reasons.push(format!("unclassified path {path}"))
+            }
+            None => {}
+        }
+    }
+    if reasons.is_empty() {
+        GateTier::Quick
+    } else {
+        GateTier::FullAlone(reasons)
+    }
+}
+
+fn git_capture(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("git")
+        .args(args)
+        .current_dir(workspace_root())
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8(out.stdout).map_err(|e| format!("git {}: {e}", args.join(" ")))
+}
+
+/// `base...head`, parsed.
+fn git_diff_files(base: &str, head: &str) -> Result<Vec<FileDiff>, String> {
+    let range = format!("{base}...{head}");
+    let diff = git_capture(&["diff", "--no-color", "-U0", "--no-renames", &range])?;
+    Ok(parse_unified_diff(&diff))
+}
+
+/// The added lines of `base...HEAD`.
+fn git_diff_added_lines(base: &str) -> Result<Vec<String>, String> {
+    Ok(git_diff_files(base, "HEAD")?
+        .iter()
+        .flat_map(|f| f.added().cloned().collect::<Vec<_>>())
+        .collect())
+}
+
+/// `cargo xtask gate-plan --base REF [--head REF]`: print `tier=quick` or `tier=full-alone`
+/// with its reasons, the non-smoke scenarios the quick tier adds, and those the
+/// diff names that go to the full tier only, as one-line `key=value` lines for
+/// `$GITHUB_OUTPUT`. Any git failure (no merge base, a shallow fetch) gives
+/// `full-alone`, never `quick`.
+fn cmd_gate_plan(args: &[String]) -> Result<(), String> {
+    let usage = || "usage: cargo xtask gate-plan --base REF [--head REF]".to_string();
+    let (base, head) = match args {
+        [b, base] if b == "--base" => (base.clone(), "HEAD".to_string()),
+        [b, base, h, head] if b == "--base" && h == "--head" => (base.clone(), head.clone()),
+        _ => return Err(usage()),
+    };
+    let (tier, changed, full_only) = match git_diff_files(&base, &head) {
+        Ok(files) => {
+            let added: Vec<String> = files.iter().flat_map(|f| f.added().cloned()).collect();
+            let suite = select_test_scenarios(&[], false, false)?;
+            let (quick, full_only) = quick_tier_scenarios(&suite, &added);
+            let changed: Vec<&str> = quick
+                .iter()
+                .map(|s| s.name)
+                .filter(|n| !SMOKE_SCENARIOS.contains(n))
+                .collect();
+            (classify_gate_tier(&files), changed, full_only)
+        }
+        Err(e) => (
+            GateTier::FullAlone(vec![format!("diff unavailable: {e}")]),
+            Vec::new(),
+            Vec::new(),
+        ),
+    };
+    print!("{}", gate_plan_output(&tier, &changed, &full_only));
+    if let GateTier::FullAlone(reasons) = &tier {
+        for r in reasons {
+            eprintln!("[xtask] gate-plan: {r}");
+        }
+    }
+    Ok(())
+}
+
+/// `key=value` lines for `$GITHUB_OUTPUT`, one line each: any newline in a
+/// reason (a git error) is flattened.
+fn gate_plan_output(tier: &GateTier, changed: &[&str], full_only: &[&str]) -> String {
+    let mut out = String::new();
+    match tier {
+        GateTier::Quick => out.push_str("tier=quick\n"),
+        GateTier::FullAlone(reasons) => {
+            let flat: Vec<String> = reasons
+                .iter()
+                .map(|r| r.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            out.push_str("tier=full-alone\n");
+            out.push_str(&format!("reasons={}\n", flat.join("; ")));
+        }
+    }
+    out.push_str(&format!("changed_scenarios={}\n", changed.join(" ")));
+    out.push_str(&format!("changed_full_only={}\n", full_only.join(" ")));
+    out
 }
 
 /// `cargo xtask shard-coverage N` — the sharding analog of a byte-oracle.
@@ -17048,7 +17846,7 @@ fn run_with_timeout_and_dump(
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 eprintln!("[xtask] qemu stderr for `{label}`:\n{stderr}");
             }
-            record_qemu_run(start.elapsed());
+            record_qemu_run(start.elapsed(), false);
             eprintln!(
                 "[xtask] neo-test: `{label}` qemu elapsed={:.1}s status={} budget={}s",
                 start.elapsed().as_secs_f64(),
@@ -17060,7 +17858,7 @@ fn run_with_timeout_and_dump(
 
         if start.elapsed() >= timeout {
             let elapsed = start.elapsed();
-            record_qemu_run(elapsed);
+            record_qemu_run(elapsed, true);
             if let Some(dump_path) = dump_target {
                 attempt_timeout_monitor_dump(label, dump_path);
             }
@@ -22333,8 +23131,421 @@ mod tests {
             wall: Duration::from_millis(wall_ms),
             qemu: Duration::from_millis(qemu_ms),
             qemu_runs: runs,
-            passed,
+            outcome: if passed {
+                ScenarioOutcome::Pass
+            } else {
+                ScenarioOutcome::Fail
+            },
+            rerun: false,
         }
+    }
+
+    /// OT-58 S1: every smoke scenario is a default-suite scenario QEMU can run,
+    /// listed once, measured, and within the quick tier's cost rule; every
+    /// full-tier-only exclusion exists and is over it.
+    #[test]
+    fn smoke_scenarios_are_measured_and_within_the_cost_rule() {
+        let suite = canonical_suite();
+        let mut seen = BTreeSet::new();
+        for name in SMOKE_SCENARIOS {
+            assert!(
+                seen.insert(*name),
+                "`{name}` is listed twice in SMOKE_SCENARIOS"
+            );
+            let scenario = suite
+                .iter()
+                .find(|s| s.name == *name)
+                .unwrap_or_else(|| panic!("smoke scenario `{name}` is not in the default suite"));
+            assert!(
+                !is_hardware_only_scenario(*scenario),
+                "`{name}` is hardware-only"
+            );
+            let wall = hosted_wall_s(name).unwrap_or_else(|| {
+                panic!("smoke scenario `{name}` has no row in hosted-timings.tsv")
+            });
+            assert!(
+                wall <= QUICK_WALL_BUDGET_S,
+                "smoke scenario `{name}` takes {wall} s on hosted runners, over the {QUICK_WALL_BUDGET_S} s rule"
+            );
+        }
+        assert_eq!(SMOKE_SCENARIOS.len(), 31);
+        for (name, _) in FULL_TIER_ONLY_EXCLUDED {
+            assert!(
+                suite.iter().any(|s| s.name == *name),
+                "excluded `{name}` is not in the suite"
+            );
+            assert!(!SMOKE_SCENARIOS.contains(name));
+            assert!(hosted_wall_s(name).is_some_and(|w| w > QUICK_WALL_BUDGET_S));
+        }
+        let (quick, full_only) = quick_tier_scenarios(&suite, &[]);
+        assert_eq!(
+            quick.iter().map(|s| s.name).collect::<Vec<_>>(),
+            SMOKE_SCENARIOS.to_vec(),
+            "with no diff the quick tier is exactly the smoke list, in order"
+        );
+        assert!(full_only.is_empty());
+    }
+
+    /// The timing table parses: every data row has a known scenario and two
+    /// numbers. A scenario added since the table was taken has no row (that is
+    /// expected: changed_scenario_quick_ok handles it).
+    #[test]
+    fn hosted_timings_table_is_well_formed() {
+        let suite = canonical_suite();
+        let mut rows = 0;
+        for line in HOSTED_TIMINGS_TSV
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .skip(1)
+        {
+            let cols: Vec<&str> = line.split('\t').collect();
+            assert_eq!(cols.len(), 3, "row `{line}`");
+            assert!(
+                cols[1].parse::<f64>().is_ok() && cols[2].parse::<f64>().is_ok(),
+                "row `{line}`"
+            );
+            assert!(
+                TEST_SCENARIOS.iter().any(|s| s.name == cols[0]),
+                "timing row for unknown scenario `{}`",
+                cols[0]
+            );
+            rows += 1;
+        }
+        assert!(rows >= 400, "only {rows} timing rows");
+        assert!(suite.len() >= rows - 10);
+        assert_eq!(hosted_wall_s("wait_any_core"), Some(33.9));
+        assert_eq!(hosted_wall_s("no_such_scenario"), None);
+    }
+
+    /// OT-58 S1 fail-safe (THINK 2.3, "totality"): every file under `kernel/`
+    /// classifies as core or non-core, and every listed path exists.
+    #[test]
+    fn gate_plan_classifies_every_kernel_file() {
+        let root = workspace_root();
+        let mut stack = vec![root.join("kernel")];
+        let mut seen = 0;
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    if path.file_name().is_some_and(|n| n == "target") {
+                        continue;
+                    }
+                    stack.push(path);
+                    continue;
+                }
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel == "kernel/Cargo.toml" {
+                    continue; // special-cased by classify_gate_tier
+                }
+                assert!(
+                    path_is_core(&rel).is_some(),
+                    "`{rel}` is on neither CORE_PATHS nor NON_CORE_PATHS: classify it"
+                );
+                seen += 1;
+            }
+        }
+        assert!(seen > 250, "walked only {seen} files");
+        for path in CORE_PATHS.iter().chain(NON_CORE_PATHS) {
+            assert!(
+                root.join(path).exists(),
+                "listed path `{path}` does not exist"
+            );
+        }
+    }
+
+    #[test]
+    fn gate_plan_path_classes() {
+        // Core directories, with longer non-core entries inside them.
+        assert_eq!(path_is_core("kernel/src/sched/scheduler.rs"), Some(true));
+        assert_eq!(path_is_core("kernel/src/sched/wake_trace.rs"), Some(true));
+        assert_eq!(
+            path_is_core("kernel/src/sched/wait_any_logic.rs"),
+            Some(false)
+        );
+        assert_eq!(path_is_core("kernel/src/mm/frame.rs"), Some(true));
+        assert_eq!(
+            path_is_core("kernel/src/mm/mem_account_logic.rs"),
+            Some(false)
+        );
+        assert_eq!(path_is_core("kernel/src/arch/x86_64/gdt.rs"), Some(true));
+        assert_eq!(path_is_core("kernel/src/arch/x86_64/rtc.rs"), Some(false));
+        // A core file inside a non-core directory.
+        assert_eq!(
+            path_is_core("kernel/src/drivers/block/virtio_blk.rs"),
+            Some(true)
+        );
+        assert_eq!(
+            path_is_core("kernel/src/drivers/block/nvme.rs"),
+            Some(false)
+        );
+        assert_eq!(path_is_core("kernel/src/ai/par_matmul.rs"), Some(true));
+        assert_eq!(path_is_core("kernel/src/ai/generate.rs"), Some(false));
+        // Build configuration and test machinery.
+        assert_eq!(path_is_core("Cargo.lock"), Some(true));
+        assert_eq!(path_is_core("rust-toolchain.toml"), Some(true));
+        assert_eq!(path_is_core("scripts/worker-close-gate.sh"), Some(true));
+        assert_eq!(path_is_core("tools/xtask/src/vendor_verify.rs"), Some(true));
+        // Outside kernel/, unlisted is quick; inside, unlisted is unknown.
+        assert_eq!(path_is_core("userland/neo-init/src/main.rs"), None);
+        assert_eq!(path_is_core("kernel/src/brand_new_dir/x.rs"), None);
+    }
+
+    fn file(path: &str, added: &[&str], removed: &[&str]) -> FileDiff {
+        FileDiff {
+            path: path.to_string(),
+            hunks: vec![Hunk {
+                added: added.iter().map(|s| s.to_string()).collect(),
+                removed: removed.iter().map(|s| s.to_string()).collect(),
+            }],
+        }
+    }
+
+    #[test]
+    fn parse_unified_diff_reads_paths_hunks_and_dash_lines() {
+        let diff = "diff --git a/docs/a.md b/docs/a.md\n\
+                    index 1..2 100644\n\
+                    --- a/docs/a.md\n\
+                    +++ b/docs/a.md\n\
+                    @@ -3 +3 @@\n\
+                    --- an old line that began with two dashes\n\
+                    ++++ a new line that began with three pluses\n\
+                    @@ -9,0 +10 @@\n\
+                    +x\n\
+                    diff --git a/kernel/src/gone.rs b/kernel/src/gone.rs\n\
+                    deleted file mode 100644\n\
+                    --- a/kernel/src/gone.rs\n\
+                    +++ /dev/null\n\
+                    @@ -1 +0,0 @@\n\
+                    -fn f() {}\n\
+                    diff --git a/blob.png b/blob.png\n\
+                    Binary files a/blob.png and b/blob.png differ\n";
+        let files = parse_unified_diff(diff);
+        assert_eq!(
+            files,
+            vec![
+                FileDiff {
+                    path: "docs/a.md".into(),
+                    hunks: vec![
+                        Hunk {
+                            added: vec!["+++ a new line that began with three pluses".into()],
+                            removed: vec!["-- an old line that began with two dashes".into()],
+                        },
+                        Hunk {
+                            added: vec!["x".into()],
+                            removed: vec![]
+                        },
+                    ],
+                },
+                FileDiff {
+                    path: "kernel/src/gone.rs".into(),
+                    hunks: vec![Hunk {
+                        added: vec![],
+                        removed: vec!["fn f() {}".into()]
+                    }],
+                },
+                FileDiff {
+                    path: "blob.png".into(),
+                    hunks: vec![]
+                },
+            ]
+        );
+    }
+
+    /// THINK 2.3: the tier for fixture diffs, including the scenario-only
+    /// exception (2.3.1) and its near-misses.
+    #[test]
+    fn gate_plan_tier_for_fixture_diffs() {
+        let quick = |files: &[FileDiff]| classify_gate_tier(files) == GateTier::Quick;
+        // Non-core kernel, userland, docs.
+        assert!(quick(&[
+            file("kernel/src/fs/mod.rs", &["x"], &["y"]),
+            file("userland/neo-init/src/main.rs", &["x"], &[]),
+            file("docs/x.md", &["x"], &[]),
+        ]));
+        // Core paths, unknown kernel paths, build configuration.
+        assert_eq!(
+            classify_gate_tier(&[file("kernel/src/arch/x86_64/syscall.rs", &["x"], &[])]),
+            GateTier::FullAlone(vec!["core path kernel/src/arch/x86_64/syscall.rs".into()])
+        );
+        assert_eq!(
+            classify_gate_tier(&[file("kernel/src/brand_new/x.rs", &["x"], &[])]),
+            GateTier::FullAlone(vec!["unclassified path kernel/src/brand_new/x.rs".into()])
+        );
+        assert!(!quick(&[file(
+            "kernel/Cargo.toml",
+            &["default = [\"a\"]"],
+            &["default = []"]
+        )]));
+        assert!(!quick(&[file(
+            "kernel/Cargo.toml",
+            &["lapic-timer = []"],
+            &[]
+        )]));
+
+        // A #13-shaped new scenario: the feature, the xtask block, gated harness code.
+        let cargo = file(
+            "kernel/Cargo.toml",
+            &[
+                "# a comment",
+                "neo-test-shiny = [\"neo-test\", \"browser-runtime\"]",
+            ],
+            &[],
+        );
+        let xtask = file(
+            "tools/xtask/src/main.rs",
+            &[
+                "    TestScenario {",
+                "        // what it proves",
+                "        name: \"shiny\",",
+                "        feature: \"neo-test-shiny\",",
+                "        user_feature: Some(\"shiny-test\"),",
+                "        ignored: false,",
+                "        limine_kaslr: None,",
+                "    },",
+            ],
+            &[],
+        );
+        // The same block as git may align it: starting inside the previous one.
+        let xtask_shifted = file(
+            "tools/xtask/src/main.rs",
+            &[
+                "        name: \"shiny\",",
+                "        feature: \"neo-test-shiny\",",
+                "        user_feature: None,",
+                "        ignored: false,",
+                "        limine_kaslr: None,",
+                "    },",
+                "    TestScenario {",
+            ],
+            &[],
+        );
+        let harness = FileDiff {
+            path: "kernel/src/test_harness.rs".into(),
+            hunks: vec![
+                Hunk {
+                    added: vec![
+                        "#[cfg(feature = \"neo-test-shiny\")]".into(),
+                        "const SCENARIO: &str = \"shiny\";".into(),
+                    ],
+                    removed: vec![],
+                },
+                Hunk {
+                    added: vec!["    feature = \"neo-test-shiny\",".into()],
+                    removed: vec![],
+                },
+                Hunk {
+                    added: vec![
+                        "    // shiny: neo-init's legs.".into(),
+                        "    #[cfg(feature = \"neo-test-shiny\")]".into(),
+                        "    {".into(),
+                        "        let exit_code = _ipc_smoke();".into(),
+                        "        if exit_code == 0 {".into(),
+                        "            pass(\"shiny=ok\");".into(),
+                        "        }".into(),
+                        "        debug_exit(EXIT_FAILURE);".into(),
+                        "    }".into(),
+                    ],
+                    removed: vec![],
+                },
+            ],
+        };
+        let userland = file(
+            "userland/neo-init/src/main.rs",
+            &["mod shiny_tests {}"],
+            &[],
+        );
+        assert!(quick(&[
+            cargo.clone(),
+            harness.clone(),
+            xtask.clone(),
+            userland.clone()
+        ]));
+        assert!(quick(&[
+            cargo.clone(),
+            harness.clone(),
+            xtask_shifted.clone()
+        ]));
+
+        // Near-misses: a removed harness line; an ungated harness line; a block
+        // gated on an existing feature; an xtask line outside a block; no new
+        // feature at all.
+        let mut removed = harness.clone();
+        removed.hunks[0].removed.push("const OLD: u8 = 0;".into());
+        assert!(!quick(&[cargo.clone(), removed, xtask.clone()]));
+        let mut ungated = harness.clone();
+        ungated.hunks[1]
+            .added
+            .push("static EVERYONE: u8 = 1;".into());
+        assert!(!quick(&[cargo.clone(), ungated, xtask.clone()]));
+        let mut old_feature = harness.clone();
+        old_feature.hunks[2].added[1] =
+            "    #[cfg(feature = \"neo-test-user-copy-bounds\")]".into();
+        assert!(!quick(&[cargo.clone(), old_feature, xtask.clone()]));
+        let mut xtask_extra = xtask.clone();
+        xtask_extra.hunks[0]
+            .added
+            .push("        \"shiny\" => Duration::from_secs(900),".into());
+        assert!(!quick(&[cargo.clone(), harness.clone(), xtask_extra]));
+        assert!(!quick(&[harness.clone(), xtask.clone()]));
+        // An unterminated gated block (the hunk ends inside it).
+        let mut open = harness.clone();
+        open.hunks[2].added.truncate(5);
+        assert!(!quick(&[cargo, open, xtask]));
+    }
+
+    #[test]
+    fn gate_plan_output_is_one_line_per_key() {
+        assert_eq!(
+            gate_plan_output(&GateTier::Quick, &["a", "b"], &["c"]),
+            "tier=quick\nchanged_scenarios=a b\nchanged_full_only=c\n"
+        );
+        assert_eq!(
+            gate_plan_output(
+                &GateTier::FullAlone(vec![
+                    "diff unavailable: fatal:\nline two\n".to_string(),
+                    "core path x".to_string()
+                ]),
+                &[],
+                &[]
+            ),
+            "tier=full-alone\nreasons=diff unavailable: fatal: line two; core path x\nchanged_scenarios=\nchanged_full_only=\n"
+        );
+    }
+
+    /// THINK 2.2.1: a scenario a diff names joins the quick tier only within
+    /// the budget; `-control` features don't match their base feature.
+    #[test]
+    fn quick_tier_adds_changed_scenarios_within_the_budget() {
+        assert!(contains_token("neo-test-x = [\"neo-test\"]", "neo-test-x"));
+        assert!(!contains_token("neo-test-x-control = []", "neo-test-x"));
+        assert!(contains_token("a = [\"neo-test-x\"]", "neo-test-x"));
+        assert!(!contains_token("aneo-test-x", "neo-test-x"));
+
+        let suite = canonical_suite();
+        let lines = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // mount_authority: measured 15.3 s, so it joins.
+        let (quick, full_only) = quick_tier_scenarios(
+            &suite,
+            &lines(&["neo-test-mount-authority = [\"neo-test\"]"]),
+        );
+        assert_eq!(
+            &quick.iter().map(|s| s.name).collect::<Vec<_>>()[SMOKE_SCENARIOS.len()..],
+            &["mount_authority"]
+        );
+        assert!(full_only.is_empty());
+        // install_fresh: measured 478 s, so full tier only.
+        let (quick, full_only) = quick_tier_scenarios(&suite, &lines(&["\"install_fresh\""]));
+        assert_eq!(quick.len(), SMOKE_SCENARIOS.len());
+        assert_eq!(full_only, vec!["install_fresh"]);
+        // A smoke scenario the diff names is not added twice.
+        let (quick, _) = quick_tier_scenarios(&suite, &lines(&["\"kill_at_exit\""]));
+        assert_eq!(quick.len(), SMOKE_SCENARIOS.len());
     }
 
     /// OT-58 S0: the TSV row and both summary forms, against hand-written bytes.
@@ -22382,28 +23593,45 @@ mod tests {
         assert_eq!(picked.len(), 4);
         let fail_on = |s: TestScenario| s.name == picked[1].name || s.name == picked[3].name;
 
+        let stop = RunPolicy::default();
+        let keep = RunPolicy {
+            keep_going: true,
+            rerun_timeouts: false,
+        };
         let mut ran = Vec::new();
-        let err = run_scenarios_timed(&picked, "test", false, |s| {
-            ran.push(s.name);
-            if fail_on(s) {
-                Err(format!("boom {}", s.name))
-            } else {
-                Ok(())
-            }
-        })
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            stop,
+            |s| {
+                ran.push(s.name);
+                if fail_on(s) {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            QemuTally::default,
+        )
         .unwrap_err();
         assert_eq!(ran, vec![picked[0].name, picked[1].name]);
         assert_eq!(err, format!("boom {}", picked[1].name));
 
         let mut ran = Vec::new();
-        let err = run_scenarios_timed(&picked, "test", true, |s| {
-            ran.push(s.name);
-            if fail_on(s) {
-                Err(format!("boom {}", s.name))
-            } else {
-                Ok(())
-            }
-        })
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            keep,
+            |s| {
+                ran.push(s.name);
+                if fail_on(s) {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            QemuTally::default,
+        )
         .unwrap_err();
         assert_eq!(ran, picked.iter().map(|s| s.name).collect::<Vec<_>>());
         assert_eq!(
@@ -22415,7 +23643,130 @@ mod tests {
             )
         );
 
-        assert!(run_scenarios_timed(&picked, "test", true, |_| Ok(())).is_ok());
+        assert!(run_scenarios_timed(&picked, "test", keep, |_| Ok(()), QemuTally::default).is_ok());
+    }
+
+    /// OT-58 THINK 2.5 (Dexter #47 item 2.4): the timing table tells a build
+    /// failure (no QEMU run), a timeout (the last QEMU run hit its limit) and
+    /// a scenario failure apart.
+    #[test]
+    fn scenario_outcome_classifies_build_timeout_and_scenario_failures() {
+        let ran = |runs, last_timed_out| QemuTally {
+            qemu: Duration::from_secs(1),
+            runs,
+            last_timed_out,
+        };
+        assert_eq!(
+            ScenarioOutcome::classify(true, ran(1, false)),
+            ScenarioOutcome::Pass
+        );
+        // A retry that timed out, then passed, is a pass.
+        assert_eq!(
+            ScenarioOutcome::classify(true, ran(2, false)),
+            ScenarioOutcome::Pass
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, QemuTally::default()),
+            ScenarioOutcome::BuildFail
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, ran(4, true)),
+            ScenarioOutcome::Timeout
+        );
+        assert_eq!(
+            ScenarioOutcome::classify(false, ran(4, false)),
+            ScenarioOutcome::Fail
+        );
+
+        let mut row = timing("gamma", 5_000, 0, 0, false);
+        row.outcome = ScenarioOutcome::BuildFail;
+        assert_eq!(
+            timings_tsv_row(&row),
+            "gamma\t5.0\t0.0\t5.0\t0\tFAIL-build\n"
+        );
+        row.outcome = ScenarioOutcome::Timeout;
+        row.rerun = true;
+        assert!(timings_tsv_row(&row).ends_with("\trerun-FAIL-timeout\n"));
+    }
+
+    /// OT-58 THINK 2.5 (Dexter #47 item 2.4): `--rerun-timeouts` re-runs each
+    /// timed-out scenario once, after the others. A re-run pass clears the
+    /// failure; a scenario failure or build failure is never re-run; a
+    /// timeout that fails again stays a failure.
+    #[test]
+    fn rerun_timeouts_reruns_each_timeout_once() {
+        let suite = canonical_suite();
+        let picked: Vec<TestScenario> = suite.iter().copied().take(4).collect();
+        // [0] passes; [1] fails in QEMU; [2] times out, then passes;
+        // [3] times out twice.
+        let policy = RunPolicy {
+            keep_going: true,
+            rerun_timeouts: true,
+        };
+        let mut ran: Vec<&str> = Vec::new();
+        let mut seen: BTreeMap<&str, u32> = BTreeMap::new();
+        let last = std::cell::Cell::new(QemuTally::default());
+        let err = run_scenarios_timed(
+            &picked,
+            "test",
+            policy,
+            |s| {
+                ran.push(s.name);
+                let n = seen.entry(s.name).or_insert(0);
+                *n += 1;
+                let timed_out = s.name == picked[3].name || (s.name == picked[2].name && *n == 1);
+                last.set(QemuTally {
+                    qemu: Duration::from_secs(1),
+                    runs: 1,
+                    last_timed_out: timed_out,
+                });
+                if timed_out || s.name == picked[1].name {
+                    Err(format!("boom {}", s.name))
+                } else {
+                    Ok(())
+                }
+            },
+            || last.replace(QemuTally::default()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            ran,
+            vec![
+                picked[0].name,
+                picked[1].name,
+                picked[2].name,
+                picked[3].name,
+                picked[2].name,
+                picked[3].name,
+            ]
+        );
+        assert!(err.starts_with(&format!(
+            "2 scenario(s) failed: {} {}",
+            picked[1].name, picked[3].name
+        )));
+        assert!(err.contains("re-run FAIL-timeout"));
+
+        // Without the flag, a timeout is not re-run.
+        let mut ran = 0;
+        let _ = run_scenarios_timed(
+            &picked[..1],
+            "test",
+            RunPolicy {
+                keep_going: true,
+                rerun_timeouts: false,
+            },
+            |_| {
+                ran += 1;
+                last.set(QemuTally {
+                    qemu: Duration::from_secs(1),
+                    runs: 1,
+                    last_timed_out: true,
+                });
+                Err("slow".to_string())
+            },
+            || last.replace(QemuTally::default()),
+        );
+        assert_eq!(ran, 1);
     }
 
     /// S2-F1: every licence file the ISO stages exists and is non-empty, and
@@ -23328,10 +24679,19 @@ mod tests {
         let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
             .expect("read CI workflow");
         let qemu_start = workflow.find("\n  neo-test:\n").expect("neo-test job");
-        let qemu_end = workflow.find("\n  spdx-lint:\n").expect("SPDX job");
+        let qemu_end = workflow
+            .find("\n  rng-seed-boot:\n")
+            .expect("RNG seed boot job");
         let qemu = &workflow[qemu_start..qemu_end];
-        assert!(qemu.contains("needs: [nightly-skip, host-checks, product-build]"));
-        assert!(qemu.contains("timeout-minutes: 240"));
+        // OT-58 S2 (THINK 2.1, approved): the QEMU job waits only for the
+        // plan job, so the quick tier's critical path is its smoke job. The
+        // shards keep their 240-minute cold-cache headroom.
+        assert!(qemu.contains("needs: [nightly-skip]\n"));
+        assert!(qemu.contains("timeout-minutes: ${{ matrix.shard == 'quick' && 45 || 240 }}"));
+        assert!(qemu.contains("fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}"));
+        // The smoke job uses the plan job's base; it does not plan again.
+        assert!(qemu.contains("GATE_BASE=\"${{ needs.nightly-skip.outputs.gate_base }}\""));
+        assert!(!qemu.contains("cargo xtask gate-plan"));
 
         let host_start = workflow
             .find("\n  host-checks:\n")
@@ -23340,16 +24700,37 @@ mod tests {
         assert!(!host.contains("needs: product-build"));
         assert!(host.contains("timeout-minutes: 60"));
 
+        // OT-58 (THINK 2.1, 3; Dexter #45 item 4): every build-only check is
+        // one job, and the fuzz targets are one job.
+        for gone in [
+            "\n  product-build:\n",
+            "\n  spdx-lint:\n",
+            "\n  monolithic-identity:\n",
+            "\n  feature-gated-coverage:\n",
+        ] {
+            assert!(
+                !workflow.contains(gone),
+                "{gone:?} is folded into build-checks"
+            );
+        }
         let product_start = workflow
-            .find("\n  product-build:\n")
-            .expect("blocking product build job");
+            .find("\n  build-checks:\n")
+            .expect("blocking build-checks job");
+        // The job ends at the next job (`batch-report` once S2b lands) or EOF.
         let product_end = workflow[product_start + 1..]
-            .find("\n  # OT-69:")
-            .map(|offset| product_start + 1 + offset)
-            .expect("end of product build job");
+            .find("\n  batch-report:\n")
+            .map_or(workflow.len(), |offset| product_start + 1 + offset);
         let product = &workflow[product_start..product_end];
         assert!(product.contains("--features product"));
         assert!(product.contains("--bin kernel --no-default-features\n"));
+        assert!(product.contains("every feature-gated configuration"));
+        assert!(product.contains("Check SPDX headers on source files"));
+        assert!(product.contains("scripts/check-monolithic-identity.sh"));
+        assert!(!product.contains("strategy:"));
+        let fuzz_start = workflow.find("\n  decoder-fuzz:\n").expect("fuzz job");
+        let fuzz = &workflow[fuzz_start..product_start];
+        assert!(!fuzz.contains("strategy:"));
+        assert!(fuzz.contains("needs.nightly-skip.outputs.full == 'true'"));
         assert!(!product.contains("continue-on-error: true"));
     }
 
