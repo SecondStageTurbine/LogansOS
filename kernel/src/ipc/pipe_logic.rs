@@ -31,6 +31,17 @@ pub const STDIN_PIPE_CAPACITY: usize = 4 * 1024;
 pub const STDOUT_PIPE_CAPACITY: usize = 64 * 1024;
 /// The largest pipe a caller may create.
 pub const MAX_PIPE_CAPACITY: usize = 64 * 1024;
+/// The smallest pipe `SYS_PIPE_CREATE` makes: a write of at most
+/// [`PIPE_ATOMIC`] bytes is atomic only if it fits the capacity, so the
+/// capacity must be at least that (POSIX: `PIPE_BUF` <= capacity; Chad #56
+/// item 5). Kernel-internal pipes (the tests) may be smaller.
+pub const MIN_PIPE_CAPACITY: usize = PIPE_ATOMIC;
+
+/// `SYS_PIPE_CREATE`'s capacity rule: `MIN_PIPE_CAPACITY..=MAX_PIPE_CAPACITY`.
+pub const fn create_capacity_ok(capacity: usize) -> bool {
+    capacity >= MIN_PIPE_CAPACITY && capacity <= MAX_PIPE_CAPACITY
+}
+
 /// `SYS_PIPE_READ` / `SYS_PIPE_WRITE` flag: don't block (`EAGAIN`).
 pub const PIPE_NONBLOCK: u64 = 1;
 

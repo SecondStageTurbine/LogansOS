@@ -18321,7 +18321,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             scenario,
             observed,
             &[
-                "PIPE create bad_capacity=-22 handles_ok=true write=3 read=3 bytes_ok=true read_end_write=-1",
+                "PIPE create bad_capacity=-22 small_capacity=-22 handles_ok=true write=3 read=3 bytes_ok=true read_end_write=-1",
                 "PIPE round read=5 write=5 bytes_ok=true counts=0/0/0 arc=1",
                 "PIPE eof zero_write=0 read=0",
                 "PIPE epipe zero_read=0 partial_write=16 later_write_epipe=true",

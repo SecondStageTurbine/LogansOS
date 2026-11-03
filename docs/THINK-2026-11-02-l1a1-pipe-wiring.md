@@ -59,7 +59,9 @@ and the wait item):
   right, and grant/derive can only narrow it.
 - **Syscalls** at `0x1BA`-`0x1BC` (`0x1B7`-`0x1B9` are taken by #15's A0k calls; no branch uses `0x1BA`-`0x1BF`) (all `cfg(feature = "pipe")`, each with an SDK-ABI row):
   - `SYS_PIPE_CREATE(capacity) -> rd | wr << 32`, two installs with the `sys_chan_create` rollback
-    (syscall.rs 2112-2155); capacity 1..=64 KiB, else `EINVAL`. The packing is `pipe_logic::pack_ends`, with a
+    (syscall.rs 2112-2155); capacity 512 B..=64 KiB, else `EINVAL`. The floor is `PIPE_ATOMIC`, so a write of at most
+    512 bytes always fits and is always atomic (POSIX: `PIPE_BUF` ≤ capacity; Chad #56 item 5;
+    `pipe_logic::create_capacity_ok`). Kernel-internal pipes (the scenarios) may be smaller. The packing is `pipe_logic::pack_ends`, with a
     hand-laid byte oracle in `tools/pipe-logic-tests` and the same fixture against libneo's `pipe_split_ends` (`userland/libneo/src/pipe_abi.rs`, mounted in the same test)
     (Dexter #56 F3).
   - `SYS_PIPE_READ(h, buf, len, flags) -> n`, and `SYS_PIPE_WRITE(h, buf, len, flags) -> n`. `flags` 0 blocks;
@@ -68,7 +70,10 @@ and the wait item):
     blocking read returns once it has some bytes (it parks only for the first chunk). Buffers move through `user_copy`
     in `PIPE_ATOMIC`-byte stack chunks (the `SYS_WRITE_CHUNK` pattern, syscall.rs 1531); a read checks each chunk's
     destination with `check_user_writable` before consuming bytes it can't put back (CP-99, syscall.rs 1574). Per
-    chunk, not the whole `len` up front: the walk is bounded by what the call moves (Dexter #56 F6).
+    chunk, not the whole `len` up front: the walk is bounded by what the call moves (Dexter #56 F6). If a sibling
+    unmaps the buffer between a chunk's check and its copy, the read returns the bytes that reached the buffer
+    (`user_copy::try_copy_count`; `EFAULT` only when none did), and the rest of that chunk is lost, as stdin's byte is
+    (CP-99's "outside that guarantee"; Chad #56 item 5).
 - **Blocking write (Dexter 3a/5.4):** a blocking write loops until all `len` bytes are written. A write of at most
   `PIPE_ATOMIC = 512` bytes is atomic: it waits for room for all of it, so two writers' small writes never
   interleave. A kill or `EPIPE` mid-loop returns the count written so far, if any. KATs in `pipe-logic-tests` for

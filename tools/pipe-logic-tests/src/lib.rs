@@ -339,6 +339,32 @@ mod tests {
         assert_eq!(q.write(&[2; 512]).0, WriteOutcome::Written(512));
     }
 
+    /// Chad #56 item 5: `SYS_PIPE_CREATE` makes no pipe smaller than
+    /// `PIPE_ATOMIC`, so a write of at most 512 bytes always fits the
+    /// capacity and is always atomic.
+    #[test]
+    fn create_refuses_a_capacity_below_pipe_atomic() {
+        assert_eq!(MIN_PIPE_CAPACITY, 512);
+        assert!(!create_capacity_ok(0));
+        assert!(!create_capacity_ok(1));
+        assert!(!create_capacity_ok(511));
+        assert!(create_capacity_ok(512));
+        assert!(create_capacity_ok(STDIN_PIPE_CAPACITY));
+        assert!(create_capacity_ok(STDOUT_PIPE_CAPACITY));
+        assert!(create_capacity_ok(MAX_PIPE_CAPACITY));
+        assert!(!create_capacity_ok(MAX_PIPE_CAPACITY + 1));
+        // At the floor, a 512-byte write into an empty pipe goes in whole,
+        // and the write end is ready exactly when it would.
+        let mut storage = vec![0u8; 512];
+        let mut p = Pipe::new(512).unwrap();
+        assert!(p.writable());
+        assert_eq!(
+            p.write(&mut storage, &[7; 512]).unwrap().0,
+            WriteOutcome::Written(512)
+        );
+        assert!(!p.writable());
+    }
+
     /// The byte oracle for the pipe ABI (Dexter #56 F3), hand-laid: the
     /// read end in the low 32 bits of `SYS_PIPE_CREATE`'s return, the write
     /// end in the high 32; `PIPE_NONBLOCK` is bit 0.

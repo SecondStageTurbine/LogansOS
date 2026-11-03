@@ -211,7 +211,7 @@ fn pt_finish(reason: &str, pid: u32) -> i64 {
 /// and reads them back (`SYS_PIPE_CREATE`'s two installs, then the same
 /// process on both ends), and asks for a pipe of capacity 0.
 #[cfg(feature = "neo-test-pipe-core")]
-static PT_CREATE: crate::sync::SwitchMutex<[i64; 5]> = crate::sync::SwitchMutex::new([0; 5]);
+static PT_CREATE: crate::sync::SwitchMutex<[i64; 6]> = crate::sync::SwitchMutex::new([0; 6]);
 #[cfg(feature = "neo-test-pipe-core")]
 static PT_CREATE_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
@@ -227,14 +227,17 @@ extern "C" fn pt_create_caller() -> ! {
         crate::arch::x86_64::without_interrupts(|| sys(n, a0, a1, a2, a3))
     };
     let bad = sys(SYS_PIPE_CREATE, 0, 0, 0, 0);
-    let both = sys(SYS_PIPE_CREATE, 64, 0, 0, 0);
+    // Below PIPE_ATOMIC: refused, so a small write is always atomic (Chad
+    // #56 item 5).
+    let small = sys(SYS_PIPE_CREATE, 511, 0, 0, 0);
+    let both = sys(SYS_PIPE_CREATE, 512, 0, 0, 0);
     let (rd, wr) = ((both as u64) & 0xffff_ffff, (both as u64) >> 32);
     let w = sys(SYS_PIPE_WRITE, wr, buf, 3, 0);
     let r = sys(SYS_PIPE_READ, rd, buf + 0x80, 16, 0);
     // The read end can't write (rights).
     let wrong = sys(SYS_PIPE_WRITE, rd, buf, 1, 0);
     crate::arch::x86_64::without_interrupts(|| {
-        *PT_CREATE.lock() = [bad, both, w, r, wrong];
+        *PT_CREATE.lock() = [bad, small, both, w, r, wrong];
     });
     PT_CREATE_DONE.store(true, Ordering::Release);
     crate::sched::exit();
@@ -343,8 +346,8 @@ fn run_pipe_core() -> ! {
     let new_pipe = |cap: usize| PipeObject::new(cap).unwrap_or_else(|_| fail("reason=pipe_new"));
 
     // --- create: SYS_PIPE_CREATE installs both ends in the caller; a write
-    // and a read on them round-trip; capacity 0 is EINVAL; the read end
-    // can't write.
+    // and a read on them round-trip; capacity 0, and 511 (below
+    // PIPE_ATOMIC), are EINVAL; the read end can't write.
     {
         let (proc, base) = pt_process();
         let pmap = proc.pmap.clone().expect("stand-in pmap");
@@ -361,20 +364,21 @@ fn run_pipe_core() -> ! {
         pt_until("reason=pipe_create_timeout", || {
             PT_CREATE_DONE.load(Ordering::Acquire) && pt_gone(pid.0)
         });
-        let [bad, both, w, r, wrong] =
+        let [bad, small, both, w, r, wrong] =
             crate::arch::x86_64::without_interrupts(|| *PT_CREATE.lock());
         // SAFETY: the stand-in has exited; its page is no longer written.
         let got = unsafe { core::slice::from_raw_parts(base.add(PT_BUF as usize + 0x80), 3) };
         serial_println!(
-            "PIPE create bad_capacity={} handles_ok={} write={} read={} bytes_ok={} read_end_write={}",
+            "PIPE create bad_capacity={} small_capacity={} handles_ok={} write={} read={} bytes_ok={} read_end_write={}",
             bad,
+            small,
             both > 0,
             w,
             r,
             got == b"abc",
             wrong
         );
-        if bad != EINVAL || both <= 0 || w != 3 || r != 3 || got != b"abc" || wrong != EPERM {
+        if bad != EINVAL || small != EINVAL || both <= 0 || w != 3 || r != 3 || got != b"abc" || wrong != EPERM {
             fail("reason=pipe_create_wrong");
         }
     }

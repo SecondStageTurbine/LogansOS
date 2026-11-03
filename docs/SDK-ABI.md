@@ -355,7 +355,7 @@ A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wi
 
 | # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
 |---|-----|------|------|---------|--------|------|---|--------|
-| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (1..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
+| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (512..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
 | 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
 | 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
 
@@ -370,6 +370,11 @@ Notes:
   kind 4 (`WAIT_KIND_PIPE`) on a write end is ready when a write of `min(512, capacity)` bytes would fit,
   or no reader is left; on a read end, when bytes are buffered or no writer is left.
 - A timed read is `SYS_WAIT_ANY` with a deadline, then a `PIPE_NONBLOCK` read.
+- The capacity is at least 512 (`PIPE_ATOMIC`), so a write of at most 512 bytes is always atomic; a smaller
+  capacity is `EINVAL`.
+- A read checks each chunk's destination before taking its bytes. If a sibling thread unmaps the buffer between
+  that check and the copy, the read returns the bytes that reached the buffer (`EFAULT` only if none did), and
+  the rest of that chunk (at most 512 bytes) is lost, as with stdin (`docs/concurrency-pitfalls.md` CP-99).
 
 ### Installer (0x1C0–0x1C1)
 

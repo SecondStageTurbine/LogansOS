@@ -2193,6 +2193,11 @@ fn sys_pipe_create_impl(capacity: u64) -> i64 {
     let Ok(capacity) = usize::try_from(capacity) else {
         return EINVAL;
     };
+    // At least PIPE_ATOMIC, so a write of at most 512 bytes is always atomic
+    // (POSIX: PIPE_BUF <= capacity; Chad #56 item 5).
+    if !crate::ipc::pipe_logic::create_capacity_ok(capacity) {
+        return EINVAL;
+    }
     let proc = match process::get(crate::sched::current_pid()) {
         Some(p) => p,
         None => return EINVAL,
@@ -2274,8 +2279,16 @@ fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
                 Ok(n) => {
                     // SAFETY: `dst .. + n` is inside the validated user
                     // range, checked writable above; `chunk[..n]` is ours.
-                    if let Err(e) = user_copy(dst, chunk.as_ptr(), n) {
-                        return if total > 0 { total as i64 } else { e };
+                    let copied = unsafe {
+                        crate::arch::x86_64::user_copy::try_copy_count(dst, chunk.as_ptr(), n)
+                    };
+                    if copied < n {
+                        // A sibling unmapped the buffer after the check: the
+                        // bytes that reached it count (Chad #56 item 5); the
+                        // rest of this chunk is lost, as stdin's byte is
+                        // (CP-99's "outside that guarantee").
+                        let total = total + copied;
+                        return if total > 0 { total as i64 } else { EFAULT };
                     }
                     total += n;
                     if total == len {

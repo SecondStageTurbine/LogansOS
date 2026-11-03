@@ -94,6 +94,20 @@ pub unsafe fn try_copy(dst: *mut u8, src: *const u8, len: usize) -> bool {
     crate::arch::x86_64::with_user_access(|| unsafe { copy(dst, src, len) }) == 0
 }
 
+/// `copy` inside its own SMAP window, returning how many bytes moved (all
+/// `len`, or the prefix before the first faulting byte), for a caller that
+/// must report a partial count (`SYS_PIPE_READ`, Chad #56 item 5).
+///
+/// # Safety
+///
+/// As `try_copy`.
+#[cfg(feature = "pipe")]
+pub unsafe fn try_copy_count(dst: *mut u8, src: *const u8, len: usize) -> usize {
+    // SAFETY: per this function's contract.
+    let left = crate::arch::x86_64::with_user_access(|| unsafe { copy(dst, src, len) });
+    len - left
+}
+
 /// Read the user word at `src` with one aligned 4-byte load, in its own SMAP
 /// window: `None` when its page faults.
 ///
