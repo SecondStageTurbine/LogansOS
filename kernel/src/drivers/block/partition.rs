@@ -106,6 +106,11 @@ impl PartitionDevice {
 }
 
 impl BlockDevice for PartitionDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<super::ShutdownStep> {
+        self.inner.shutdown_step()
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }

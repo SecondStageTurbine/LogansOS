@@ -23,9 +23,12 @@
 //! - **K5** (`power-stop-cpus`): stop this CPU's LAPIC tick and mask every
 //!   I/O APIC entry (prepared before K4: no mapping after it).
 //!
-//! K6 (quiesce DMA, then the IOMMU) is P3b's second part. Without
-//! `power-stop-cpus`, P2's paths run with the other CPUs live, as they
-//! already do.
+//! - **K6** (`power-quiesce`): stop each guard-armed disk's controller,
+//!   clear every function's Bus Master Enable, then turn the IOMMU off
+//!   (`drivers::quiesce`; planned before K4).
+//!
+//! Without `power-stop-cpus`, P2's paths run with the other CPUs live, as
+//! they already do.
 //!
 //! **The whole of K1-K3 is bounded too** (Chad #199 item 2). K2's bound is
 //! checked between drain passes, so a block request whose completion never
@@ -236,6 +239,14 @@ fn clean(kind: Kind, keep: Option<ProcessId>) {
 fn stop_world() {
     use crate::arch::x86_64::cpu_stop;
     let timer = super::power::stop_timer();
+    // K6's plan is read now, while every CPU runs (it takes driver locks
+    // and scans PCI). It holds heap vectors, and after K4 a parked CPU may
+    // hold the allocator's lock, so it must never be dropped (Janus's #7
+    // review, item 3: `stop_world` returns to K7, normally or with
+    // holdouts, and a drop there spun on that lock). `ManuallyDrop` leaks it
+    // on every path; K7 never returns, so nothing is lost.
+    #[cfg(feature = "power-quiesce")]
+    let quiesce = core::mem::ManuallyDrop::new(crate::drivers::quiesce::Plan::prepare());
     let ioapics =
         super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
     crate::serial_println!("[ power ] K4 start");
@@ -306,6 +317,8 @@ fn stop_world() {
         pci.msix_masked,
         pci.left_on
     );
+    #[cfg(feature = "power-quiesce")]
+    quiesce.run(&|us, done| super::power::spin_us(timer.as_ref(), us, done));
 }
 
 /// K5's I/O APIC part of the log line: `masked=N`, or `no-madt` when the
