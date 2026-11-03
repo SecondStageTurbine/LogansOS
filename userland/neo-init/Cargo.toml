@@ -84,6 +84,11 @@ desktop-arthur-scope-test = ["desktop-home-boot-test", "cap-rooted-open"]
 # route, draws the sprite, forwards clicks in Arthur's client area, and the
 # SAK / a Spine click / a window click move the keyboard. Off = DS-1 exactly.
 desktop-pointer = ["desktop-home"]
+# OT-88 A1a (`docs/THINK-2026-10-29-ot88-app-model.md` §2.3): a client table
+# beside Arthur. The probe app is launched through Arthur's LaunchCap, takes
+# its own turns, and Super+Tab moves the front between the clients. Off:
+# today's Arthur-only WM.
+atrium-apps = ["desktop-pointer"]
 desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
 # DS-1c: Arthur's `list /` blooms the Lens — a second client (neo-worker
 # `desktop-lens`) lent `/` read-only — beside the window; its Spine chip

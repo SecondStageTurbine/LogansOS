@@ -371,6 +371,19 @@ pub const SYS_WAIT_ANY: u64 = 0x1B5;
 /// buffer mapping starts at `va`.
 #[cfg(feature = "atrium-compositor-g1")]
 pub const SYS_BUFFER_UNMAP: u64 = 0x1B6;
+/// OT-88 A0k: `SYS_SEND` that completes only with a receiver already parked
+/// on the peer side, else EAGAIN; it never parks. `(h, buf, len)`.
+#[cfg(feature = "ipc-try-send")]
+pub const SYS_TRY_SEND: u64 = 0x1B7;
+/// OT-88 A0k: `SYS_GRANT` that completes only with a `SYS_RECV_GRANT`
+/// already parked on the peer side, else EAGAIN; it never parks.
+/// `(channel, src, rights_subset)`.
+#[cfg(feature = "ipc-try-send")]
+pub const SYS_TRY_GRANT: u64 = 0x1B8;
+/// OT-88 A0k: `SYS_RECV_GRANT` that completes only with a grantor already
+/// parked on the peer side, else EAGAIN; it never parks. `(channel, max)`.
+#[cfg(feature = "ipc-try-send")]
+pub const SYS_TRY_RECV_GRANT: u64 = 0x1B9;
 /// OT-87 R4.4: the installer's disk list (`install_ui_logic`). Gated by the
 /// `Installer` cap; ENOSYS without `installer`.
 #[cfg(feature = "installer")]
@@ -379,6 +392,13 @@ pub const SYS_INSTALL_LIST: u64 = 0x1C0;
 /// `Installer` cap; ENOSYS without `installer`.
 #[cfg(feature = "installer")]
 pub const SYS_INSTALL_RUN: u64 = 0x1C1;
+/// `rtc-offset` (THINK-2026-11-02-time-zones §2.1):
+/// `SYS_CLOCK_CONFIRM_REALTIME(offset_s)`: the session confirms realtime as
+/// UTC, once (input-system authority).
+pub const SYS_CLOCK_CONFIRM_REALTIME: u64 = 0x1C8;
+/// `rtc-offset`: `SYS_CLOCK_REALTIME_STATUS() -> 0 | 1` (unconfirmed /
+/// confirmed UTC).
+pub const SYS_CLOCK_REALTIME_STATUS: u64 = 0x1C9;
 #[cfg(feature = "wait-multiplex")]
 pub(crate) use crate::sched::wait_any_logic::{WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_SAK};
 /// CP-43 test-only: return with a kernel address in both `rcx` and `r11`, so
@@ -1327,12 +1347,20 @@ extern "C" fn syscall_dispatch(
         SYS_INPUT_SAK_TAKE => sys_input_sak_take_impl(a0, a1 as u32),
         #[cfg(feature = "atrium-pointer-forward")]
         SYS_TRY_RECV => sys_try_recv_impl(a0 as u32, a1, a2 as usize),
+        #[cfg(feature = "ipc-try-send")]
+        SYS_TRY_SEND => sys_try_send_impl(a0 as u32, a1, a2 as usize),
+        #[cfg(feature = "ipc-try-send")]
+        SYS_TRY_GRANT => sys_try_grant_impl(a0 as u32, a1 as u32, a2 as u16),
+        #[cfg(feature = "ipc-try-send")]
+        SYS_TRY_RECV_GRANT => sys_try_recv_grant_impl(a0 as u32, a1 as u16),
         #[cfg(feature = "wait-multiplex")]
         SYS_WAIT_ANY => sys_wait_any_impl(a0, a1 as usize, a2),
         #[cfg(feature = "installer")]
         SYS_INSTALL_LIST => sys_install_list_impl(a0, a1 as usize),
         #[cfg(feature = "installer")]
         SYS_INSTALL_RUN => sys_install_run_impl(a0, a1, a2),
+        SYS_CLOCK_CONFIRM_REALTIME => sys_clock_confirm_realtime_impl(a0 as i64),
+        SYS_CLOCK_REALTIME_STATUS => sys_clock_realtime_status_impl(),
         #[cfg(any(feature = "neo-test-desktop-idle", feature = "neo-test-login-cut"))]
         n @ (SYS_TEST_IDLE_TICKS | SYS_TEST_BLOCK_CUT) => test_idle_or_block_cut(n, a0),
         #[cfg(feature = "neo-test-threads-tls")]
@@ -6228,6 +6256,84 @@ fn sys_try_recv_impl(h: u32, buf: u64, max_len: usize) -> i64 {
     crate::arch::x86_64::without_interrupts(|| channel.try_recv(side, buf, max_len, pmap))
 }
 
+/// OT-88 A0k `SYS_TRY_SEND`: `sys_send_impl`, completing only with a parked
+/// receiver (EAGAIN otherwise). It never parks, but a completed handoff
+/// yields to the receiver with this frame live, so the channel is anchored
+/// on the thread as `sys_send`'s is (CP-67).
+#[cfg(feature = "ipc-try-send")]
+fn sys_try_send_impl(h: u32, buf: u64, len: usize) -> i64 {
+    if len == 0 {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(buf, len) {
+        return e;
+    }
+    let (channel, side, pmap) = match ipc_lookup(h, channel_rights::SEND) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    crate::sched::with_channel_anchor(channel, |channel| {
+        crate::arch::x86_64::without_interrupts(|| channel.try_send(side, buf, len, pmap))
+    })
+}
+
+/// OT-88 A0k `SYS_TRY_GRANT`: `sys_grant_impl`'s checks, then a grant that
+/// completes only with a parked `SYS_RECV_GRANT` (EAGAIN otherwise).
+#[cfg(feature = "ipc-try-send")]
+fn sys_try_grant_impl(channel_h: u32, src_h: u32, rights_subset: u16) -> i64 {
+    let (channel, side) = match channel_lookup(channel_h, channel_rights::SEND) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let donor_pid = crate::sched::current_pid();
+    let source = match crate::arch::x86_64::without_interrupts(|| {
+        let donor = process::get(donor_pid).ok_or(EINVAL)?;
+        donor.handles.lock().get(src_h).ok_or(EBADF)
+    }) {
+        Ok(h) => h,
+        Err(EBADF) => {
+            channel.fail_recv_grant(side);
+            return EBADF;
+        }
+        Err(e) => return e,
+    };
+    if !source.rights().has_meta(meta_rights::GRANT) {
+        channel.fail_recv_grant(side);
+        return EPERM;
+    }
+    #[cfg(feature = "installer")]
+    if matches!(source, Handle::Installer { .. }) {
+        channel.fail_recv_grant(side);
+        return EPERM;
+    }
+    let payload = crate::ipc::GrantPayload {
+        grantor_pid: donor_pid,
+        source_cap_id: source.cap_id(),
+        offered: unpack_rights(rights_subset),
+    };
+    drop(source);
+    crate::sched::with_channel_anchor(channel, |channel| {
+        crate::arch::x86_64::without_interrupts(|| channel.try_grant(side, payload))
+    })
+}
+
+/// OT-88 A0k `SYS_TRY_RECV_GRANT`: `sys_recv_grant_impl`, completing only
+/// with a parked grantor (EAGAIN otherwise). It neither parks nor yields
+/// (the grantor is woken to run later), but it is anchored as `recv_grant` is.
+#[cfg(feature = "ipc-try-send")]
+fn sys_try_recv_grant_impl(channel_h: u32, max_rights: u16) -> i64 {
+    let (channel, side) = match channel_lookup(channel_h, channel_rights::RECV) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let recipient_pid = crate::sched::current_pid();
+    crate::sched::with_channel_anchor(channel, |channel| {
+        crate::arch::x86_64::without_interrupts(|| {
+            channel.try_recv_grant(side, recipient_pid, unpack_rights(max_rights))
+        })
+    })
+}
+
 /// One `SYS_WAIT_ANY` item.
 #[cfg(feature = "wait-multiplex")]
 #[derive(Clone, Copy)]
@@ -6962,7 +7068,8 @@ fn sys_close_impl(fd: u32) -> i64 {
         Handle::File { .. } | Handle::Channel { .. } => true,
         #[cfg(feature = "net-dial-public-only")]
         Handle::NetDial { .. } => true,
-        _ => false,
+        // PR #15 review item 2 (`close-object-handles`).
+        other => closes_object(other),
     });
     match removed {
         Ok(Handle::File { .. }) => 0,
@@ -6976,9 +7083,36 @@ fn sys_close_impl(fd: u32) -> i64 {
             channel.close_peer(side, crate::sched::current_pid());
             0
         }
-        Ok(_) => unreachable!(),
+        // `close-object-handles`: the handle is gone from the table; its
+        // object reference drops here, after `close_handle` released the
+        // table and CAP_GRAPH locks (a focus's route goes with its last Arc).
+        Ok(_) => 0,
         Err(e) => e,
     }
+}
+
+/// PR #15 review item 2: `SYS_CLOSE` also releases a buffer, an input-focus
+/// and a process handle, so a WM can let go of an ended client's handles.
+/// Off: only files and channels, exactly as before (EBADF for the rest).
+#[cfg(all(feature = "close-object-handles", feature = "atrium-compositor-g1"))]
+fn closes_object(h: &Handle) -> bool {
+    matches!(
+        h,
+        Handle::Buffer { .. } | Handle::InputFocus { .. } | Handle::Process { .. }
+    )
+}
+
+#[cfg(all(
+    feature = "close-object-handles",
+    not(feature = "atrium-compositor-g1")
+))]
+fn closes_object(h: &Handle) -> bool {
+    matches!(h, Handle::Process { .. })
+}
+
+#[cfg(not(feature = "close-object-handles"))]
+fn closes_object(_: &Handle) -> bool {
+    false
 }
 
 fn sys_fsync_impl(fd: u32) -> i64 {
@@ -7420,6 +7554,45 @@ fn sys_clock_gettime_impl(clock_id: u64) -> i64 {
         return monotonic.saturating_add(crate::arch::x86_64::rtc::realtime_base_ns()) as i64;
     }
     monotonic as i64
+}
+
+/// `SYS_CLOCK_CONFIRM_REALTIME(offset_s) -> 0 | errno`: `EPERM` without the
+/// input-system authority, `EINVAL` for an offset past ±24 h, `EALREADY`
+/// once confirmed, `EAGAIN` when there is no RTC epoch (boot-relative
+/// realtime), `ENOSYS` without `rtc-offset` (the kill-switch: realtime is
+/// OT-85's, bit for bit).
+fn sys_clock_confirm_realtime_impl(offset_s: i64) -> i64 {
+    #[cfg(all(feature = "rtc-offset", feature = "atrium-compositor-g1"))]
+    {
+        use crate::arch::x86_64::rtc::{self, ConfirmError};
+        if let Err(e) = caller_holds_input_system() {
+            return e;
+        }
+        match rtc::confirm(offset_s) {
+            Ok(()) => 0,
+            Err(ConfirmError::NotSeeded) => EAGAIN,
+            Err(ConfirmError::Already) => crate::errno::EALREADY,
+            Err(ConfirmError::Range) => EINVAL,
+        }
+    }
+    #[cfg(not(all(feature = "rtc-offset", feature = "atrium-compositor-g1")))]
+    {
+        let _ = offset_s;
+        ENOSYS
+    }
+}
+
+/// `SYS_CLOCK_REALTIME_STATUS() -> 0 | 1`: whether realtime is confirmed
+/// UTC; `ENOSYS` without `rtc-offset`.
+fn sys_clock_realtime_status_impl() -> i64 {
+    #[cfg(feature = "rtc-offset")]
+    {
+        i64::from(crate::arch::x86_64::rtc::confirmed())
+    }
+    #[cfg(not(feature = "rtc-offset"))]
+    {
+        ENOSYS
+    }
 }
 
 // ── OT-61 C1.1 host-runtime primitives (futex + threads) ──────────────────
