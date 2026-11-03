@@ -1040,6 +1040,9 @@ jobs:
         run: cargo test -p neo-atrium --features install-chip
       - name: cargo test -p neo-atrium --features install-chip,app-icons (blocking)
         run: cargo test -p neo-atrium --features install-chip,app-icons
+      # F11 S2: the settings record with the setup menu's keys (6, 7).
+      - name: cargo test -p settings-core --features setup-keys (blocking)
+        run: cargo test -p settings-core --features setup-keys
 
       # Sharding coverage gate: prove the 4-way neo-test partition the QEMU
       # matrix uses is complete + pairwise-disjoint, so sharding can never
