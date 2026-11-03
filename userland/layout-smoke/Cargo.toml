@@ -432,3 +432,8 @@ zune-core = { path = "../../third_party/ot61-browser/vendor/zune-core-0.5.3" }
 zune-jpeg = { path = "../../third_party/ot61-browser/vendor/zune-jpeg-0.5.15" }
 # #25's patched copy (byte-identical, same path as on #25).
 wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
+
+# The on-target binary carries no debuginfo: with it, the linked ELF was 575 MB;
+# without it, 12.9 MB (5.3 MB of text), the size of the other gated smokes.
+[profile.dev]
+debug = false
