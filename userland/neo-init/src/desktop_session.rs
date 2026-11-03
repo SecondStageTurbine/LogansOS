@@ -6210,9 +6210,10 @@ mod clock {
         /// [`Basis::Utc`] the WM never re-interprets it: a later zone only
         /// changes the display, a later RTC mode waits for a restart.
         basis: Basis,
-        /// The offset this WM confirmed (realtime + it was the RTC's
-        /// reading), for the restart hint. `None`: not confirmed by this WM.
-        confirmed_s: Option<i64>,
+        /// The RTC reading this WM confirmed from, and the offset it
+        /// confirmed, for the restart hint (`tz::needs_restart`). `None`:
+        /// not confirmed by this WM.
+        confirmed: Option<(i64, i64)>,
     }
 
     impl Default for State {
@@ -6223,7 +6224,7 @@ mod clock {
                 zone: tz::UTC,
                 rtc_local: true,
                 basis: Basis::Legacy,
-                confirmed_s: None,
+                confirmed: None,
             }
         }
     }
@@ -6255,13 +6256,10 @@ mod clock {
 
         /// The zone, the RTC mode and the clock's state, for the card.
         pub fn mode(&self) -> Mode {
-            let restart = match (self.basis, self.confirmed_s, sample()) {
-                (Basis::Utc, Some(c), Some((r, _))) => tz::needs_restart(
-                    (r / civil::NS_PER_SECOND) as i64,
-                    c,
-                    self.zone,
-                    self.rtc_local,
-                ),
+            let restart = match (self.basis, self.confirmed) {
+                (Basis::Utc, Some((wall, offset))) => {
+                    tz::needs_restart(wall, offset, self.zone, self.rtc_local)
+                }
                 _ => false,
             };
             Mode {
@@ -6397,7 +6395,7 @@ mod clock {
         match libneo::sys_clock_confirm_realtime(offset) {
             Ok(()) => {
                 st.basis = Basis::Utc;
-                st.confirmed_s = Some(offset);
+                st.confirmed = Some((wall_s, offset));
                 log_mode(st, b"confirmed", Some(offset));
             }
             Err(e) => {

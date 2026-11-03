@@ -305,10 +305,23 @@ mod tests {
         assert_eq!(Basis::of(Err(-38)), Basis::Legacy);
         // A later mode or zone that would read the RTC differently needs a
         // restart; the same settings don't.
-        assert!(!needs_restart(utc, -18000, ny, true));
-        assert!(needs_restart(utc, -18000, ny, false));
-        assert!(needs_restart(utc, -18000, sydney, true));
-        assert!(needs_restart(utc, -18000, tz::UTC, true));
+        // (`wall` is the reading the confirm used: 01:29 local.)
+        assert!(!needs_restart(wall, -18000, ny, true));
+        assert!(needs_restart(wall, -18000, ny, false));
+        assert!(needs_restart(wall, -18000, sydney, true));
+        assert!(needs_restart(wall, -18000, tz::UTC, true));
+        // Janus (#60): confirmed in New York at 2026-11-01 05:00 UTC, from
+        // the RTC reading 01:00 (the repeated hour: the earlier, EDT,
+        // instant), so -14400. At 06:30 UTC New York is on EST, but the same
+        // zone still reads the same reading the same way: no restart.
+        let fold = 20758 * 86400 + 3600;
+        assert_eq!(confirm_offset(fold, ny, true), Some(-14400));
+        assert!(!needs_restart(fold, -14400, ny, true));
+        // A zone with New York's rules reads it the same way, too.
+        let toronto = id("America/Toronto");
+        assert!(!needs_restart(fold, -14400, toronto, true));
+        // Chicago reads 01:00 as CDT, 06:00 UTC: a restart would change it.
+        assert!(needs_restart(fold, -14400, id("America/Chicago"), true));
         // Dexter (#59): defined at the i64 extremes too.
         for t in [i64::MAX, i64::MIN] {
             for z in [ny, sydney, tz::UTC] {
