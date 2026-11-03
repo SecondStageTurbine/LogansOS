@@ -749,8 +749,20 @@ fn wake_worker(waiter: Option<ThreadWakeToken>) {
     }
 }
 
+/// A plain indexed loop, not `iter().position`: this scan is the hot path of
+/// a large read-back (the installer's W5 verify spends most of its time
+/// here), and in the debug kernel the iterator form costs three calls per
+/// entry spread over several code pages. The loop is one small function:
+/// `install_fresh_4k` went from about 145 s to 100 s locally under TCG.
 fn find_cached_block(blocks: &[CachedBlock], block: u64) -> Option<usize> {
-    blocks.iter().position(|cached| cached.block == block)
+    let mut idx = 0;
+    while idx < blocks.len() {
+        if blocks[idx].block == block {
+            return Some(idx);
+        }
+        idx += 1;
+    }
+    None
 }
 
 fn find_or_insert_full_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
