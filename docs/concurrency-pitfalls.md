@@ -4663,8 +4663,11 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
      the fallback at all.
   3. **A parked CPU holds a lock.** STOP is taken only with interrupts on, so its parks hold no IRQ-safe
      lock, but they can hold a plain spin lock taken with interrupts on; an NMI park can hold anything. Any
-     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free.
-- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5.
+     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free. **That includes
+     the heap allocator's lock, taken by any drop of a heap value** (a `Vec` going out of scope), so a
+     plan built before the stop and dropped after it hangs the stopper before the power-off.
+- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5; the allocator-lock case
+  and the per-step waits by his review of P3b-2 (#7), items 2a and 3.
 - **Guard (OT-90 P3b-1).**
   - The stopper takes the TLB-shootdown sender lock with interrupts on (waiting out and acknowledging any
     sender in flight), then masks interrupts and leaves the ready set, and never releases the lock
@@ -4675,11 +4678,47 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
     with a holdout's), and the power plan is read from a copy taken before the stop.
   - With any holdout, the single-CPU steps (I/O APIC and PCI masking) are skipped and the path goes straight
     to the power-off or reset, which ends every CPU. The holdouts are reported.
+  - **(P3b-2, K6.)** K6's plan (heap vectors, built before the stop) is held in `ManuallyDrop`, so no path
+    after the stop frees it, the holdout return included. Every K6 wait is bounded by a poll count as well
+    as the timer (`power_logic::wait_bounded`), so a frozen timer can't hold it either.
 - **Discriminators.** `ot90_stop_shootdown`: an AP sends IF=0 shootdowns at every other CPU while K4
   starts; every AP must park by STOP (with the old mask-first order it fails 4/4, the sender parked only
   by the NMI). `ot90_stop_wedged`: the highest AP ignores STOP and, in its NMI handler, takes the UART lock
   and never acknowledges; the PM timer reads as frozen. K4 must end on its poll count, report that AP as
-  the holdout, skip K5 and reach S5.
+  the holdout, skip K5 and reach S5. `ot90_quiesce_heap_held` (P3b-2): the highest AP ignores STOP, takes
+  the allocator's lock in its NMI handler and parks holding it; K6 must run and S5 must still come (with the
+  plan dropped at the end of `stop_world` it hangs, 4 of 4). Host KAT `a_k6_wait_ends_on_a_frozen_pm_timer`:
+  the real `pm_wait` on a timer reading 0, with a controller that never finishes.
 - **Source.** Ours, with the principle from Linux's `smp_send_stop` / `crash_smp_send_stop` (read for
   principle only): the stop is best-effort, the caller must not assume it worked, and panic-time printing
   uses a lock-free console path.
+
+### CP-106 — A C library's "unlocked until threads exist" streams, in a process whose threads aren't its own
+
+- **Shape.** musl starts the standard streams unlocked (`stdout`/`stderr` have `lock = -1`) and turns locking
+  on in `pthread_create` (`libc.threaded`, `__stdio_*` locks). That is sound in a process where only
+  `pthread_create` makes threads. In a bundle process the threads are std's (`std::thread::spawn` over
+  `SYS_THREAD_CREATE`), and any of them can call into C. neo-crt compiles none of musl's pthread code, so
+  locking never turns on. Two threads in `printf` on the same stream then share `__fwritex`'s static buffer
+  with no lock: a run with no newline overruns the buffer (two threads, a 600-byte string each). The
+  outcome is memory corruption next to the buffer, not just interleaved text.
+- **The general form.** A runtime that keys a safety mode on "has this program made a thread yet?" breaks
+  when the program's threads come from somewhere the runtime can't see: a host language's thread API, a
+  foreign pool, a callback from another runtime's thread.
+- **Guard (#261, C3a).**
+  - neo-crt's `c/stdout.c` and `c/stderr.c` are musl's with `.lock = 0`, so every `FLOCK` locks, with or
+    without pthreads.
+  - `__lockfile`/`__unlockfile` are Rust (`userland/neo-crt/src/lib.rs`): an owner table under a std
+    `Mutex` and `Condvar`, keyed by the stream's address, with musl's contract (1 = this call took the lock,
+    0 = this thread already holds it). musl's own versions need `__pthread_self()->tid` and its futex,
+    which neo-crt doesn't have.
+  - The other half of the same gap: libc++ is built `_LIBCPP_HAS_NO_THREADS` in C3a (`shared_ptr` counts
+    not atomic, `call_once` unsynchronised), so no multi-threaded C++ until C3b's pthread rebuild (C3a THINK
+    §6.1, a hard rule).
+- **Discriminators (`cxx_runtime_smoke`).**
+  - `ok(16)`: a thread holds stdout's lock through `__lockfile`, and a second thread's `fputs` to stdout
+    must not return for 200 ms, then return once the lock is let go; the holder taking it again gets 0.
+    Control: musl's `stdout.c` (`lock = -1`) makes the `fputs` return at once, `FAIL(16)`.
+  - `ok(17)`: six threads print 600-byte runs with no newline at once (the bounce's repro).
+- **Source.** The PM's AAG on #261 (2026-10-31). Principle: musl's `__stdio_*` locking and `libc.threaded`
+  (`src/thread/pthread_create.c`), read for the design only.

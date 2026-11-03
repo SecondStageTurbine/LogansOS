@@ -135,7 +135,10 @@ pub extern "x86-interrupt" fn stop_ipi(_frame: x86_64::structures::idt::Interrup
     if holdout_test_ignores_ipi() {
         return;
     }
-    #[cfg(feature = "neo-test-ot90-stop-wedged")]
+    #[cfg(any(
+        feature = "neo-test-ot90-stop-wedged",
+        feature = "neo-test-ot90-quiesce-heap-held"
+    ))]
     if is_highest_cpu() {
         return;
     }
@@ -152,6 +155,11 @@ pub fn park_from_nmi() {
     #[cfg(feature = "neo-test-ot90-stop-wedged")]
     if is_highest_cpu() {
         wedged_in_nmi();
+    }
+    // `ot90_quiesce_heap_held`: park by NMI holding the allocator's lock.
+    #[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+    if is_highest_cpu() {
+        crate::mm::heap::hold_lock_forever_for_test();
     }
     match apic::cpu_from_own_lapic_id() {
         Some(cpu) if cpu != STOPPER.load(Ordering::Acquire) => park(PARKED_BY_NMI),
@@ -170,8 +178,12 @@ fn park(by: u8) -> ! {
     }
 }
 
-/// `ot90_stop_wedged`: whether this is the highest-numbered started CPU.
-#[cfg(feature = "neo-test-ot90-stop-wedged")]
+/// `ot90_stop_wedged`, `ot90_quiesce_heap_held`: whether this is the
+/// highest-numbered started CPU.
+#[cfg(any(
+    feature = "neo-test-ot90-stop-wedged",
+    feature = "neo-test-ot90-quiesce-heap-held"
+))]
 fn is_highest_cpu() -> bool {
     let Some(me) = apic::cpu_from_own_lapic_id() else {
         return false;

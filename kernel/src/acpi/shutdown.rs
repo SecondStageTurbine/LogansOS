@@ -247,9 +247,13 @@ fn stop_world() {
     use crate::arch::x86_64::cpu_stop;
     let timer = super::power::stop_timer();
     // K6's plan is read now, while every CPU runs (it takes driver locks
-    // and scans PCI). It is never dropped: K7 doesn't return.
+    // and scans PCI). It holds heap vectors, and after K4 a parked CPU may
+    // hold the allocator's lock, so it must never be dropped (Janus's #7
+    // review, item 3: `stop_world` returns to K7, normally or with
+    // holdouts, and a drop there spun on that lock). `ManuallyDrop` leaks it
+    // on every path; K7 never returns, so nothing is lost.
     #[cfg(feature = "power-quiesce")]
-    let quiesce = crate::drivers::quiesce::Plan::prepare();
+    let quiesce = core::mem::ManuallyDrop::new(crate::drivers::quiesce::Plan::prepare());
     let ioapics =
         super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
     crate::serial_println!("[ power ] K4 start");
