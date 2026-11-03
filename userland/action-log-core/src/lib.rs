@@ -8,8 +8,14 @@
 //!
 //! Record (little-endian): magic `NAL1`, version `u16` = 1, kind `u8`,
 //! action `u8`, sequence `u64`, wall-clock seconds `u64`, detail `u32`, path
-//! length `u16`, intent length `u16`, prev `[u8; 16]`, 16 reserved zero
-//! bytes, then the path and the intent.
+//! length `u16`, intent length `u16`, prev `[u8; 16]`, flags `u8`, 15
+//! reserved zero bytes, then the path and the intent.
+//!
+//! Flags (byte 48, formerly reserved and always zero, so every older record
+//! reads as flags 0): [`TIME_UTC`]. A record written before the session
+//! confirmed the clock (`SYS_CLOCK_REALTIME_STATUS`, THINK-2026-11-02 §2.7)
+//! has it clear, and its time is the computer's clock as read (possibly
+//! local wall time), not UTC.
 
 #![no_std]
 
@@ -83,6 +89,13 @@ pub const DONE_UNREPORTED: u32 = 0xFFFF_FFFF;
 /// Where a repair keeps the bytes it cut off the log.
 pub const BROKEN_PATH: &str = "/neofs/.system/actions.broken";
 
+/// `flags` bit 0: `time_s` is UTC (the kernel had confirmed realtime as UTC
+/// when the record was written). Clear: the computer's clock as read.
+pub const TIME_UTC: u8 = 1;
+/// Every flag bit this version defines; a record with any other bit set is
+/// not well formed.
+pub const FLAGS_KNOWN: u8 = TIME_UTC;
+
 /// Whether `record` is a rotation marker (the only record that may open a
 /// log at a sequence other than 0, with a link other than zero).
 pub fn is_rotation(record: &Record<'_>) -> bool {
@@ -101,11 +114,17 @@ pub struct Record<'a> {
     pub path: &'a str,
     pub intent: &'a str,
     pub prev: [u8; PREV_LEN],
+    /// [`TIME_UTC`] or 0.
+    pub flags: u8,
 }
 
-/// The bytes of `record`; `None`: a text is longer than [`TEXT_MAX`].
+/// The bytes of `record`; `None`: a text is longer than [`TEXT_MAX`], or a
+/// flag this version doesn't define is set.
 pub fn encode(record: &Record<'_>) -> Option<Vec<u8>> {
-    if record.path.len() > TEXT_MAX || record.intent.len() > TEXT_MAX {
+    if record.path.len() > TEXT_MAX
+        || record.intent.len() > TEXT_MAX
+        || record.flags & !FLAGS_KNOWN != 0
+    {
         return None;
     }
     let mut out = Vec::with_capacity(HEADER_LEN + record.path.len() + record.intent.len());
@@ -119,7 +138,8 @@ pub fn encode(record: &Record<'_>) -> Option<Vec<u8>> {
     out.extend_from_slice(&(record.path.len() as u16).to_le_bytes());
     out.extend_from_slice(&(record.intent.len() as u16).to_le_bytes());
     out.extend_from_slice(&record.prev);
-    out.extend_from_slice(&[0u8; 16]);
+    out.push(record.flags);
+    out.extend_from_slice(&[0u8; 15]);
     out.extend_from_slice(record.path.as_bytes());
     out.extend_from_slice(record.intent.as_bytes());
     Some(out)
@@ -147,12 +167,14 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 }
 
 /// The record at the start of `bytes` and its length, or `None` if it isn't
-/// a well-formed record (magic, version, kind, reserved zero, lengths, UTF-8).
+/// a well-formed record (magic, version, kind, known flags, reserved zero,
+/// lengths, UTF-8).
 pub fn decode(bytes: &[u8]) -> Option<(Record<'_>, usize)> {
     if bytes.len() < HEADER_LEN
         || bytes[..4] != MAGIC
         || u16_at(bytes, 4) != VERSION
-        || bytes[48..64].iter().any(|&b| b != 0)
+        || bytes[48] & !FLAGS_KNOWN != 0
+        || bytes[49..64].iter().any(|&b| b != 0)
     {
         return None;
     }
@@ -182,6 +204,7 @@ pub fn decode(bytes: &[u8]) -> Option<(Record<'_>, usize)> {
             path,
             intent,
             prev,
+            flags: bytes[48],
         },
         len,
     ))
