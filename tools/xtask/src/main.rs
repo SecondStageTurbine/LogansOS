@@ -2001,6 +2001,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 L0/L1: Servo's layout linked without its script engine, over
+        // neo-layout-dom, and the bundled font read through servo-fonts'
+        // neoplutarch backend against hand-read tables.
+        name: "layout_smoke",
+        feature: "neo-test-layout-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
         // musl's portable C over a std bottom half) in a real-std process.
         name: "cxx_runtime_smoke",
@@ -6710,6 +6720,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "swgl_smoke" => &[SWGL_BIN],
+        "layout_smoke" => &[LAYOUT_SMOKE_BIN],
         _ => &[],
     }
 }
@@ -7704,6 +7715,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SWGL_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
         }
+        if std_real_staged_bins().contains(&LAYOUT_SMOKE_BIN) {
+            build_standalone_std_smoke(LAYOUT_SMOKE_BIN, &[LAYOUT_SMOKE_BIN], LAYOUT_SMOKE_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7727,6 +7741,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 L0/L1: Servo's layout without script, and the bundled-font backend.
+const LAYOUT_SMOKE_BIN: &str = "layout-smoke";
+const LAYOUT_SMOKE_DIR: &str = "userland/layout-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -7737,6 +7754,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
         SWGL_BIN => Some(SWGL_DIR),
+        LAYOUT_SMOKE_BIN => Some(LAYOUT_SMOKE_DIR),
         _ => None,
     }
 }
@@ -7746,6 +7764,7 @@ fn is_standalone_std_dir(subdir: &str) -> bool {
         || subdir == STYLO_SMOKE_DIR
         || subdir == CXX_RUNTIME_DIR
         || subdir == SWGL_DIR
+        || subdir == LAYOUT_SMOKE_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -7767,6 +7786,22 @@ fn build_cxx_runtime_smoke() -> Result<(), String> {
 /// and no host C++ library to link (`CXXSTDLIB` empty; libc++ comes from
 /// neo-crt). The same flags neo-crt uses for its own objects.
 fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
+    neo_crt_cc_env(cmd, &[], false)
+}
+
+/// OT-61 L0: layout-smoke's C/C++ (HarfBuzz, fontsan's OTS and lz4, and
+/// zlib through libz-sys) on the same variables as SWGL's, plus:
+/// - `-fno-exceptions -fno-rtti` for C++: neo-crt has no libc++abi (C3a), and
+///   without them OTS's unwind tables name `__gxx_personality_v0`. Neither
+///   OTS nor HarfBuzz uses exceptions or RTTI.
+/// - the same flags as `CFLAGS`, for zlib's C.
+fn layout_cc_env(cmd: &mut Command) -> Result<(), String> {
+    neo_crt_cc_env(cmd, &["-fno-exceptions", "-fno-rtti"], true)
+}
+
+/// The shared body: `cxx_extra` is added to `CXXFLAGS` only; `with_cflags`
+/// also sets `CFLAGS` (without `cxx_extra`).
+fn neo_crt_cc_env(cmd: &mut Command, cxx_extra: &[&str], with_cflags: bool) -> Result<(), String> {
     let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
     let out = Command::new(&clang)
         .arg("-print-resource-dir")
@@ -7801,11 +7836,19 @@ fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
     ]
     .join(" ");
     let t = "x86_64_unknown_neoplutarch";
+    let mut cxxflags = flags.clone();
+    for f in cxx_extra {
+        cxxflags.push(' ');
+        cxxflags.push_str(f);
+    }
     cmd.env("CRATE_CC_NO_DEFAULTS", "1")
         .env(format!("CC_{t}"), &clang)
         .env(format!("CXX_{t}"), &clang)
-        .env(format!("CXXFLAGS_{t}"), &flags)
+        .env(format!("CXXFLAGS_{t}"), &cxxflags)
         .env(format!("CXXSTDLIB_{t}"), "");
+    if with_cflags {
+        cmd.env(format!("CFLAGS_{t}"), &flags);
+    }
     Ok(())
 }
 
@@ -7886,7 +7929,11 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     let (bin, dir) = match args {
         [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
         [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
-        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+        // `--layout`: OT-61 L0/L1, Servo's layout without script over neo-crt.
+        [a] if a == "--layout" => (LAYOUT_SMOKE_BIN, LAYOUT_SMOKE_DIR),
+        _ => {
+            return Err("usage: cargo xtask ot61-closure-build [--stylo | --layout]".to_string());
+        }
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
@@ -8403,6 +8450,9 @@ fn build_member_at_opt_level(
     }
     if subdir == SWGL_DIR {
         swgl_cc_env(&mut cmd)?;
+    }
+    if subdir == LAYOUT_SMOKE_DIR {
+        layout_cc_env(&mut cmd)?;
     }
     if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
@@ -18183,6 +18233,23 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "SWGL must raster the hand-laid pattern into the caller's buffer",
+            )?;
+        }
+    }
+    if scenario.name == "layout_smoke" {
+        for needle in [
+            "[ layout-smoke ] ok(1) neo-layout-dom parsed a page (document, html, head, body, p, text)",
+            "[ layout-smoke ] ok(2) Roboto Slab opens from the bundled store",
+            "[ layout-smoke ] ok(30) U+6C34 (not in the font) has no glyph",
+            "[ layout-smoke ] ok(31) em size = 960 Au",
+            "[ layout-smoke ] ok(44) zero advance = 548 Au",
+            "[ layout-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "Servo's layout must link without script and read the bundled font as the hand-read tables say",
             )?;
         }
     }

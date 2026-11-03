@@ -171,6 +171,8 @@ const SCENARIO: &str = "servo_closure_smoke_avx";
 const SCENARIO: &str = "cxx_runtime_smoke";
 #[cfg(feature = "neo-test-swgl-smoke")]
 const SCENARIO: &str = "swgl_smoke";
+#[cfg(feature = "neo-test-layout-smoke")]
+const SCENARIO: &str = "layout_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -1257,6 +1259,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-stylo-smoke",
     feature = "neo-test-cxx-runtime-smoke",
     feature = "neo-test-swgl-smoke",
+    feature = "neo-test-layout-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -2984,6 +2987,57 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "swgl_smoke=ran exit=0 swgl=0.70.0 pattern=exact stride=padded canaries=intact frames_returned=1",
+        );
+    }
+
+    // OT-61 L0/L1: layout-smoke links Servo's layout without script over
+    // neo-layout-dom and reads the bundled font through servo-fonts'
+    // neoplutarch backend, checking glyphs and metrics against hand-read
+    // tables; it exits 0 only if every check holds, and every frame must
+    // come back.
+    #[cfg(feature = "neo-test-layout-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 256 * 256; // 256 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=layout_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke = process::spawn_user_by_name_budgeted("layout-smoke", &handles, SMOKE_FRAMES)
+            .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!("[ kernel ] proc: layout-smoke pid={} (256 MiB)", smoke.0);
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: layout-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "layout_smoke=ran exit=0 servo_layout=0.7.0 script=none font=roboto-slab metrics=exact frames_returned=1",
         );
     }
 
