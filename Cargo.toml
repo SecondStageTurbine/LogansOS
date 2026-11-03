@@ -97,6 +97,8 @@ exclude = [
     # OT-61 rung 4: the SWGL S1 smoke (third-party closure in
     # third_party/ot61-swgl); built standalone for the target only.
     "userland/swgl-smoke",
+    # OT-61 rung 4 S2: WebRender on SWGL, standalone for the target only.
+    "userland/webrender-smoke",
     # OT-86 Fix 1: vendored rust-osdev `acpi` 6.1.1 (upstream MIT/Apache-2.0
     # licence and formatting). A path dependency of tools/acpi-aml-grade only;
     # kept out of the workspace so first-party lints and fmt don't apply to it.

@@ -17,9 +17,14 @@
 //!   memory; no flip);
 //! - the stride padding and both canaries still `0xCD`.
 //!
+//! Every framebuffer goes through `fb::attach`, which refuses what SWGL
+//! would take on trust (check 5 tries each kind of bad input).
+//!
 //! Exit 0 on a pass. A failed check prints `FAIL(n)` and exits `n`.
 
 #![no_main]
+
+mod fb;
 
 use std::ffi::c_void;
 
@@ -54,6 +59,73 @@ fn bgra(c: u8) -> [u8; 4] {
     }
 }
 
+/// #66 review (Jarvis), item 2: each kind of bad framebuffer is refused
+/// with its own error, and none reaches SWGL: afterwards the context still
+/// reports the caller's 7x5 buffer.
+fn bad_framebuffers_refused(ctx: &swgl::Context, good: *mut u8) -> bool {
+    use fb::FbError::*;
+    let mut spare = vec![0u32; (STRIDE * H) / 4 + 1];
+    let base = spare.as_mut_ptr().cast::<u8>();
+    let len = spare.len() * 4;
+    let full = unsafe { std::slice::from_raw_parts_mut(base, len) };
+    let cases: [(&str, usize, usize, usize, usize, usize, fb::FbError); 7] = [
+        // (what, byte offset, length, width, height, stride, expected)
+        ("0x0, stride 0", 0, len, 0, 0, 0, Empty),
+        ("width 7, height 0", 0, len, W, 0, STRIDE, Empty),
+        ("width 7, stride 0", 0, len, W, H, 0, StrideTooSmall),
+        (
+            "stride one byte short of width*4",
+            0,
+            len,
+            W,
+            H,
+            W * 4 - 1,
+            StrideTooSmall,
+        ),
+        (
+            "buffer one byte short",
+            0,
+            STRIDE * H - 1,
+            W,
+            H,
+            STRIDE,
+            TooShort,
+        ),
+        (
+            "buffer at an odd address",
+            1,
+            len - 1,
+            W,
+            H,
+            STRIDE,
+            Misaligned,
+        ),
+        (
+            "stride past i32",
+            0,
+            len,
+            W,
+            H,
+            i32::MAX as usize + 1,
+            TooLarge,
+        ),
+    ];
+    let mut ok = true;
+    for (what, off, n, w, h, stride, want) in cases {
+        let buf = &mut full[off..off + n];
+        let got = unsafe { fb::attach(ctx, buf, w, h, stride) };
+        let pass = got == Err(want);
+        println!("{TAG}   bad framebuffer ({what}): {got:?}, want Err({want:?})");
+        ok &= pass;
+    }
+    let (ptr, w, h, stride) = ctx.get_color_buffer(0, false);
+    let unchanged =
+        ptr == good.cast::<c_void>() && w == W as i32 && h == H as i32 && stride == STRIDE as i32;
+    println!("{TAG}   still the caller's buffer afterwards: {unchanged}");
+    drop(spare);
+    ok && unchanged
+}
+
 fn check(n: i32, what: &str, ok: bool) {
     if ok {
         println!("{TAG} ok({n}) {what}");
@@ -68,18 +140,24 @@ pub extern "C" fn _start() -> ! {
     neo_crt::init();
     println!("{TAG} start: swgl 0.70.0 (WebRender's software GL) over neo-crt");
 
-    let mut mem = vec![FILL; CANARY + STRIDE * H + CANARY];
+    // u32-backed, so the buffer (16 bytes in) is 4-byte aligned by
+    // construction, as `fb::attach` requires.
+    const LEN: usize = CANARY + STRIDE * H + CANARY;
+    let mut words = vec![u32::from_ne_bytes([FILL; 4]); LEN / 4];
+    let mem: &mut [u8] =
+        unsafe { std::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), LEN) };
     let fb = unsafe { mem.as_mut_ptr().add(CANARY) };
 
     let ctx = swgl::Context::create();
     ctx.make_current();
-    ctx.init_default_framebuffer(
-        0,
-        0,
-        W as i32,
-        H as i32,
-        STRIDE as i32,
-        fb.cast::<c_void>(),
+    let fb_slice = unsafe { std::slice::from_raw_parts_mut(fb, STRIDE * H) };
+    // Safety: `words` outlives `ctx` (destroyed below), and the buffer is
+    // read only after `get_color_buffer`.
+    let attached = unsafe { fb::attach(&ctx, fb_slice, W, H, STRIDE) };
+    check(
+        4,
+        "the 7x5 buffer passes fb::attach's checks",
+        attached.is_ok(),
     );
     ctx.clear_color(1.0, 0.0, 0.0, 1.0);
     ctx.clear(gl::COLOR_BUFFER_BIT);
@@ -91,7 +169,11 @@ pub extern "C" fn _start() -> ! {
     ctx.clear_color(0.0, 1.0, 0.0, 0.0);
     ctx.clear(gl::COLOR_BUFFER_BIT);
     ctx.disable(gl::SCISSOR_TEST);
-    check(1, "gl calls raised no error", ctx.get_error() == gl::NO_ERROR);
+    check(
+        1,
+        "gl calls raised no error",
+        ctx.get_error() == gl::NO_ERROR,
+    );
 
     let (ptr, w, h, stride) = ctx.get_color_buffer(0, true);
     println!("{TAG} color buffer: {ptr:p} {w}x{h} stride {stride} (caller's {fb:p})");
@@ -128,7 +210,14 @@ pub extern "C" fn _start() -> ! {
         first_bad.is_none(),
     );
 
+    check(
+        5,
+        "fb::attach refuses each bad framebuffer before SWGL sees it",
+        bad_framebuffers_refused(&ctx, fb),
+    );
+
     ctx.destroy();
+    drop(words);
     println!("{TAG} PASS");
     std::process::exit(0)
 }
