@@ -323,6 +323,169 @@ impl Channel {
         }
     }
 
+    /// OT-88 A0k `SYS_TRY_SEND` body: `send`, except that it completes only
+    /// with a receiver already parked on the peer side. Anything else restores
+    /// the peer's state and returns `EAGAIN` (`EPIPE` if closed); it never
+    /// parks, so it adds no park, wait-queue or park-teardown edge. A WM's
+    /// reply to a client that isn't receiving stays the WM's to retry.
+    #[cfg(feature = "ipc-try-send")]
+    pub fn try_send(
+        self: &Arc<Self>,
+        my_side: EndpointSide,
+        buf_user_va: u64,
+        len: usize,
+        my_pmap: Arc<Pmap>,
+    ) -> i64 {
+        let mut guard = self.state.lock();
+        let peer_idx = my_side.other().idx();
+        match core::mem::take(&mut guard[peer_idx]) {
+            // Exactly `send`'s receiver-parked handoff, under the same guard.
+            EndpointState::RecvBlocked {
+                buf_user_va: dst_va,
+                max_len,
+                receiver_pmap,
+                waiter: recv_thread,
+            } => {
+                let n = min(len, max_len);
+                let copy_result = cross_pmap_copy(&my_pmap, buf_user_va, &receiver_pmap, dst_va, n);
+                drop(guard);
+                match copy_result {
+                    Ok(()) => {
+                        handoff_to_rendezvous_peer(recv_thread, n as i64);
+                        n as i64
+                    }
+                    Err(()) => {
+                        handoff_to_rendezvous_peer(recv_thread, EFAULT);
+                        EFAULT
+                    }
+                }
+            }
+            EndpointState::Closed => {
+                guard[peer_idx] = EndpointState::Closed;
+                EPIPE
+            }
+            existing => {
+                guard[peer_idx] = existing;
+                crate::errno::EAGAIN
+            }
+        }
+    }
+
+    /// OT-88 A0k `SYS_TRY_GRANT` body: `grant`, completing only with a
+    /// `recv_grant` already parked on the peer side; otherwise `EAGAIN` (or
+    /// `EPIPE`), nothing installed and nothing parked.
+    #[cfg(feature = "ipc-try-send")]
+    pub fn try_grant(self: &Arc<Self>, my_side: EndpointSide, payload: GrantPayload) -> i64 {
+        let mut guard = self.state.lock();
+        let peer_idx = my_side.other().idx();
+        match core::mem::take(&mut guard[peer_idx]) {
+            // Exactly `grant`'s receiver-parked handoff.
+            EndpointState::RecvGrantBlocked {
+                recipient_pid,
+                max_rights,
+                waiter: recv_thread,
+            } => {
+                let completion = process::complete_grant(
+                    payload.grantor_pid,
+                    payload.source_cap_id,
+                    payload.offered,
+                    recipient_pid,
+                    max_rights,
+                );
+                drop(guard);
+                match completion {
+                    Ok(handle_idx) => {
+                        handoff_to_rendezvous_peer(recv_thread, handle_idx as i64);
+                        0
+                    }
+                    Err(GrantInstallError::EmptyIntersection) => {
+                        handoff_to_rendezvous_peer(recv_thread, EPERM);
+                        EPERM
+                    }
+                    Err(GrantInstallError::GrantorBadCap) => {
+                        handoff_to_rendezvous_peer(recv_thread, EPIPE);
+                        crate::errno::EBADF
+                    }
+                    Err(GrantInstallError::GrantorMissingGrant) => {
+                        handoff_to_rendezvous_peer(recv_thread, EPIPE);
+                        EPERM
+                    }
+                    Err(GrantInstallError::RecipientGone) => EPIPE,
+                }
+            }
+            EndpointState::Closed => {
+                guard[peer_idx] = EndpointState::Closed;
+                EPIPE
+            }
+            existing => {
+                guard[peer_idx] = existing;
+                crate::errno::EAGAIN
+            }
+        }
+    }
+
+    /// OT-88 A0k `SYS_TRY_RECV_GRANT` body: `recv_grant`, completing only
+    /// with a grantor already parked on the peer side; otherwise `EAGAIN` (or
+    /// `EPIPE`), nothing installed and nothing parked. The WM receives a
+    /// client's buffer and activator this way, so a client that never grants
+    /// can't park it.
+    #[cfg(feature = "ipc-try-send")]
+    pub fn try_recv_grant(
+        self: &Arc<Self>,
+        my_side: EndpointSide,
+        recipient_pid: ProcessId,
+        max_rights: CapRights,
+    ) -> i64 {
+        let mut guard = self.state.lock();
+        let peer_idx = my_side.other().idx();
+        match core::mem::take(&mut guard[peer_idx]) {
+            // Exactly `recv_grant`'s grantor-parked handoff.
+            EndpointState::GrantBlocked {
+                payload,
+                waiter: grant_thread,
+            } => {
+                let completion = process::complete_grant(
+                    payload.grantor_pid,
+                    payload.source_cap_id,
+                    payload.offered,
+                    recipient_pid,
+                    max_rights,
+                );
+                drop(guard);
+                match completion {
+                    Ok(handle_idx) => {
+                        continue_current_after_receive(grant_thread, 0);
+                        handle_idx as i64
+                    }
+                    Err(GrantInstallError::EmptyIntersection) => {
+                        continue_current_after_receive(grant_thread, EPERM);
+                        EPERM
+                    }
+                    Err(GrantInstallError::GrantorBadCap) => {
+                        continue_current_after_receive(grant_thread, crate::errno::EBADF);
+                        EPIPE
+                    }
+                    Err(GrantInstallError::GrantorMissingGrant) => {
+                        continue_current_after_receive(grant_thread, EPERM);
+                        EPIPE
+                    }
+                    Err(GrantInstallError::RecipientGone) => {
+                        continue_current_after_receive(grant_thread, EPIPE);
+                        EPIPE
+                    }
+                }
+            }
+            EndpointState::Closed => {
+                guard[peer_idx] = EndpointState::Closed;
+                EPIPE
+            }
+            existing => {
+                guard[peer_idx] = existing;
+                crate::errno::EAGAIN
+            }
+        }
+    }
+
     /// `sys_grant` body. Syscall callers keep the whole IPC handoff under
     /// `without_interrupts`; `Channel.state` itself is IRQ-safe by type.
     /// Completes with a waiting `sys_recv_grant` or parks the grantor on its
@@ -497,17 +660,27 @@ impl Channel {
         }
     }
 
-    #[cfg(feature = "neo-test-smp-grant-cross-cpu")]
+    #[cfg(any(
+        feature = "neo-test-smp-grant-cross-cpu",
+        feature = "neo-test-ipc-try-send"
+    ))]
     pub fn debug_endpoint_is_grant_blocked(&self, side: EndpointSide) -> bool {
         let guard = self.state.lock();
         matches!(guard[side.idx()], EndpointState::GrantBlocked { .. })
+    }
+
+    #[cfg(feature = "neo-test-ipc-try-send")]
+    pub fn debug_endpoint_is_recv_grant_blocked(&self, side: EndpointSide) -> bool {
+        let guard = self.state.lock();
+        matches!(guard[side.idx()], EndpointState::RecvGrantBlocked { .. })
     }
 
     #[cfg(any(
         feature = "neo-test-q8c-close-peer-my-side-extract",
         feature = "neo-test-smp-cross-cpu-migration-reap",
         feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-        feature = "neo-test-smp-c11-migration-reservation"
+        feature = "neo-test-smp-c11-migration-reservation",
+        feature = "neo-test-ipc-try-send"
     ))]
     pub fn debug_endpoint_is_send_blocked(&self, side: EndpointSide) -> bool {
         let guard = self.state.lock();
@@ -518,7 +691,8 @@ impl Channel {
         feature = "neo-test-q8c-blocked-kill-walk",
         feature = "neo-test-q8c-blocked-kill-foreign-parked",
         feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-        feature = "neo-test-smp-c11-migration-reservation"
+        feature = "neo-test-smp-c11-migration-reservation",
+        feature = "neo-test-ipc-try-send"
     ))]
     pub fn debug_endpoint_is_recv_blocked(&self, side: EndpointSide) -> bool {
         let guard = self.state.lock();

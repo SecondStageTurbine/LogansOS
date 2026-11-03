@@ -469,6 +469,14 @@ pub fn serve(
 
 /// After the reply: lend the answer's cap over `surface`. `false`: the
 /// client didn't take it (its session is over).
+/// The cap (and its rights) the answer lends, if any (the client table's
+/// bounded lend, `apps::lend_arthur`).
+#[cfg_attr(not(feature = "atrium-apps"), allow(dead_code))]
+pub(super) fn lent(answer: &Answer) -> Option<(Handle, CapRights)> {
+    answer.lend
+}
+
+#[cfg_attr(feature = "atrium-apps", allow(dead_code))]
 pub fn lend(surface: Handle, answer: &Answer) -> bool {
     match answer.lend {
         Some((cap, rights)) => grant_over(surface, cap, rights),

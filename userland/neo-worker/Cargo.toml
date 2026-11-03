@@ -38,6 +38,17 @@ atrium-surface-protocol = []
 # DS-1c: the Lens role (a read-only directory instrument; still DS-1b's probe
 # when spawned with no handles).
 desktop-lens = ["dep:neo-text", "libneo/atrium-launch"]
+# OT-88 A1a: the probe app, a second focusable WM client for the app-model
+# scenarios (`src/probe_app.rs`).
+probe-app = ["dep:neo-text", "libneo/atrium-damage", "libneo/atrium-launch"]
+# Test only: the probe app exits 7 after its first key (per-client faults).
+probe-app-exit-after-key = ["probe-app"]
+probe-app-hang-reply = ["probe-app"]
+probe-app-stall-handshake = ["probe-app"]
+probe-app-drop-reply = ["probe-app"]
+# PR #15 review item 2: the probe app exits on the handoff's `K`, before its
+# `D` (a failed activation with the route already swapped to it).
+probe-app-die-on-discard = ["probe-app"]
 atrium-input-routing = []
 dw1-desktop-wm = []
 dw2-scene-policy = ["libneo/dw2-scene-policy"]

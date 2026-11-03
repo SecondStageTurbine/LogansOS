@@ -531,6 +531,15 @@ neo-test-wallclock-rtc-fallback = ["neo-test-wallclock-rtc", "rtc-epoch-force-in
 # input focus/route, SAK, deadline) so an idle desktop parks instead of
 # spinning. Off: the syscall does not exist (ENOSYS) and nothing else changes.
 wait-multiplex = []
+# OT-88 A0k: SYS_TRY_SEND and SYS_TRY_GRANT, a send and a grant that complete
+# only with the peer already parked in its receive (else EAGAIN), never
+# parking, so a WM can't be parked by a client that doesn't receive. Off: the
+# syscalls do not exist (ENOSYS) and nothing else changes.
+ipc-try-send = []
+# PR #15 review item 2: SYS_CLOSE also closes buffer, input-focus and process
+# handles (the WM's release of an ended client). Off: only files and channels
+# close, EBADF for the rest, exactly as before.
+close-object-handles = []
 # OT-22 test-only control: the channel send/grant/close paths do not fire
 # waiters, so an IPC-only wait can only end at its deadline. The
 # wait_any_core IPC leg must FAIL with it.
@@ -937,6 +946,10 @@ neo-test-di1-forward = ["neo-test", "atrium-pointer-forward", "neo-test-atrium-r
 # schedules, each forced on one CPU by an armed point (`focus::race`) that
 # runs Super+L (or a route read) between a route check and its effect.
 neo-test-lock-route-races = ["neo-test", "sak-lock-route", "neo-test-atrium-runtime"]
+# OT-88 A0k: SYS_TRY_SEND / SYS_TRY_GRANT complete only with a parked peer,
+# else EAGAIN with nothing changed; a 200-round race against a receiver on
+# CPU 1 delivers every message exactly once.
+neo-test-ipc-try-send = ["neo-test", "ipc-try-send"]
 # Jarvis (#61): a key repeat checked under one activation epoch is never
 # delivered under another (focus change, or Super+L, between the check and the
 # stage, or between the stage and the flush).
@@ -1107,6 +1120,30 @@ neo-test-desktop-wheel-boot = ["neo-test-desktop-pointer", "atrium-pointer-wheel
 # DI-1a: the DS-1 session with the B-ref pointer (WM-forwarded clicks, the
 # SAK escape, click-to-focus) over a real usb-mouse.
 neo-test-desktop-pointer-boot = ["neo-test-desktop-pointer"]
+# OT-88 A1a: the DS-1 session with the probe app as a second WM client, and
+# with it faulting; kernel-identical to desktop_pointer_boot (the WM's polling
+# loop needs SYS_TRY_RECV and the SAK), only the userland build differs.
+neo-test-desktop-apps-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-fault-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# The WM-liveness legs (app-model THINK §2.3 items 7, 8): a probe app that
+# never receives its reply, one that never finishes its handshake, and one
+# that exits between a request and the reply. A0k's tries keep
+# the WM (and Super+Tab) live through each.
+neo-test-desktop-apps-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-stall-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-drop-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 review: a client dead mid-handoff, slot reuse with a stale handle,
+# a flooding Arthur, and a held button across a front change and a death.
+neo-test-desktop-apps-handoff-death-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-reuse-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-grab-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 re-check item 3: Arthur hangs on a reply with the probe app live; he
+# alone is ended.
+neo-test-desktop-apps-arthur-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 re-check 2: Arthur's untaken Yield reply is settled with the WM's
+# input still served.
+neo-test-desktop-apps-arthur-yield-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # DS-1c: the DS-1 session whose Arthur blooms the read-only Lens (a second
 # client); kernel-identical to desktop_home_boot / desktop_pointer_boot, only
 # the userland build (`desktop-lens`) and the host-side capture checks differ.
