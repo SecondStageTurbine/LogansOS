@@ -114,6 +114,14 @@ pub struct StaticPage {
 impl StaticPage {
     /// Parse `html` and make a layout for it, `width` x `height` CSS px.
     pub fn new(html: &str, width: f32, height: f32) -> StaticPage {
+        // This thread is the page's script thread, as far as layout knows:
+        // Servo's script thread starts with `initialize(SCRIPT)`
+        // (`servo-script` 0.7.0, `event_loop/script_thread.rs:496`), and
+        // layout's `ThreadStateRestorer` (`servo-layout-api`, debug builds)
+        // swaps SCRIPT for LAYOUT around each reflow and asserts SCRIPT was
+        // set. Without it the first reflow panics in `thread_state::exit`
+        // (the first on-target L2 run, 2026-11-03).
+        style::thread_state::initialize(style::thread_state::ThreadState::SCRIPT);
         PipelineNamespace::install(PipelineNamespaceId(1));
         let url = ServoUrl::parse("about:blank").expect("about:blank");
         let extra = UrlExtraData::from(url.as_url().clone());
