@@ -2007,6 +2007,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
+        // musl's portable C over a std bottom half) in a real-std process.
+        name: "cxx_runtime_smoke",
+        feature: "neo-test-cxx-runtime-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // A socket's last handle leaving (exit, kill, revoke) closes it: the
         // port is free again and the net tables are back to their baseline.
         name: "socket_teardown",
@@ -6077,6 +6086,7 @@ fn main() -> ExitCode {
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
+        "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
         "gate-plan" => cmd_gate_plan(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
@@ -6266,6 +6276,9 @@ fn print_help() {
     println!("    neo-test-build build one scenario ISO + disk bundle without launching QEMU");
     println!(
         "    ot61-closure-build  build the OT-61 C2.3b html5ever/selectors smoke (overlay std, A4 checks)"
+    );
+    println!(
+        "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
     );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
@@ -6698,6 +6711,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_host_smoke" => &["servo-host-smoke"],
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
+        "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         _ => &[],
     }
 }
@@ -7688,7 +7702,10 @@ fn build_user_members(
             build_servo_closure_smoke()?;
         }
         if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
-            build_closure_smoke(STYLO_SMOKE_BIN, STYLO_SMOKE_DIR)?;
+            build_standalone_std_smoke(STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR)?;
+        }
+        if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
+            build_cxx_runtime_smoke()?;
         }
     }
     Ok(())
@@ -7702,37 +7719,87 @@ const SERVO_CLOSURE_DIR: &str = "userland/servo-closure-smoke";
 /// OT-61 C2.4: upstream Stylo over the same vendored tree, its own crate.
 const STYLO_SMOKE_BIN: &str = "stylo-smoke";
 const STYLO_SMOKE_DIR: &str = "userland/stylo-smoke";
+/// OT-61 C3a: the private C/C++ runtime smoke (`userland/neo-crt` under
+/// `userland/cxx-runtime-smoke`). Its own crate and target dir for the same
+/// reason as the closure smokes: only its scenario compiles the C runtime
+/// (and needs clang).
+const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
+const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
+/// Its hardening twin, in the same crate (`src/trap.rs`).
+const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 
-/// The std crates with their own target dir (the vendored-closure smokes),
-/// each built as a known target (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`).
-fn is_closure_smoke_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR
+/// The std crates with their own target dir that build std as a known target
+/// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
+/// vendored-closure smokes and the C/C++ runtime smoke.
+fn standalone_std_dir(bin: &str) -> Option<&'static str> {
+    match bin {
+        SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
+        STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
+        CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
+        _ => None,
+    }
+}
+
+fn is_standalone_std_dir(subdir: &str) -> bool {
+    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR || subdir == CXX_RUNTIME_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
-    build_closure_smoke(SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR)
+    build_standalone_std_smoke(SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR)
 }
 
-/// Build a closure smoke (the overlay must already be applied) and run the
-/// A4 checks on it: the vendored crates may add no `syscall` site and no TCB
-/// read of their own.
-fn build_closure_smoke(bin: &str, dir: &str) -> Result<(), String> {
+fn build_cxx_runtime_smoke() -> Result<(), String> {
+    build_standalone_std_smoke(
+        CXX_RUNTIME_BIN,
+        &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        CXX_RUNTIME_DIR,
+    )
+}
+
+/// Build one standalone std smoke (the overlay must already be applied) and
+/// run the A4 checks on it: nothing it links (the vendored crates, the C
+/// runtime) may add a `syscall` site or a TCB read of its own.
+fn build_standalone_std_smoke(package: &str, bins: &[&str], dir: &str) -> Result<(), String> {
     invalidate_stale_overlay_std_in(
         &workspace_root().join(dir).join("target"),
         "RUSTC_BOOTSTRAP_SYNTHETIC_TARGET=1",
     )?;
-    build_member(
-        &format!("userspace {bin}"),
-        bin,
-        bin,
-        dir,
-        "x86_64-unknown-neoplutarch",
-        &[],
-        false,
-    )?;
-    let elf = std_real_bin_path(bin);
-    verify_std_real_syscall_sites(&elf)?;
-    verify_std_real_tcb_reads(&elf)
+    for bin in bins {
+        build_member(
+            &format!("userspace {bin}"),
+            package,
+            bin,
+            dir,
+            "x86_64-unknown-neoplutarch",
+            &[],
+            false,
+        )?;
+        let elf = std_real_bin_path(bin);
+        verify_std_real_syscall_sites(&elf)?;
+        verify_std_real_tcb_reads(&elf)?;
+    }
+    Ok(())
+}
+
+/// `cargo xtask ot61-crt-build`: apply the std overlay and build the C3a
+/// C/C++ runtime smoke, with its A4 checks, without a QEMU run (the CI job
+/// that builds the runtime).
+fn cmd_ot61_crt_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-crt-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_cxx_runtime_smoke()?;
+    let elf = std_real_bin_path(CXX_RUNTIME_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-crt-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
 }
 
 /// `cargo xtask ot61-closure-build`: apply the std overlay and build the C2.3b
@@ -7749,7 +7816,7 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_closure_smoke(bin, dir)?;
+    build_standalone_std_smoke(bin, &[bin], dir)?;
     let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
@@ -8175,12 +8242,7 @@ fn std_real_smoke_path() -> PathBuf {
 /// The built ELF of a staged std bin: the closure smoke from its own crate,
 /// every other one from `userland/std-real-smoke`.
 fn std_real_bin_path(bin: &str) -> PathBuf {
-    if bin == SERVO_CLOSURE_BIN || bin == STYLO_SMOKE_BIN {
-        let dir = if bin == STYLO_SMOKE_BIN {
-            STYLO_SMOKE_DIR
-        } else {
-            SERVO_CLOSURE_DIR
-        };
+    if let Some(dir) = standalone_std_dir(bin) {
         workspace_root()
             .join(dir)
             .join("target/x86_64-unknown-neoplutarch/debug")
@@ -8261,11 +8323,11 @@ fn build_member_at_opt_level(
         eprintln!("[xtask] building {label} with dev opt-level=2");
         cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", "2");
     }
-    if subdir == "userland/std-real-smoke" || is_closure_smoke_dir(subdir) {
+    if subdir == "userland/std-real-smoke" || is_standalone_std_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if is_closure_smoke_dir(subdir) {
+    if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
         // list (JSON targets included), and then every crate that uses std
         // needs `#![feature(restricted_std)]`: the vendored closure would need
@@ -18030,6 +18092,27 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "Stylo must style the document sequentially and match every hand-derived value",
+            )?;
+        }
+    }
+    if scenario.name == "cxx_runtime_smoke" {
+        // The smoke's own lines: the musl printf path reached the console, and
+        // every check passed (the kernel's PASS line covers the exit code).
+        for needle in [
+            "[ crt-smoke ] stdout via musl printf: ok 7",
+            "[ crt-smoke ] ok(9) malloc/free from 6 threads at once, contents intact",
+            "[ crt-smoke ] ok(15) C++: one function-local static, 6 threads, built once",
+            "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
+            "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
+            "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] PASS",
+            "[ crt-trap ] reading std::vector<int>(4)[4]",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "the C/C++ runtime smoke must print through musl's stdout and pass every check, and its twin must reach the out-of-bounds read",
             )?;
         }
     }
