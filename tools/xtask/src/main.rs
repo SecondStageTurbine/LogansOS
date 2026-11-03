@@ -10411,6 +10411,7 @@ const CORE_PATHS: &[&str] = &[
     // 7. The test machinery and the workflow.
     "kernel/src/test_harness.rs",
     "kernel/src/test_harness_latency_oracle.rs",
+    "kernel/src/test_harness_pipe.rs",
     "tools/xtask/",
     "scripts/",
     ".github/workflows/",
