@@ -1009,10 +1009,19 @@ fn run_desktop_session(
     if sys_send(CONVERSATION, b"M") != 1 {
         return 50;
     }
-    let mut command = [0u8; 1];
-    if sys_recv(CONVERSATION, &mut command) != 1 || command[0] != b'K' {
+    // F8: under the WM's `desktop-clock` the `K` carries the user's zone id
+    // (`[K, lo, hi]`); a bare `K` means no zone (UTC).
+    let mut command = [0u8; 3];
+    let got = sys_recv(CONVERSATION, &mut command);
+    if !(got == 1 || got == 3) || command[0] != b'K' {
         return 53;
     }
+    #[cfg(feature = "arthur-clock")]
+    let clock_zone = if got == 3 {
+        u16::from_le_bytes([command[1], command[2]])
+    } else {
+        libneo::tz::UTC
+    };
     stage_b_log_line(b"DESKTOP arthur input focus=active source=live_hid");
     #[cfg(feature = "desktop-pointer-probe")]
     if !showcase_surface::probe_input_system_authority() {
@@ -1249,6 +1258,10 @@ fn run_desktop_session(
                 };
                 #[cfg(not(feature = "desktop-actions"))]
                 let handled = false;
+                // F8: the time and the date, from the system clock, before
+                // the model (which has none).
+                #[cfg(feature = "arthur-clock")]
+                let handled = handled || clock_reply(surface, &input[..input_len], clock_zone);
                 if handled {
                 } else if action {
                     #[cfg(feature = "desktop-lens")]
@@ -1512,6 +1525,48 @@ fn launch_probes(
     stage_b_log_u64(exit as u64);
     stage_b_log_newline();
     Ok(())
+}
+
+/// F8: if `line` asks the time or the date, write the answer from the
+/// system clock in `zone` and log it; `false` leaves the line to the model.
+#[cfg(feature = "arthur-clock")]
+fn clock_reply(
+    surface: &mut showcase_surface::ArthurSurface,
+    line: &[u8],
+    zone: libneo::tz::ZoneId,
+) -> bool {
+    use libneo::clock_answer::{Question, answer, question};
+    use libneo::tz::Basis;
+    let Some(q) = question(line) else {
+        return false;
+    };
+    // The status before the clock: a confirmed status means the clock read
+    // after it is UTC.
+    let basis = Basis::of(libneo::sys_clock_realtime_status());
+    let Ok(ns) = libneo::sys_clock_gettime(libneo::CLOCK_REALTIME) else {
+        return false;
+    };
+    let realtime = ns / 1_000_000_000;
+    let a = answer(q, realtime as i64, basis, zone);
+    surface.write_text(a.as_bytes());
+    stage_b_log_bytes(match q {
+        Question::Time => b"DESKTOP arthur clock question=time",
+        Question::Date => b"DESKTOP arthur clock question=date",
+    });
+    stage_b_log_bytes(match basis {
+        Basis::Utc => b" basis=utc",
+        Basis::Rtc => b" basis=rtc",
+        Basis::Legacy => b" basis=legacy",
+    });
+    stage_b_log_bytes(b" zone=");
+    stage_b_log_u64(u64::from(zone));
+    stage_b_log_bytes(b" realtime_s=");
+    stage_b_log_u64(realtime);
+    stage_b_log_bytes(b" reply=\"");
+    stage_b_log_bytes(a.as_bytes());
+    stage_b_log_bytes(b"\"");
+    stage_b_log_newline();
+    true
 }
 
 /// DS-1: receive Home's intent (`b"I"` + printable ASCII, possibly empty)
