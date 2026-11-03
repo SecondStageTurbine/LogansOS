@@ -183,7 +183,7 @@ of the listed features compiles the arm), `A` (image A), `libneo` (wrapper in `u
 | 22 | 0x16 | `SYS_OBSERVE` | `out: ptr, out_len` (`KernelObservabilityV1`) | 0, fills the snapshot | `EINVAL` (size), `EFAULT`, `ENOSYS` | `kernel-observability` | **no** | `sys_observe` |
 | 23 | 0x17 | `SYS_FTRUNCATE` | `fd: u32, new_len: u64` | 0 | `EINVAL`, `EBADF`, `EACCES`, `EPERM`, `ESTALE`, VFS errors | always | yes | `sys_ftruncate` |
 | 24 | 0x18 | `SYS_FILE_REPLACE` | `fd: u32, bytes: ptr, len` | 0 | `EINVAL`, `EBADF`, `EACCES`, `EPERM`, `EBUSY`, `EEXIST`, `EIO`, `EISDIR`, `ENOENT`, `ENOMEM`, `ENOSYS`, `ENOTDIR`, `ESTALE` | `neofs-file-replace` | **no** | `sys_file_replace` |
-| 25 | 0x19 | `SYS_POWER` | `action: u64` (1 = power off, 2 = restart), `flags: u64` (0) | 0: the clean shutdown started (the caller is spared until the power goes) | `EINVAL` (action, flags), `EBADF` (no `PowerControl` cap), `EPERM` (the cap lacks that action's right), `EBUSY` (a shutdown is already running) | `power-cap` | **no** | `sys_power` |
+| 25 | 0x19 | `SYS_POWER` | `action: u64` (1 = power off, 2 = restart), `flags: u64` (0) | 0: the clean shutdown started (the caller is spared until the power goes) | `EINVAL` (action, flags), `EPERM` (no `PowerControl` cap, or the cap lacks that action's right), `EBUSY` (a shutdown is already running), `ENOSYS` (a kernel without `power-cap`) | `power-cap` | **no** | `sys_power` |
 
 Notes:
 - `SYS_SPAWN` inherits only handles carrying `GRANT` (and a spawned own-directory cap); a `File` handle

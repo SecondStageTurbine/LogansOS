@@ -41397,11 +41397,27 @@ fn run_ot90_cap() -> ! {
     use crate::acpi::power_abi::{ACTION_POWER_OFF, ACTION_RESTART};
     use crate::arch::x86_64::syscall::debug_sys_power_for_test as sys_power;
     use crate::errno::{EBUSY, EINVAL, EPERM};
-    use crate::sched::process::{self, Handle, meta_rights};
-    let rights = match process::root_power_control_cap() {
-        Handle::PowerControl { rights, .. } => rights,
-        _ => fail("reason=cap_wrong_kind"),
+    use crate::sched::process::{Handle, meta_rights};
+    // Janus's #8 review, item 1a: the cap comes from neo-init's actual root
+    // table (`root_inherited_caps`), not a separately minted one, so a build
+    // whose only root authority is `power-cap` (this scenario's) must install
+    // exactly one PowerControl there.
+    let root = crate::root_inherited_caps();
+    let mut power = root.iter().filter_map(|c| match c.handle {
+        Handle::PowerControl { rights, .. } => Some(rights),
+        _ => None,
+    });
+    let Some(rights) = power.next() else {
+        fail("reason=root_table_has_no_power_cap");
     };
+    if power.next().is_some() {
+        fail("reason=root_table_has_two_power_caps");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} root_caps={} power_caps=1",
+        SCENARIO,
+        root.len()
+    );
     if !rights.has_meta(meta_rights::USE)
         || rights.has_meta(meta_rights::DERIVE)
         || rights.has_meta(meta_rights::GRANT)

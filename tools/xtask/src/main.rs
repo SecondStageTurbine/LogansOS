@@ -11712,6 +11712,10 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             scenario.name,
             &serial,
             &[
+                // Janus's #8 review, item 1a: neo-init's actual root table
+                // holds the cap in a build whose only root authority is
+                // `power-cap`.
+                "root_caps=1 power_caps=1",
                 "stage=power_off_requested",
                 "[ power ] shutdown: started kind=PowerOff",
                 "cap=no_derive_no_grant refusals=ok started=0 second=-16",
