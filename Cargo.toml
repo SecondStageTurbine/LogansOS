@@ -91,6 +91,9 @@ exclude = [
     # x86_64-unknown-neoplutarch (std + clang), as a path dependency of
     # userland/cxx-runtime-smoke; never for the host workspace.
     "userland/neo-crt",
+    # OT-61 rung 4: the SWGL S1 smoke (third-party closure in
+    # third_party/ot61-swgl); built standalone for the target only.
+    "userland/swgl-smoke",
     # OT-86 Fix 1: vendored rust-osdev `acpi` 6.1.1 (upstream MIT/Apache-2.0
     # licence and formatting). A path dependency of tools/acpi-aml-grade only;
     # kept out of the workspace so first-party lints and fmt don't apply to it.

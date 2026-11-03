@@ -1,0 +1,15 @@
+[package]
+name = "swgl"
+version.workspace = true
+license = "MPL-2.0"
+authors = ["The Mozilla Project Developers"]
+build = "build.rs"
+description = "Software OpenGL implementation for WebRender."
+
+[build-dependencies]
+cc = "1.0.46"
+glsl-to-cxx = { workspace = true }
+webrender_build = { workspace = true }
+
+[dependencies]
+gleam = { workspace = true }

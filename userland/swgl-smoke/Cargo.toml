@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: MPL-2.0
+# Standalone (excluded from the root workspace): OT-61 rung 4, the SWGL
+# software-render floor, step S1 (docs/RESEARCH-2026-07-22-ot61-swgl-browser-floor-spike-FINDINGS.md §0):
+# upstream SWGL rasterizing into a caller-owned, padded-stride buffer on
+# x86_64-unknown-neoplutarch, over neo-crt (musl + libc++). Every
+# third-party crate resolves to third_party/ot61-swgl/vendor through
+# [patch.crates-io]; the first build runs on the CI runners.
+[workspace]
+
+[package]
+name = "swgl-smoke"
+version = "0.0.1"
+edition = "2024"
+license = "MPL-2.0"
+description = "OT-61 rung 4 S1 gate: SWGL clears into a caller buffer, byte-compared with a hand-laid oracle on-target"
+
+[[bin]]
+name = "swgl-smoke"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+neo-std-pal = { path = "../neo-std-pal" }
+neo-crt = { path = "../neo-crt" }
+swgl = "=0.70.0"
+gleam = "=0.15.1"
+
+# Every third-party crate resolves to the vendored closure
+# (third_party/ot61-swgl/VENDORED.md: licences and upstream commits).
+# [patch] rather than source replacement: build-std resolves std's own
+# dependencies through the same sources, and those are not vendored here.
+[patch.crates-io]
+bitflags = { path = "../../third_party/ot61-swgl/vendor/bitflags-2.13.2" }
+cc = { path = "../../third_party/ot61-swgl/vendor/cc-1.2.63" }
+find-msvc-tools = { path = "../../third_party/ot61-swgl/vendor/find-msvc-tools-0.1.15" }
+gl_generator = { path = "../../third_party/ot61-swgl/vendor/gl_generator-0.14.0" }
+gleam = { path = "../../third_party/ot61-swgl/vendor/gleam-0.15.1" }
+glsl = { path = "../../third_party/ot61-swgl/vendor/glsl-6.0.2" }
+glsl-to-cxx = { path = "../../third_party/ot61-swgl/vendor/glsl-to-cxx-0.70.0" }
+khronos_api = { path = "../../third_party/ot61-swgl/vendor/khronos_api-3.1.0" }
+lazy_static = { path = "../../third_party/ot61-swgl/vendor/lazy_static-1.5.1" }
+linked_list_allocator = { path = "../../third_party/ot61-swgl/vendor/linked_list_allocator-0.10.6" }
+log = { path = "../../third_party/ot61-swgl/vendor/log-0.4.35" }
+memchr = { path = "../../third_party/ot61-swgl/vendor/memchr-2.8.3" }
+minimal-lexical = { path = "../../third_party/ot61-swgl/vendor/minimal-lexical-0.2.1" }
+nom = { path = "../../third_party/ot61-swgl/vendor/nom-7.1.3" }
+shlex = { path = "../../third_party/ot61-swgl/vendor/shlex-2.0.1" }
+swgl = { path = "../../third_party/ot61-swgl/patched/swgl-0.70.0" }
+webrender_build = { path = "../../third_party/ot61-swgl/vendor/webrender_build-0.70.0" }
+xml-rs = { path = "../../third_party/ot61-swgl/vendor/xml-rs-0.8.29" }
