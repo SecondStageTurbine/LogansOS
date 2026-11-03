@@ -604,6 +604,28 @@ C2.4 survey §3.7). Its first run is on the CI runners: the closure workflow's `
 host. Versions and licences are from each wheel's `METADATA`; the SHA-256s are of the files as vendored (they are
 also covered by `stylo`'s `.cargo-checksum.json`).
 
+**OT-61 L0 (`userland/layout-smoke`, #55) adds these.** Each build script was read for this list. None fetches anything, none
+runs Python, and none probes the host for a library on this build:
+
+- **C and C++, compiled with `cc` for our target** (through #66's `swgl_cc_env` variables once L0 links):
+  - `harfbuzz-sys` 0.8.0: HarfBuzz from its bundled sources. Our build turns on only its `bundled` feature (the
+    unit graph shows it). Without that feature its build script would call `pkg_config::probe_library("harfbuzz")`;
+    with it, it never does.
+  - `fontsan` 0.7.0: OTS (the font sanitiser), its glue, and lz4.
+  - `libz-sys` 1.1.31: zlib from its bundled `stock-zlib` sources, because `layout-smoke` turns on `static`. Its
+    `pkg-config`, `vcpkg` and `cmake` paths are for system or Windows zlib, and `static` skips them on this target.
+  - `wuff-capi` 0.2.0: only prints its header directory for `fontsan`; it compiles nothing.
+- **Build scripts that probe `rustc`** (run `$RUSTC --version`, or compile a feature probe, and set `cfg`s):
+  `crc32fast` 1.5.4, `serde_json` 1.0.154, `thiserror` 1.0.69 and 2.0.21, `zmij` 1.0.23, and, through
+  `version_check` or `rustversion`, `cookie` 0.16.2 and 0.18.2, `generic-array` 0.14.7, `slotmap` 1.1.1 and
+  `rustls` 0.23.46.
+- **Proc macros:** `darling_macro` 0.24.1, `enumn` 0.1.14, `num_enum_derive` 0.7.6, `serde_with_macros` 3.24.0,
+  `thiserror-impl` 1.0.69 and 2.0.21, `time-macros` 0.2.32, `zeroize_derive` 1.5.0, and Servo's
+  `servo-config-macro`, `servo-media-derive` and `servo-tracing` 0.7.0.
+
+Like the rest of this tree, they first run on the CI runners: in the closure job L0 adds once #66 lands (until then
+they have run only in local builds).
+
 ## Obligations
 
 MIT and Apache-2.0 notices for the linked crates go into `NOTICE` when a browser binary ships (each crate's
