@@ -157,10 +157,18 @@ pub fn render_and_check(page: &neo_static_page::StaticPage) {
     if let Err(e) = &rendered {
         println!("{TAG} render: {e:?}");
     }
+    // SWGL queues draws; asking for the colour buffer with `flush` runs
+    // them into our buffer (as webrender-smoke does before its read).
+    let (ptr, w, h, stride) = ctx.get_color_buffer(0, true);
+    let ours = ptr == fb.as_mut_ptr().cast::<c_void>()
+        && (w, h, stride) == (W as i32, H as i32, STRIDE as i32);
+    if !ours {
+        println!("{TAG} colour buffer {ptr:?} {w}x{h} stride {stride}");
+    }
     check(
         61,
-        "WebRender starts on SWGL and renders the page's frame",
-        rendered.is_ok(),
+        "WebRender renders the page's frame into our 800x600 buffer",
+        rendered.is_ok() && ours,
     );
 
     let (first, n) = mismatches(&fb, true);
