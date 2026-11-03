@@ -109,6 +109,11 @@ pub struct PaintHost {
     painted: Arc<Mutex<Painted>>,
 }
 
+std::thread_local! {
+    /// Whether this thread's pipeline namespace is installed (`StaticPage::new`).
+    static NAMESPACE_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The id namespace this host's keys come from.
 const NAMESPACE: IdNamespace = IdNamespace(1);
 
@@ -230,7 +235,16 @@ impl StaticPage {
         // set. Without it the first reflow panics in `thread_state::exit`
         // (the first on-target L2 run, 2026-11-03).
         style::thread_state::initialize(style::thread_state::ThreadState::SCRIPT);
-        PipelineNamespace::install(PipelineNamespaceId(1));
+        // Servo installs a thread's pipeline namespace once (it asserts so,
+        // `servo-base` `id.rs:208`); a script thread then hosts every
+        // document it loads in that one namespace. So a second page made on
+        // this thread reuses it (L4 makes its text page after L3's page; the
+        // first L4 run, 2026-11-03, panicked here).
+        NAMESPACE_INSTALLED.with(|done| {
+            if !done.replace(true) {
+                PipelineNamespace::install(PipelineNamespaceId(1));
+            }
+        });
         let url = ServoUrl::parse("about:blank").expect("about:blank");
         let extra = UrlExtraData::from(url.as_url().clone());
         let extra_url = url.clone();
