@@ -18659,6 +18659,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
+            "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
+            "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
