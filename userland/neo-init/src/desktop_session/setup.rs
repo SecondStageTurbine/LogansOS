@@ -63,10 +63,44 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                     Finish::Skipped => line,
                 };
                 line.s(b"\n").emit();
+                #[cfg(feature = "setup-store")]
+                if finish == Finish::Try {
+                    store(scene, &c);
+                }
                 return end(scene);
             }
         }
     }
+}
+
+/// F11 S2: the choices into the settings store, through the WM's own path
+/// (`set_wm`: checked, written to the file not holding the record and
+/// applied live; on the volatile overlay, in memory only). The zone is S3's,
+/// with the clock confirm. Skip writes nothing: the defaults stand.
+#[cfg(feature = "setup-store")]
+fn store(scene: &mut Scene, c: &setup_core::Choices) {
+    use settings_core::Key;
+    let rm = if c.reduce_motion { 1 } else { 0 };
+    let writes = [
+        (Key::ReduceTransparency, u32::from(c.reduce_transparency)),
+        (Key::ReduceMotion, rm),
+        // One language and one layout exist (S6/S5 add the rest).
+        (Key::Language, 0),
+        (Key::KeyboardLayout, 0),
+    ];
+    let mut refused = 0u64;
+    for (key, value) in writes {
+        if super::settings::set_wm(scene, key.id(), value) != 0 {
+            refused += 1;
+        }
+    }
+    Line::new()
+        .s(b"DESKTOP setup stored keys=4 refused=")
+        .n(refused)
+        .s(b" volatile=")
+        .n(u64::from(super::settings::volatile()))
+        .s(b"\n")
+        .emit();
 }
 
 fn log_page(wizard: &Wizard) {
