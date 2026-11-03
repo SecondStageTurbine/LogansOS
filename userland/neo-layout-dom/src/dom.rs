@@ -33,6 +33,29 @@ pub struct SharedRwLocks {
     pub ua_or_user: SharedRwLock,
 }
 
+std::thread_local! {
+    /// The calling thread's locks, shared by every document parsed on it.
+    static THREAD_LOCKS: SharedRwLocks = SharedRwLocks {
+        author: SharedRwLock::new(),
+        ua_or_user: SharedRwLock::new(),
+    };
+}
+
+impl SharedRwLocks {
+    /// The calling thread's locks. Servo's script thread has one pair for
+    /// all its documents, and layout relies on it: it parses the user-agent
+    /// sheets once per thread under the first document's `ua_or_user` lock
+    /// (`get_ua_stylesheets`, `servo-layout` `layout_impl.rs:1738`), and
+    /// reading them with another document's guard panics
+    /// (`shared_lock.rs:146`; the second on-target L4 run, 2026-11-03).
+    pub fn for_this_thread() -> SharedRwLocks {
+        THREAD_LOCKS.with(|l| SharedRwLocks {
+            author: l.author.clone(),
+            ua_or_user: l.ua_or_user.clone(),
+        })
+    }
+}
+
 pub(crate) enum NodeData {
     Document,
     Text(AtomicRefCell<String>),
@@ -458,10 +481,7 @@ fn attr_value(name: &QualName, value: &str) -> AttrValue {
 fn build(doc: &RcHandle, url: &UrlExtraData) -> Box<Document> {
     let mut document = Box::new(Document {
         nodes: Vec::new(),
-        locks: SharedRwLocks {
-            author: SharedRwLock::new(),
-            ua_or_user: SharedRwLock::new(),
-        },
+        locks: SharedRwLocks::for_this_thread(),
         quirks_mode: QuirksMode::NoQuirks,
     });
     let doc_ptr: *const Document = &*document;
