@@ -221,7 +221,17 @@ impl StaticPage {
             epoch: Epoch(1),
             restyle: Some(ReflowRequestRestyle {
                 reason: RestyleReason::empty(),
-                dirty_root: Some(self.document.address(0)),
+                // An element (layout unwraps `as_element()` on it): the
+                // document element, as Servo's script passes for a first
+                // reflow. The document node itself panicked layout on
+                // target (layout_impl.rs:1297, 2026-11-03).
+                dirty_root: Some(
+                    self.document.address(
+                        self.document
+                            .document_element()
+                            .expect("html5ever always makes <html>"),
+                    ),
+                ),
                 stylesheets_changed: true,
                 pending_restyles: Vec::new(),
             }),
