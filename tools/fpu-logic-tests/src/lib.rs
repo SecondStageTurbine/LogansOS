@@ -102,4 +102,101 @@ mod tests {
             xsave_area_size(576, [AVX, HI16_ZMM])
         );
     }
+
+    mod ap_policy {
+        use super::super::fpu_logic::{ApVerdict, ApXsave, Policy, ap_verdict};
+
+        /// x87|SSE|AVX, sized 832 (AVX ends at 576 + 256).
+        const XSAVE_AVX: Policy = Policy {
+            xsave: true,
+            mask: 0x7,
+            area: 832,
+        };
+        const FXSAVE: Policy = Policy {
+            xsave: false,
+            mask: 0x3,
+            area: 512,
+        };
+        const SAME_CPU: ApXsave = ApXsave {
+            plan_supported: true,
+            xcr0: Some(0x7),
+            need: 832,
+        };
+
+        #[test]
+        fn same_cpu_is_admitted() {
+            assert_eq!(ap_verdict(XSAVE_AVX, SAME_CPU), ApVerdict::Admit);
+        }
+
+        #[test]
+        fn a_smaller_need_is_admitted_and_changes_nothing() {
+            let ap = ApXsave {
+                need: 768,
+                ..SAME_CPU
+            };
+            assert_eq!(ap_verdict(XSAVE_AVX, ap), ApVerdict::Admit);
+        }
+
+        #[test]
+        fn a_larger_need_is_rejected() {
+            let ap = ApXsave {
+                need: 896,
+                ..SAME_CPU
+            };
+            assert_eq!(
+                ap_verdict(XSAVE_AVX, ap),
+                ApVerdict::AreaTooSmall {
+                    need: 896,
+                    area: 832
+                }
+            );
+        }
+
+        #[test]
+        fn no_xsave_under_an_xsave_policy_is_rejected() {
+            let ap = ApXsave {
+                plan_supported: false,
+                xcr0: None,
+                need: 512,
+            };
+            assert_eq!(ap_verdict(XSAVE_AVX, ap), ApVerdict::NoXsave);
+            let ap = ApXsave {
+                xcr0: None,
+                ..SAME_CPU
+            };
+            assert_eq!(ap_verdict(XSAVE_AVX, ap), ApVerdict::NoXsave);
+        }
+
+        #[test]
+        fn an_xcr0_that_did_not_take_the_mask_is_rejected() {
+            let ap = ApXsave {
+                xcr0: Some(0x3),
+                ..SAME_CPU
+            };
+            assert_eq!(
+                ap_verdict(XSAVE_AVX, ap),
+                ApVerdict::Xcr0Mismatch { xcr0: 0x3 }
+            );
+            // More than the mask is a mismatch too: XSAVE would write it.
+            let ap = ApXsave {
+                xcr0: Some(0xe7),
+                ..SAME_CPU
+            };
+            assert_eq!(
+                ap_verdict(XSAVE_AVX, ap),
+                ApVerdict::Xcr0Mismatch { xcr0: 0xe7 }
+            );
+        }
+
+        #[test]
+        fn the_fxsave_policy_admits_any_cpu() {
+            let ap = ApXsave {
+                plan_supported: false,
+                xcr0: None,
+                need: 0,
+            };
+            assert_eq!(ap_verdict(FXSAVE, ap), ApVerdict::Admit);
+            assert_eq!(ap_verdict(FXSAVE, SAME_CPU), ApVerdict::Admit);
+        }
+    }
 }

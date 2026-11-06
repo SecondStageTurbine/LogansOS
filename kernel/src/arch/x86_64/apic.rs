@@ -64,6 +64,17 @@ pub fn register_lapic_id(cpu_id: u32, lapic_id: u32) {
     }
 }
 
+/// Forget `cpu_id`'s local APIC ID: an AP that was started but stayed offline
+/// (it cannot run under the FPU save policy). It halts before its IDT is
+/// loaded, so nothing may target it: `cpu_stop::stop_others` sends a STOP IPI
+/// and then an NMI to every registered CPU (#57 re-check).
+pub fn unregister_lapic_id(cpu_id: u32) {
+    let idx = cpu_id as usize;
+    if idx < per_cpu::MAX_CPUS {
+        LAPIC_IDS[idx].store(INVALID_LAPIC_ID, Ordering::Release);
+    }
+}
+
 /// xAPIC IPIs refused for a destination above 255 (the first is logged).
 static XAPIC_IPI_REFUSED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -217,7 +228,7 @@ pub fn send_nmi_ipi(target_cpu: u32) {
 }
 
 /// Whether `cpu_id` has a registered local APIC (it was started).
-#[cfg(feature = "power-stop-cpus")]
+#[cfg(any(feature = "power-stop-cpus", feature = "neo-test-xsave-ap-policy"))]
 pub fn cpu_registered(cpu_id: u32) -> bool {
     (cpu_id as usize) < per_cpu::MAX_CPUS && lapic_id_for_cpu(cpu_id) != INVALID_LAPIC_ID
 }

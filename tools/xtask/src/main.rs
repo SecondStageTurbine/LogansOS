@@ -2759,6 +2759,22 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    TestScenario {
+        // #52 review item 1: the FPU save policy is the boot CPU's and never
+        // changes. An AP that needs a larger area stays offline; one that
+        // needs a smaller one comes online without shrinking it. Needs
+        // NEO_SMP>=3 (the gate runs 4). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-xsave-ap-policy-control (each AP
+        // republishes its own size, as before: must FAIL), and
+        // neo-test-xsave-ap-policy-late-sample (the rejection baseline read
+        // after the AP's launch, as before: the rejection is lost and the
+        // BSP waits out its spin limit, so it times out).
+        name: "xsave_ap_policy",
+        feature: "neo-test-xsave-ap-policy",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // A stub-level x87/SSE save in `swapgs_irq_entry`: a test-only vector whose
     // body clobbers xmm0-15 must leave the interrupted context's registers intact.
     // The same rounds also go through the timer stub; both bodies must see DF=0,
@@ -5251,6 +5267,18 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // #52 review item 4: a kernel-mode #GP while this CPU holds the
+        // serial lock still reaches the panic screen (the fatal-trap path
+        // panics before it prints). Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-fb-gp-holding-serial-control
+        // (print first: must FAIL by timeout).
+        name: "fb_gp_holding_serial",
+        feature: "neo-test-fb-gp-holding-serial",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // Zenbook lane: a disk with no NeoPlutarch marker is never written
         // (the block guard refuses, the log sink refuses, the bytes stay).
         // Control: NEO_TEST_EXTRA_FEATURES=neo-test-block-write-guard-control
@@ -6950,9 +6978,16 @@ fn product_image_ub_checks_on() -> bool {
 }
 
 fn build_product_image_kernel() -> Result<(), String> {
+    build_product_image_kernel_with(&[])
+}
+
+/// The product image's kernel plus `extra` features (a boot witness's test
+/// hooks; empty for the image itself).
+fn build_product_image_kernel_with(extra: &[String]) -> Result<(), String> {
     let mut kernel_features: Vec<String> = PRODUCT_IMAGE_KERNEL_FEATURES
         .iter()
         .map(|f| f.to_string())
+        .chain(extra.iter().cloned())
         .collect();
     if boot_time_image() {
         kernel_features.push("boot-time".to_string());
@@ -9062,6 +9097,12 @@ fn cmd_vendor_verify(args: &[String]) -> Result<(), String> {
 
 fn cmd_iso(args: &[String]) -> Result<(), String> {
     let (with_model, rest) = split_with_model(args)?;
+    if let Some(options) = split_product_kernel(&rest)? {
+        if with_model.is_some() {
+            return Err("--product-kernel builds no model; drop --with-model".to_string());
+        }
+        return cmd_iso_product_kernel(&options);
+    }
     match with_model {
         None => {
             cmd_build(&rest)?;
@@ -9069,6 +9110,67 @@ fn cmd_iso(args: &[String]) -> Result<(), String> {
         }
         Some(neom) => cmd_iso_with_model(&neom, &rest),
     }
+}
+
+/// `iso --product-kernel [--no-kaslr] [--features <extra>]`: the product
+/// kernel's options when the flag is present. Any other argument is an error
+/// (this image takes no other build options).
+struct ProductKernelIso {
+    extra: Vec<String>,
+    /// Limine loads the kernel at its link address, so its ELF's addresses
+    /// are its run-time ones (`product-xsave-boot.sh`'s CPUID model).
+    no_kaslr: bool,
+}
+
+fn split_product_kernel(args: &[String]) -> Result<Option<ProductKernelIso>, String> {
+    if !args.iter().any(|a| a == "--product-kernel") {
+        return Ok(None);
+    }
+    let mut extra = Vec::new();
+    let mut no_kaslr = false;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--product-kernel" {
+            continue;
+        } else if arg == "--no-kaslr" {
+            no_kaslr = true;
+        } else if arg == "--features" {
+            let list = iter
+                .next()
+                .ok_or_else(|| "--features requires a list".to_string())?;
+            extra.extend(parse_feature_list(list));
+        } else if let Some(list) = arg.strip_prefix("--features=") {
+            extra.extend(parse_feature_list(list));
+        } else {
+            return Err(format!("iso --product-kernel: unexpected argument `{arg}`"));
+        }
+    }
+    Ok(Some(ProductKernelIso { extra, no_kaslr }))
+}
+
+/// `iso --product-kernel`: the product image's kernel (its features and
+/// opt-level, `build_product_image_kernel`), plus `extra` features, with no
+/// model staged. A boot witness for the shipped kernel (#52 review, item 3:
+/// `scripts/ci/product-xsave-boot.sh`); not a usable image.
+fn cmd_iso_product_kernel(options: &ProductKernelIso) -> Result<(), String> {
+    set_stage_std_real_smoke(&[]);
+    set_fault_probe_stage(None);
+    set_stage_reclaim_probe(false);
+    set_stage_kat_model(false);
+    set_boot_model_stage(None);
+    build_product_image_user()?;
+    build_product_image_kernel_with(&options.extra)?;
+    set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
+    let result = assemble_iso_with_limine_kaslr(options.no_kaslr.then_some(false));
+    set_desktop_resolution(None);
+    result
+}
+
+/// The product image's userland (its WM and Arthur): one build, shared by
+/// `iso --with-model` and `iso --product-kernel`.
+fn build_product_image_user() -> Result<(), String> {
+    build_user_with_feature(Some("desktop-with-model"))?;
+    Ok(())
 }
 
 /// B1c: the real 0.5B vocab beside the model (B1-1's reproducible import).
@@ -9318,7 +9420,7 @@ fn cmd_iso_with_model(neom: &Path, rest: &[String]) -> Result<(), String> {
         binary_vocab: true,
     }));
     let result = (|| {
-        build_user_with_feature(Some("desktop-with-model"))?;
+        build_product_image_user()?;
         build_product_image_kernel()?;
         set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
         assemble_iso()
@@ -14281,6 +14383,7 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "arthur_memory_forgetting"
             | "xsave_ymm_context_switch"
             | "xsave_ebx_understated"
+            | "xsave_ap_policy"
             // CP-38: without AVX/XSAVE (qemu64) the xsave-fpu stub silently takes
             // the FXSAVE fallback; `-cpu max` exercises the real XSAVE/XRSTOR path.
             | "irq_xmm_preserve"
@@ -24951,6 +25054,12 @@ mod tests {
     #[test]
     fn product_image_has_no_boot_evidence_holds() {
         assert!(!PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"boot-evidence-holds"));
+        // The product-kernel boot witness's hooks (#52 review item 3).
+        assert!(
+            !PRODUCT_IMAGE_KERNEL_FEATURES
+                .iter()
+                .any(|f| f.starts_with("test-") || f.starts_with("neo-test"))
+        );
         assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"fb-progress-console"));
     }
 

@@ -631,10 +631,15 @@ fn write_syscall_msrs() {
     // SYSENTER_CS = 0. On Intel SYSENTER is legal from 64-bit ring 3 and
     // enters ring 0 at SYSENTER_EIP/ESP unless SYSENTER_CS[15:2] is 0, which
     // makes it #GP(0); don't rely on firmware leaving the reset value (AMD
-    // #UDs SYSENTER in long mode).
-    // SAFETY: CPU-local trap init; every x86-64 CPU has the SYSENTER MSRs.
-    unsafe {
-        Msr::new(IA32_SYSENTER_CS).write(0);
+    // #UDs SYSENTER in long mode). The MSR exists only with SEP
+    // (CPUID.01H:EDX[11]); without it SYSENTER is #UD and there is nothing to
+    // close, and a WRMSR to it would #GP (a hypervisor CPU model may clear
+    // SEP; #52 review, item 2).
+    if has_sep() {
+        // SAFETY: CPU-local trap init; SEP ⇒ IA32_SYSENTER_CS exists.
+        unsafe {
+            Msr::new(IA32_SYSENTER_CS).write(0);
+        }
     }
 
     // SFMASK = bits CLEARED in RFLAGS on SYSCALL entry:
@@ -657,6 +662,12 @@ fn write_syscall_msrs() {
         "[ kernel ] syscall: SYSCALL/IRETQ enabled (LSTAR={:?}, SFMASK=IF|TF|AC|DF|NT)",
         VirtAddr::new(syscall_entry as *const () as u64)
     );
+}
+
+/// SEP (CPUID.01H:EDX[11]): SYSENTER/SYSEXIT and their MSRs
+/// (IA32_SYSENTER_CS/ESP/EIP) exist.
+pub fn has_sep() -> bool {
+    core::arch::x86_64::__cpuid(1).edx & (1 << 11) != 0
 }
 
 /// IA32_CSTAR: SYSCALL target RIP for compatibility mode.

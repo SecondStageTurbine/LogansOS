@@ -48,3 +48,66 @@ pub fn xsave_area_size(ebx: u32, components: impl IntoIterator<Item = Component>
 pub fn ebx_understated(ebx: u32, area: usize) -> bool {
     (ebx as usize) < area
 }
+
+/// The save policy the boot CPU published (#52 review, item 1). It is fixed
+/// once published: every CPU saves and restores with this mask into areas
+/// of this size, so no CPU may change it afterwards.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Policy {
+    /// XSAVE (`true`) or the legacy FXSAVE image (`false`).
+    pub xsave: bool,
+    /// The XCR0 mask every CPU saves with.
+    pub mask: u64,
+    /// The save-area size every buffer is allocated with.
+    pub area: usize,
+}
+
+/// What an application processor found when it checked [`Policy`].
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ApXsave {
+    /// CPUID reports XSAVE, AVX, leaf 0xD and the policy's components.
+    pub plan_supported: bool,
+    /// XCR0 as read back after writing the policy's mask (`None` if the CPU
+    /// could not take it: no CR4.OSXSAVE).
+    pub xcr0: Option<u64>,
+    /// The area this CPU's own CPUID says the mask needs (`xsave_area_size`).
+    pub need: usize,
+}
+
+/// Whether an application processor may come online under the policy.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ApVerdict {
+    /// It can save and restore exactly the policy's state in the policy's
+    /// area (always, for the FXSAVE policy: every x86-64 CPU has FXSAVE).
+    Admit,
+    /// The policy saves with XSAVE and this CPU cannot.
+    NoXsave,
+    /// XCR0 did not take the policy's mask.
+    Xcr0Mismatch { xcr0: u64 },
+    /// This CPU's XSAVE writes more than the policy's area holds.
+    AreaTooSmall { need: usize, area: usize },
+}
+
+/// Decide whether an application processor can run under `policy`. A CPU
+/// that cannot must stay offline: changing the policy to fit it would
+/// resize areas other CPUs already allocated and save into.
+pub fn ap_verdict(policy: Policy, ap: ApXsave) -> ApVerdict {
+    if !policy.xsave {
+        return ApVerdict::Admit;
+    }
+    if !ap.plan_supported {
+        return ApVerdict::NoXsave;
+    }
+    match ap.xcr0 {
+        None => return ApVerdict::NoXsave,
+        Some(xcr0) if xcr0 != policy.mask => return ApVerdict::Xcr0Mismatch { xcr0 },
+        Some(_) => {}
+    }
+    if ap.need > policy.area {
+        return ApVerdict::AreaTooSmall {
+            need: ap.need,
+            area: policy.area,
+        };
+    }
+    ApVerdict::Admit
+}

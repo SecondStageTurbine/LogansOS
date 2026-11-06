@@ -23,7 +23,9 @@ pub fn halt_forever() -> ! {
 /// during single-threaded boot).
 #[inline(always)]
 pub unsafe fn enable_sse() {
-    unsafe { x86_64::enable_sse() }
+    // The boot CPU publishes the FPU save policy, so it is always admitted.
+    let admitted = unsafe { x86_64::enable_sse() };
+    debug_assert!(admitted);
 }
 
 /// Install the GDT (with TSS) and IDT. After this returns, CPU exceptions
