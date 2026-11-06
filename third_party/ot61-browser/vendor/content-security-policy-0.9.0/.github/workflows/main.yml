@@ -1,0 +1,46 @@
+name: CI
+on:
+  # Only run when merging to master, or open/synchronize/reopen a PR.
+  push:
+    branches:
+      - master
+      - staging
+      - trying
+  pull_request:
+  merge_group:
+
+jobs:
+  format:
+    name: Check code formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      - name: Run cargo format
+        run: cargo fmt --check
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        rust: ["1.81.0", "stable", "beta"]
+        os: [ubuntu-latest]
+        cargo_params: ["--features=version-sync", "--features=serde"]
+    steps:
+      - uses: actions/checkout@master
+      - name: Set toolchain
+        run: |
+          rustup set profile minimal
+          rustup override set ${{ matrix.rust }}
+      - name: Test
+        run: cargo test ${{ matrix.cargo_params }}
+
+  ci-success:
+    name: ci
+    if: ${{ success() }}
+    needs:
+      - test
+      - format
+    runs-on: ubuntu-latest
+    steps:
+      - name: CI succeeded
+        run: exit 0

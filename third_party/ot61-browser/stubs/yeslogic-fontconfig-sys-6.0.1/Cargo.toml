@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "yeslogic-fontconfig-sys"
+version = "6.0.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/yeslogic/fontconfig-rs"
+description = "LogansOS empty stand-in for yeslogic-fontconfig-sys 6.0.1 (never compiled for LogansOS)"
+
+[lib]
+name = "fontconfig_sys"
+path = "src/lib.rs"
+
+[features]
+"dlopen" = []

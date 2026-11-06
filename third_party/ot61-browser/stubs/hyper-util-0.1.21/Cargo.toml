@@ -1,0 +1,42 @@
+# SPDX-License-Identifier: MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stub: hyper-util").
+# - What: the one type servo-net-traits 0.7.0 names from hyper-util,
+#   `client::legacy::Error`, as an opaque error, plus the published crate's
+#   feature names so dependents' feature lists resolve.
+# - Why: the published crate's `client-legacy` + `tokio` features (enabled by
+#   servo-net-traits) build an HTTP client over socket2 and tokio's network
+#   stack. A content process has no dial capability and never runs an HTTP
+#   client, so the stub keeps sockets out of its build.
+# - Safe because: nothing can construct the error (its field is private), so
+#   code that reports one is unreachable here.
+# - Licence: MIT, the upstream crate's (github.com/hyperium/hyper-util).
+[package]
+name = "hyper-util"
+version = "0.1.21"
+edition = "2021"
+license = "MIT"
+description = "LogansOS stand-in for hyper-util 0.1.21: one opaque error type, no HTTP client"
+repository = "https://github.com/hyperium/hyper-util"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+__internal_happy_eyeballs_tests = []
+client = []
+client-legacy = []
+client-pool = []
+client-proxy = []
+client-proxy-system = []
+full = []
+http1 = []
+http2 = []
+rt-tracing-exec-force = []
+server = []
+server-auto = []
+server-graceful = []
+service = []
+tokio = []
+tracing = []

@@ -1,0 +1,33 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-allocator-0.7.0/lib.rs patched/servo-allocator-0.7.0/lib.rs
+--- vendor/servo-allocator-0.7.0/lib.rs
++++ patched/servo-allocator-0.7.0/lib.rs
+@@ -152,7 +153,7 @@
+     }
+ }
+ 
+-#[cfg(all(not(windows), any(target_env = "ohos", not(feature = "use-jemalloc"))))]
++#[cfg(all(not(windows), not(target_os = "neoplutarch"), any(target_env = "ohos", not(feature = "use-jemalloc"))))]
+ mod platform {
+     pub use std::alloc::System as Allocator;
+     use std::os::raw::c_void;
+@@ -220,4 +221,20 @@
+     pub fn heap_reports() -> Vec<crate::HeapReport> {
+         Vec::new()
+     }
++}
++
++// LogansOS: std's allocator on target_os = "neoplutarch". There is no
++// usable-size query here, so Servo's memory reports count 0 for heap blocks.
++#[cfg(target_os = "neoplutarch")]
++mod platform {
++    pub use std::alloc::System as Allocator;
++    use std::os::raw::c_void;
++    /// # Safety
++    /// Any pointer; the size is not known on this target.
++    pub unsafe extern "C" fn usable_size(_ptr: *const c_void) -> usize {
++        0
++    }
++    pub fn heap_reports() -> Vec<crate::HeapReport> {
++        Vec::new()
++    }
+ }

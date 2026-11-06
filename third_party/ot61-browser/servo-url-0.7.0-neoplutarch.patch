@@ -1,0 +1,29 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-url-0.7.0/lib.rs patched/servo-url-0.7.0/lib.rs
+--- vendor/servo-url-0.7.0/lib.rs
++++ patched/servo-url-0.7.0/lib.rs
+@@ -163,6 +164,11 @@
+     }
+ 
+     pub fn to_file_path(&self) -> Result<::std::path::PathBuf, UrlError> {
++        // LogansOS: `url` has no file paths on target_os = "neoplutarch", and
++        // a content process has no ambient file system to name.
++        #[cfg(target_os = "neoplutarch")]
++        return Err(UrlError::ToFilePath);
++        #[cfg(not(target_os = "neoplutarch"))]
+         self.0.to_file_path().map_err(|_| UrlError::ToFilePath)
+     }
+ 
+@@ -195,6 +201,13 @@
+     }
+ 
+     pub fn from_file_path<P: AsRef<Path>>(path: P) -> Result<Self, UrlError> {
++        // LogansOS: as `to_file_path`.
++        #[cfg(target_os = "neoplutarch")]
++        {
++            let _ = path;
++            Err(UrlError::FromFilePath)
++        }
++        #[cfg(not(target_os = "neoplutarch"))]
+         Url::from_file_path(path)
+             .map(Self::from_url)
+             .map_err(|_| UrlError::FromFilePath)

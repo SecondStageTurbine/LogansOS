@@ -1,0 +1,68 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-paint-api-0.7.0/Cargo.toml patched/servo-paint-api-0.7.0/Cargo.toml
+--- vendor/servo-paint-api-0.7.0/Cargo.toml
++++ patched/servo-paint-api-0.7.0/Cargo.toml
+@@ -134,7 +135,7 @@
+ [dependencies.stylo_traits]
+ version = "0.22"
+ 
+-[dependencies.surfman]
++[target.'cfg(not(target_os = "neoplutarch"))'.dependencies.surfman]
+ version = "0.14.0"
+ features = ["sm-x11"]
+ 
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-paint-api-0.7.0/lib.rs patched/servo-paint-api-0.7.0/lib.rs
+--- vendor/servo-paint-api-0.7.0/lib.rs
++++ patched/servo-paint-api-0.7.0/lib.rs
+@@ -1,9 +1,11 @@
++// SPDX-License-Identifier: MPL-2.0
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ //! The interface to the `paint` crate, which helps to break dependency cycles.
+ 
++#[cfg(not(target_os = "neoplutarch"))]
+ use std::collections::HashMap;
+ use std::fmt::{Debug, Error, Formatter};
+ 
+@@ -19,14 +21,20 @@
+ use smallvec::SmallVec;
+ use strum::IntoStaticStr;
+ use style_traits::CSSPixel;
++#[cfg(not(target_os = "neoplutarch"))]
+ use surfman::{Adapter, Connection};
+ use webrender_api::{DocumentId, FontInstancePlatformOptions, FontVariation};
+ 
+ pub mod display_list;
++// LogansOS: surfman's GL contexts are not built for target_os = "neoplutarch";
++// rendering there is SWGL into an Atrium buffer (ADR-078 §2.2).
++#[cfg(not(target_os = "neoplutarch"))]
+ pub mod rendering_context;
+ pub mod viewport_description;
+ 
+-use std::sync::{Arc, Mutex};
++use std::sync::Arc;
++#[cfg(not(target_os = "neoplutarch"))]
++use std::sync::Mutex;
+ 
+ use bitflags::bitflags;
+ use display_list::PaintDisplayListInfo;
+@@ -517,15 +525,18 @@
+     }
+ }
+ 
++#[cfg(not(target_os = "neoplutarch"))]
+ #[derive(Clone)]
+ pub struct PainterSurfmanDetails {
+     pub connection: Connection,
+     pub adapter: Adapter,
+ }
+ 
++#[cfg(not(target_os = "neoplutarch"))]
+ #[derive(Clone, Default)]
+ pub struct PainterSurfmanDetailsMap(Arc<Mutex<HashMap<PainterId, PainterSurfmanDetails>>>);
+ 
++#[cfg(not(target_os = "neoplutarch"))]
+ impl PainterSurfmanDetailsMap {
+     pub fn get(&self, painter_id: PainterId) -> Option<PainterSurfmanDetails> {
+         let map = self.0.lock().expect("poisoned");
