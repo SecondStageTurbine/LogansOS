@@ -548,6 +548,10 @@ ipc-try-send = []
 # handles (the WM's release of an ended client). Off: only files and channels
 # close, EBADF for the rest, exactly as before.
 close-object-handles = []
+# L1a.1 step 2a (docs/THINK-2026-11-02-l1a1-pipe-wiring.md): the byte pipe,
+# Handle::Pipe, SYS_PIPE_* and the SYS_WAIT_ANY pipe item. Parks by wait
+# token, so it needs wait-multiplex. Off = no handle type, no syscall arms.
+pipe = ["wait-multiplex"]
 # OT-22 test-only control: the channel send/grant/close paths do not fire
 # waiters, so an IPC-only wait can only end at its deadline. The
 # wait_any_core IPC leg must FAIL with it.
@@ -1200,6 +1204,14 @@ neo-test-admission-park-kill-sink-held-control = ["neo-test-admission-park-kill-
 # control restores both frame-owned shapes (must FAIL: the counts leak).
 neo-test-ipc-park-kill = ["neo-test"]
 neo-test-ipc-park-kill-control = ["neo-test-ipc-park-kill"]
+# L1a.1 step 2a: the pipe's syscalls, wait item and teardown (pipe_core; its
+# CP-14 control drops the pipe's guard between the empty check and the park),
+# and a reader and a writer killed while parked in a pipe (pipe_park_kill; its
+# control owns the pipe in the syscall frame across the park, CP-67).
+neo-test-pipe-core = ["neo-test", "pipe"]
+neo-test-pipe-core-cp14-control = ["neo-test-pipe-core"]
+neo-test-pipe-park-kill = ["neo-test", "pipe"]
+neo-test-pipe-park-kill-control = ["neo-test-pipe-park-kill"]
 # OT-98 (CP-98): a kill that races a natural exit, or finds its target parked
 # in sys_wait, completes or returns ESRCH and never panics. Control: claims the
 # natural exit at the reap and skips the sys_wait extraction, as before OT-98

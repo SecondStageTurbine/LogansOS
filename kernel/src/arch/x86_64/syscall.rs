@@ -377,6 +377,23 @@ pub const SYS_TRY_GRANT: u64 = 0x1B8;
 /// parked on the peer side, else EAGAIN; it never parks. `(channel, max)`.
 #[cfg(feature = "ipc-try-send")]
 pub const SYS_TRY_RECV_GRANT: u64 = 0x1B9;
+/// L1a.1 step 2a: `(capacity)` → `read_end | write_end << 32`. A byte pipe
+/// of `capacity` bytes (512 B..=64 KiB, else `EINVAL`). (`0x1B7`-`0x1B9`
+/// are OT-88 A0k's, #15.)
+#[cfg(feature = "pipe")]
+pub const SYS_PIPE_CREATE: u64 = 0x1BA;
+/// L1a.1 step 2a: `(h, buf, len, flags)` → bytes read (0 at EOF). Blocks
+/// until some bytes or EOF, unless `flags & PIPE_NONBLOCK` (`EAGAIN`).
+#[cfg(feature = "pipe")]
+pub const SYS_PIPE_READ: u64 = 0x1BB;
+/// L1a.1 step 2a: `(h, buf, len, flags)` → bytes written. Blocks until all
+/// `len` bytes are written (a write of at most 512 bytes is atomic), unless
+/// `flags & PIPE_NONBLOCK`; `EPIPE` once the last reader is gone.
+#[cfg(feature = "pipe")]
+pub const SYS_PIPE_WRITE: u64 = 0x1BC;
+/// `SYS_PIPE_READ` / `SYS_PIPE_WRITE` flag: don't park (`EAGAIN` instead).
+#[cfg(feature = "pipe")]
+pub const PIPE_NONBLOCK: u64 = crate::ipc::pipe_logic::PIPE_NONBLOCK;
 /// OT-87 R4.4: the installer's disk list (`install_ui_logic`). Gated by the
 /// `Installer` cap; ENOSYS without `installer`.
 #[cfg(feature = "installer")]
@@ -1346,6 +1363,12 @@ extern "C" fn syscall_dispatch(
         SYS_TRY_RECV_GRANT => sys_try_recv_grant_impl(a0 as u32, a1 as u16),
         #[cfg(feature = "wait-multiplex")]
         SYS_WAIT_ANY => sys_wait_any_impl(a0, a1 as usize, a2),
+        #[cfg(feature = "pipe")]
+        SYS_PIPE_CREATE => sys_pipe_create_impl(a0),
+        #[cfg(feature = "pipe")]
+        SYS_PIPE_READ => sys_pipe_read_impl(a0 as u32, a1, a2 as usize, a3),
+        #[cfg(feature = "pipe")]
+        SYS_PIPE_WRITE => sys_pipe_write_impl(a0 as u32, a1, a2 as usize, a3),
         #[cfg(feature = "installer")]
         SYS_INSTALL_LIST => sys_install_list_impl(a0, a1 as usize),
         #[cfg(feature = "installer")]
@@ -2146,6 +2169,212 @@ fn is_spawn_inheritable_dir(rights: FileRights) -> bool {
 /// SYS_CHAN_CREATE — create a fresh anonymous channel and install both
 /// endpoints in the calling process's handle table. Returns the two handle
 /// indices packed into a single i64: low 32 bits = h_a, high 32 bits = h_b.
+/// L1a.1 step 2a: the pipe end handle `h` names, if it carries `USE` and
+/// `need` (its end's right; `None` accepts either end, for `SYS_WAIT_ANY`).
+#[cfg(feature = "pipe")]
+fn pipe_lookup(
+    h: u32,
+    need: Option<u8>,
+) -> Result<
+    (
+        alloc::sync::Arc<crate::ipc::pipe::PipeObject>,
+        crate::ipc::pipe_logic::End,
+        process::CapId,
+    ),
+    i64,
+> {
+    crate::arch::x86_64::without_interrupts(|| {
+        let proc = process::get(crate::sched::current_pid()).ok_or(EINVAL)?;
+        let handle = proc.handles.lock().get(h).ok_or(EBADF)?;
+        match handle {
+            Handle::Pipe {
+                pipe,
+                end,
+                cap_id,
+                rights,
+            } if rights.has_meta(meta_rights::USE)
+                && need.is_none_or(|bit| rights.has_semantic(bit)) =>
+            {
+                Ok((pipe, end, cap_id))
+            }
+            Handle::Pipe { .. } => Err(EPERM),
+            _ => Err(EBADF),
+        }
+    })
+}
+
+/// `SYS_PIPE_CREATE` (L1a.1 step 2a): a new pipe, its read end and write end
+/// installed in the caller's table. As `SYS_CHAN_CREATE`: if the second
+/// install fails, the first is taken back out.
+#[cfg(feature = "pipe")]
+fn sys_pipe_create_impl(capacity: u64) -> i64 {
+    use crate::ipc::pipe_logic::End;
+    let Ok(capacity) = usize::try_from(capacity) else {
+        return EINVAL;
+    };
+    // At least PIPE_ATOMIC, so a write of at most 512 bytes is always atomic
+    // (POSIX: PIPE_BUF <= capacity; Chad #56 item 5).
+    if !crate::ipc::pipe_logic::create_capacity_ok(capacity) {
+        return EINVAL;
+    }
+    let proc = match process::get(crate::sched::current_pid()) {
+        Some(p) => p,
+        None => return EINVAL,
+    };
+    let pipe = match crate::ipc::pipe::PipeObject::new(capacity) {
+        Ok(pipe) => pipe,
+        Err(e) => return e,
+    };
+    let install = |end: End, pipe| {
+        process::install_cap(
+            &proc,
+            Handle::Pipe {
+                pipe,
+                end,
+                cap_id: process::alloc_cap_id(),
+                rights: process::full_pipe_rights(end),
+            },
+            None,
+        )
+    };
+    let rd = match install(End::Read, pipe.clone()) {
+        Ok(idx) => idx,
+        #[cfg(feature = "obj-quota")]
+        Err(process::InstallCapError::Quota) => return ENOMEM,
+        Err(_) => return EINVAL,
+    };
+    let wr = match install(End::Write, pipe) {
+        Ok(idx) => idx,
+        Err(_e) => {
+            let _ = process::close_handle(&proc, rd, |_| true);
+            #[cfg(feature = "obj-quota")]
+            if matches!(_e, process::InstallCapError::Quota) {
+                return ENOMEM;
+            }
+            return EINVAL;
+        }
+    };
+    crate::ipc::pipe_logic::pack_ends(rd, wr) as i64
+}
+
+/// The kernel bounce buffer for pipe I/O: a write of at most this many bytes
+/// is one chunk, so it is atomic (`PIPE_ATOMIC`).
+#[cfg(feature = "pipe")]
+const PIPE_CHUNK: usize = crate::ipc::pipe::PIPE_ATOMIC;
+
+/// `SYS_PIPE_READ` (L1a.1 step 2a): read up to `len` bytes. The first read
+/// parks until there are bytes or EOF (or is a try with `PIPE_NONBLOCK`);
+/// later chunks of the same call never park. Each chunk's destination is
+/// checked writable before its bytes are taken (CP-99), so the check walks
+/// only what the call can move, not the whole user `len` (Dexter #56 F6).
+#[cfg(feature = "pipe")]
+fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
+    if let Err(e) = validate_user_buf(buf, len) {
+        return e;
+    }
+    let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::READ)) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let nonblock = flags & PIPE_NONBLOCK != 0;
+    // CP-67: the pipe is owned by the thread, not this frame, while it may
+    // park.
+    crate::sched::scheduler::with_pipe_anchor(pipe, |pipe| {
+        let mut total = 0usize;
+        let mut chunk = [0u8; PIPE_CHUNK];
+        loop {
+            let want = (len - total).min(PIPE_CHUNK);
+            let dst = (buf + total as u64) as *mut u8;
+            if let Err(e) = check_user_writable(dst, want) {
+                return if total > 0 { total as i64 } else { e };
+            }
+            let got = if total == 0 && !nonblock {
+                pipe.read_blocking(&mut chunk[..want])
+            } else {
+                pipe.try_read(&mut chunk[..want])
+            };
+            match got {
+                Ok(0) => break,
+                Ok(n) => {
+                    // SAFETY: `dst .. + n` is inside the validated user
+                    // range, checked writable above; `chunk[..n]` is ours.
+                    let copied = unsafe {
+                        crate::arch::x86_64::user_copy::try_copy_count(dst, chunk.as_ptr(), n)
+                    };
+                    if copied < n {
+                        // A sibling unmapped the buffer after the check: the
+                        // bytes that reached it count (Chad #56 item 5); the
+                        // rest of this chunk is lost, as stdin's byte is
+                        // (CP-99's "outside that guarantee").
+                        let total = total + copied;
+                        return if total > 0 { total as i64 } else { EFAULT };
+                    }
+                    total += n;
+                    if total == len {
+                        break;
+                    }
+                }
+                Err(EAGAIN) if total > 0 => break,
+                Err(e) => return e,
+            }
+        }
+        total as i64
+    })
+}
+
+/// `SYS_PIPE_WRITE` (L1a.1 step 2a): write `len` bytes. Blocking (the
+/// default) writes all of them, parking for room; a write of at most 512
+/// bytes is atomic. `EPIPE` once the last reader is gone, or the count so far
+/// if some bytes went in first. With `PIPE_NONBLOCK`: what fits now, or
+/// `EAGAIN`.
+#[cfg(feature = "pipe")]
+fn sys_pipe_write_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
+    if let Err(e) = validate_user_buf(buf, len) {
+        return e;
+    }
+    let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::WRITE)) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let nonblock = flags & PIPE_NONBLOCK != 0;
+    crate::sched::scheduler::with_pipe_anchor(pipe, |pipe| {
+        if len == 0 {
+            // The zero-length contract: EPIPE with no reader, else 0.
+            return match pipe.try_write(&[]) {
+                Ok(_) => 0,
+                Err(e) => e,
+            };
+        }
+        let mut total = 0usize;
+        let mut chunk = [0u8; PIPE_CHUNK];
+        while total < len {
+            let n = (len - total).min(PIPE_CHUNK);
+            let src = (buf + total as u64) as *const u8;
+            if let Err(e) = user_copy(chunk.as_mut_ptr(), src, n) {
+                return if total > 0 { total as i64 } else { e };
+            }
+            // A chunk may go in in parts (a pipe smaller than the chunk).
+            let mut done = 0usize;
+            while done < n {
+                let r = if nonblock {
+                    pipe.try_write(&chunk[done..n])
+                } else {
+                    pipe.write_blocking(&chunk[done..n])
+                };
+                match r {
+                    Ok(m) => done += m,
+                    Err(e) => {
+                        let so_far = total + done;
+                        return if so_far > 0 { so_far as i64 } else { e };
+                    }
+                }
+            }
+            total += n;
+        }
+        total as i64
+    })
+}
+
 fn sys_chan_create_impl() -> i64 {
     let proc = match crate::sched::process::get(crate::sched::current_pid()) {
         Some(p) => p,
@@ -3479,7 +3708,9 @@ pub(crate) fn infer_run_syscall_for_test(
 #[cfg(any(
     feature = "neo-test-admission-park-kill",
     feature = "neo-test-ipc-park-kill",
-    feature = "neo-test-kill-at-exit"
+    feature = "neo-test-kill-at-exit",
+    feature = "neo-test-pipe-core",
+    feature = "neo-test-pipe-park-kill"
 ))]
 pub(crate) fn admission_kill_process_for_test(
     page: x86_64::structures::paging::PhysFrame,
@@ -3503,10 +3734,19 @@ pub(crate) fn syscall_dispatch_for_test(num: u64, a0: u64, a1: u64, a2: u64) -> 
     syscall_dispatch(num, a0, a1, a2, 0, 0, 0)
 }
 
+/// L1a.1 step 2a: the pipe scenarios' stand-in syscall, with the fourth
+/// argument (`SYS_PIPE_READ` / `SYS_PIPE_WRITE` flags).
+#[cfg(any(feature = "neo-test-pipe-core", feature = "neo-test-pipe-park-kill"))]
+pub(crate) fn syscall_dispatch4_for_test(num: u64, a0: u64, a1: u64, a2: u64, a3: u64) -> i64 {
+    syscall_dispatch(num, a0, a1, a2, a3, 0, 0)
+}
+
 #[cfg(any(
     feature = "neo-test-admission-park-kill",
     feature = "neo-test-ipc-park-kill",
-    feature = "neo-test-kill-at-exit"
+    feature = "neo-test-kill-at-exit",
+    feature = "neo-test-pipe-core",
+    feature = "neo-test-pipe-park-kill"
 ))]
 pub(crate) const ADMISSION_KILL_VA: u64 = 0x0000_0011_0000_0000;
 
@@ -6050,6 +6290,8 @@ fn ipc_lookup(
             Handle::SystemStore { .. } => Err(EBADF),
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Err(EBADF),
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { .. } => Err(EBADF),
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { .. }
             | Handle::InputFocus { .. }
@@ -6099,6 +6341,8 @@ fn channel_lookup(
             Handle::SystemStore { .. } => Err(EBADF),
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Err(EBADF),
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { .. } => Err(EBADF),
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { .. }
             | Handle::InputFocus { .. }
@@ -6164,6 +6408,8 @@ fn process_handle_lookup_pinned(
             Handle::SystemStore { .. } => Err(EBADF),
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Err(EBADF),
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { .. } => Err(EBADF),
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { .. }
             | Handle::InputFocus { .. }
@@ -6416,6 +6662,14 @@ fn wait_any_scan(items: &[WaitItem], ident: &mut WaitIdentity) -> Result<u64, i6
                 caller_holds_input_system()?;
                 crate::atrium::focus::sak_pending()
             }
+            #[cfg(feature = "pipe")]
+            crate::sched::wait_any_logic::WAIT_KIND_PIPE => {
+                let (pipe, end, cap_id) = pipe_lookup(item.handle, None)?;
+                ident.keys[ident.n] = pipe.wait_key(end);
+                ident.caps[ident.n] = cap_id.0;
+                ident.n += 1;
+                pipe.ready(end)
+            }
             _ => return Err(EINVAL),
         };
         if ready {
@@ -6498,7 +6752,7 @@ pub(crate) fn wait_any_items(items: &[WaitItem], deadline_ns: u64) -> i64 {
         if mask != 0 {
             return mask as i64;
         }
-        #[cfg(feature = "neo-test-wait-any-core")]
+        #[cfg(any(feature = "neo-test-wait-any-core", feature = "neo-test-pipe-core"))]
         wait_any::rebind_window_hook(pid);
         // Register, then check again (CP-14): a fire that lands after this
         // check finds the entry and sets `fired`, which the park sees.
@@ -7018,6 +7272,18 @@ fn sys_file_write_impl(fd: u32, buf: *const u8, len: usize) -> i64 {
 }
 
 fn sys_close_impl(fd: u32) -> i64 {
+    // L1a.1 step 2a: a pipe end in slot 0 or 1 (where a fresh process's first
+    // installs land) closes too, as #29 lets a NetDial cap in slot 1 close.
+    // The stdio paths don't use the table, so stdin and stdout are
+    // unaffected; any other handle in those slots is refused as before.
+    #[cfg(feature = "pipe")]
+    if fd <= STDOUT_FD {
+        if let Ok(proc) = current_process_for_syscall() {
+            if process::close_handle(&proc, fd, |h| matches!(h, Handle::Pipe { .. })).is_ok() {
+                return 0;
+            }
+        }
+    }
     #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
     if fd == STDIN_FD {
         return EBADF;
@@ -7050,6 +7316,11 @@ fn sys_close_impl(fd: u32) -> i64 {
         Handle::File { .. } | Handle::Channel { .. } => true,
         #[cfg(feature = "net-dial-public-only")]
         Handle::NetDial { .. } => true,
+        // L1a.1 step 2a: a pipe end closes; `close_handle` releases its
+        // endpoint after the table and CAP_GRAPH locks (the last one of an
+        // end wakes both sides: EOF / EPIPE / EBADF).
+        #[cfg(feature = "pipe")]
+        Handle::Pipe { .. } => true,
         // PR #15 review item 2 (`close-object-handles`).
         other => closes_object(other),
     });
