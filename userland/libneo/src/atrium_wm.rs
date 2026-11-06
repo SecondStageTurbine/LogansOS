@@ -166,6 +166,34 @@ impl Rect {
         }
     }
 
+    /// `self` with `other` taken out: up to four disjoint rects (top and
+    /// bottom bands at full width, then left and right of the overlap),
+    /// empty where nothing is left. Together they cover exactly the pixels of
+    /// `self` not in `other` (F7: a moved frame repaints each pixel once).
+    pub fn minus(&self, other: &Rect) -> [Rect; 4] {
+        let cut = self.intersect(other);
+        if cut.is_empty() {
+            return [*self, Rect::default(), Rect::default(), Rect::default()];
+        }
+        let nonempty = |r: Rect| if r.is_empty() { Rect::default() } else { r };
+        [
+            nonempty(Rect::new(self.x, self.y, self.w, cut.y - self.y)),
+            nonempty(Rect::new(
+                self.x,
+                cut.bottom(),
+                self.w,
+                self.bottom() - cut.bottom(),
+            )),
+            nonempty(Rect::new(self.x, cut.y, cut.x - self.x, cut.h)),
+            nonempty(Rect::new(
+                cut.right(),
+                cut.y,
+                self.right() - cut.right(),
+                cut.h,
+            )),
+        ]
+    }
+
     /// Smallest rect covering both. An empty operand is ignored.
     pub fn union(&self, other: &Rect) -> Rect {
         if self.is_empty() {

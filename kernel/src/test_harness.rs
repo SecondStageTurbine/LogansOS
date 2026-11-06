@@ -555,6 +555,10 @@ const SCENARIO: &str = "desktop_lens_fault_boot";
 /// end view; the sprite is hidden whenever Home is shown).
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const SCENARIO: &str = "desktop_pointer_boot";
+#[cfg(feature = "neo-test-desktop-drag-perf-boot")]
+const SCENARIO: &str = "desktop_drag_perf_boot";
+#[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
+const SCENARIO: &str = "desktop_drag_perf_control_boot";
 /// OT-88 A1a: the pointer session with the probe app as a second client.
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const SCENARIO: &str = "desktop_apps_boot";
@@ -623,6 +627,10 @@ const DESKTOP_PASS: &str = "desktop_icons_boot=ok view=home scene=independent_or
 const DESKTOP_PASS: &str = "desktop_home_cycle=ok view=home scene=independent_oracle_digest labels=ink arthur_rounds_past_pin_cap=ok";
 #[cfg(feature = "neo-test-desktop-arthur-scope")]
 const DESKTOP_PASS: &str = "desktop_arthur_scope=ok view=home scene=independent_oracle_digest labels=ink arthur_scopes_only=ok";
+#[cfg(feature = "neo-test-desktop-drag-perf-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_perf_boot=ok view=home drag=measured damage=edges";
+#[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_perf_control_boot=ok view=home drag=measured damage=union";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]

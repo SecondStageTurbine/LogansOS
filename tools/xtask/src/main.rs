@@ -191,6 +191,9 @@ const DESKTOP_SESSION_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_session_
 const DESKTOP_GLASS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_boot.ppm";
 const DESKTOP_GLASS_RT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_rt_boot.ppm";
 const DESKTOP_HOME_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_home_boot.ppm";
+const DESKTOP_DRAG_PERF_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_drag_perf_boot.ppm";
+const DESKTOP_DRAG_PERF_CONTROL_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_drag_perf_control_boot.ppm";
 const DESKTOP_ICONS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_icons_boot.ppm";
 const DESKTOP_BUSY_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_busy_boot.ppm";
 const DESKTOP_SCROLL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_scroll_boot.ppm";
@@ -366,6 +369,15 @@ const SPINE_CLICK: SerialScriptStep =
 const REFOCUS_CLICK: SerialScriptStep = step(
     b"DESKTOP pointer focus client=arthur via=click",
     b"\x03\x04",
+);
+/// F7 (drag smoothness): onto the title band as `TITLE_DRAG` does, press,
+/// then 16 moves (8 × `mouse_move 30 15`, 8 × `mouse_move -30 15`: the frame
+/// goes right and back while it goes down, 674,337 → 674,577) and release.
+/// Each HMP move is its own monitor command, so most reach the guest as their
+/// own report: a drag frame each.
+const LONG_TITLE_DRAG: SerialScriptStep = step(
+    b"DESKTOP arthur pointer buttons=0 phase=3",
+    b"\x1c\x1c\x1c\x16\x03\x13\x13\x13\x13\x13\x13\x13\x13\x1d\x1d\x1d\x1d\x1d\x1d\x1d\x1d\x04",
 );
 const TITLE_DRAG: SerialScriptStep = step(
     b"DESKTOP arthur pointer buttons=0 phase=3",
@@ -565,6 +577,23 @@ const DESKTOP_POINTER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"DESKTOP arthur pointer buttons=0 phase=3 local=0,31",
         b"\x1b",
     ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+/// F7: desktop_pointer_boot's script up to the refocus, then
+/// [`LONG_TITLE_DRAG`]; once the move is presented, Esc and DS-1's ending.
+const DESKTOP_DRAG_PERF_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    PROOF_SAK,
+    SPINE_ENTER,
+    ROUND1_SAK,
+    SPINE_CLICK,
+    REFOCUS_CLICK,
+    LONG_TITLE_DRAG,
+    step(b"DESKTOP pointer move from=", b"\x1b"),
     HOLD_TAB,
     CHIP1_TAB,
     CHIP0_AGAIN,
@@ -868,7 +897,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 38] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -964,6 +993,19 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
         "desktop_pointer_boot",
         DESKTOP_POINTER_BOOT_HID_STEPS,
         DESKTOP_HOME_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // F7: the drag measured, with the fix and with the control.
+    desktop(
+        "desktop_drag_perf_boot",
+        DESKTOP_DRAG_PERF_BOOT_HID_STEPS,
+        DESKTOP_DRAG_PERF_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    desktop(
+        "desktop_drag_perf_control_boot",
+        DESKTOP_DRAG_PERF_BOOT_HID_STEPS,
+        DESKTOP_DRAG_PERF_CONTROL_BOOT_CAPTURE_REL,
         b"\n",
     ),
     // OT-88 A1a: the probe app as a second client, and its fault.
@@ -3435,6 +3477,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_pointer_boot",
         feature: "neo-test-desktop-pointer-boot",
         user_feature: Some("desktop-pointer-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F7 (drag smoothness): a 16-report title-band drag; the WM logs each
+        // drag frame's time and recomposed pixels, and the release's move.
+        name: "desktop_drag_perf_boot",
+        feature: "neo-test-desktop-drag-perf-boot",
+        user_feature: Some("desktop-drag-perf-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F7 control: the same drag with the old bounding-box damage.
+        name: "desktop_drag_perf_control_boot",
+        feature: "neo-test-desktop-drag-perf-control-boot",
+        user_feature: Some("desktop-drag-perf-control-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -7518,6 +7577,11 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "atrium-settings-store",
         ],
         Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
+        // F7: the pointer session, with the fix or the control's old damage.
+        Some("desktop-drag-perf-boot-test") => vec!["desktop-pointer-boot-test"],
+        Some("desktop-drag-perf-control-boot-test") => {
+            vec!["desktop-pointer-boot-test", "drag-union-damage-control"]
+        }
         // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
         // stay off the locked screen).
         Some("lock-spawn-test") => vec!["lock-spawn-test", "desktop-busy"],
@@ -7687,6 +7751,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-wheel-boot-test")
         | Some("desktop-pointer")
         | Some("desktop-pointer-boot-test")
+        | Some("desktop-drag-perf-boot-test")
+        | Some("desktop-drag-perf-control-boot-test")
         | Some("desktop-resize")
         | Some("desktop-resize-boot-test")
         | Some("desktop-park")
@@ -7958,7 +8024,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-scrollback",
             "arthur-scroll-seed-test",
         ],
-        Some("desktop-pointer-boot-test") => vec![
+        Some("desktop-pointer-boot-test")
+        | Some("desktop-drag-perf-boot-test")
+        | Some("desktop-drag-perf-control-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-pointer-probe",
@@ -19100,6 +19168,69 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     }
     if scenario.name == "desktop_idle_parks" || scenario.name == "desktop_idle_spins" {
         require_desktop_idle_window(scenario, observed)?;
+    }
+    // F7 (drag smoothness): the drag was measured, with the damage the
+    // build says, and it was a real drag (several frames, one move).
+    if scenario.name == "desktop_drag_perf_boot"
+        || scenario.name == "desktop_drag_perf_control_boot"
+    {
+        let damage = if scenario.name == "desktop_drag_perf_boot" {
+            " damage=edges\n"
+        } else {
+            " damage=union\n"
+        };
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP pointer focus client=arthur via=click",
+                "DESKTOP drag perf frames=",
+                damage,
+                "DESKTOP pointer move from=",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "F7: the title-band drag is measured and the window moves once",
+        )?;
+        let serial = read_serial(observed)?;
+        let line = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag perf frames="))
+            .unwrap_or_default();
+        let field = |name: &str| {
+            line.split(name)
+                .nth(1)
+                .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let frames = field("frames=");
+        // Non-vacuity: most of the 16 reports were their own drag frame.
+        if frames < 4 {
+            return Err(format!(
+                "`{}`: the drag presented only {frames} frames (want >= 4): {line}",
+                scenario.name
+            ));
+        }
+        eprintln!("[xtask] {}: {line}", scenario.name);
+        // The budget (TCG, GitHub-hosted runners). With the fixes, gates
+        // 41480459303 and 41498408639 measured frames 30-44 ms mean, 40-60 ms
+        // max, and the release's move 1.40 s and 3.08 s on the same code (the
+        // runners differ by about 2.2x). Before any fix: 122 ms mean / 160 ms
+        // max, the move 2.3-5.7 s. The frame budget keeps about 2x over the
+        // worst fixed run; the move's catches a return of the old blur and
+        // repaint on a fast runner without failing the slow one.
+        if scenario.name == "desktop_drag_perf_boot" {
+            const FRAME_US_MAX: u64 = 100_000;
+            const RELEASE_MOVE_US_MAX: u64 = 6_000_000;
+            let (frame_max, release) = (field("frame_us_max="), field("release_move_us="));
+            if frame_max > FRAME_US_MAX || release > RELEASE_MOVE_US_MAX {
+                return Err(format!(
+                    "`{}`: over the drag budget (frame max {frame_max} us <= {FRAME_US_MAX}, \
+                     release move {release} us <= {RELEASE_MOVE_US_MAX}): {line}",
+                    scenario.name
+                ));
+            }
+        }
     }
     if scenario.name == "desktop_pointer_boot" || scenario.name == "desktop_resize_boot" {
         require_serial_sequence(
