@@ -49,3 +49,25 @@ licence of each piece checked** (raw `LICENSE`/`package.json` via git, never a s
   `@webtoon/psd`/`ag-psd`, `maplibre-gl`, `proj4`, `@myriaddreamin/typst*`, `hyparquet`, `bpmn-js`, `styled-exceljs`,
   `cfb`, the AOSP PacketVideo MPEG-4 decoder (stated Apache-2.0), and the two files in `patches/`.
 - Route the survey to a seat as part of the file-viewer THINK; it goes in the THINK and the PR body (survey rule).
+
+## Added 2026-11-07 (J.c.): learn from Raven (Windows programs on Linux)
+`mirkobrombin/raven` (https://github.com/mirkobrombin/raven; checked 2026-11-07 at `74e3e3e5`, committed that day, one
+main author). It runs Windows programs natively on x86_64 Linux: the program's code runs on the CPU in a supervised,
+ptrace-controlled sandbox, and every system call is answered by Raven acting as the NT kernel and its services
+(processes, files, registry, windows, input); graphics go to Wayland/Vulkan via DXVK and vkd3d-proton. It installs
+real installers (NSIS, Inno, MSI, VC++ 2005-2022, .NET 4.8/3.5) and benchmarks ahead of Wine 11 on its tests.
+
+**Licences (for any borrowing):** host runtime (`raven`, `raven-bootstrap`) **GPL-3.0-or-later: read for principle
+only, never copy.** Its own PE guest adapters are MIT (exact list in its `LICENSES.json`); DXVK zlib; code-page and
+Unicode data Unicode-3.0; libpng PNG-2; Skia BSD; SQLite public domain; fonts OFL/Bitstream — all usable with
+notices. **vkd3d-proton is LGPL-2.1: don't copy.** Re-check each file's own notice before taking anything.
+
+**What to take into a THINK on resume (route to a seat; no build yet):**
+1. **An "NT personality" for LogansOS, the long-range Windows-compat idea.** Raven has to fake the kernel from outside
+   with ptrace; we own the kernel, so a PE loader plus an NT syscall personality could be served by our own dispatcher
+   (capability-checked, no ptrace). Study Raven's split of what the "kernel" answers vs. what guest DLLs do.
+2. **Its app-matrix acceptance test:** each real app is installed fresh and scored 25% per stage (install, start,
+   main window, an automated workflow). Adopt the same shape for our own apps and scenario oracles.
+3. **A machine-readable licence manifest** (`LICENSES.json`: per component licence, provenance, pinned version,
+   review date), checked in CI — stronger than our prose `VENDORED.md` files. Consider it for `third_party/`.
+4. **Snapshot before every installer, one-command restore** — the same idea as our L2.1 "always undo"; compare designs.
