@@ -33,3 +33,19 @@ DeepSeek reviewers) uses its own quotas and may still return queued reviews; the
 1. Re-enable or recreate the PM loop (it must reschedule itself first) and each seat's check-in.
 2. Each loop: find fixes by comparing each PR's head with its reviewed head (`git log --no-merges <reviewed>..pr<N>
    ^origin/main`), not only by RETURN branches. Three re-checks were missed for hours on 11-03 for lack of this.
+
+## Added 2026-11-07 (J.c.): File Viewer into the file-viewer prior-art survey
+On resume, add `flyfish-dev/file-viewer` (https://github.com/flyfish-dev/file-viewer; checked 2026-11-07 at
+`7e5e131c`, v3.3.3, last commit 2026-10-31) to the prior-art survey of our file-viewer / "open a file" work, **with the
+licence of each piece checked** (raw `LICENSE`/`package.json` via git, never a summarizing fetch). What's known so far:
+- A browser JS/TS library: about 275 extensions, 47 preview pipelines (Office, PDF/OFD, CAD, archives, email, media,
+  DICOM). It needs JS + DOM + WASM + Workers, so it can't run in LogansOS until the browser runs script (post-C3c).
+  Use it now as a design reference (per-format parsers, lazy loading); our own build stays Rust.
+- Its own code: Apache-2.0 (87 packages; 2 MIT). Compatible.
+- **AGPL-3.0-only: `@flyfish-dev/cad-viewer` and `dwf-viewer` (the DWG/DWF/DWFX runtime). Never copy.**
+- To verify per dependency (one row each: licence, commit/version, alive?): `occt-import-js` (OpenCascade, believed
+  LGPL — check), `pdfjs-dist`, `three`, `mermaid`, `libarchive.js`, `web-ifc`, `@thatopen/*`, `@cornerstonejs/*`,
+  `sql.js`, `xmllint-wasm`, `epubjs`, `rtf.js`, `postal-mime`, `@kenjiuno/msgreader`, `heic2any`, `utif`,
+  `@webtoon/psd`/`ag-psd`, `maplibre-gl`, `proj4`, `@myriaddreamin/typst*`, `hyparquet`, `bpmn-js`, `styled-exceljs`,
+  `cfb`, the AOSP PacketVideo MPEG-4 decoder (stated Apache-2.0), and the two files in `patches/`.
+- Route the survey to a seat as part of the file-viewer THINK; it goes in the THINK and the PR body (survey rule).
