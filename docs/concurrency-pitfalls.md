@@ -146,6 +146,7 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-100 | **An XSAVE area sized from CPUID.(0DH,0):EBX alone** (found 2026-11-02, the preview under WHPX). EBX is "the size for the features enabled in XCR0", so it is only right if whoever answers CPUID tracks the guest's XCR0. QEMU under WHPX (`kernel-irqchip=off`) answered 576 (x87\|SSE) with XCR0 = x87\|SSE\|AVX ⇒ every `xsave` wrote AVX state 256 bytes past the area: in the timer stub, over the saved registers and the iretq frame copy, so the first LAPIC tick's `iretq` took a #GP(0) and the boot froze; per-thread save buffers on the heap overran the same way | Interrupt entry / FPU state (`fpu::finish_xsave_init`) | **Was EXPOSED → fixed:** the area is the largest of EBX, 576, and each enabled component's offset + size from CPUID.(0DH,i) (`fpu_logic::xsave_area_size`); an understated EBX is logged (`cpuid_0d_ebx=576 (understated; …)`) | **Yes (`xsave_ebx_understated`: EBX forced to 576, the YMM/XMM/x87 context-switch legs must pass with area 832; control `neo-test-xsave-ebx-understated-control` (EBX trusted) takes the same #GP at `timer_isr_entry+0xe0`; host KATs `fpu-logic-tests`)** |
 | CP-101 | **Withdrawn (2026-10-31).** Filed in 27ce30f0 as a loopback-pump reordering race (two CPUs pop `OUTBOUND` in order, then inject out of order) behind the `fetch_broker` lost request. A per-segment trace then showed every segment delivered in order; the real cause was the TLS fixture server dropping a request decrypted during its handshake (fixed in `libneo::tls`, dcf91989). The `LOOPBACK_PUMP` lock was removed. The shape is still possible in principle but has not been observed | Network / loopback TCP (`tcp::pump_loopback_egress`) | **Not guarded; unproven hazard**, no change | **No (the discriminator it cited was the fixture bug)** |
 | CP-102 | **A check against a route epoch, then an act that reads it again** (found 2026-11-02, Jarvis's review of #61). Key auto-repeat checked the held key's activation epoch, then staged the repeat with `stage_event`, which stamps the stage with the epoch read *then* ⇒ a focus change or Super+L between the check and the stage (another CPU) gives a repeat checked for the old owner to the new owner or the lock screen | Input routing / key auto-repeat (`key-autorepeat`) | **Guarded:** the repeat carries the epoch it was checked under (`key_repeat::poll` returns it); `stage_event_at` drops it if the epoch has moved and otherwise stamps the stage with *that* epoch, so a move after staging is caught by the flush's comparison under `DELIVERY` (where every route change bumps it). The legacy routed path compares under `DELIVERY` (`route_event_at`). Pure decision: `key_repeat_logic::stage_action`, host-KAT'd | **Yes (`key_repeat_epoch`: a focus change and Super+L forced between the check and the stage, and Super+L between the stage and the flush; nothing reaches B or the lock screen. Falsified by `neo-test-key-repeat-epoch-control`, the fresh-read shape: FAIL `reason=repeat_crossed_focus_change`)** |
+| CP-111 | **A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O** (standing rule, 2026-11-08, from J.c.'s architecture read). The general form of CP-91 and CP-92, and CP-56's `Drop` blind spot at a global lock: cleanup that waits on another CPU (a shootdown), takes another lock, or does I/O, run inside the locked (often IF-off) section, can wait on what a CPU spinning for that lock must provide | Any global lock (`CAP_GRAPH` today; the tensor and model object paths next) | **Guard: the last reference is detached and released at a deferral point outside the locked section (the reaper, a post-unlock tail in the caller, or a work queue). A `Drop` that only decrements a count and returns is fine anywhere** | **Yes for its instances (CP-91, CP-92, CP-98 discriminators); every new object with drop-time teardown adds its own** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
 prevents it and there is (or should be) a discriminator; *N-A* = the construct doesn't exist in our kernel
@@ -4750,3 +4751,38 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   version reproduced both waiters asleep after `signal` returned. Principle: the standard "signal under the
   condvar's internal lock" rule for sequence-counter condvars (as in std's own futex condvar, which bumps and wakes
   in one step on the futex word).
+
+### CP-111 — A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O
+
+- **Trap.** An object's `Drop` has side effects: it waits on another CPU (a TLB shootdown), takes another lock, or
+  does I/O. If the last reference is dropped while a global lock is held, or inside an interrupts-off section that
+  holds one, the cleanup can wait on something a CPU locked out by that lock must provide, and the system hangs.
+  CP-56's "known blind spot" names the general trap (a `Drop` has no call site to audit; it runs wherever the last
+  reference dies). This is its global-lock instance, made a standing rule.
+- **The checkable condition.** The danger starts at the first wait, lock or I/O inside the cleanup. A `Drop` that
+  only decrements a count and returns is fine anywhere. "Global lock" is the practical scope; the review question
+  that makes it enforceable is whether the cleanup can block.
+- **Known instances.**
+  - **CP-91.** A `CAP_GRAPH` scan held the last reference to a process; its drop freed the page tables and waited on
+    a TLB shootdown that a CPU spinning on the same lock with interrupts off could never answer. Fix: the scan keeps
+    every touched process alive (`CapGraph` pins scanned `Arc`s); after the unlock, a last one is handed to the
+    reaper (`Arc::into_inner`).
+  - **CP-92.** A last tensor release under `CAP_GRAPH` could park on a Reserved slot with interrupts-off waiters
+    behind it. Fix: removals return `Detached`; tensor counts are released after the unlock.
+  - **CP-98.** The kill path: last `Arc`s under `SYS_KILL`'s IF-off section go to the deferred drop.
+- **Standing rule.** Any object whose drop-time cleanup can wait on another CPU, take any other lock, or do I/O must
+  not have its last reference dropped under a global lock. The release is handed to a deferral point (the reaper, a
+  post-unlock tail in the caller, or a work queue), never inside the locked section.
+- **Review checklist** (part of every concurrency-touching review that adds or moves a release):
+  1. Can this `Drop` run while a global lock is held, directly or through a function that takes one?
+  2. If so, does its cleanup wait on another CPU, take another lock, or do I/O?
+  3. If both, is the last reference detached and released at a deferral point outside the locked section?
+- **Discriminators.** Per instance: the `cap_graph_revoke` F1 leg and the `Pmap::drop` witness (CP-91), the F2 leg
+  and the `release_tensor` and park witnesses (CP-92), and the `kill_at_exit` legs (CP-98). Each new object type with
+  drop-time teardown brings a witness that its release under the lock is deferred, and a control that drops it in
+  place and must fail.
+- **Forward note.** As tensors and models become first-class objects with drop-time teardown (page tables,
+  accelerator memory release, DMA unmap), this rule applies to every path that can release them under `CAP_GRAPH`
+  or an equivalent global lock.
+- **Source.** J.c.'s architecture read of the README (2026-11-08), drafted from the 10-27/28 review finds (Janus F1
+  and F2 on #166).
