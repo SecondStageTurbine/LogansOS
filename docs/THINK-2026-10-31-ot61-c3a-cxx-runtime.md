@@ -122,15 +122,7 @@ No kernel concurrency code changes.
 
 ## 6. Known gaps (each with the rung that closes it)
 
-1. **No C++ threads, no pthreads. Hard rule: no multi-threaded C++ on this build until C3b's pthread rebuild.**
-   libc++ here is `_LIBCPP_HAS_NO_THREADS`: `shared_ptr`'s reference counts aren't atomic, `call_once` isn't
-   synchronised, and `std::thread`/`mutex`/`condition_variable` are absent. So C++ code may run on one thread
-   only: a C++ object shared between std threads, or C++ entered from two threads at once, is undefined
-   behaviour here, even when it compiles. (C is different: the C library's own state is per thread or locked,
-   `errno` and the stdio streams included, CP-106.) SpiderMonkey threads through its own POSIX port
-   (`js/src/threading/posix`). C3b adds a pthread subset on the C1 primitives std already uses (one
-   implementation for std and C++, per ADR-078 A3), then rebuilds libc++ with `_LIBCPP_HAS_THREAD_API_PTHREAD`.
-   That rebuild is an ABI change inside the bundle only, and it lifts this rule.
+1. **No C++ threads, no pthreads** in C3a. **Closed by C3b (§9).**
 2. **`atexit`/`__cxa_atexit` handlers never run.** Bundle processes end by `exit` or by being killed; SWGL and
    SpiderMonkey shut down explicitly.
 3. **No wall clock.** `clock_gettime(CLOCK_REALTIME)` is `EINVAL`, so `std::chrono::system_clock::now()` aborts (a
@@ -168,3 +160,80 @@ No kernel concurrency code changes.
   - The smoke's C++ object didn't rebuild when neo-crt's `__config_site` changed. Hardening checks inline into the
     consumer, so a stale object kept the old mode. The smoke's build script now reruns on that file.
 - A4: two syscall sites and one `%fs` read in each ELF, all std's.
+
+## 9. C3b: POSIX threads, and libc++ with threads
+
+**Branch:** `claude/ot61-c3b-pthreads`, stacked on C3a.
+
+**What it adds.** `userland/neo-crt/src/pthread.rs` provides the pthread subset that SpiderMonkey's POSIX
+threading layer (`js/src/threading/posix`) and libc++'s pthread thread API call:
+- create/join/detach/self/equal and the stack-size and detach-state attributes;
+- mutexes: normal, recursive and error-checking;
+- condition variables, with `pthread_condattr_setclock(CLOCK_MONOTONIC)`;
+- keys with destructors at thread exit, once, rwlocks, `sched_yield`, `nanosleep`/`usleep`, and `sysconf` for the
+  CPU count and page size.
+
+libc++ is rebuilt with `_LIBCPP_HAS_THREAD_API_PTHREAD`, plus its atomic, barrier, condition_variable, future,
+mutex, shared_mutex and thread sources.
+
+**Still one threading implementation (ADR-078 A3).**
+- Threads are `std::thread`.
+- Every block is a std `Mutex`/`Condvar`, so the C1.1 futex underneath.
+- Keys sit on a std `thread_local!`.
+
+No syscall is added, and the A4 backstop still shows exactly std's two syscall sites and one `%fs` read.
+
+**How state lives in C memory.** musl's `pthread_mutex_t`/`pthread_cond_t`/`pthread_rwlock_t` are caller-owned and
+start all-zero. The first pointer of each holds a boxed state, built on first use and installed by
+compare-and-swap, so two first users agree on one box. `*_destroy` frees it.
+
+**Condition-variable wakeups aren't lost** (`neo-crt/src/seqcond.rs`). A sequence number lives under the condvar's
+own mutex, and two rules hold it together:
+- A waiter reads the number *before* releasing the user's mutex, and a signaller must take the same mutex to bump
+  it. So a signal sent after the release can't land before the wait.
+- A signaller **wakes while still holding that mutex**. A thread can only record a number, and so only start waiting,
+  while it holds the mutex, so every waiter the wake can reach recorded the old number and returns to its caller.
+  The first version bumped, released, then woke. A thread arriving in that gap recorded the new number and parked,
+  and our kernel wakes futex waiters lowest queue slot first, so it could be the one woken: it saw no change and slept
+  again, and the waiter the signal was for slept on (Chad's review of #67, item 2).
+
+**Clocks.** POSIX's default condvar clock is `CLOCK_REALTIME`, which the bundle doesn't have, so a timed wait on a
+default condvar is `EINVAL`. Timed waits work on `CLOCK_MONOTONIC` (`pthread_condattr_setclock`, which SpiderMonkey
+uses) and through `pthread_cond_clockwait`. libc++ uses the latter for every `condition_variable` timeout once
+`_LIBCPP_HAS_COND_CLOCKWAIT` is set in `__config_site` (upstream sets it only for glibc and Android). musl 1.2.5
+doesn't declare that call, so `neo-crt/cxx/pthread.h` adds the declaration and then includes musl's header
+(`#include_next`).
+
+**Checks** (`cxx_runtime_smoke`, items 20–29 (16–17 are C3a's CP-106 checks, 18 is C3a's errno check, 19 is C3c-1's); all pass in QEMU, `NEO_SMP=4`):
+- six threads updating a counter under a pthread mutex, yielding inside the critical section, lose no update; join
+  returns each start routine's value;
+- recursive, error-checking and normal mutex semantics (`EPERM`, `EDEADLK`, `EBUSY`);
+- condvar wake; a monotonic timed wait times out no earlier than its deadline; the realtime default is refused;
+- keys: each thread sees only its own value, each thread's destructor runs once at its exit, and a deleted key
+  refuses values; a plain `std::thread` that sets a key runs its destructor once at exit too (item 29);
+- `pthread_once` under six threads; rwlock sharing and exclusion;
+- libc++: `std::thread` + `std::mutex` (lost-update check), `condition_variable::wait_for` timeout and wake,
+  `call_once`, `shared_mutex`, `atomic::wait`/`notify_one`.
+
+**Falsified** (results in the RETURN): with `pthread_mutex_lock`/`unlock` as no-ops, the lost-update checks fail;
+with key destructors skipped, item 23 fails; without `Slots`'s `Drop`, item 29 fails (its destructor count is 0, as
+Chad's probe found). The condvar's wake order has a host KAT (`tools/neo-crt-logic-tests`): a model condvar that
+wakes the newest waiter first, as our futex queue can, with a late waiter arriving during the wake. The fixed order
+gets the signal to the waiter it was for, and a control with the old order loses it every time.
+
+**CP bank (C3b):**
+
+| Class | This change | Guard / discriminator |
+|---|---|---|
+| Lost wakeup (condvar) | Introduces a condvar on std's | Sequence read before the user mutex is released, and the wake sent under the sequence lock (above); host KAT `signal_reaches_the_waiter_it_was_for` with its control; items 22 and 27 |
+| Lazy init race | Boxed state installed on first use | CAS install, loser frees its box |
+| Lock-holder preemption / spin | None: every wait blocks on the futex | — |
+| Thread-exit ordering | Key destructors run on the exiting thread: before std's TLS teardown on `pthread_create`'s threads (4 rounds), and from `Slots`'s TLS `Drop` on any other thread that set a key (one round) | Items 23 and 29 |
+| Join vs detach vs exit | `pthread_t` is an `Arc` record shared by the creator and the thread | Join returns values (item 20) |
+
+**Not here** (each with the consumer that will need it):
+- `pthread_exit` and cancellation (SpiderMonkey uses neither);
+- `pthread_mutex_timedlock` (POSIX measures it on the realtime clock, so `EINVAL`);
+- `pthread_getattr_np`/stack bounds (SpiderMonkey's stack limit; comes with C3 proper);
+- C++ `thread_local` stays unusable on this target: it compiles to `%fs` accesses. SpiderMonkey must take its
+  pthread-key path (`MOZ_THREAD_LOCAL` without compiler TLS).

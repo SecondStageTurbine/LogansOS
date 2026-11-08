@@ -1246,13 +1246,25 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     ),
     step(b"DESKTOP zone set name=Europe/London", b"rtc utc\n"),
     step(b"DESKTOP zone rtc=utc", b"\x1b"),
-    step(b"DESKTOP zone closed via=esc", b"hello desktop"),
-    HOME_TYPED_ENTER,
+    // F8: Arthur's two rounds ask the time, then (after a hold and resume)
+    // the date. Each ends in `?`, its only `?`, so Enter waits for all of it.
+    step(b"DESKTOP zone closed via=esc", b"what time is it?"),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     ROUND1_ESC,
     HOLD_TAB,
     CHIP1_TAB,
-    CHIP0_AGAIN,
-    AGAIN_ENTER,
+    step(b"DESKTOP home chip selected=0", b"what's the date?"),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
+    // The PM (#68): a question the phrase table doesn't hold still goes to
+    // the model (here, its no-model line).
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    step(
+        b"DESKTOP home chip selected=0",
+        b"what time is it in tokyo?",
+    ),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
@@ -2335,6 +2347,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // The same with xsave-fpu: AVX advertised and saved, memchr on AVX2.
         name: "servo_closure_smoke_avx",
         feature: "neo-test-servo-closure-smoke-avx",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 4 (SWGL S1): upstream SWGL clears an asymmetric pattern
+        // into a caller-owned padded-stride buffer, byte-compared on-target.
+        name: "swgl_smoke",
+        feature: "neo-test-swgl-smoke",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -6513,6 +6534,24 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
+    // then S5.
+    TestScenario {
+        name: "ot90_quiesce",
+        feature: "neo-test-ot90-quiesce",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Janus's #7 review, items 1 and 3: an AP parked by NMI holding the heap
+    // allocator's lock, and a bus master that won't clear; S5 must still come.
+    TestScenario {
+        name: "ot90_quiesce_heap_held",
+        feature: "neo-test-ot90-quiesce-heap-held",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -6555,6 +6594,7 @@ fn main() -> ExitCode {
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
+        "ot61-swgl-build" => cmd_ot61_swgl_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
         "gate-plan" => cmd_gate_plan(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
@@ -6747,6 +6787,9 @@ fn print_help() {
     );
     println!(
         "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
+    );
+    println!(
+        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
     );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
@@ -7181,6 +7224,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        "swgl_smoke" => &[SWGL_BIN],
         _ => &[],
     }
 }
@@ -7851,6 +7895,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-busy-emblem",
             // A9-C: PgUp/PgDn and Up/Down scroll the transcript.
             "arthur-scrollback",
+            // F8: the time and the date from the clock, before the model.
+            "arthur-clock",
         ],
         Some("desktop-session-boot-test")
         | Some("desktop-glass-boot-test")
@@ -8031,13 +8077,19 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-resize",
         ],
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
-        Some("desktop-intro-boot-test")
-        | Some("install-atrium-boot-test")
-        | Some("desktop-clock-boot-test") => vec![
+        Some("desktop-intro-boot-test") | Some("install-atrium-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
             "desktop-resize",
+        ],
+        // F8: Arthur's third round (a question the clock leaves alone).
+        Some("desktop-clock-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-clock-boot-test",
         ],
         // OT-22: the parked session parks Arthur too; the control spins both.
         Some("desktop-park") => vec!["desktop-session", "desktop-home", "desktop-park"],
@@ -8240,6 +8292,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
             build_cxx_runtime_smoke()?;
         }
+        if std_real_staged_bins().contains(&SWGL_BIN) {
+            build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+        }
     }
     Ok(())
 }
@@ -8260,6 +8315,9 @@ const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
 const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
 /// Its hardening twin, in the same crate (`src/trap.rs`).
 const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
+/// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
+const SWGL_BIN: &str = "swgl-smoke";
+const SWGL_DIR: &str = "userland/swgl-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -8269,12 +8327,16 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
+        SWGL_BIN => Some(SWGL_DIR),
         _ => None,
     }
 }
 
 fn is_standalone_std_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR || subdir == CXX_RUNTIME_DIR
+    subdir == SERVO_CLOSURE_DIR
+        || subdir == STYLO_SMOKE_DIR
+        || subdir == CXX_RUNTIME_DIR
+        || subdir == SWGL_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -8287,6 +8349,76 @@ fn build_cxx_runtime_smoke() -> Result<(), String> {
         &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         CXX_RUNTIME_DIR,
     )
+}
+
+/// SWGL's build script compiles `gl.cc` and its translated shaders with the
+/// `cc` crate's defaults for the target, which knows nothing of ours. These
+/// are `cc`'s per-target variables: no default flags, clang, our target
+/// flags and neo-crt's headers (libc++ first, then musl, then clang's own),
+/// and no host C++ library to link (`CXXSTDLIB` empty; libc++ comes from
+/// neo-crt). The same flags neo-crt uses for its own objects.
+fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
+    let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let out = Command::new(&clang)
+        .arg("-print-resource-dir")
+        .output()
+        .map_err(|e| format!("{clang} -print-resource-dir: {e} (SWGL needs clang >= 18)"))?;
+    if !out.status.success() {
+        return Err(format!("{clang} -print-resource-dir failed"));
+    }
+    let builtin = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("include");
+    let root = workspace_root();
+    let crt = root.join("third_party/ot61-crt/vendor");
+    let flags = [
+        "--target=x86_64-unknown-none-elf".to_string(),
+        "-mno-red-zone".into(),
+        "-mcmodel=small".into(),
+        "-fno-pic".into(),
+        "-fno-pie".into(),
+        "-fno-stack-protector".into(),
+        "-O2".into(),
+        "-ffunction-sections".into(),
+        "-fdata-sections".into(),
+        "-nostdinc".into(),
+        "-nostdinc++".into(),
+        "-D_XOPEN_SOURCE=700".into(),
+        format!("-I{}", root.join("userland/neo-crt/cxx").display()),
+        format!("-I{}", crt.join("libcxx/include").display()),
+        format!("-I{}", crt.join("musl-generated").display()),
+        format!("-I{}", crt.join("musl/arch/x86_64").display()),
+        format!("-I{}", crt.join("musl/arch/generic").display()),
+        format!("-I{}", crt.join("musl/include").display()),
+        format!("-isystem{}", builtin.display()),
+    ]
+    .join(" ");
+    let t = "x86_64_unknown_neoplutarch";
+    cmd.env("CRATE_CC_NO_DEFAULTS", "1")
+        .env(format!("CC_{t}"), &clang)
+        .env(format!("CXX_{t}"), &clang)
+        .env(format!("CXXFLAGS_{t}"), &flags)
+        .env(format!("CXXSTDLIB_{t}"), "");
+    Ok(())
+}
+
+/// `cargo xtask ot61-swgl-build`: apply the std overlay and build the SWGL S1
+/// smoke, with its A4 checks, without a QEMU run (the CI job that runs SWGL's
+/// build script and shader translator first, per J.c.'s C2.3b ruling).
+fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-swgl-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+    let elf = std_real_bin_path(SWGL_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
 }
 
 /// Build one standalone std smoke (the overlay must already be applied) and
@@ -8859,6 +8991,9 @@ fn build_member_at_opt_level(
     if subdir == "userland/std-real-smoke" || is_standalone_std_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
+    }
+    if subdir == SWGL_DIR {
+        swgl_cc_env(&mut cmd)?;
     }
     if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
@@ -11637,7 +11772,9 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_cpus"
         | "ot90_stop_holdout"
         | "ot90_stop_shootdown"
-        | "ot90_stop_wedged" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stop_wedged"
+        | "ot90_quiesce"
+        | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -11683,7 +11820,10 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         )
     })?;
     // Chad #199 item 2: K2 never came back from the stuck disk; the deadline
-    // abandoned it (so K3 never ran) and S5 still came.
+    // abandoned it (so K3 never ran) and K4 stopped the CPUs. The drain's
+    // write was the disk's first, so its write-guard judgement is the stuck
+    // read: K6's plan reads the disk as not armed instead of waiting on it,
+    // leaves it alone, and S5 still came.
     if scenario.name == "ot90_stuck_disk" {
         ot90_require_in_order(
             scenario.name,
@@ -11693,6 +11833,8 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 "stage=power_off_requested",
                 "[ power ] shutdown: started kind=PowerOff",
                 "[ power ] shutdown: deadline passed in K2 after ",
+                "[ power ] K4 targets=",
+                "[ power ] K6 disks_stopped=0 disks_left_alone=1 ",
                 "power: S5 PM1a=",
             ],
         )?;
@@ -11738,6 +11880,61 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             ));
         }
+    }
+    // OT-90 P3b-2: K6 stopped disk 0 (armed by this boot's write), cleared
+    // the bus masters, then S5.
+    if scenario.name == "ot90_quiesce" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K5 lapic_timer=",
+                "[ power ] K6 disk=0 virtio-reset ok",
+                "[ power ] K6 disks_stopped=1 ",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let cleared = serial
+            .lines()
+            .find_map(|l| l.split("bus_masters_cleared=").nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0);
+        if cleared == 0 {
+            return Err(format!(
+                "`{}`: K6 cleared no bus master; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    // Janus's #7 review, items 1 and 3: the highest AP parked by NMI holding
+    // the heap's lock (no holdout, so K5 and K6 ran); K6 stopped the disk,
+    // reported the stuck bus master and kept the IOMMU on; S5 still came, so
+    // nothing after K4 freed heap memory.
+    if scenario.name == "ot90_quiesce_heap_held" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 targets=",
+                "[ power ] K5 lapic_timer=",
+                "[ power ] K6 disk=0 virtio-reset ok",
+                "FAILED bme-still-set",
+                "disks_failed=0 bus_masters_cleared=",
+                "bus_masters_failed=1 iommu=kept",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(true, k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
     }
     // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
     // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
@@ -15704,6 +15901,8 @@ fn scenario_uses_storage_disk(scenario: TestScenario) -> bool {
         || scenario.name == "install_claim_identity"
         || scenario.name == "virtio_blk_io_gate_contention"
         || scenario.name == "vtd_fence"
+        || scenario.name == "ot90_quiesce"
+        || scenario.name == "ot90_quiesce_heap_held"
         || scenario.name == "graphics_vtd_domain"
         || scenario.name == "model_load_cascade"
         || scenario.name == "mount_authority"
@@ -16484,8 +16683,9 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         "phase3_neofs_cache_evict" | "phase3_neofs_cache_evict_off" => Some("normal"),
         "phase3_neofs_allocator_reuse_guard" => Some("normal"),
         "phase3_neofs_reboot_persistence_small_file" => Some("normal"),
-        "ot90_s5_durability" => Some("normal"),
-        "ot90_stuck_disk" => Some("normal"),
+        "ot90_s5_durability" | "ot90_quiesce" | "ot90_quiesce_heap_held" | "ot90_stuck_disk" => {
+            Some("normal")
+        }
         "phase3_neofs_fsync_noop_write_through" => Some("normal"),
         "phase3_neofs_cow_write_after_write" => Some("normal"),
         "phase3_neofs_crash_mid_overwrite_recovery" => Some("normal"),
@@ -18634,6 +18834,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    if scenario.name == "swgl_smoke" {
+        for needle in [
+            "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
+            "[ swgl-smoke ] ok(3) every byte == the hand-laid pattern (BGRA, no flip, padding and canaries untouched)",
+            "[ swgl-smoke ] ok(4) the 7x5 buffer passes fb::attach's checks",
+            "[ swgl-smoke ] ok(5) fb::attach refuses each bad framebuffer before SWGL sees it",
+            "[ swgl-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SWGL must raster the hand-laid pattern into the caller's buffer",
+            )?;
+        }
+    }
     if scenario.name == "cxx_runtime_smoke" {
         // The smoke's own lines: the musl printf path reached the console, and
         // every check passed (the kernel's PASS line covers the exit code).
@@ -18644,6 +18860,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
+            "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
+            "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
@@ -20005,6 +20224,14 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP zone card shown rows=6",
                 "DESKTOP zone closed via=esc",
                 "DESKTOP home intent submitted target=arthur",
+                // F8: Arthur answers from the clock, in London (zone 288),
+                // before the model (`require_arthur_clock_answers`).
+                "DESKTOP arthur line=what time is it?",
+                "DESKTOP arthur clock question=time basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what's the date?",
+                "DESKTOP arthur clock question=date basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what time is it in tokyo?",
+                "DESKTOP arthur turn path=no-model",
                 "DESKTOP view switch=home residue_pixels=0",
                 "DESKTOP home return client=arthur exit=0 focus=wm-home",
                 "DESKTOP clock readback box=642,285,720,84 ink_pixels=",
@@ -20014,6 +20241,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         require_single_arthur(scenario, observed, false)?;
         require_clock_words(scenario, observed)?;
+        require_arthur_clock_answers(scenario, observed)?;
         require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL)?;
         require_clock_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL, true)?;
         require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_CAPTURE_REL)?;
@@ -22121,6 +22349,84 @@ fn require_wallclock_probe_oracle(
     if realtime < base || realtime - base > 120_000_000_000 {
         return Err(format!(
             "`{}` realtime {realtime} is not the base {base} plus a short boot",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// F8: Arthur's two answers against the host oracle. Realtime is confirmed
+/// UTC by then (the pinned RTC's 17:48 EDT, so 21:48 UTC plus the run), and
+/// the zone is London, on BST (UTC+1) on 21 October 2026: the time is the
+/// oracle's for `realtime_s + 3600` with "BST", the date that instant's.
+fn require_arthur_clock_answers(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let mut seen = 0;
+    for line in serial
+        .lines()
+        .filter(|l| l.contains("DESKTOP arthur clock question="))
+    {
+        let s = numeric(line, "realtime_s").unwrap_or(0);
+        if !(WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900).contains(&s) {
+            return Err(format!(
+                "`{}` Arthur's clock read {s}, not confirmed UTC near the pin: {line:?}",
+                scenario.name
+            ));
+        }
+        let (d, t, _) = civil_oracle(s + 3_600);
+        let want = if line.contains("question=time") {
+            format!("It's {t} BST.")
+        } else {
+            format!("Today is {d}.")
+        };
+        if quoted(line, "reply") != Some(want.as_str()) {
+            return Err(format!(
+                "`{}` Arthur answered {line:?}; the host oracle says {want:?}",
+                scenario.name
+            ));
+        }
+        seen += 1;
+    }
+    if seen != 2 {
+        return Err(format!(
+            "`{}` expected Arthur's time and date answers, saw {seen}",
+            scenario.name
+        ));
+    }
+    // A time question outside the phrase table is the model's (Jarvis,
+    // #68): after its line, Arthur's next turn line is the model path's,
+    // and no clock answer follows. This scenario boots no model, so the
+    // model path is its no-model line (`path=no-model`); the two clock
+    // rounds before it must not have taken it.
+    let tokyo = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .nth(1)
+        .ok_or_else(|| format!("`{}` Arthur never got the Tokyo question", scenario.name))?;
+    if tokyo.contains("DESKTOP arthur clock question=") {
+        return Err(format!(
+            "`{}` the clock answered \"what time is it in tokyo?\"; it is the model's",
+            scenario.name
+        ));
+    }
+    let next = tokyo
+        .lines()
+        .find(|l| l.contains("DESKTOP arthur turn path=") || l.contains("DESKTOP arthur line="));
+    if !next.is_some_and(|l| l.contains("DESKTOP arthur turn path=")) {
+        return Err(format!(
+            "`{}` \"what time is it in tokyo?\" never reached the model path: {next:?}",
+            scenario.name
+        ));
+    }
+    let before = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .next()
+        .unwrap_or("");
+    if before.contains("DESKTOP arthur turn path=") {
+        return Err(format!(
+            "`{}` a clock question took the model path",
             scenario.name
         ));
     }
@@ -24823,6 +25129,25 @@ mod tests {
             .and_then(|r| r.split(']').next())
             .unwrap();
         assert!(arthur.contains("\"arthur-busy-emblem\""), "{arthur}");
+    }
+
+    /// F8 (Jarvis, #68): Arthur's clock answers are a separate feature (its
+    /// kill-switch), and the product image's Arthur turns them on.
+    #[test]
+    fn product_image_answers_the_time() {
+        let src = include_str!("main.rs");
+        let arthur = src
+            .split("Some(\"desktop-with-model\") => vec![\n            \"desktop-session\"")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(arthur.contains("\"arthur-clock\""), "{arthur}");
+        let cargo = include_str!("../../../userland/neo-arthur/Cargo.toml");
+        let session = cargo
+            .lines()
+            .find(|l| l.starts_with("desktop-session = "))
+            .unwrap();
+        assert!(!session.contains("arthur-clock"), "{session}");
     }
 
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A

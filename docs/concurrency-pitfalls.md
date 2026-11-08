@@ -4664,8 +4664,11 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
      the fallback at all.
   3. **A parked CPU holds a lock.** STOP is taken only with interrupts on, so its parks hold no IRQ-safe
      lock, but they can hold a plain spin lock taken with interrupts on; an NMI park can hold anything. Any
-     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free.
-- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5.
+     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free. **That includes
+     the heap allocator's lock, taken by any drop of a heap value** (a `Vec` going out of scope), so a
+     plan built before the stop and dropped after it hangs the stopper before the power-off.
+- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5; the allocator-lock case
+  and the per-step waits by his review of P3b-2 (#7), items 2a and 3.
 - **Guard (OT-90 P3b-1).**
   - The stopper takes the TLB-shootdown sender lock with interrupts on (waiting out and acknowledging any
     sender in flight), then masks interrupts and leaves the ready set, and never releases the lock
@@ -4676,11 +4679,17 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
     with a holdout's), and the power plan is read from a copy taken before the stop.
   - With any holdout, the single-CPU steps (I/O APIC and PCI masking) are skipped and the path goes straight
     to the power-off or reset, which ends every CPU. The holdouts are reported.
+  - **(P3b-2, K6.)** K6's plan (heap vectors, built before the stop) is held in `ManuallyDrop`, so no path
+    after the stop frees it, the holdout return included. Every K6 wait is bounded by a poll count as well
+    as the timer (`power_logic::wait_bounded`), so a frozen timer can't hold it either.
 - **Discriminators.** `ot90_stop_shootdown`: an AP sends IF=0 shootdowns at every other CPU while K4
   starts; every AP must park by STOP (with the old mask-first order it fails 4/4, the sender parked only
   by the NMI). `ot90_stop_wedged`: the highest AP ignores STOP and, in its NMI handler, takes the UART lock
   and never acknowledges; the PM timer reads as frozen. K4 must end on its poll count, report that AP as
-  the holdout, skip K5 and reach S5.
+  the holdout, skip K5 and reach S5. `ot90_quiesce_heap_held` (P3b-2): the highest AP ignores STOP, takes
+  the allocator's lock in its NMI handler and parks holding it; K6 must run and S5 must still come (with the
+  plan dropped at the end of `stop_world` it hangs, 4 of 4). Host KAT `a_k6_wait_ends_on_a_frozen_pm_timer`:
+  the real `pm_wait` on a timer reading 0, with a controller that never finishes.
 - **Source.** Ours, with the principle from Linux's `smp_send_stop` / `crash_smp_send_stop` (read for
   principle only): the stop is best-effort, the caller must not assume it worked, and panic-time printing
   uses a lock-free console path.
@@ -4714,3 +4723,30 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   - `ok(17)`: six threads print 600-byte runs with no newline at once (the bounce's repro).
 - **Source.** The PM's AAG on #261 (2026-10-31). Principle: musl's `__stdio_*` locking and `libc.threaded`
   (`src/thread/pthread_create.c`), read for the design only.
+
+### CP-107 — A sequence condvar that wakes after dropping its lock, on a futex that wakes the lowest slot first
+
+- **Shape.**
+  - A condvar built as "a sequence number under a lock, plus a wait queue": a waiter records the number, releases
+    the caller's mutex, and sleeps until the number changes; `signal` bumps the number and wakes one sleeper.
+  - If `signal` releases the lock **before** it wakes, a thread can arrive in the gap, record the *new* number and
+    start sleeping. If the wake can reach that late thread, it sees no change and sleeps again. The signal is
+    spent, and the waiter it was for (asleep at the time of the call, as POSIX requires) sleeps on.
+  - Whether the late thread can be woken first depends on the wait queue. Our futex puts a waiter in the first free
+    queue slot and wakes the lowest slot first (`kernel/src/sched/futex.rs`), so a late waiter can take a slot
+    freed by an unrelated waiter and be first in line. A FIFO queue hides the bug.
+- **Guard (#67, C3b).** `neo-crt/src/seqcond.rs`: `signal` and `broadcast` wake while holding the sequence lock. A
+  thread can only record a number while holding that lock, so every thread the wake can reach recorded the old
+  number and returns to its caller.
+- **Discriminators.**
+  - Host KAT `tools/neo-crt-logic-tests`, `signal_reaches_the_waiter_it_was_for`. A model condvar wakes the newest
+    waiter first and, inside `notify_one`, waits for one more waiter to register. Waiter A waits; the producer
+    signals; waiter B starts waiting during the wake. A must get the signal.
+  - Its control, `control_waking_after_unlock_loses_the_signal`, runs the old order (bump, unlock, wake), and A
+    must **not** get the signal. That keeps the model honest: if the control ever passes, the KAT no longer
+    reproduces the race.
+  - On target, `cxx_runtime_smoke` items 22 and 27 (condvar wake and timeout, pthread and libc++).
+- **Source.** Chad's cross-family review of #67 (relay 299, item 2): a deterministic scheduling model of the first
+  version reproduced both waiters asleep after `signal` returned. Principle: the standard "signal under the
+  condvar's internal lock" rule for sequence-counter condvars (as in std's own futex condvar, which bumps and wakes
+  in one step on the futex word).

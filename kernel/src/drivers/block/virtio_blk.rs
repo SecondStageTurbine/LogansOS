@@ -667,6 +667,13 @@ struct VirtioBlkDevice {
 }
 
 impl BlockDevice for VirtioBlkDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<block::ShutdownStep> {
+        Some(block::ShutdownStep::VirtioBlk {
+            common: self.inner.lock().common.as_u64(),
+        })
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }
@@ -1628,6 +1635,27 @@ fn write_driver_features(common: VirtAddr, features: u64) {
         mmio_write32(common, COMMON_DRIVER_FEATURE_SELECT, 1);
         mmio_write32(common, COMMON_DRIVER_FEATURE, (features >> 32) as u32);
     }
+}
+
+/// OT-90 P3b-2 (K6): reset the device (status 0), registers only. An
+/// `Err` when the status never reads back 0 (Janus's #7 review, item 2b):
+/// the device isn't confirmed reset. `reset_device`'s poll, reporting its
+/// outcome; the probe path keeps `reset_device` as it was.
+#[cfg(feature = "power-quiesce")]
+pub fn shutdown_reset(common: u64) -> Result<(), &'static str> {
+    let common = VirtAddr::new(common);
+    // SAFETY: the device's common configuration, mapped at probe; K6 runs
+    // alone.
+    unsafe {
+        mmio_write8(common, COMMON_DEVICE_STATUS, 0);
+        for _ in 0..100_000 {
+            if mmio_read8(common, COMMON_DEVICE_STATUS) == 0 {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+    }
+    Err("reset-timeout")
 }
 
 fn reset_device(common: VirtAddr) {

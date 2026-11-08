@@ -169,6 +169,8 @@ const SCENARIO: &str = "stylo_smoke";
 const SCENARIO: &str = "servo_closure_smoke_avx";
 #[cfg(feature = "neo-test-cxx-runtime-smoke")]
 const SCENARIO: &str = "cxx_runtime_smoke";
+#[cfg(feature = "neo-test-swgl-smoke")]
+const SCENARIO: &str = "swgl_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -1124,6 +1126,10 @@ const SCENARIO: &str = "ot90_stop_holdout";
 const SCENARIO: &str = "ot90_stop_shootdown";
 #[cfg(feature = "neo-test-ot90-stop-wedged")]
 const SCENARIO: &str = "ot90_stop_wedged";
+#[cfg(feature = "neo-test-ot90-quiesce")]
+const SCENARIO: &str = "ot90_quiesce";
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+const SCENARIO: &str = "ot90_quiesce_heap_held";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1312,6 +1318,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-servo-closure-smoke",
     feature = "neo-test-stylo-smoke",
     feature = "neo-test-cxx-runtime-smoke",
+    feature = "neo-test-swgl-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -1695,6 +1702,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-ot90-straggler-forced",
     feature = "neo-test-ot90-stop-cpus",
     feature = "neo-test-ot90-stop-holdout",
@@ -2992,6 +3001,55 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "cxx_runtime_smoke=ran exit=0 libc=oracle libcxx=checked errno=per_thread malloc=threads static_guard=once hardening=trap frames_returned=1",
+        );
+    }
+
+    // OT-61 rung 4 (SWGL S1): swgl-smoke rasters a hand-laid pattern through
+    // upstream SWGL into its own padded-stride buffer and byte-compares it;
+    // it exits 0 only on an exact match, and every frame must come back.
+    #[cfg(feature = "neo-test-swgl-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 64 * 256; // 64 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=swgl_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke = process::spawn_user_by_name_budgeted("swgl-smoke", &handles, SMOKE_FRAMES)
+            .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!("[ kernel ] proc: swgl-smoke pid={} (64 MiB)", smoke.0);
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: swgl-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "swgl_smoke=ran exit=0 swgl=0.70.0 pattern=exact stride=padded canaries=intact frames_returned=1",
         );
     }
 
@@ -5141,6 +5199,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-ot90-stuck-sink-restart"
     ))]
     run_ot90_stuck_sink();
+
+    #[cfg(any(
+        feature = "neo-test-ot90-quiesce",
+        feature = "neo-test-ot90-quiesce-heap-held"
+    ))]
+    run_ot90_quiesce();
 
     #[cfg(feature = "neo-test-sys-getrandom")]
     {
@@ -31648,6 +31712,8 @@ fn run_phase3_pci_virtio_blk_probe_smoke() -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
     feature = "neo-test-phase3-virtio-blk-abandoned-io-no-leak",
     feature = "neo-test-phase3-virtio-blk-flush-negotiated-gate",
@@ -33888,6 +33954,8 @@ const NEOFS_2C_DIRECT_BLOCK_BYTES: usize = 4096;
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33921,6 +33989,8 @@ fn mount_neofs_rw_or_fail() -> crate::fs::neofs::MountReport {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33945,6 +34015,8 @@ fn neofs_2c_rw_rights() -> crate::fs::FileRights {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -33974,6 +34046,8 @@ fn neofs_2c_fail_vfs(reason: &str, err: crate::fs::VfsError) -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -34003,6 +34077,8 @@ fn neofs_2c_fail_count(reason: &str, got: usize, expected: usize) -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -34028,6 +34104,8 @@ fn neofs_2c_create_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFile> 
 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -34079,6 +34157,8 @@ fn neofs_2c_open_read_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFil
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -34104,6 +34184,8 @@ fn neofs_2c_write_all_or_fail(file: &crate::fs::OpenFile, input: &[u8]) {
 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -39873,6 +39955,32 @@ fn run_phase3_nvme_neofs_mount_and_readwrite() -> ! {
     drop(file);
     nvme_expect_file_bytes(PATH, CONTENT);
     crate::scenario::phase(crate::scenario::ScenarioPhase::Cleanup);
+    // OT-90 P3b-2, with `power-quiesce` (NEO_TEST_EXTRA_FEATURES): K6's NVMe
+    // step on the controller this scenario just wrote through: CC.SHN,
+    // CSTS.SHST complete, CC.EN cleared.
+    #[cfg(feature = "power-quiesce")]
+    {
+        let step = crate::drivers::block::get_device(source_index).and_then(|d| d.shutdown_step());
+        let Some(crate::drivers::block::ShutdownStep::Nvme { mmio }) = step else {
+            fail("reason=nvme_shutdown_step_missing");
+        };
+        let timer = crate::acpi::power::stop_timer();
+        match crate::drivers::block::nvme::shutdown_notify(mmio, &|us, done| {
+            crate::acpi::power::spin_us(timer.as_ref(), us, done)
+        }) {
+            Ok(()) => {
+                serial_println!("NEO_TEST/1 event=INFO name={} nvme_shutdown=ok", SCENARIO);
+            }
+            Err(why) => {
+                serial_println!(
+                    "NEO_TEST/1 event=FAIL name={} reason=nvme_shutdown_{}",
+                    SCENARIO,
+                    why
+                );
+                debug_exit(EXIT_FAILURE);
+            }
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fs=neofs source=device{} mount=rw initial_read=ok create_write_fsync_readback=ok bytes={}",
         SCENARIO,
@@ -41325,6 +41433,36 @@ fn run_ot90_stop_shootdown() -> ! {
         fail("reason=storm_place_failed");
     }
     frame("INFO", &alloc::format!("stage=storm_ready ap={ap}"));
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// `ot90_quiesce_heap_held`: whether K6 should report `dev`'s Bus Master
+/// Enable as still set. The first bus master K6 clears does, once, so the
+/// IOMMU-kept path runs (Janus's #7 review, item 1).
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+pub fn ot90_bme_stuck(_dev: crate::drivers::pci::Device) -> bool {
+    static FIRST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+    FIRST.swap(false, Ordering::AcqRel)
+}
+
+/// OT-90 P3b-2 `ot90_quiesce`: power-off with K6. NeoFS is mounted
+/// writable on disk 0 and a file is written, so the write guard has armed
+/// that disk; K6 must stop its controller, clear every bus master and then
+/// S5. xtask judges it by QMP and the K6 lines.
+#[cfg(any(
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held"
+))]
+fn run_ot90_quiesce() -> ! {
+    let _ = mount_neofs_rw_or_fail();
+    let file = neofs_2c_create_or_fail("/neofs/ot90-quiesce.txt");
+    neofs_2c_write_all_or_fail(&file, b"K6 stops this disk after K2 drained it.\n");
+    drop(file);
     frame("INFO", "stage=power_off_requested");
     crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
     loop {

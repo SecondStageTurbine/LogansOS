@@ -12,6 +12,10 @@
 
 #![allow(dead_code)]
 
+#[path = "../../../userland/libneo/src/civil.rs"]
+mod civil;
+#[path = "../../../userland/libneo/src/clock_answer.rs"]
+mod clock_answer;
 #[path = "../../../userland/libneo/src/tz.rs"]
 mod tz;
 
@@ -374,5 +378,94 @@ mod tests {
         };
         assert_eq!(near[0], Some(ny));
         assert_eq!(find_zone(b"atlantis"), Err([None, None, None]));
+    }
+
+    /// F8: the phrasings Arthur answers itself, and some it leaves to the
+    /// model.
+    #[test]
+    fn time_and_date_questions() {
+        use super::clock_answer::{Question, question};
+        for q in [
+            "what time is it",
+            "what time is it?",
+            "What time is it?",
+            "  WHAT TIME IS IT NOW?! ",
+            "what's the time",
+            "Whats the time?",
+            "time",
+            "current time.",
+        ] {
+            assert_eq!(question(q.as_bytes()), Some(Question::Time), "{q}");
+        }
+        for q in [
+            "what's the date?",
+            "What is the date today",
+            "what's today's date",
+            "What day is it?",
+            "date",
+        ] {
+            assert_eq!(question(q.as_bytes()), Some(Question::Date), "{q}");
+        }
+        for q in [
+            "what time is it in Tokyo",
+            "what time does the shop open",
+            "date night ideas",
+            "what's the time difference to London",
+            // Jarvis (#68): punctuation inside is not a word break.
+            "what,time is it",
+            "what time, is it",
+            "what?time is it",
+            "what time is it?!x",
+            "",
+            "?",
+            "time time time time time time time time time time time",
+        ] {
+            assert_eq!(question(q.as_bytes()), None, "{q}");
+        }
+    }
+
+    /// F8: the answers, written out by hand. The instant is 2026-11-02
+    /// 06:29:00 UTC (day 20759 + 23340 s); New York is on EST (UTC-5)
+    /// then, Sydney on AEDT (UTC+11).
+    #[test]
+    fn time_and_date_answers() {
+        use super::clock_answer::{Question, answer};
+        use super::tz::Basis;
+        let utc = 20759 * 86400 + 23340;
+        let ny = id("America/New_York");
+        let sydney = id("Australia/Sydney");
+        let a = |q, t, b, z| answer(q, t, b, z).as_str().to_string();
+        assert_eq!(a(Question::Time, utc, Basis::Utc, ny), "It's 1:29 AM EST.");
+        assert_eq!(
+            a(Question::Date, utc, Basis::Utc, ny),
+            "Today is Monday, November 2, 2026."
+        );
+        assert_eq!(
+            a(Question::Time, utc, Basis::Utc, sydney),
+            "It's 5:29 PM AEDT."
+        );
+        assert_eq!(
+            a(Question::Time, utc, Basis::Utc, tz::UTC),
+            "It's 6:29 AM UTC."
+        );
+        // Before midnight in New York, already the next day in Sydney:
+        // 2026-11-02 23:30 EST is 2026-11-03 04:30 UTC, 15:30 AEDT.
+        let late = 20760 * 86400 + 16200;
+        assert_eq!(
+            a(Question::Date, late, Basis::Utc, ny),
+            "Today is Monday, November 2, 2026."
+        );
+        assert_eq!(
+            a(Question::Date, late, Basis::Utc, sydney),
+            "Today is Tuesday, November 3, 2026."
+        );
+        // Unconfirmed: the computer's clock as read (01:29), and how to fix it.
+        let wall = 20759 * 86400 + 5340;
+        assert_eq!(
+            a(Question::Time, wall, Basis::Rtc, tz::UTC),
+            "It's 1:29 AM by this computer's clock. Your time zone isn't set: type timezone Area/City at Home."
+        );
+        // A kernel without rtc-offset: the reading, plainly.
+        assert_eq!(a(Question::Time, wall, Basis::Legacy, ny), "It's 1:29 AM.");
     }
 }
