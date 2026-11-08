@@ -11,14 +11,19 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
 use quant_drift_tests::model::Model;
 use quant_drift_tests::prompts::{CORPUS_EVAL_START, CORPUS_TOKENS, PROMPTS};
 use quant_drift_tests::report::{self, KatMeta, RefRun};
+use quant_drift_tests::vocab_sidecar::RealVocab;
 
 const MAX_NEW: usize = 32;
+const LOGIT_DUMP_MAGIC: &[u8; 4] = b"QDLG";
+const HIDDEN_DUMP_MAGIC: &[u8; 4] = b"QDLH";
+const LOGIT_DUMP_VERSION: u32 = 1;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -39,6 +44,9 @@ fn main() -> ExitCode {
         "compare" => cmd_compare(&options),
         "control" => cmd_control(&options),
         "encode" => cmd_encode(&options),
+        "logits" => cmd_logits(&options),
+        "hidden" => cmd_hidden(&options),
+        "debug-layer" => cmd_debug_layer(&options),
         "help" | "-h" | "--help" => {
             print_help();
             Ok(())
@@ -56,10 +64,21 @@ fn main() -> ExitCode {
 
 fn print_help() {
     eprintln!(
-        "quant-drift-tests <prompts|run|compare|control>\n\
+        "quant-drift-tests <prompts|run|compare|control|encode|logits>\n\
          \n\
          prompts  --neom M.neom [--corpus-text test.txt] --out-prompts prompts.tsv "
     );
+}
+
+/// Load the shipped `.neom`, or the same metadata/vocabulary with the weights
+/// of a fully dequantized F32 GGUF (`--gguf-f32`).
+fn load_model(options: &BTreeMap<String, String>) -> Result<(Model, RealVocab), String> {
+    let neom_path = Path::new(required(options, "neom")?);
+    match options.get("gguf-f32") {
+        Some(gguf_path) => Model::load_f32_gguf(Path::new(gguf_path), neom_path),
+        None => Model::load(neom_path),
+    }
+    .map_err(|err| format!("load model: {err}"))
 }
 
 fn parse_options(args: &[String]) -> Result<BTreeMap<String, String>, String> {
@@ -88,8 +107,7 @@ fn required<'a>(options: &'a BTreeMap<String, String>, key: &str) -> Result<&'a 
 }
 
 fn cmd_prompts(options: &BTreeMap<String, String>) -> Result<(), String> {
-    let neom_path = Path::new(required(options, "neom")?);
-    let (model, vocab) = Model::load(neom_path).map_err(|err| format!("load model: {err}"))?;
+    let (model, vocab) = load_model(options)?;
     let mut run = RefRun {
         model: "ours".to_string(),
         ..Default::default()
@@ -143,8 +161,7 @@ fn cmd_prompts(options: &BTreeMap<String, String>) -> Result<(), String> {
 }
 
 fn cmd_run(options: &BTreeMap<String, String>) -> Result<(), String> {
-    let neom_path = Path::new(required(options, "neom")?);
-    let (model, _vocab) = Model::load(neom_path)?;
+    let (model, _vocab) = load_model(options)?;
     let prompts_text = std::fs::read_to_string(required(options, "prompts")?)
         .map_err(|err| format!("read prompts: {err}"))?;
     let mut input = RefRun::from_tsv(&prompts_text)?;
@@ -293,6 +310,177 @@ fn cmd_control(options: &BTreeMap<String, String>) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// Dump the full 151,936-wide logit rows at the named positions.
+///
+/// Format (`QDLG`, little-endian): magic, version, n_vocab, row_count; then per
+/// row a u32 name length, the prompt id bytes, a u32 position, and `n_vocab`
+/// f32 logits. `ref/llama_drift.cpp --dump-logits` writes the same format, so a
+/// byte-for-byte comparison is a plain array subtraction.
+fn cmd_logits(options: &BTreeMap<String, String>) -> Result<(), String> {
+    let (model, _vocab) = load_model(options)?;
+    let prompts_text = std::fs::read_to_string(required(options, "prompts")?)
+        .map_err(|err| format!("read prompts: {err}"))?;
+    let input = RefRun::from_tsv(&prompts_text)?;
+    let positions = read_positions(required(options, "positions")?)?;
+    let rows = positions.values().map(Vec::len).sum::<usize>();
+    let path = required(options, "out")?;
+    let file = std::fs::File::create(path).map_err(|err| format!("create {path}: {err}"))?;
+    let mut out = BufWriter::new(file);
+    write_logit_header(&mut out, model.vocab_size as u32, rows as u32)?;
+    for prompt in &input.prompts {
+        let Some(wanted) = positions.get(&prompt.id) else {
+            continue;
+        };
+        let found = model.logits_at_positions(&prompt.ids, wanted);
+        if found.len() != wanted.len() {
+            return Err(format!(
+                "{}: wanted {} positions, found {}",
+                prompt.id,
+                wanted.len(),
+                found.len()
+            ));
+        }
+        for (index, logits) in found {
+            write_logit_row(&mut out, &prompt.id, index, &logits)?;
+        }
+    }
+    out.flush().map_err(|err| format!("flush {path}: {err}"))?;
+    eprintln!("logits: {rows} rows of {} -> {path}", model.vocab_size);
+    Ok(())
+}
+
+/// Dump every intermediate vector of one layer at one position, one named
+/// vector per TSV line: `name<TAB>v0,...`.
+fn cmd_debug_layer(options: &BTreeMap<String, String>) -> Result<(), String> {
+    let (model, _vocab) = load_model(options)?;
+    let prompts_text = std::fs::read_to_string(required(options, "prompts")?)
+        .map_err(|err| format!("read prompts: {err}"))?;
+    let input = RefRun::from_tsv(&prompts_text)?;
+    let prompt_id = required(options, "prompt")?;
+    let prompt = input
+        .prompt(prompt_id)
+        .ok_or_else(|| format!("no prompt {prompt_id:?}"))?;
+    let index = required(options, "index")?
+        .parse::<usize>()
+        .map_err(|_| "--index must be an integer".to_string())?;
+    let layer = required(options, "layer")?
+        .parse::<usize>()
+        .map_err(|_| "--layer must be an integer".to_string())?;
+    let vectors = model.layer_debug_at(&prompt.ids, index, layer)?;
+    let mut out = String::new();
+    for (name, values) in vectors {
+        out.push_str(&name);
+        out.push('\t');
+        for (i, value) in values.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("{value:.9}"));
+        }
+        out.push('\n');
+    }
+    let path = required(options, "out")?;
+    std::fs::write(path, out).map_err(|err| format!("write {path}: {err}"))?;
+    Ok(())
+}
+
+/// Dump the residual-stream hidden state after the embedding and after every
+/// transformer layer at the named positions. Format (`QDLH`, little-endian):
+/// magic, version, hidden_size, layer_count+1, row_count; then per row a u32
+/// prompt-id length, the id bytes, a u32 position, and every layer's f32 row.
+fn cmd_hidden(options: &BTreeMap<String, String>) -> Result<(), String> {
+    let (model, _vocab) = load_model(options)?;
+    let prompts_text = std::fs::read_to_string(required(options, "prompts")?)
+        .map_err(|err| format!("read prompts: {err}"))?;
+    let input = RefRun::from_tsv(&prompts_text)?;
+    let positions = read_positions(required(options, "positions")?)?;
+    let rows = positions.values().map(Vec::len).sum::<usize>();
+    let path = required(options, "out")?;
+    let file = std::fs::File::create(path).map_err(|err| format!("create {path}: {err}"))?;
+    let mut out = BufWriter::new(file);
+    out.write_all(HIDDEN_DUMP_MAGIC)
+        .and_then(|()| out.write_all(&1u32.to_le_bytes()))
+        .and_then(|()| out.write_all(&(model.config.hidden_size as u32).to_le_bytes()))
+        .and_then(|()| out.write_all(&((model.layer_count + 1) as u32).to_le_bytes()))
+        .and_then(|()| out.write_all(&(rows as u32).to_le_bytes()))
+        .map_err(|err| format!("write hidden header: {err}"))?;
+    for prompt in &input.prompts {
+        let Some(wanted) = positions.get(&prompt.id) else {
+            continue;
+        };
+        for (index, layers) in model.hidden_per_layer_at_positions(&prompt.ids, wanted) {
+            out.write_all(&(prompt.id.len() as u32).to_le_bytes())
+                .and_then(|()| out.write_all(prompt.id.as_bytes()))
+                .and_then(|()| out.write_all(&(index as u32).to_le_bytes()))
+                .map_err(|err| format!("write hidden row: {err}"))?;
+            for layer in &layers {
+                let mut bytes = Vec::with_capacity(layer.len() * 4);
+                for value in layer {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+                out.write_all(&bytes)
+                    .map_err(|err| format!("write hidden values: {err}"))?;
+            }
+        }
+    }
+    out.flush().map_err(|err| format!("flush {path}: {err}"))?;
+    eprintln!(
+        "hidden: {rows} rows x {} layers x {} -> {path}",
+        model.layer_count + 1,
+        model.config.hidden_size
+    );
+    Ok(())
+}
+
+fn read_positions(path: &str) -> Result<BTreeMap<String, Vec<usize>>, String> {
+    let text = std::fs::read_to_string(path).map_err(|err| format!("read {path}: {err}"))?;
+    let mut out: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (prompt, index) = line
+            .split_once('\t')
+            .ok_or_else(|| format!("{path}: expected <prompt>\\t<index>, got {line:?}"))?;
+        let index = index
+            .parse::<usize>()
+            .map_err(|_| format!("{path}: bad position {index:?}"))?;
+        out.entry(prompt.to_string()).or_default().push(index);
+    }
+    Ok(out)
+}
+
+fn write_logit_header(
+    out: &mut BufWriter<std::fs::File>,
+    n_vocab: u32,
+    rows: u32,
+) -> Result<(), String> {
+    out.write_all(LOGIT_DUMP_MAGIC)
+        .and_then(|()| out.write_all(&LOGIT_DUMP_VERSION.to_le_bytes()))
+        .and_then(|()| out.write_all(&n_vocab.to_le_bytes()))
+        .and_then(|()| out.write_all(&rows.to_le_bytes()))
+        .map_err(|err| format!("write logit header: {err}"))
+}
+
+fn write_logit_row(
+    out: &mut BufWriter<std::fs::File>,
+    prompt: &str,
+    index: usize,
+    logits: &[f32],
+) -> Result<(), String> {
+    out.write_all(&(prompt.len() as u32).to_le_bytes())
+        .and_then(|()| out.write_all(prompt.as_bytes()))
+        .and_then(|()| out.write_all(&(index as u32).to_le_bytes()))
+        .map_err(|err| format!("write logit row: {err}"))?;
+    let mut bytes = Vec::with_capacity(logits.len() * 4);
+    for logit in logits {
+        bytes.extend_from_slice(&logit.to_le_bytes());
+    }
+    out.write_all(&bytes)
+        .map_err(|err| format!("write logit values: {err}"))
 }
 
 fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {

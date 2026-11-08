@@ -12,6 +12,8 @@
 //! the multi-output row, which is the correctness check for the batch path.
 
 #include "llama.h"
+#include "ggml.h"
+#include "llama-ext.h"
 
 #include <algorithm>
 #include <cmath>
@@ -21,6 +23,7 @@
 #include <cstring>
 #include <fstream>
 #include <iomanip>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -148,6 +151,58 @@ static void append_top2(std::ostringstream & out, const std::string & name, cons
     out << name << "_2nd_logit\t" << id << "\t" << join_floats(v2) << "\n";
 }
 
+static std::map<std::string, std::vector<int>> read_positions(const std::string & path) {
+    std::map<std::string, std::vector<int>> out;
+    std::ifstream in(path);
+    if (!in) { fprintf(stderr, "read %s failed\n", path.c_str()); exit(1); }
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        const size_t tab = line.find('\t');
+        if (tab == std::string::npos) {
+            fprintf(stderr, "%s: expected <prompt>\\t<index>, got %s\n", path.c_str(), line.c_str());
+            exit(1);
+        }
+        const std::string id = line.substr(0, tab);
+        out[id].push_back(std::atoi(line.c_str() + tab + 1));
+    }
+    for (auto & entry : out) std::sort(entry.second.begin(), entry.second.end());
+    return out;
+}
+
+static void write_u32(std::ofstream & out, uint32_t value) {
+    out.write(reinterpret_cast<const char *>(&value), sizeof(value));
+}
+
+// Same `QDLG` format as `quant-drift-tests logits`: magic, version, n_vocab,
+// row_count, then per row: u32 id length, id bytes, u32 position, f32 logits.
+static void write_logit_row(std::ofstream & out, const std::string & id, int index,
+                            const float * row, int n_vocab) {
+    write_u32(out, static_cast<uint32_t>(id.size()));
+    out.write(id.data(), static_cast<std::streamsize>(id.size()));
+    write_u32(out, static_cast<uint32_t>(index));
+    out.write(reinterpret_cast<const char *>(row), static_cast<std::streamsize>(n_vocab) * 4);
+}
+
+static void write_layer_header(std::ofstream & out, uint32_t n_embd, uint32_t n_layers, uint32_t rows) {
+    out.write("QDLH", 4);
+    write_u32(out, 1);
+    write_u32(out, n_embd);
+    write_u32(out, n_layers);
+    write_u32(out, rows);
+}
+
+static void write_layer_row(std::ofstream & out, const std::string & id, int index,
+                            const std::vector<std::vector<float>> & layers) {
+    write_u32(out, static_cast<uint32_t>(id.size()));
+    out.write(id.data(), static_cast<std::streamsize>(id.size()));
+    write_u32(out, static_cast<uint32_t>(index));
+    for (const auto & layer : layers) {
+        out.write(reinterpret_cast<const char *>(layer.data()),
+                  static_cast<std::streamsize>(layer.size()) * 4);
+    }
+}
+
 int main(int argc, char ** argv) {
     if (argc < 7) {
         fprintf(stderr,
@@ -169,12 +224,37 @@ int main(int argc, char ** argv) {
     int verify_final = 0;
     bool generate = true;
     std::string corpus_blake3;
+    std::string dump_positions_path;
+    std::string dump_logits_path;
+    std::string dump_layers_path;
+    bool kv_f32 = false;
     for (int i = 9; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--eval-start") == 0) eval_start = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--corpus-tokens") == 0) corpus_tokens = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--corpus-blake3") == 0) corpus_blake3 = argv[i + 1];
         else if (std::strcmp(argv[i], "--verify-final") == 0) verify_final = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--no-generate") == 0) generate = std::atoi(argv[i + 1]) == 0;
+        else if (std::strcmp(argv[i], "--dump-positions") == 0) dump_positions_path = argv[i + 1];
+        else if (std::strcmp(argv[i], "--dump-logits") == 0) dump_logits_path = argv[i + 1];
+        else if (std::strcmp(argv[i], "--kv-f32") == 0) kv_f32 = std::atoi(argv[i + 1]) != 0;
+        else if (std::strcmp(argv[i], "--dump-layer-inputs") == 0) dump_layers_path = argv[i + 1];
+    }
+    if (dump_logits_path.empty() != dump_positions_path.empty()) {
+        fprintf(stderr, "--dump-logits and --dump-positions must be given together\n");
+        return 2;
+    }
+    const std::map<std::string, std::vector<int>> dump_positions =
+        dump_positions_path.empty() ? std::map<std::string, std::vector<int>>()
+                                    : read_positions(dump_positions_path);
+    std::ofstream dump_logits;
+    if (!dump_logits_path.empty()) {
+        dump_logits.open(dump_logits_path, std::ios::binary);
+        if (!dump_logits) { fprintf(stderr, "write %s failed\n", dump_logits_path.c_str()); return 1; }
+    }
+    std::ofstream dump_layers;
+    if (!dump_layers_path.empty()) {
+        dump_layers.open(dump_layers_path, std::ios::binary);
+        if (!dump_layers) { fprintf(stderr, "write %s failed\n", dump_layers_path.c_str()); return 1; }
     }
 
     const int n_threads = 4;
@@ -184,6 +264,21 @@ int main(int argc, char ** argv) {
     llama_model * model = llama_model_load_from_file(model_path.c_str(), mparams);
     if (!model) { fprintf(stderr, "load model failed\n"); return 1; }
     const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
+    const int n_embd = llama_model_n_embd(model);
+    const int n_layer = llama_model_n_layer(model);
+    if (dump_layers.is_open()) {
+        uint32_t total = 0;
+        for (const auto & entry : dump_positions) total += static_cast<uint32_t>(entry.second.size());
+        write_layer_header(dump_layers, static_cast<uint32_t>(n_embd), static_cast<uint32_t>(n_layer), total);
+    }
+    if (dump_logits.is_open()) {
+        uint32_t total = 0;
+        for (const auto & entry : dump_positions) total += static_cast<uint32_t>(entry.second.size());
+        dump_logits.write("QDLG", 4);
+        write_u32(dump_logits, 1);
+        write_u32(dump_logits, static_cast<uint32_t>(n_vocab));
+        write_u32(dump_logits, total);
+    }
 
     llama_context_params cparams = llama_context_default_params();
     cparams.n_ctx = static_cast<uint32_t>(corpus_tokens + 64);
@@ -194,6 +289,10 @@ int main(int argc, char ** argv) {
     cparams.n_outputs_max = 512;
     cparams.n_outputs_max_per_seq = 512;
     cparams.no_perf = true;
+    if (kv_f32) {
+        cparams.type_k = GGML_TYPE_F32;
+        cparams.type_v = GGML_TYPE_F32;
+    }
 
     std::vector<Prompt> prompts = read_prompts(prompts_path);
     std::vector<llama_token> corpus = read_u32(corpus_path);
@@ -220,6 +319,9 @@ int main(int argc, char ** argv) {
         if (prompt.ids.empty()) { fprintf(stderr, "empty prompt %s\n", prompt.id.c_str()); return 1; }
         llama_context * ctx = llama_init_from_model(model, cparams);
         if (!ctx) { fprintf(stderr, "context init failed\n"); return 1; }
+        if (dump_layers.is_open()) {
+            for (int lid = 0; lid < n_layer; ++lid) llama_set_embeddings_layer_inp(ctx, static_cast<uint32_t>(lid), true);
+        }
         if (!decode_range(ctx, prompt.ids, 0, prompt.ids.size(), 512)) return 1;
         std::vector<int> top1, top2;
         std::vector<float> v1, v2;
@@ -235,6 +337,29 @@ int main(int argc, char ** argv) {
             top2.push_back(t.second);
             v1.push_back(t.v1);
             v2.push_back(t.v2);
+        }
+        const auto wanted = dump_positions.find(prompt.id);
+        if (dump_layers.is_open() && wanted != dump_positions.end()) {
+            for (const int index : wanted->second) {
+                std::vector<std::vector<float>> layers;
+                layers.reserve(static_cast<size_t>(n_layer));
+                for (int lid = 0; lid < n_layer; ++lid) {
+                    const float * row = llama_get_embeddings_layer_inp(ctx, static_cast<uint32_t>(lid)) + static_cast<size_t>(index) * n_embd;
+                    layers.emplace_back(row, row + n_embd);
+                }
+                write_layer_row(dump_layers, prompt.id, index, layers);
+            }
+        }
+        if (dump_logits.is_open() && wanted != dump_positions.end()) {
+            for (const int index : wanted->second) {
+                if (index < 0 || static_cast<size_t>(index) >= prompt.ids.size()) {
+                    fprintf(stderr, "%s: position %d out of range\n", prompt.id.c_str(), index);
+                    return 1;
+                }
+                const float * row = llama_get_logits_ith(ctx, index);
+                if (!row) { fprintf(stderr, "no logits at %d\n", index); return 1; }
+                write_logit_row(dump_logits, prompt.id, index, row, n_vocab);
+            }
         }
         const float * last_logits = llama_get_logits_ith(ctx, static_cast<int32_t>(prompt.ids.size() - 1));
         std::vector<llama_token> generated;

@@ -7,7 +7,10 @@
 //! every layer runs `forward_logic::forward_layer_with_gqa_attention_with_norms`
 //! and the output projection runs `forward_logic::qwen2_output_logits`.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
+use std::rc::Rc;
 
 use crate::forward_logic::{
     self, Qwen2KvCacheSet, Qwen2LayerConfig, Qwen2LayerDtypes, Qwen2LayerWeights,
@@ -43,6 +46,10 @@ pub struct Model {
     /// `true` iff every scheduled layer is the Qwen2 attention+FFN stack. The
     /// harness refuses a hybrid/GDN model rather than silently skipping layers.
     pub all_attention: bool,
+    /// Ops-layout (transposed) copies of the f32 projection weights, built once.
+    /// The quantized path slices blocks in place, but a plain f32 `.neom`/GGUF
+    /// would otherwise re-transpose every weight on every token.
+    ops_cache: RefCell<HashMap<String, Rc<Vec<f32>>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -91,9 +98,51 @@ impl Model {
                 layer_count: schedule.layers.len(),
                 vocab_size: QWEN25_05B_VOCAB,
                 all_attention,
+                ops_cache: RefCell::new(HashMap::new()),
             },
             vocab,
         ))
+    }
+
+    /// Load the shipped `.neom`'s config/vocabulary, but take every weight from
+    /// an F32 GGUF with the same tensor set.
+    ///
+    /// This is the dequantized-f32 control for the clear-gap positions: the
+    /// F32 GGUF is written once by llama.cpp (`llama-quantize … F32`, which
+    /// dequantizes each block once) and both runtimes then read those numbers.
+    /// The `.neom` container caps at 2 GiB, below this model's 2.5 GiB F32
+    /// payload, so the weights are read from the GGUF instead of a `.neom`.
+    pub fn load_f32_gguf(gguf_path: &Path, neom_path: &Path) -> Result<(Self, RealVocab), String> {
+        let (mut model, vocab) = Self::load(neom_path)?;
+        let bytes = std::fs::read(gguf_path)
+            .map_err(|err| format!("read {}: {err}", gguf_path.display()))?;
+        let gguf = crate::gguf_logic::parse_gguf(&bytes)
+            .map_err(|err| format!("parse {}: {err:?}", gguf_path.display()))?;
+        let mut tensors = Vec::with_capacity(gguf.tensors.len());
+        for tensor in &gguf.tensors {
+            if tensor.ty != GgmlType::F32 {
+                return Err(format!(
+                    "{} is {}, not F32; this control needs a fully dequantized file",
+                    tensor.name,
+                    tensor.ty.name()
+                ));
+            }
+            let mut dims = [0u64; 8];
+            for (index, dim) in tensor.dims.iter().take(tensor.n_dims as usize).enumerate() {
+                dims[index] = *dim;
+            }
+            tensors.push(NeomTensor {
+                name: tensor.name.clone(),
+                dtype: NeomDtype::F32,
+                rank: tensor.n_dims,
+                dims,
+                weight_off: tensor.data_start as usize,
+                weight_len: tensor.byte_len as usize,
+            });
+        }
+        model.bytes = bytes;
+        model.tensors = tensors;
+        Ok((model, vocab))
     }
 
     fn tensor_named_opt(&self, name: &str) -> Option<&NeomTensor> {
@@ -193,6 +242,29 @@ impl Model {
         out
     }
 
+    /// Full next-token logit rows at the requested positions. Used by the
+    /// dequantized-f32 control, which compares the whole vocab vector, not just
+    /// the top-1/top-2.
+    pub fn logits_at_positions(&self, tokens: &[u32], wanted: &[usize]) -> Vec<(usize, Vec<f32>)> {
+        let mut wanted = wanted.to_vec();
+        wanted.sort_unstable();
+        let last = wanted.last().copied().unwrap_or(0);
+        let mut state = self.runtime(tokens.len());
+        let mut out = Vec::with_capacity(wanted.len());
+        let mut next = 0usize;
+        for (position, &token) in tokens.iter().enumerate().take(last + 1) {
+            let logits = self.next_logits(token, position, &mut state);
+            while next < wanted.len() && wanted[next] < position {
+                next += 1;
+            }
+            if next < wanted.len() && wanted[next] == position {
+                out.push((position, logits));
+                next += 1;
+            }
+        }
+        out
+    }
+
     /// Sum of negative log-likelihoods for targets at indices `eval_start + 1 ..
     /// tokens.len()`, plus the count. Position `i` predicts `tokens[i + 1]`.
     pub fn nll_sum(&self, tokens: &[u32], eval_start: usize) -> (f64, usize) {
@@ -215,6 +287,101 @@ impl Model {
             }
         }
         (sum, count)
+    }
+
+    /// Residual-stream hidden state after the embedding (index 0) and after
+    /// each transformer layer (index 1..=layer_count) at the requested
+    /// positions. Used to localize a forward-pass divergence by layer.
+    pub fn hidden_per_layer_at_positions(
+        &self,
+        tokens: &[u32],
+        wanted: &[usize],
+    ) -> Vec<(usize, Vec<Vec<f32>>)> {
+        let mut wanted = wanted.to_vec();
+        wanted.sort_unstable();
+        let last = wanted.last().copied().unwrap_or(0);
+        let mut state = self.runtime(tokens.len());
+        let mut out = Vec::with_capacity(wanted.len());
+        let mut next = 0usize;
+        for (position, &token) in tokens.iter().enumerate().take(last + 1) {
+            let mut hidden = self.token_embedding(token);
+            let mut layers = Vec::with_capacity(self.layer_count + 1);
+            layers.push(hidden.clone());
+            for layer_idx in 0..self.layer_count {
+                let layer = self.attention_layer_buffers(layer_idx);
+                let out = forward_logic::forward_layer_with_gqa_attention_with_norms(
+                    &hidden,
+                    layer.weights(),
+                    self.config,
+                    position as u64,
+                    true,
+                    Some(state.kv.layer_mut(layer_idx).expect("kv layer")),
+                    None,
+                    layer.attention_norms(),
+                )
+                .expect("real .neom attention layer");
+                hidden = out.ffn.residual;
+                layers.push(hidden.clone());
+            }
+            while next < wanted.len() && wanted[next] < position {
+                next += 1;
+            }
+            if next < wanted.len() && wanted[next] == position {
+                out.push((position, layers));
+                next += 1;
+            }
+        }
+        out
+    }
+
+    /// Every intermediate vector of one decoder layer at one position, for
+    /// localizing a forward-pass divergence. Names follow the seam structs.
+    pub fn layer_debug_at(
+        &self,
+        tokens: &[u32],
+        target_position: usize,
+        target_layer: usize,
+    ) -> Result<Vec<(String, Vec<f32>)>, String> {
+        if target_position >= tokens.len() || target_layer >= self.layer_count {
+            return Err("debug position/layer out of range".to_string());
+        }
+        let mut state = self.runtime(tokens.len());
+        let mut captured = Vec::new();
+        for (position, &token) in tokens.iter().enumerate().take(target_position + 1) {
+            let mut hidden = self.token_embedding(token);
+            for layer_idx in 0..=target_layer {
+                let layer = self.attention_layer_buffers(layer_idx);
+                let out = forward_logic::forward_layer_with_gqa_attention_with_norms(
+                    &hidden,
+                    layer.weights(),
+                    self.config,
+                    position as u64,
+                    true,
+                    Some(state.kv.layer_mut(layer_idx).expect("kv layer")),
+                    None,
+                    layer.attention_norms(),
+                )
+                .map_err(|err| format!("{err:?}"))?;
+                if position == target_position && layer_idx == target_layer {
+                    captured.push(("input".to_string(), hidden.clone()));
+                    captured.push(("attn_norm".to_string(), out.attention.attn_norm.clone()));
+                    captured.push(("q".to_string(), out.attention.q.clone()));
+                    captured.push(("k".to_string(), out.attention.k.clone()));
+                    captured.push(("v".to_string(), out.attention.v.clone()));
+                    captured.push(("q_rope".to_string(), out.attention.q_rope.clone()));
+                    captured.push(("k_rope".to_string(), out.attention.k_rope.clone()));
+                    captured.push(("ffn_input".to_string(), out.ffn_input.clone()));
+                    captured.push(("ffn_norm".to_string(), out.ffn.ffn_norm.clone()));
+                    captured.push(("gate".to_string(), out.ffn.gate.clone()));
+                    captured.push(("up".to_string(), out.ffn.up.clone()));
+                    captured.push(("swiglu".to_string(), out.ffn.swiglu.clone()));
+                    captured.push(("ffn_out".to_string(), out.ffn.ffn_out.clone()));
+                    captured.push(("residual".to_string(), out.ffn.residual.clone()));
+                }
+                hidden = out.ffn.residual;
+            }
+        }
+        Ok(captured)
     }
 
     fn next_logits(&self, token: u32, position: usize, state: &mut RuntimeState) -> Vec<f32> {
@@ -479,19 +646,28 @@ impl Model {
 
     /// Ops-layout (transposed) f32 weights for a non-quantized tensor; an empty
     /// vector for a quantized one, which travels through `*_quantized`.
-    fn tensor_to_ops_rhs_placeholder(&self, name: &str, rows: usize, cols: usize) -> Vec<f32> {
+    ///
+    /// The transpose is cached by tensor name: the f32 control would otherwise
+    /// re-transpose the whole model once per token.
+    fn tensor_to_ops_rhs_placeholder(&self, name: &str, rows: usize, cols: usize) -> Rc<Vec<f32>> {
         if self.tensor_dtype(name, rows, cols).is_quantized() {
-            Vec::new()
-        } else {
-            let raw = self.tensor_to_f32(name, rows, cols);
-            let mut out = vec![0.0f32; raw.len()];
-            for col in 0..cols {
-                for row in 0..rows {
-                    out[row * cols + col] = raw[col * rows + row];
-                }
-            }
-            out
+            return Rc::new(Vec::new());
         }
+        if let Some(cached) = self.ops_cache.borrow().get(name) {
+            return Rc::clone(cached);
+        }
+        let raw = self.tensor_to_f32(name, rows, cols);
+        let mut out = vec![0.0f32; raw.len()];
+        for col in 0..cols {
+            for row in 0..rows {
+                out[row * cols + col] = raw[col * rows + row];
+            }
+        }
+        let out = Rc::new(out);
+        self.ops_cache
+            .borrow_mut()
+            .insert(name.to_string(), Rc::clone(&out));
+        out
     }
 
     fn tensor_to_quantized_rhs<'a>(
@@ -524,19 +700,19 @@ impl Model {
 
 struct AttentionLayerBuffers<'a> {
     attn_norm: Vec<f32>,
-    attn_q: Vec<f32>,
-    attn_k: Vec<f32>,
-    attn_v: Vec<f32>,
+    attn_q: Rc<Vec<f32>>,
+    attn_k: Rc<Vec<f32>>,
+    attn_v: Rc<Vec<f32>>,
     attn_q_bias: Option<Vec<f32>>,
     attn_k_bias: Option<Vec<f32>>,
     attn_v_bias: Option<Vec<f32>>,
     attn_q_norm: Option<Vec<f32>>,
     attn_k_norm: Option<Vec<f32>>,
-    attn_o: Vec<f32>,
+    attn_o: Rc<Vec<f32>>,
     ffn_norm: Vec<f32>,
-    ffn_gate: Vec<f32>,
-    ffn_up: Vec<f32>,
-    ffn_down: Vec<f32>,
+    ffn_gate: Rc<Vec<f32>>,
+    ffn_up: Rc<Vec<f32>>,
+    ffn_down: Rc<Vec<f32>>,
     dtypes: Qwen2LayerDtypes,
     attn_q_quantized: Option<&'a [u8]>,
     attn_k_quantized: Option<&'a [u8]>,

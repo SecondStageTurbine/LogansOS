@@ -1,0 +1,67 @@
+{
+  "reference": "upstream F16 (8e0ae260\u2026)",
+  "positions": 697,
+  "gap_gt_0p5_positions": 521,
+  "models": {
+    "q4_k_m": {
+      "file_size": 491400032,
+      "teacher_forced_top1_matches": 487,
+      "teacher_forced_top1_positions": 697,
+      "teacher_forced_top1_pct": 69.87087517934003,
+      "ppl": 29.226276630880513,
+      "ppl_delta_pct": 1.3355025220676684,
+      "boot_reply_identical": false,
+      "identical_streams": 0,
+      "identical_streams_of": 30,
+      "gap_gt_0p5_matches": 418,
+      "gap_gt_0p5_positions": 521,
+      "gap_gt_0p5_pct": 80.23032629558541,
+      "reference_ppl": 28.841102973280222
+    },
+    "q5_k_m": {
+      "file_size": 522186592,
+      "teacher_forced_top1_matches": 555,
+      "teacher_forced_top1_positions": 697,
+      "teacher_forced_top1_pct": 79.62697274031564,
+      "ppl": 29.09784817649952,
+      "ppl_delta_pct": 0.8902059101455331,
+      "boot_reply_identical": true,
+      "identical_streams": 5,
+      "identical_streams_of": 30,
+      "gap_gt_0p5_matches": 452,
+      "gap_gt_0p5_positions": 521,
+      "gap_gt_0p5_pct": 86.75623800383877,
+      "reference_ppl": 28.841102973280222
+    },
+    "q6_k": {
+      "file_size": 650379104,
+      "teacher_forced_top1_matches": 629,
+      "teacher_forced_top1_positions": 697,
+      "teacher_forced_top1_pct": 90.2439024390244,
+      "ppl": 29.217905857369352,
+      "ppl_delta_pct": 1.3064787585905389,
+      "boot_reply_identical": true,
+      "identical_streams": 10,
+      "identical_streams_of": 30,
+      "gap_gt_0p5_matches": 487,
+      "gap_gt_0p5_positions": 521,
+      "gap_gt_0p5_pct": 93.47408829174664,
+      "reference_ppl": 28.841102973280222
+    },
+    "q8_0": {
+      "file_size": 675710816,
+      "teacher_forced_top1_matches": 655,
+      "teacher_forced_top1_positions": 697,
+      "teacher_forced_top1_pct": 93.974175035868,
+      "ppl": 29.55591912887192,
+      "ppl_delta_pct": 2.478463310692169,
+      "boot_reply_identical": true,
+      "identical_streams": 14,
+      "identical_streams_of": 30,
+      "gap_gt_0p5_matches": 518,
+      "gap_gt_0p5_positions": 521,
+      "gap_gt_0p5_pct": 99.42418426103647,
+      "reference_ppl": 28.841102973280222
+    }
+  }
+}

@@ -143,3 +143,46 @@ effect from the transformer weights' small PPL shift.
 
 `ref/run-control.sh` reproduces the whole corrected run, including the
 same-checkpoint F16 reference for bar B.
+
+## Relay 342 — the dequantized-f32 control and the quant ladder
+
+**One dequantization, read by both.** `llama-quantize --allow-requantize
+qwen2.5-0.5b-instruct-q4_k_m.gguf dequant.gguf F32` writes the f32 GGUF once.
+The kernel reads that GGUF directly with `--gguf-f32` (the `.neom` container
+caps at 2 GiB, below this model's 2.5 GiB f32 payload) while llama.cpp reads the
+same file; there is no second dequantizer.
+
+```sh
+# kernel: full 151,936-wide logit rows at named (prompt, index) positions
+quant-drift-tests logits --neom M.neom --gguf-f32 dequant.gguf \
+    --prompts prompts.tsv --positions positions.tsv --out kernel.qdlg
+
+# kernel: residual-stream hidden state after every layer
+quant-drift-tests hidden --neom M.neom --gguf-f32 dequant.gguf \
+    --prompts prompts.tsv --positions positions.tsv --out kernel.qdlh
+
+# llama.cpp: the same two dumps, plus its per-layer inputs (needs the
+# `llama-ext.h` layer-input API and the one-line qwen2.cpp diagnostic patch)
+llama_drift dequant.gguf prompts.tsv corpus.u32 out.tsv LABEL SRC SHA TOOL \
+    --dump-positions positions.tsv --dump-logits llama.qdlg \
+    --dump-layer-inputs llama.qdlh
+```
+
+`QDLG` is `magic,version,n_vocab,rows` then per row `name,position,f32×n_vocab`;
+`QDLH` is the same with `hidden_size,layers` and every layer's f32 row. Both are
+little-endian and are compared by a plain array subtraction.
+
+The 37 clear-gap rows are the `ours_vs_llama_q4` divergences with a > 0.5 gap
+in either runtime; 30 of them are the same shared-prefix position 7, so the
+control measures the 8 unique positions and replicates the shared-prefix row.
+
+Result: the kernel stays within 0.054 of an independent float64 reference at
+all 37 rows (top-1 identical at all 37); llama.cpp's f32 run drifts up to 0.299.
+The first layer where the two runtimes part is layer 0, in the K/V cache: layer
+0's input is bit-identical, and a numpy layer-0 computed with **f16 K/V**
+matches llama.cpp to 3.4e-4 while the f32-K/V computation matches the kernel to
+6e-11. The kernel is the more accurate side, not the outlier. The committed
+artifacts are `fixtures/quant-drift-kat-2026-11-08-f32-control.json` (control,
+per-layer localization, and the byte-identity check) and
+`fixtures/quant-drift-kat-2026-11-08-quant-ladder.json`.
+

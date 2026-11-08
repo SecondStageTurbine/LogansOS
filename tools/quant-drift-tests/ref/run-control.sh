@@ -63,7 +63,7 @@ PY
 
 echo "== build llama.cpp reference runner"
 g++ -O2 -std=c++17 "$CRATE_DIR/ref/llama_drift.cpp" \
-    -I "$LLAMA_DIR/include" -I "$LLAMA_DIR/ggml/include" \
+    -I "$LLAMA_DIR/include" -I "$LLAMA_DIR/src" -I "$LLAMA_DIR/ggml/include" \
     -L "$LLAMA_DIR/build/bin" -lllama -lggml -lggml-base -lggml-cpu \
     -Wl,-rpath,"$LLAMA_DIR/build/bin" -o "$WORK/llama_drift"
 
