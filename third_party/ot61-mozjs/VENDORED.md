@@ -108,9 +108,10 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
 - **`system_wrappers.txt`:** the 1,061 names in `dist/system_wrappers`. Each wrapper is the same four lines
   (`#pragma GCC system_header`, `visibility push(default)`, `#include_next`, `visibility pop`).
 
-Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The current copy is from run 42527592472 at
-`9abbb2cf`: a gzip'd tar with sha256 `299fe0e352035b56e061d82eb7678845179f2fa3dd7c70f10aa8e411c533c0cf`, taken from
-the job log and checked against that hash. The first copy was run 42518384967; the rest of the set is unchanged since.
+Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The current copy is from run 42532935334 at
+`4f7c4e75`, the first with the pinned clang 19: a gzip'd tar with sha256
+`90b00f59c50c1e11825a1523b73e2db872ee0ff6dd8e191148960b76061093c3`, taken from
+the job log and checked against that hash. The first copy was run 42518384967. Moving from the runner's clang 21 to the pinned 19 changed exactly two files: clang 19 rejects `-Wno-character-conversion`, so configure dropped it from all 167 compile entries, and `jsapi.rs` changed with libclang. That is the drift the pin now prevents.
 
 ## Left out of the copy
 
