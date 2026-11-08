@@ -19565,7 +19565,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
             "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
             "[ crt-smoke ] ok(30) C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
-            "[ crt-smoke ] ok(31) POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary",
+            "[ crt-smoke ] ok(31) POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary, thread names",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {

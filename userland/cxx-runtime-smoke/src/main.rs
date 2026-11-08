@@ -331,7 +331,7 @@ pub extern "C" fn _start() -> ! {
     );
     c_check(
         31,
-        "POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary",
+        "POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary, thread names",
         crt_check_posix,
     );
     println!("{TAG} PASS");

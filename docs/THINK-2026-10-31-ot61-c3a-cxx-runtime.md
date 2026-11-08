@@ -295,7 +295,11 @@ hooks), these are now here:
   - `fclose` flushes the standard stream it's given; there is no other kind.
   - musl's `ferror`, `fileno`, `setvbuf`, `perror` and `fread` work on the standard streams.
 - **`getpid`** is std's `process::id`.
-- **`pthread_setname_np`** is accepted and ignored.
+- **`pthread_setname_np`** stores the name in the thread's record, cut to 15 bytes and a NUL as Linux's comm
+  field is, and returns 0. `pthread_getname_np` returns it, or `ERANGE` if the buffer is too small.
+  - **PM decision (#88, relay 351):** a name is an advisory label, so a long one is truncated, not refused.
+    SpiderMonkey release-asserts that naming succeeds (`PosixThread.cpp`), so an error return would abort it.
+  - Smoke items 108–110 cover the round trip, the cut and the `ERANGE`.
 - **The stack protector.** SpiderMonkey's configure turns on `-fstack-protector-strong`.
   - `neo_crt::seed_stack_canary()` randomises `__stack_chk_guard`, with the low byte zero. A program with
     stack-protected code calls it first, before `init()` and before any C runs.
@@ -305,4 +309,4 @@ hooks), these are now here:
     `kernel-rng`, by std's no-weaker-fallback rule.
   - `__stack_chk_fail` reports and aborts.
 
-Smoke item 31 checks these with hand-worked values (1971-01-01 is 31,536,000 s and a Friday).
+Smoke item 31 checks these with hand-worked values (1971-01-01 is 31,536,000 s and a Friday), and the thread names.

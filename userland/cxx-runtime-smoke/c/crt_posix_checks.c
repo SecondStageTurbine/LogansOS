@@ -7,6 +7,7 @@
  * is 52 weeks and 1 day).
  */
 #include <errno.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -22,6 +23,9 @@
   } while (0)
 
 extern uintptr_t __stack_chk_guard;
+/* Declared for _GNU_SOURCE only in musl's <pthread.h>. */
+int pthread_setname_np(pthread_t, const char *);
+int pthread_getname_np(pthread_t, char *, size_t);
 
 int crt_check_posix(void) {
   time_t t = 31536000;
@@ -53,5 +57,18 @@ int crt_check_posix(void) {
   CHECK(107, "the stack canary was randomised, low byte zero",
         __stack_chk_guard != 0x595e9fbd94fda700u &&
             (__stack_chk_guard & 0xff) == 0 && __stack_chk_guard != 0);
+  /* Thread names: stored, cut to 15 bytes, and ERANGE for a short buffer
+   * (PM decision on #88, relay 351). */
+  char nb[32];
+  CHECK(108, "pthread_setname_np/getname_np round trip",
+        pthread_setname_np(pthread_self(), "js-helper") == 0 &&
+            pthread_getname_np(pthread_self(), nb, sizeof nb) == 0 &&
+            strcmp(nb, "js-helper") == 0);
+  CHECK(109, "a 20-byte name is cut to 15",
+        pthread_setname_np(pthread_self(), "abcdefghijklmnopqrst") == 0 &&
+            pthread_getname_np(pthread_self(), nb, sizeof nb) == 0 &&
+            strcmp(nb, "abcdefghijklmno") == 0);
+  CHECK(110, "getname_np refuses a buffer too small with ERANGE",
+        pthread_getname_np(pthread_self(), nb, 4) == ERANGE);
   return 0;
 }
