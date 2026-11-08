@@ -1134,8 +1134,12 @@ pub fn run() -> i32 {
     clock::start(&mut scene);
     // F11 S1: the setup menu, after the clock is read and before sign-in
     // (setup-menu THINK §2.1).
+    // S2 (`setup-store`): an installed system runs it until its store holds
+    // a record; a Try session (nothing persists) every boot.
     #[cfg(feature = "setup-menu")]
-    if let Err(code) = setup::run(&mut scene, &home_focus) {
+    if (!cfg!(feature = "setup-store") || setup_menu_due())
+        && let Err(code) = setup::run(&mut scene, &home_focus)
+    {
         return code;
     }
     // OT-66 L1: sign-in comes first (it shows Home with its own card).
@@ -5113,6 +5117,21 @@ mod login;
 /// F11 S1: the first-boot setup menu, before sign-in.
 #[cfg(feature = "setup-menu")]
 mod setup;
+
+/// F11 S2: whether the setup menu runs this boot ([`settings::setup_due`]).
+#[cfg(feature = "setup-store")]
+fn setup_menu_due() -> bool {
+    let due = settings::setup_due();
+    if !due {
+        log(b"DESKTOP setup skipped reason=stored\n");
+    }
+    due
+}
+
+#[cfg(all(feature = "setup-menu", not(feature = "setup-store")))]
+fn setup_menu_due() -> bool {
+    true
+}
 
 /// OT-66 L2: lock and unlock, in a signed-in session.
 #[cfg(feature = "login")]
