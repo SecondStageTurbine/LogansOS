@@ -21382,6 +21382,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             &[
                 "DESKTOP launchcap minted client=arthur",
                 "DESKTOP arthur line=open browser",
+                "DESKTOP apps browser budget=268435456",
                 "DESKTOP apps client connected client=2 value=1",
                 "DESKTOP apps front client=2 via=launch",
                 "DESKTOP apps front client=0",

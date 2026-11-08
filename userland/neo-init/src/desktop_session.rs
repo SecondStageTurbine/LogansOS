@@ -3618,8 +3618,22 @@ mod apps {
             ),
         )
         .map_err(|_| 63)?;
-        let spawned = libneo::sys_spawn_client("browser", &[session_client, runtime]);
+        // The browser gets its own frame account of BROWSER_BUDGET, nested
+        // under ours (OT-61 C2.2, `mem-quota`): WebRender, Stylo and their
+        // threads can't take more than that, and an allocation past it
+        // aborts the browser alone (exit 134), which the WM sees as the
+        // client's death (ADR-073), not the session's.
+        const BROWSER_BUDGET: u64 = 256 * 1024 * 1024;
+        let spawned =
+            libneo::sys_spawn_budgeted("browser", &[session_client, runtime], BROWSER_BUDGET);
         let _ = libneo::sys_close(libneo::FileHandle(runtime.0));
+        if spawned.is_ok() {
+            Line::new()
+                .s(b"DESKTOP apps browser budget=")
+                .n(BROWSER_BUDGET)
+                .s(b"\n")
+                .emit();
+        }
         spawned.map(|(_pid, process)| process).map_err(|errno| {
             Line::new()
                 .s(b"DESKTOP apps browser spawn errno=")
