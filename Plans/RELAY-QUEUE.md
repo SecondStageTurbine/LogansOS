@@ -141,3 +141,4 @@ RELAY 320 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-315-321.
 RELAY 321 | janus | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-315-321.md | Section 321 (#76 file-viewer survey; RETURN `Plans/RETURN-2026-11-08-pr76-survey-review-janus.md`)
 RELAY 322 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relay-322.md | Section 322 (#72 stdio-at-spawn design read; RETURN `Plans/RETURN-2026-11-08-pr72-design-dexter.md`)
 RELAY 323 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relay-323-quant-drift-dexter.md | Build the quantization-drift check (Q4_K_M vs full precision; bars A and B fixed in the dispatch); RETURN `Plans/RETURN-2026-11-08-quant-drift-dexter.md`
+RELAY 324 | jarvis | GPT-5.6-Luna | medium | Plans/DISPATCH-2026-11-08-relays-315-321.md | Section 324 (#14 add-on: test commit `3d55c856`, head `ec3de81c`; RETURN `Plans/RETURN-2026-11-08-pr14-check2-jarvis.md`)
