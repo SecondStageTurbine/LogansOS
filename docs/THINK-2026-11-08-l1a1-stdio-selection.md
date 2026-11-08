@@ -244,23 +244,29 @@ spawned without `SYS_SPAWN_STDIO` holds `Stdio::NONE`, and its fd 0/1 take the e
 | **CP-67** `Arc` across a park | Same as 2a | `with_pipe_anchor`: the fd path calls the same body | 2a's `pipe_park_kill` `Arc` count, on the same body |
 | **CP-85** exit retiring one thread | N-A: `Stdio` holds no object | Handles leave through `Detached` | Leg 2's EOF after the shell's exit |
 | **CP-87** revoke vs spawn | Yes: the selection is checked against handles being cloned | The checks run on the same clones that the `CAP_GRAPH` liveness check covers; a revoked parent fails the spawn (`ParentGone`) | Covered by the existing K1a-0 discriminator; no new window |
-| Child runs before its stdio is set | Yes: the new field | Set before `register` and `try_push_ready` (§1 item 3) | Leg 1 (the prompt arrives in the pipe and never on serial), and the late-control below |
+| **CP-112** child runs before its stdio is set (new, added to the bank) | Yes: the new field | Set before `register` and `try_push_ready` (§1 item 3) | Leg 1 (the prompt arrives in the pipe and never on serial), and the late-control below |
 
 I-14 does not apply: there is no ISR path and no governance lock.
 
 ## 4. Gate and review
 
 **Scenario `pipe_stdio`:**
-- `neo-test-pipe-stdio = ["neo-test", "pipe", "atrium-compositor-g1"]`, with `user_feature: Some("pipe-stdio-test")`.
+- `neo-test-pipe-stdio = ["neo-test", "pipe", "atrium-compositor-g1", "neo-test-atrium-runtime"]` (the buffer syscalls
+  need the Atrium runtime switch), with `user_feature: Some("pipe-stdio-test")`.
 - **The terminal side is real ring-3 code:** `neo-init`'s `pipe-stdio-test` arm makes the real syscalls and blocks
   like a terminal would. It needs no kernel stand-in and no 5-argument test dispatch (Dexter 322 item 6).
-- It waits with `SYS_WAIT_ANY` and a deadline of 5 s per step, so a missing byte is a named failure, not a hang.
+- Each wait is a `PIPE_NONBLOCK` poll bounded by the TSC (2^35 cycles, seconds on QEMU's TCG clock): this kernel has
+  no clock syscall to make a `SYS_WAIT_ANY` deadline from. So a missing byte is a named failure, not a hang.
 - It reports each leg as a `PIPE_STDIO <leg> ...` serial line from its own console fd 1. xtask checks them in order
   with `require_serial_sequence`.
 - **Two children:**
   - the real `neo-shell`;
-  - a new test module, `neo-stdio-probe` (a few dozen lines, built only with `pipe-stdio-test`). It reads one command
-    byte from fd 0, or, given a channel in slot 0, acts as a shell's child (leg 8).
+  - the probe: `neo-worker`'s `pipe-stdio-test` role (`userland/neo-worker/src/stdio_probe.rs`), spawned as
+    `worker`. It is a role, not a new module, so the image needs no new staging. With its stdin in slot 0 it reads one
+    command byte from fd 0. With its stdin in slot 1 (`neo-shell`'s `spawn` put the channel in 0) it acts as the
+    shell's child (leg 8). With no selection it prints its `SYS_STDIO_INFO` record on the console (leg 7).
+- **The order:** the legs below run 1, 2, 3, 5, 6, 7, 8, 9, then 4. The unselected spawn runs last, so its marker
+  splits the log: before it, no pipe child's output may reach serial.
 
 The legs:
 1. **Round trip:**
@@ -270,8 +276,8 @@ The legs:
    - write `echo pipe-ok\n`;
    - read until `pipe-ok\n` arrives after the echoed command line.
 
-   xtask checks that no `neo> ` and no `pipe-ok` reach serial before the leg-4 marker (`require_serial_absent` on that
-   prefix).
+   xtask checks that none of `neo> `, `[ neo-shell ] ready`, `pipe-ok` and `probe-line` reach serial before the
+   leg-4 marker (`require_pipe_stdio_prefix_quiet`).
 2. **EOF:** close the stdin write end. The shell's `read_line` gets EOF, the shell exits with code 2 (`SYS_WAIT`), and
    the stdout pipe reads EOF once the bytes still buffered are delivered.
 3. **Kill while parked:**
@@ -283,31 +289,33 @@ The legs:
    - `SYS_SPAWN("shell", [chan])`, as today, and wait for it;
    - xtask requires `neo> ` on serial after the marker. The shell's fd-0 read is `EBADF` with no selection and no
      `serial-stdin`, so it exits with code 2 after its prompt.
-5. **Stale stdout slot.** Spawn the probe with `[stdin rd, stdout wr, term]` and the word `0x02_01_00`, and send it
-   `s`. Each case's result goes in the probe's exit code (its stdout is gone):
+5. **Stale stdout slot.** Spawn the probe with `[stdin rd, stdout wr]` and the word `0x_FF_01_00`, and send it `s`.
+   Each case's result goes in the probe's exit code (its stdout is gone). In the order run:
+   - **(c) a write end reused into it:**
+     - create pipe P2 first (ends in 2 and 3);
+     - close 1, then `SYS_DERIVE` slot 3, which lands in slot 1, the lowest free;
+     - `SYS_WRITE(1)` is −9, and a `PIPE_NONBLOCK` read of slot 2 is `EAGAIN`.
    - **(a) closed:** close slot 1; `SYS_WRITE(1, "x")` is −9.
    - **(b) a read end reused into it:** create a pipe; its read end lands in slot 1. `SYS_WRITE(1)` is −9, not −1,
      because the `CapId` is checked first.
-   - **(c) a write end reused into it:**
-     - create pipe P2 before closing (ends in 3 and 4);
-     - close 1, then `SYS_DERIVE` slot 4, which lands in slot 1, the lowest free;
-     - `SYS_WRITE(1)` is −9, and a `PIPE_NONBLOCK` read of slot 3 is `EAGAIN`.
-6. **Refusals:** each of these is −22 from `SYS_SPAWN_STDIO`, and no child is created (no process handle is installed, and the caller's lowest free slot is unchanged):
+6. **Refusals:** each of these 16 cases is −22 from `SYS_SPAWN_STDIO`, and no child is created (no process handle is
+   installed, so the caller's lowest free slot is the same after the cases as before):
    - stdin naming a write end, a channel or a buffer;
    - stdout naming a read end, a channel or a buffer;
    - term naming a pipe;
-   - term pages of 4095 and 8192 bytes;
+   - term pages of 4092 and 8192 bytes (a buffer's size is `stride × height` in 4-byte pixels, so 4095 can't exist);
    - a term without `MAP_WRITE` (derived down to `MAP_READ`);
-   - the same index for two roles;
-   - an index ≥ `n`;
-   - bit 24 set.
+   - the same index for two roles (stdin and stdout; stdout and the term page);
+   - an index ≥ `n` (two cases);
+   - bit 24 set, and bit 63 set.
 7. **`SYS_STDIO_INFO`:**
    - the probe, sent `i`, writes its 8 bytes to fd 1, and the terminal compares them with the selected-with-term row;
    - the terminal's own call (no selection) gives the no-selection row;
    - `len` 7 is −22, and `out = 1` is −14;
-   - an all-none spawn (`0x00FF_FFFF`) of the probe gives the no-selection row.
+   - an all-none spawn (`0x00FF_FFFF`) of the probe gives the no-selection row: the probe prints
+     `PIPE_STDIO probe_unselected info=ffffffffffff0000` on its console, and xtask pins that line.
 8. **The shell names its pipes for its child (§2.2):**
-   - start a leg-1 shell and type `spawn stdio-probe\n`;
+   - start a leg-1 shell and type `spawn worker\n`;
    - the probe sees a channel in slot 0, takes the ping, writes `probe-line` to its fd 1, replies and exits;
    - `probe-line` arrives in the terminal's stdout pipe, followed by the shell's relay and wait lines, and never on
      serial.
@@ -316,12 +324,17 @@ The legs:
    - the probe, sent `t`, maps it with `SYS_STDIO_TERM_MAP` and writes back the magic and the size it read;
    - sent `T`, it closes slot 2, creates a 4096-byte buffer (which lands in slot 2), and `SYS_STDIO_TERM_MAP` is −9.
 
-**Control: `neo-test-pipe-stdio-late-control`.** It stores the stdio after `try_push_ready`, with a witness that the
-window was hit. The spawn path spins, with a 1 s bound, until the child's first syscall has entered (a per-pid
-syscall counter that exists only in the control), and counts a hit when it has. The two outcomes:
+**Control: `neo-test-pipe-stdio-late-control`.** `SYS_SPAWN_STDIO` spawns with no selection and stores it only
+after the spawn returns, the `obj_spawn` shape that §1 item 3 calls too late. The witness:
+- before the spawn, the control arms a recorder of the first syscall made by any process other than the spawner;
+- after it, the spawn yields (IF on, 100 ticks, 1 s, at most) until that first syscall is the child's;
+- a spawn whose window never opened counts a miss.
+
+The two outcomes:
 - the window was hit: the shell's first prompt goes to serial, leg 1's read of the prompt times out, and the terminal
   reports `pipe_stdio_prompt_not_in_pipe`;
-- the window was not hit: the scenario reports `pipe_stdio_late_window_not_hit`.
+- the window was not hit: the harness fails the scenario with `pipe_stdio_late_window_not_hit`. Without this, a
+  missed window would let the late store land before the child's first write, and the control would pass.
 
 Either way the control fails, and the named reason says which one (Dexter 322 item 6).
 
@@ -332,10 +345,11 @@ Either way the control fails, and the named reason says which one (Dexter 322 it
 **xtask:**
 - the `TestScenario` entry, beside 2a's, with `user_feature`;
 - `require_serial_sequence` for the `PIPE_STDIO` lines, ending in
-  `PIPE_STDIO pass legs=round,eof,kill,unselected,stale,refusals,info,shell_child,term`;
-- the two `require_serial_absent` checks;
+  `PIPE_STDIO pass legs=round,eof,kill,stale,refusals,info,shell_child,term,unselected`;
+- `require_pipe_stdio_prefix_quiet`: before the leg-4 marker, no `neo> `, no `[ neo-shell ] ready`, no `pipe-ok` and
+  no `probe-line` on serial;
 - the control's `NEO_TEST_EXTRA_FEATURES` row, which must fail with one of its two reasons;
-- gate-plan: the new kernel files classified as core.
+- gate-plan: no new kernel file (the scenario hooks are in `test_harness.rs`, already core).
 
 **Gate tier:** `full-alone`, since it touches spawn (`kernel/src/sched/process.rs`). **Review:** spawn and thread park
 are SMP-core, so the review needs a cross-family lens: GPT-6.1-Sol, high.
@@ -372,4 +386,18 @@ are SMP-core, so the review needs a cross-family lens: GPT-6.1-Sol, high.
 | 6 | The late-control doesn't prove its window | A first-syscall witness, and `pipe_stdio_late_window_not_hit` (§4) |
 | 6 | Leg 5 puts a read end, not a write end, in slot 1 | Leg 5 has three cases; (c) uses `SYS_DERIVE` into the freed slot |
 | 6 | No positive term-page leg | Leg 9 |
-| 6 (notes) | The xtask registration; naming the modules and their handle layouts | §4: the xtask list, `neo-stdio-probe`, and each leg's handles |
+| 6 (notes) | The xtask registration; naming the modules and their handle layouts | §4: the xtask list, the probe (`neo-worker`'s `pipe-stdio-test` role), and each leg's handles |
+
+## 7. As built (revision 3)
+
+The code follows revisions 1-2 except where this table says, each a detail the build found:
+
+| Where | Revision 2 said | Built | Why |
+|---|---|---|---|
+| §4 probe | a new module `neo-stdio-probe` | `neo-worker`'s `pipe-stdio-test` role, spawned as `worker` | the scenario-role pattern; a new module needs new image staging |
+| §4 waits | `SYS_WAIT_ANY` with a 5 s deadline | TSC-bounded `PIPE_NONBLOCK` polls | the scenario kernel has no clock syscall to form an absolute deadline |
+| §4 feature | `neo-test`, `pipe`, `atrium-compositor-g1` | plus `neo-test-atrium-runtime` | the buffer syscalls are `ENOSYS` without the runtime switch |
+| §4 leg 6 | a 4095-byte term page | 4092 bytes | a buffer's size is `stride × height` in 4-byte pixels |
+| §4 leg 7 | all-none gives the no-selection row | the probe prints the row on the console; xtask pins it | with no selection its fd 1 is the console |
+| §4 order | legs 1-9 in number order | leg 4 last | its marker splits the log for the quiet-prefix check |
+| §4 control | a per-pid counter in the spawn path | a first-other-syscall recorder, a yield after the spawn, and a named failure on a miss | a missed window would otherwise let the control pass |

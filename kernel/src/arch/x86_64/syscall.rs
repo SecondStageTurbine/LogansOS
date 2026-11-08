@@ -2276,9 +2276,18 @@ fn selected_stdio(
 /// most) for the child's first syscall, so the control can tell "the window
 /// was hit" from "it never opened". Test only; never in a product build.
 #[cfg(feature = "neo-test-pipe-stdio-late-control")]
-mod late_control {
+pub(crate) mod late_control {
     use super::{InheritedHandle, process};
     use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// Spawns whose window was not seen open: the harness fails the
+    /// control with `pipe_stdio_late_window_not_hit` if any (otherwise a
+    /// control that never hit its window would pass, proving nothing).
+    static MISSES: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn misses() -> u64 {
+        MISSES.load(Ordering::Acquire)
+    }
 
     /// The spawning process's pid while a spawn is armed, else 0.
     static CALLER: AtomicU64 = AtomicU64::new(0);
@@ -2327,6 +2336,7 @@ mod late_control {
         if hit {
             crate::serial_println!("[ kernel ] pipe_stdio late-control: window hit");
         } else {
+            MISSES.fetch_add(1, Ordering::AcqRel);
             crate::serial_println!("[ kernel ] pipe_stdio_late_window_not_hit");
         }
         if let Some(p) = process::get(child) {

@@ -358,12 +358,11 @@ fn leg_info() -> bool {
         && self_bytes == [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x00];
     let len7 = sys_stdio_info_raw(raw.as_mut_ptr() as u64, 7);
     let out1 = sys_stdio_info_raw(1, 8);
-    // An all-none spawn of the probe: its stdin isn't selected, so it reads
-    // fd 0 from the console path and gives up; its info is the no-selection
-    // row, which it can't report on a pipe. So check the spawn itself is
-    // accepted and the child runs to an exit.
+    // An all-none spawn of the probe is SYS_SPAWN's child: with no selection
+    // it prints its record on the console (serial), and xtask pins that line
+    // to the no-selection row.
     let allnone = sys_spawn_stdio_word("worker", &[], 0x00FF_FFFF)
-        .map(|(_, p)| sys_wait(p, 0).is_ok())
+        .map(|(_, p)| sys_wait(p, 0) == Ok(0))
         .unwrap_or(false);
     say(b"PIPE_STDIO info probe=");
     say(yes(got && probe_code == 0));

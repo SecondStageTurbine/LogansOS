@@ -28,6 +28,9 @@ pub fn run() -> i32 {
     let Ok(info) = sys_stdio_info() else {
         return 90;
     };
+    if !info.selected {
+        return unselected();
+    }
     if info.stdin == Some(1) {
         return shell_child();
     }
@@ -41,6 +44,27 @@ pub fn run() -> i32 {
         b't' => term_read(),
         b'T' => term_stale(),
         _ => 92,
+    }
+}
+
+/// Leg 7's all-none spawn: no selection, so fd 1 is the console. Print the
+/// raw record in hex there; xtask pins it to the no-selection oracle row.
+fn unselected() -> i32 {
+    let mut raw = [0u8; 8];
+    if sys_stdio_info_raw(raw.as_mut_ptr() as u64, raw.len()) != 0 {
+        return 75;
+    }
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut line = *b"PIPE_STDIO probe_unselected info=0000000000000000\n";
+    let at = line.len() - 17;
+    for (i, b) in raw.iter().enumerate() {
+        line[at + 2 * i] = HEX[usize::from(b >> 4)];
+        line[at + 2 * i + 1] = HEX[usize::from(b & 0xf)];
+    }
+    if out(&line) != line.len() as i64 {
+        76
+    } else {
+        0
     }
 }
 
