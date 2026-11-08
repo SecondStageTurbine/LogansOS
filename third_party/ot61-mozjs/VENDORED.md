@@ -83,6 +83,25 @@ SpiderMonkey's headers and irregexp use `<ostream>`/`<sstream>`/`<iomanip>`, so 
 localization. That change is its own PR (`claude/ot61-c3a-localization`; C3a THINK §10). Until it lands, the
 generator's compile probe points `neo-cc` (`NEO_CXX_CONFIG`) at a copy of `__config_site` with localization on.
 
+## The frozen outputs: `generated/`
+
+This is what the product build reads instead of running `configure`: option (c), THINK #10 §6. CI writes it
+(`generator/freeze.py`) after `configure` and `make export` for `x86_64-unknown-neoplutarch`, with the network off.
+Every generator run freezes the outputs afresh, diffs them against this copy, and fails on any difference. A change
+to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has to come with a matching `generated/`.
+- **`compile_commands.json`:** one entry per object. There are 167: 81 unified files and the sources no unified
+  file includes, the same set `make` compiled in the probe. Each entry carries its directory, source and compiler
+  arguments.
+- **`obj/`:** the generated headers and unified sources, 96 files. Among them are `js-confdefs.h`, `js-config.h`,
+  `selfhosted.out.h` and the `jit/*Generated.h` tables.
+- **`dist_include.txt`:** the 396 links of `dist/include`, as `name -> source`.
+- **`system_wrappers.txt`:** the 1,061 names in `dist/system_wrappers`. Each wrapper is the same four lines
+  (`#pragma GCC system_header`, `visibility push(default)`, `#include_next`, `visibility pop`).
+
+Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The first copy is from run 42518384967 at
+`6b70a914`: a gzip'd tar with sha256 `e29faac123278a3b69bd3d748a20226a741fd3bbc0204f5e430ae6cd56f63975`, taken from
+the job log and checked against that hash.
+
 ## Left out of the copy
 
 | Path | Why |
