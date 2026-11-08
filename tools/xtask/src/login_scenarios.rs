@@ -50,6 +50,7 @@ pub const SETTINGS_STORE_SCENARIO: &str = "login_settings_store";
 pub const SETTINGS_CUT_SCENARIO: &str = "login_settings_cut";
 pub const SETTINGS_REFUSED_SCENARIO: &str = "login_settings_refused";
 pub const ARTHUR_PERMISSION_SCENARIO: &str = "login_arthur_permission";
+pub const LOGIN_SETUP_STORE_SCENARIO: &str = "login_setup_store";
 
 pub fn is_login_vm_scenario(name: &str) -> bool {
     matches!(
@@ -67,6 +68,7 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | SETTINGS_CUT_SCENARIO
             | SETTINGS_REFUSED_SCENARIO
             | ARTHUR_PERMISSION_SCENARIO
+            | LOGIN_SETUP_STORE_SCENARIO
     )
 }
 
@@ -399,6 +401,28 @@ const SETTINGS2: &[SerialScriptStep] = &[
     step(b"LOCK prompt=password", P1),
 ];
 
+/// `login_setup_store` (F11 S2), boot 1: the setup menu walked with both
+/// Comfort options on (S1's walk), then the account as `login_record_guard`
+/// makes it.
+const SETUP_STORE1: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=0", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=comfort focus=1", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=1", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(b"LOGIN prompt=name", b"ada\n"),
+    step(b"LOGIN prompt=choose", P1),
+    step(b"LOGIN prompt=again", P1),
+    step(b"LOGIN prompt=code", b"\n"),
+];
+
+/// Boot 2: no menu (the record exists); sign in.
+const SETUP_STORE2: &[SerialScriptStep] = &[step(b"LOGIN prompt=password", P1)];
+
 /// One boot of the VM layout with `steps` typed (none: no keyboard).
 #[allow(clippy::too_many_arguments)]
 fn boot(
@@ -593,6 +617,9 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         }
         ARTHUR_PERMISSION_SCENARIO => {
             arthur_permission(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
+        }
+        LOGIN_SETUP_STORE_SCENARIO => {
+            setup_store(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
         }
         _ => cut_steps(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?,
     }
@@ -1647,6 +1674,138 @@ fn settings_written(settings: &settings_core::Settings, generation: u64, file: &
     format!("SETTINGS written generation={generation} file={file} digest={hex}")
 }
 
+/// F11 S2's seven-key record (`settings-core`'s `setup-keys`), hand-laid
+/// here: xtask builds `settings-core` without the feature (the five-key
+/// scenarios above need its five-key `encode`), so the two new entries,
+/// Language (6) and KeyboardLayout (7), both `Choice` (2) at 0, are appended
+/// by hand and the count and checksum cover them. `settings-core`'s
+/// `setup_keys_tests.rs` holds the byte oracle (`DEFAULTS7_GEN1`).
+fn record7(settings: &settings_core::Settings, generation: u64) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(&settings_core::MAGIC);
+    b.extend_from_slice(&settings_core::VERSION.to_le_bytes());
+    b.extend_from_slice(&7u16.to_le_bytes());
+    b.extend_from_slice(&generation.to_le_bytes());
+    for key in settings_core::KEYS {
+        b.extend_from_slice(&key.id().to_le_bytes());
+        b.push(key.kind() as u8);
+        b.push(0);
+        b.extend_from_slice(&settings.get(key).to_le_bytes());
+    }
+    for id in [6u16, 7] {
+        b.extend_from_slice(&id.to_le_bytes());
+        b.extend_from_slice(&[2, 0]);
+        b.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let sum = blake3::hash(&b);
+    b.extend_from_slice(&sum.as_bytes()[..settings_core::CHECKSUM_LEN]);
+    b
+}
+
+/// [`settings_written`] for a seven-key record.
+fn settings7_written(settings: &settings_core::Settings, generation: u64, file: &str) -> String {
+    let digest = blake3::hash(&record7(settings, generation));
+    let hex: String = digest.as_bytes()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("SETTINGS written generation={generation} file={file} digest={hex}")
+}
+
+/// F11 S2: the two boots of `login_setup_store`.
+fn setup_store(
+    scenario: TestScenario,
+    attempt: usize,
+    ovmf: &vm_image::Ovmf,
+    vars: &Path,
+    boot_disk: &Path,
+    data: &Path,
+) -> Result<(), String> {
+    use settings_core::{Motion, Settings};
+    let run = |label: &str, steps| {
+        boot(
+            scenario,
+            attempt,
+            label,
+            ovmf,
+            vars,
+            boot_disk,
+            data,
+            Some(steps),
+        )
+    };
+    let defaults = Settings::default();
+    let rt = Settings {
+        reduce_transparency: true,
+        ..defaults
+    };
+    let rm = Settings {
+        reduce_motion: Motion::Reduced,
+        ..rt
+    };
+    let w1 = settings7_written(&defaults, 1, "a");
+    let w2 = settings7_written(&rt, 2, "b");
+    let w3 = settings7_written(&rm, 3, "a");
+    let first = run("boot1", SETUP_STORE1)?;
+    require_serial_sequence(
+        scenario,
+        &first,
+        &[
+            "SETTINGS migrated rt=0 rm=0 idle=10 lang=0 kb=0",
+            &w1,
+            "DESKTOP setup page=welcome rows=5",
+            "DESKTOP setup page=try rows=5",
+            "DESKTOP setup done action=try zone=UTC reduce_motion=1 reduce_transparency=1",
+            &w2,
+            "DESKTOP material=reduce-transparency cause=settings live=1",
+            "SETTING applied key=1 value=1 status=0",
+            &w3,
+            "SETTING applied key=2 value=1 status=0",
+            "SETTING applied key=6 value=0 status=0",
+            "SETTING applied key=7 value=0 status=0",
+            "DESKTOP setup stored keys=4 refused=0 volatile=0",
+            "LOGIN account created generation=1",
+            "LOGIN session started view=home",
+        ],
+        "boot 1 must find no record, run the menu, and write each changed choice through the WM's path (the record read back by digest), the two keys already at their only value writing nothing, before the account is made",
+    )?;
+    let serial = read_serial(&first)?;
+    let writes = serial.matches("SETTINGS written").count();
+    if writes != 3 {
+        return Err(format!(
+            "`{}`: three store writes expected (the first record, Reduce transparency, Reduce motion), saw {writes}",
+            scenario.name
+        ));
+    }
+    let second = run("boot2", SETUP_STORE2)?;
+    require_serial_sequence(
+        scenario,
+        &second,
+        &[
+            "SETTINGS loaded generation=3 file=a rt=1 rm=1 idle=10 lang=0 kb=0",
+            "DESKTOP material=reduce-transparency cause=settings",
+            "DESKTOP setup skipped reason=stored",
+            "LOGIN signed in",
+            "LOGIN session started view=home",
+        ],
+        "boot 2 must build from the record the menu wrote (generation 3, file a) and not show the menu again",
+    )?;
+    for (needle, why) in [
+        (
+            "DESKTOP setup page=",
+            "a stored record means the menu is done",
+        ),
+        (
+            "SETTINGS written",
+            "a boot that only reads the store must write nothing",
+        ),
+        ("SETTINGS migrated", "the record exists"),
+    ] {
+        absent(scenario, &second, needle, why)?;
+    }
+    Ok(())
+}
+
 /// OT-88 S1: the two boots of `login_settings_store`.
 fn settings_store(
     scenario: TestScenario,
@@ -2076,6 +2235,18 @@ fn settings_cut(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F11 S2: the hand-laid seven-key record is `settings-core`'s
+    /// `DEFAULTS7_GEN1` oracle (92 bytes, its checksum copied from
+    /// `setup_keys_tests.rs`).
+    #[test]
+    fn record7_is_the_seven_key_oracle() {
+        let r = record7(&settings_core::Settings::default(), 1);
+        assert_eq!(r.len(), 92);
+        assert_eq!(&r[..12], b"NEOSET1\0\x01\x00\x07\x00");
+        let sum: String = r[76..].iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(sum, "1ca373c0c135b0d880ac427a1540a232");
+    }
 
     #[test]
     fn sampled_steps_take_each_runs_ends_and_every_flush() {
