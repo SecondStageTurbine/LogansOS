@@ -8,14 +8,14 @@
 //! of the 2026-11-08 quantization-drift run. A forward-pass change that moves a
 //! token fails here instead of being re-blessed by review.
 //!
-//! `QUANT_DRIFT_CORPUS=corpus.u32` additionally checks the 8,192-token
-//! WikiText-2 perplexity within 0.5% relative (the KAT's own corpus, which is
-//! downloaded, never committed).
+//! `QUANT_DRIFT_CORPUS=corpus.u32` additionally checks the pinned PPL window
+//! (the KAT's `corpus_tokens` / `corpus_eval_start`) within 0.5% relative. The
+//! corpus text is downloaded, never committed.
 
 use std::path::{Path, PathBuf};
 
 use quant_drift_tests::model::Model;
-use quant_drift_tests::prompts::{CORPUS_EVAL_START, CORPUS_TOKENS, PROMPTS};
+use quant_drift_tests::prompts::PROMPTS;
 use quant_drift_tests::report::RefRun;
 
 const MAX_NEW: usize = 32;
@@ -29,7 +29,7 @@ fn kat_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
             Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/quant-drift-kat-2026-11-08.ours.tsv")
+                .join("fixtures/quant-drift-kat-2026-11-08-control.ours.tsv")
         })
 }
 
@@ -108,8 +108,16 @@ fn quant_drift_kat_when_available() {
             .chunks_exact(4)
             .map(|chunk| u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
             .collect();
-        assert!(corpus.len() >= CORPUS_TOKENS, "corpus has 8,192 tokens");
-        let (nll_sum, nll_count) = model.nll_sum(&corpus[..CORPUS_TOKENS], CORPUS_EVAL_START);
+        assert!(
+            corpus.len() >= kat.corpus_window_offset + kat.corpus_tokens,
+            "corpus has {} tokens, KAT needs offset {} + {}",
+            corpus.len(),
+            kat.corpus_window_offset,
+            kat.corpus_tokens
+        );
+        let window =
+            &corpus[kat.corpus_window_offset..kat.corpus_window_offset + kat.corpus_tokens];
+        let (nll_sum, nll_count) = model.nll_sum(window, kat.corpus_eval_start);
         assert_eq!(nll_count, kat.corpus_nll_count, "corpus NLL target count");
         let ppl = (nll_sum / nll_count as f64).exp();
         let expected_ppl = kat.perplexity();

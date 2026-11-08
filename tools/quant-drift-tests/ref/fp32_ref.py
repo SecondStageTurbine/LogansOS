@@ -69,7 +69,7 @@ def main():
     assert len(corpus) >= args.corpus_tokens, "corpus is too short"
 
     out = []
-    out.append("schema\tquant-drift-ref-v1")
+    out.append("schema\tquant-drift-ref-v2")
     out.append(f"model\t{args.label}")
     out.append(f"model_sha256\t{args.sha256}")
     out.append(f"model_source\t{args.source}")
@@ -84,7 +84,16 @@ def main():
             input_ids = torch.tensor([ids], dtype=torch.long)
             result = model(input_ids=input_ids, use_cache=True)
             logits = result.logits[0]
-            top1 = [int(torch.argmax(row)) for row in logits]
+            top1 = []
+            top2 = []
+            top1_logits = []
+            top2_logits = []
+            for row in logits:
+                values, indices = torch.topk(row, 2)
+                top1.append(int(indices[0]))
+                top2.append(int(indices[1]))
+                top1_logits.append(float(values[0]))
+                top2_logits.append(float(values[1]))
             generated = []
             if not args.no_generate:
                 past = result.past_key_values
@@ -103,6 +112,9 @@ def main():
             out.append(f"prompt_ids\t{pid}\t{','.join(map(str, ids))}")
             out.append(f"generated\t{pid}\t{','.join(map(str, generated))}")
             out.append(f"top1\t{pid}\t{','.join(map(str, top1))}")
+            out.append(f"top1_2nd\t{pid}\t{','.join(map(str, top2))}")
+            out.append(f"top1_logit\t{pid}\t{','.join(f'{value:.6f}' for value in top1_logits)}")
+            out.append(f"top1_2nd_logit\t{pid}\t{','.join(f'{value:.6f}' for value in top2_logits)}")
             first = generated[0] if generated else "-"
             print(f"prompt {pid}: {len(ids)} tokens, first={first}", file=sys.stderr)
 

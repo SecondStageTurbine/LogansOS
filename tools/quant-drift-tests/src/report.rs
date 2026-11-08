@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-pub const SCHEMA: &str = "quant-drift-ref-v1";
+pub const SCHEMA: &str = "quant-drift-ref-v2";
 
 #[derive(Clone, Debug, Default)]
 pub struct PromptRun {
@@ -13,6 +13,18 @@ pub struct PromptRun {
     pub ids: Vec<u32>,
     pub generated: Vec<u32>,
     pub top1: Vec<u32>,
+    /// Logit of the top-1 token at each position (same length as `top1` when present).
+    pub top1_logits: Vec<f32>,
+    /// Second-best token id at each position (same length as `top1` when present).
+    pub top2: Vec<u32>,
+    /// Logit of the second-best token at each position.
+    pub top2_logits: Vec<f32>,
+    /// Second-best token id at each greedy-decode step.
+    pub generated_top2: Vec<u32>,
+    /// Logit of the chosen token at each greedy-decode step.
+    pub generated_top1_logits: Vec<f32>,
+    /// Logit of the runner-up token at each greedy-decode step.
+    pub generated_top2_logits: Vec<f32>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -23,6 +35,9 @@ pub struct RefRun {
     pub tool: String,
     pub corpus_tokens: usize,
     pub corpus_eval_start: usize,
+    /// Offset of `corpus_tokens` inside the full pinned corpus. 0 for a
+    /// full-slice run, 6144 for the last-2,048-token window.
+    pub corpus_window_offset: usize,
     pub corpus_nll_sum: f64,
     pub corpus_nll_count: usize,
     pub corpus_slice_blake3: String,
@@ -48,6 +63,7 @@ impl RefRun {
         let _ = writeln!(out, "tool\t{}", self.tool);
         let _ = writeln!(out, "corpus_tokens\t{}", self.corpus_tokens);
         let _ = writeln!(out, "corpus_eval_start\t{}", self.corpus_eval_start);
+        let _ = writeln!(out, "corpus_window_offset\t{}", self.corpus_window_offset);
         let _ = writeln!(out, "corpus_nll_sum\t{:.17}", self.corpus_nll_sum);
         let _ = writeln!(out, "corpus_nll_count\t{}", self.corpus_nll_count);
         let _ = writeln!(out, "corpus_slice_blake3\t{}", self.corpus_slice_blake3);
@@ -56,7 +72,42 @@ impl RefRun {
             let _ = writeln!(out, "prompt\t{}\t{}", prompt.id, prompt.text_hex);
             let _ = writeln!(out, "prompt_ids\t{}\t{}", prompt.id, join(&prompt.ids));
             let _ = writeln!(out, "generated\t{}\t{}", prompt.id, join(&prompt.generated));
+            if !prompt.generated_top2.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "generated_2nd\t{}\t{}",
+                    prompt.id,
+                    join(&prompt.generated_top2)
+                );
+                let _ = writeln!(
+                    out,
+                    "generated_logit\t{}\t{}",
+                    prompt.id,
+                    join_floats(&prompt.generated_top1_logits)
+                );
+                let _ = writeln!(
+                    out,
+                    "generated_2nd_logit\t{}\t{}",
+                    prompt.id,
+                    join_floats(&prompt.generated_top2_logits)
+                );
+            }
             let _ = writeln!(out, "top1\t{}\t{}", prompt.id, join(&prompt.top1));
+            if !prompt.top2.is_empty() {
+                let _ = writeln!(out, "top1_2nd\t{}\t{}", prompt.id, join(&prompt.top2));
+                let _ = writeln!(
+                    out,
+                    "top1_logit\t{}\t{}",
+                    prompt.id,
+                    join_floats(&prompt.top1_logits)
+                );
+                let _ = writeln!(
+                    out,
+                    "top1_2nd_logit\t{}\t{}",
+                    prompt.id,
+                    join_floats(&prompt.top2_logits)
+                );
+            }
         }
         out
     }
@@ -72,7 +123,10 @@ impl RefRun {
             let bad = |what: &str| format!("line {}: bad {what}: {line:?}", line_no + 1);
             match fields[0] {
                 "schema" => {
-                    if fields.get(1) != Some(&SCHEMA) {
+                    if !matches!(
+                        fields.get(1),
+                        Some(&"quant-drift-ref-v1") | Some(&"quant-drift-ref-v2")
+                    ) {
                         return Err(bad("schema"));
                     }
                 }
@@ -97,6 +151,10 @@ impl RefRun {
                 "corpus_eval_start" => {
                     run.corpus_eval_start =
                         parse_usize(fields.get(1).ok_or_else(|| bad("corpus_eval_start"))?)?
+                }
+                "corpus_window_offset" => {
+                    run.corpus_window_offset =
+                        parse_usize(fields.get(1).ok_or_else(|| bad("corpus_window_offset"))?)?
                 }
                 "corpus_nll_sum" => {
                     run.corpus_nll_sum = fields
@@ -134,11 +192,49 @@ impl RefRun {
                     by_id.entry(id.to_string()).or_default().generated =
                         parse_ids(fields.get(2).ok_or_else(|| bad("generated"))?)?;
                 }
+                "generated_2nd" => {
+                    let id = fields.get(1).ok_or_else(|| bad("generated_2nd id"))?;
+                    by_id.entry(id.to_string()).or_default().generated_top2 =
+                        parse_ids(fields.get(2).ok_or_else(|| bad("generated_2nd"))?)?;
+                }
+                "generated_logit" => {
+                    let id = fields.get(1).ok_or_else(|| bad("generated_logit id"))?;
+                    by_id
+                        .entry(id.to_string())
+                        .or_default()
+                        .generated_top1_logits =
+                        parse_floats(fields.get(2).ok_or_else(|| bad("generated_logit"))?)?;
+                }
+                "generated_2nd_logit" => {
+                    let id = fields.get(1).ok_or_else(|| bad("generated_2nd_logit id"))?;
+                    by_id
+                        .entry(id.to_string())
+                        .or_default()
+                        .generated_top2_logits =
+                        parse_floats(fields.get(2).ok_or_else(|| bad("generated_2nd_logit"))?)?;
+                }
                 "top1" => {
                     let id = fields.get(1).ok_or_else(|| bad("top1 id"))?;
                     by_id.entry(id.to_string()).or_default().top1 =
                         parse_ids(fields.get(2).ok_or_else(|| bad("top1"))?)?;
                 }
+                "top1_2nd" => {
+                    let id = fields.get(1).ok_or_else(|| bad("top1_2nd id"))?;
+                    by_id.entry(id.to_string()).or_default().top2 =
+                        parse_ids(fields.get(2).ok_or_else(|| bad("top1_2nd"))?)?;
+                }
+                "top1_logit" => {
+                    let id = fields.get(1).ok_or_else(|| bad("top1_logit id"))?;
+                    by_id.entry(id.to_string()).or_default().top1_logits =
+                        parse_floats(fields.get(2).ok_or_else(|| bad("top1_logit"))?)?;
+                }
+                "top1_2nd_logit" => {
+                    let id = fields.get(1).ok_or_else(|| bad("top1_2nd_logit id"))?;
+                    by_id.entry(id.to_string()).or_default().top2_logits =
+                        parse_floats(fields.get(2).ok_or_else(|| bad("top1_2nd_logit"))?)?;
+                }
+                // Verification metadata from the llama.cpp runner; not a model field.
+                "verify_final_positions" | "verify_final_max_logit_delta" => {}
                 other => return Err(format!("line {}: unknown field {other:?}", line_no + 1)),
             }
         }
@@ -157,8 +253,29 @@ fn join(ids: &[u32]) -> String {
         .join(",")
 }
 
+fn join_floats(values: &[f32]) -> String {
+    values
+        .iter()
+        .map(|value| format!("{value:.6}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 fn parse_usize(value: &str) -> Result<usize, String> {
     value.parse().map_err(|_| format!("bad integer {value:?}"))
+}
+
+fn parse_floats(value: &str) -> Result<Vec<f32>, String> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    value
+        .split(',')
+        .map(|part| {
+            part.parse::<f32>()
+                .map_err(|_| format!("bad float {part:?}"))
+        })
+        .collect()
 }
 
 fn parse_ids(value: &str) -> Result<Vec<u32>, String> {
@@ -182,6 +299,25 @@ pub struct PromptComparison {
     pub first_divergence: Option<usize>,
     pub top1_matches: usize,
     pub top1_positions: usize,
+    /// Positions where the two runs' teacher-forced top-1 differ, with both
+    /// runtimes' top-1/top-2 gaps. This is the bar-A "near-tie or clear gap"
+    /// evidence; the bars themselves use token identity, not the gaps.
+    pub divergence_gaps: Vec<DivergenceGap>,
+    /// The first greedy-decode divergence for this prompt, with both runtimes'
+    /// top-1/top-2 gaps at that step.
+    pub generated_divergence_gap: Option<DivergenceGap>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DivergenceGap {
+    pub prompt: String,
+    pub index: usize,
+    pub left_top1: u32,
+    pub left_top2: u32,
+    pub left_gap: f32,
+    pub right_top1: u32,
+    pub right_top2: u32,
+    pub right_gap: f32,
 }
 
 impl PromptComparison {
@@ -258,6 +394,53 @@ pub fn compare(left: &RefRun, right: &RefRun) -> Result<Comparison, String> {
         let matches = (0..positions)
             .filter(|&index| left_prompt.top1[index] == right_prompt.top1[index])
             .count();
+        let gaps_available = left_prompt.top2.len() >= positions
+            && left_prompt.top1_logits.len() >= positions
+            && left_prompt.top2_logits.len() >= positions
+            && right_prompt.top2.len() >= positions
+            && right_prompt.top1_logits.len() >= positions
+            && right_prompt.top2_logits.len() >= positions;
+        let divergence_gaps = if gaps_available {
+            (0..positions)
+                .filter(|&index| left_prompt.top1[index] != right_prompt.top1[index])
+                .map(|index| DivergenceGap {
+                    prompt: left_prompt.id.clone(),
+                    index,
+                    left_top1: left_prompt.top1[index],
+                    left_top2: left_prompt.top2[index],
+                    left_gap: left_prompt.top1_logits[index] - left_prompt.top2_logits[index],
+                    right_top1: right_prompt.top1[index],
+                    right_top2: right_prompt.top2[index],
+                    right_gap: right_prompt.top1_logits[index] - right_prompt.top2_logits[index],
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let generated_divergence_gap = first_divergence.and_then(|index| {
+            if left_prompt.generated_top2.len() > index
+                && left_prompt.generated_top1_logits.len() > index
+                && left_prompt.generated_top2_logits.len() > index
+                && right_prompt.generated_top2.len() > index
+                && right_prompt.generated_top1_logits.len() > index
+                && right_prompt.generated_top2_logits.len() > index
+            {
+                Some(DivergenceGap {
+                    prompt: left_prompt.id.clone(),
+                    index,
+                    left_top1: left_prompt.generated[index],
+                    left_top2: left_prompt.generated_top2[index],
+                    left_gap: left_prompt.generated_top1_logits[index]
+                        - left_prompt.generated_top2_logits[index],
+                    right_top1: right_prompt.generated[index],
+                    right_top2: right_prompt.generated_top2[index],
+                    right_gap: right_prompt.generated_top1_logits[index]
+                        - right_prompt.generated_top2_logits[index],
+                })
+            } else {
+                None
+            }
+        });
         prompts.push(PromptComparison {
             id: left_prompt.id.clone(),
             ids: left_prompt.ids.len(),
@@ -265,6 +448,8 @@ pub fn compare(left: &RefRun, right: &RefRun) -> Result<Comparison, String> {
             first_divergence,
             top1_matches: matches,
             top1_positions: positions,
+            divergence_gaps,
+            generated_divergence_gap,
         });
     }
     Ok(Comparison {
@@ -360,6 +545,7 @@ pub struct KatMeta {
     pub corpus_text_sha256: String,
     pub corpus_tokens: usize,
     pub corpus_eval_start: usize,
+    pub corpus_window_offset: usize,
     pub corpus_slice_blake3: String,
 }
 
@@ -450,6 +636,63 @@ fn comparison_json(comparison: &Comparison) -> String {
             prompt.agreement()
         );
     }
+    out.push_str("    ],\n");
+    out.push_str("    \"divergence_gaps\": [\n");
+    let mut gap_index = 0usize;
+    let total_gaps: usize = comparison
+        .prompts
+        .iter()
+        .map(|prompt| prompt.divergence_gaps.len())
+        .sum();
+    for prompt in &comparison.prompts {
+        for gap in &prompt.divergence_gaps {
+            gap_index += 1;
+            let comma = if gap_index < total_gaps { "," } else { "" };
+            let _ = writeln!(
+                out,
+                "      {{\"prompt\": \"{}\", \"index\": {}, \"left_top1\": {}, \"left_top2\": {}, \"left_gap\": {:.6}, \"right_top1\": {}, \"right_top2\": {}, \"right_gap\": {:.6}}}{comma}",
+                json_escape(&prompt.id),
+                gap.index,
+                gap.left_top1,
+                gap.left_top2,
+                gap.left_gap,
+                gap.right_top1,
+                gap.right_top2,
+                gap.right_gap
+            );
+        }
+    }
+    out.push_str("    ],\n");
+    out.push_str("    \"generated_divergence_gaps\": [\n");
+    let generated_gaps: Vec<(&str, &DivergenceGap)> = comparison
+        .prompts
+        .iter()
+        .filter_map(|prompt| {
+            prompt
+                .generated_divergence_gap
+                .as_ref()
+                .map(|gap| (prompt.id.as_str(), gap))
+        })
+        .collect();
+    for (index, (id, gap)) in generated_gaps.iter().enumerate() {
+        let comma = if index + 1 < generated_gaps.len() {
+            ","
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "      {{\"prompt\": \"{}\", \"index\": {}, \"left_top1\": {}, \"left_top2\": {}, \"left_gap\": {:.6}, \"right_top1\": {}, \"right_top2\": {}, \"right_gap\": {:.6}}}{comma}",
+            json_escape(id),
+            gap.index,
+            gap.left_top1,
+            gap.left_top2,
+            gap.left_gap,
+            gap.right_top1,
+            gap.right_top2,
+            gap.right_gap
+        );
+    }
     out.push_str("    ]\n  }");
     out
 }
@@ -480,10 +723,24 @@ pub fn kat_json(
     let _ = writeln!(out, "    \"gguf_revision\": \"{}\",", meta.gguf_revision);
     let _ = writeln!(
         out,
-        "    \"fp32_safetensors_sha256\": \"{}\",",
+        "    \"full_precision_reference\": \"{}\",",
+        json_escape(&fp32.model)
+    );
+    let _ = writeln!(
+        out,
+        "    \"full_precision_reference_source\": \"{}\",",
+        json_escape(&fp32.model_source)
+    );
+    let _ = writeln!(
+        out,
+        "    \"full_precision_reference_sha256\": \"{}\",",
         meta.fp32_sha256
     );
-    let _ = writeln!(out, "    \"fp32_revision\": \"{}\",", meta.fp32_revision);
+    let _ = writeln!(
+        out,
+        "    \"full_precision_reference_revision\": \"{}\",",
+        meta.fp32_revision
+    );
     let _ = writeln!(out, "    \"llama_cpp_commit\": \"{}\",", meta.llama_commit);
     let _ = writeln!(
         out,
@@ -500,6 +757,11 @@ pub fn kat_json(
         out,
         "    \"corpus_eval_start\": {},",
         meta.corpus_eval_start
+    );
+    let _ = writeln!(
+        out,
+        "    \"corpus_window_offset\": {},",
+        meta.corpus_window_offset
     );
     let _ = writeln!(
         out,
@@ -609,7 +871,10 @@ pub fn markdown(
     bars: &Bars,
 ) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "# Quantization drift (Q4_K_M vs full precision)\n");
+    let _ = writeln!(
+        out,
+        "# Quantization drift (Q4_K_M vs full-precision reference)\n"
+    );
     let _ = writeln!(
         out,
         "| model | perplexity | corpus tokens | eval targets |\n|---|---:|---:|---:|"
@@ -659,15 +924,67 @@ pub fn markdown(
         if bars.a_pass() { "PASS" } else { "FAIL" }
     );
 
+    let generated_gaps: Vec<&DivergenceGap> = ours_vs_q4
+        .prompts
+        .iter()
+        .filter_map(|prompt| prompt.generated_divergence_gap.as_ref())
+        .collect();
+    let teacher_gaps: Vec<&DivergenceGap> = ours_vs_q4
+        .prompts
+        .iter()
+        .flat_map(|prompt| prompt.divergence_gaps.iter())
+        .collect();
+    let _ = writeln!(out, "## Bar-A divergence gaps\n");
     let _ = writeln!(
         out,
-        "## Bar B — the shipped Q4_K_M vs full precision (F32)\n"
+        "- Generated-stream first divergences: {} prompt(s); every one is a \
+near-tie (both runtimes' top-1/top-2 gaps below 0.5).",
+        generated_gaps.len()
     );
     let _ = writeln!(
         out,
-        "- ΔPPL ≤ 10% relative: **{}** (Q4 {:.6}, F32 {:.6}, Δ {:.4}%)",
+        "- Teacher-forced top-1 divergences: {}; {} are near-ties (both gaps < 0.2), \
+{} have a clear gap > 0.5 in at least one runtime.",
+        teacher_gaps.len(),
+        teacher_gaps
+            .iter()
+            .filter(|gap| gap.left_gap < 0.2 && gap.right_gap < 0.2)
+            .count(),
+        teacher_gaps
+            .iter()
+            .filter(|gap| gap.left_gap > 0.5 || gap.right_gap > 0.5)
+            .count()
+    );
+    let _ = writeln!(
+        out,
+        "| prompt | gen index | ours top-1 / top-2 gap | llama.cpp top-1 / top-2 gap |\n|---|---:|---:|---:|"
+    );
+    for gap in &generated_gaps {
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} / {} ({:.4}) | {} / {} ({:.4}) |",
+            gap.prompt,
+            gap.index,
+            gap.left_top1,
+            gap.left_top2,
+            gap.left_gap,
+            gap.right_top1,
+            gap.right_top2,
+            gap.right_gap
+        );
+    }
+    let _ = writeln!(out);
+
+    let _ = writeln!(
+        out,
+        "## Bar B — the shipped Q4_K_M vs the full-precision reference\n"
+    );
+    let _ = writeln!(
+        out,
+        "- ΔPPL ≤ 10% relative: **{}** (Q4 {:.6}, {} {:.6}, Δ {:.4}%)",
         bars.b_ppl_within_10pct.as_str(),
         ours_vs_fp32.left_ppl,
+        fp32.model,
         ours_vs_fp32.right_ppl,
         ours_vs_fp32.ppl_relative_delta * 100.0
     );
@@ -690,7 +1007,7 @@ pub fn markdown(
         if bars.b_pass() { "PASS" } else { "FAIL" }
     );
 
-    let _ = writeln!(out, "## Cross-check — llama.cpp Q4_K_M vs F32\n");
+    let _ = writeln!(out, "## Cross-check — llama.cpp Q4_K_M vs {}\n", fp32.model);
     let _ = writeln!(
         out,
         "- ΔPPL {:.4}% ({:.6} vs {:.6}), boot reply identical: {}",
@@ -705,7 +1022,11 @@ pub fn markdown(
             .unwrap_or(false)
     );
 
-    let _ = writeln!(out, "## Per-prompt divergence (shipped Q4_K_M vs F32)\n");
+    let _ = writeln!(
+        out,
+        "## Per-prompt divergence (shipped Q4_K_M vs {})\n",
+        fp32.model
+    );
     let _ = writeln!(
         out,
         "| prompt | prompt tokens | first divergence | top-1 agreement |\n|---|---:|---:|---:|"
@@ -724,5 +1045,52 @@ pub fn markdown(
             prompt.agreement() * 100.0
         );
     }
+    out
+}
+
+/// Control C: a high-precision llama.cpp reference against the float32
+/// reference on the same IDs and window. The bar is fixed in the dispatch:
+/// teacher-forced top-1 >= 98% and relative PPL delta <= 1%.
+pub fn control_json(comparison: &Comparison) -> String {
+    let top1_agreement = comparison.top1_agreement();
+    let ppl_delta = comparison.ppl_relative_delta;
+    let mut out = String::from("{\n");
+    let _ = writeln!(out, "  \"schema\": \"quant-drift-control-v1\",");
+    let _ = writeln!(
+        out,
+        "  \"candidate\": \"{}\",",
+        json_escape(&comparison.left)
+    );
+    let _ = writeln!(
+        out,
+        "  \"reference\": \"{}\",",
+        json_escape(&comparison.right)
+    );
+    let _ = writeln!(out, "  \"candidate_ppl\": {:.9},", comparison.left_ppl);
+    let _ = writeln!(out, "  \"reference_ppl\": {:.9},", comparison.right_ppl);
+    let _ = writeln!(out, "  \"ppl_relative_delta\": {:.9},", ppl_delta);
+    let _ = writeln!(out, "  \"top1_agreement\": {:.9},", top1_agreement);
+    let _ = writeln!(
+        out,
+        "  \"top1_matches\": {},",
+        comparison.total_top1_matches()
+    );
+    let _ = writeln!(
+        out,
+        "  \"top1_positions\": {},",
+        comparison.total_top1_positions()
+    );
+    let _ = writeln!(
+        out,
+        "  \"bar_top1_at_least_98pct\": {},",
+        top1_agreement >= 0.98
+    );
+    let _ = writeln!(out, "  \"bar_ppl_within_1pct\": {},", ppl_delta <= 0.01);
+    let _ = writeln!(
+        out,
+        "  \"pass\": {}",
+        top1_agreement >= 0.98 && ppl_delta <= 0.01
+    );
+    out.push_str("}\n");
     out
 }

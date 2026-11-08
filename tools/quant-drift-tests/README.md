@@ -1,6 +1,17 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 # quant-drift-tests — Q4_K_M vs full precision
 
+> **Relay 333 correction (2026-11-08).** The upstream
+> `Qwen/Qwen2.5-0.5B-Instruct-GGUF` Q4_K_M/Q8_0 files are **not** the same
+> weights as `Qwen/Qwen2.5-0.5B-Instruct@7ae5576`: their token embeddings
+> match exactly, but `blk.0.attn_q.weight` differs by ~44% relative and
+> `blk.0.ffn_down.weight` by ~32%. The reliable same-checkpoint references are
+> the upstream **F16** GGUF (for the shipped Q4_K_M) and the pinned float32
+> safetensors (for Control C). The old cross-model bar-B numbers (65.3% top-1,
+> Q4 PPL below float32) are therefore **not** quantization loss. The corrected
+> artifact is `fixtures/quant-drift-kat-2026-11-08-control.json`; the original
+> KAT stays in the history.
+
 Host-only quantization-drift check for Arthur's shipped model. It measures the
 one accuracy question the per-op KATs cannot: **accumulated drift across full
 forward passes**, and whether that drift moves the tokens Arthur actually
@@ -110,3 +121,25 @@ perplexity, the per-prompt divergences, and the bar verdicts.
   is the production path and keeps the three-way comparison exact.
 - **WikiText-2** — CC-BY-SA-3.0; only its source URL, revision, slice offsets
   and hashes are committed, never the text.
+
+## Relay 333 — Control C and the model-identity check
+
+Control C is **llama.cpp F16** built from the pinned float32 GGUF, against the
+pinned float32 transformers run, on the same IDs and the 2,048-token window.
+F16 is the lossless reference path; Q8_0 is itself a lossy quantization and is
+reported separately as a quantization probe. The bar is fixed before the run:
+teacher-forced top-1 >= 98% and relative PPL delta <= 1%.
+
+| candidate | top-1 vs float32 | ΔPPL | verdict |
+|---|---:|---:|---|
+| llama.cpp F16 (pinned) | 99.71% (695/697) | 0.023% | **PASS** |
+| llama.cpp Q8_0 (pinned) | 90.10% (628/697) | 1.44% | FAIL (quantization probe) |
+
+F16 passing proves the float32 and llama.cpp reference paths agree; the Q8_0
+miss is the quantization error of a 0.5B model, not a reference bug. A Q8_0
+variant with the tied token embedding kept at F16 moves top-1 to 95.12% while
+leaving PPL at 30.313 (vs F16 30.753), which separates the embedding's top-1
+effect from the transformer weights' small PPL shift.
+
+`ref/run-control.sh` reproduces the whole corrected run, including the
+same-checkpoint F16 reference for bar B.

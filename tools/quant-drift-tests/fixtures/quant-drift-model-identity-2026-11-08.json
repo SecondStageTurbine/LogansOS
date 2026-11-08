@@ -1,0 +1,69 @@
+{
+  "schema": "quant-drift-model-identity-v1",
+  "date": "2026-11-08",
+  "pinned_safetensors": {
+    "repo": "Qwen/Qwen2.5-0.5B-Instruct",
+    "revision": "7ae557604adf67be50417f59c2c2f167def9a775",
+    "sha256": "fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe"
+  },
+  "upstream_gguf": {
+    "repo": "Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+    "revision": "9217f5db79a29953eb74d5343926648285ec7e67",
+    "q4_k_m_sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+    "q8_0_sha256": "ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e",
+    "fp16_sha256": "8e0ae26000627ed62de0e78e41860af70094558b9d2913385c842a6aa06cf3fc"
+  },
+  "method": "dequantize each tensor (gguf-py) and compare to the pinned f32 GGUF; rel = ||a-b||/||a||",
+  "tensors": {
+    "token_embd.weight": {
+      "pinned_f32_norm": 177.55967712402344,
+      "upstream_q4_vs_pinned_rel": 0.04412933811545372,
+      "upstream_q8_vs_pinned_rel": 0.00553123326972127,
+      "upstream_f16_vs_pinned_rel": 2.5971862882556707e-08,
+      "upstream_q4_vs_upstream_q8_rel": 0.0444471538066864,
+      "upstream_f16_vs_upstream_q8_rel": 0.005531040485948324
+    },
+    "blk.0.attn_q.weight": {
+      "pinned_f32_norm": 59.79984664916992,
+      "upstream_q4_vs_pinned_rel": 0.4398204982280731,
+      "upstream_q8_vs_pinned_rel": 0.43526917695999146,
+      "upstream_f16_vs_pinned_rel": 0.4351964592933655,
+      "upstream_q4_vs_upstream_q8_rel": 0.06815308332443237,
+      "upstream_f16_vs_upstream_q8_rel": 0.008565858006477356
+    },
+    "blk.0.ffn_down.weight": {
+      "pinned_f32_norm": 37.90729522705078,
+      "upstream_q4_vs_pinned_rel": 0.32436925172805786,
+      "upstream_q8_vs_pinned_rel": 0.32405731081962585,
+      "upstream_f16_vs_pinned_rel": 0.3240439295768738,
+      "upstream_q4_vs_upstream_q8_rel": 0.01993710733950138,
+      "upstream_f16_vs_upstream_q8_rel": 0.0057829455472528934
+    },
+    "blk.0.attn_output.weight": {
+      "pinned_f32_norm": 11.763680458068848,
+      "upstream_q4_vs_pinned_rel": 0.05455784499645233,
+      "upstream_q8_vs_pinned_rel": 0.03151828050613403,
+      "upstream_f16_vs_pinned_rel": 0.03103836253285408,
+      "upstream_q4_vs_upstream_q8_rel": 0.04465080425143242,
+      "upstream_f16_vs_upstream_q8_rel": 0.005505611188709736
+    },
+    "blk.1.attn_q.weight": {
+      "pinned_f32_norm": 25.735950469970703,
+      "upstream_q4_vs_pinned_rel": 0.3483409881591797,
+      "upstream_q8_vs_pinned_rel": 0.3464706242084503,
+      "upstream_f16_vs_pinned_rel": 0.3464467227458954,
+      "upstream_q4_vs_upstream_q8_rel": 0.04875577613711357,
+      "upstream_f16_vs_upstream_q8_rel": 0.006057767663151026
+    }
+  },
+  "conclusion": "The upstream Q4_K_M/Q8_0/F16 GGUFs are the same checkpoint as each other (F16 vs Q8 within Q8 quantization error) but not the pinned safetensors: upstream F16 token_embd matches pinned F32 exactly (relative error 2.6e-8), while upstream F16 attention/FFN weights differ by up to ~44%. Bar B must use upstream F16, not the pinned float32.",
+  "cross_model_summary": {
+    "upstream_f16_vs_pinned_f32_top1_agreement": 0.9283,
+    "upstream_f16_vs_pinned_f32_top1_matches": 647,
+    "upstream_f16_vs_pinned_f32_top1_positions": 697,
+    "upstream_f16_ppl": 28.841103,
+    "pinned_f32_ppl": 30.74621,
+    "ppl_relative_delta": 0.061808,
+    "note": "Even the high-precision upstream checkpoint differs from the pinned float32 on 7.2% of prompt positions; this is the source of the old bar-B number, not quantization."
+  }
+}

@@ -3,17 +3,15 @@
 //!
 //! Prior art: llama.cpp (MIT, pinned commit in `meta.tsv`), public `llama.h`
 //! API only. It consumes the SAME prompt token IDs as the Rust harness
-//! (`prompts.tsv`) and the same corpus (`corpus.u32`), so no tokenizer is
-//! involved here and all three models see identical inputs.
+//! (`prompts.tsv`) and the same corpus (`corpus.u32`).
 //!
-//! Build (from this crate's `ref/` directory):
-//!   g++ -O2 -std=c++17 llama_drift.cpp \
-//!     -I "$LLAMA_CPP/include" -I "$LLAMA_CPP/ggml/include" \
-//!     -L "$LLAMA_CPP/build/bin" -lllama -lggml -lggml-base -lggml-cpu \
-//!     -Wl,-rpath,"$LLAMA_CPP/build/bin" -o llama_drift
+//! Per-position logits come from a real `llama_batch` with `logits[i] = 1` for
+//! EVERY token, decoded through `llama_decode()`; rows are read with
+//! `llama_get_logits_ith(ctx, i)`.  `--verify-final N` re-feeds each of the
+//! first N positions in a fresh context and compares the last-position row to
+//! the multi-output row, which is the correctness check for the batch path.
 
 #include "llama.h"
-#include "common.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,6 +27,7 @@
 
 struct Prompt {
     std::string id;
+    std::string text_hex;
     std::vector<llama_token> ids;
 };
 
@@ -38,6 +37,13 @@ static std::vector<Prompt> read_prompts(const std::string & path) {
     std::vector<Prompt> out;
     std::string line;
     while (std::getline(in, line)) {
+        if (line.rfind("prompt\t", 0) == 0) {
+            const size_t a = line.find('\t', 7);
+            if (a == std::string::npos) continue;
+            const std::string id = line.substr(7, a - 7);
+            for (auto & p : out) if (p.id == id) p.text_hex = line.substr(a + 1);
+            continue;
+        }
         if (line.rfind("prompt_ids\t", 0) != 0) continue;
         const size_t tab = line.find('\t', 11);
         if (tab == std::string::npos) continue;
@@ -66,13 +72,25 @@ static std::vector<llama_token> read_u32(const std::string & path) {
     return out;
 }
 
-static int argmax(const float * logits, int n_vocab) {
-    int best = 0;
-    float best_value = logits[0];
-    for (int i = 1; i < n_vocab; ++i) {
-        if (logits[i] > best_value) { best_value = logits[i]; best = i; }
+struct Top2 {
+    int id = -1;
+    int second = -1;
+    float v1 = 0.0f;
+    float v2 = 0.0f;
+};
+
+static Top2 top2_of(const float * row, int n_vocab) {
+    Top2 t;
+    t.id = 0;
+    t.second = 1;
+    if (row[t.second] > row[t.id]) std::swap(t.id, t.second);
+    for (int i = 2; i < n_vocab; ++i) {
+        if (row[i] > row[t.id]) { t.second = t.id; t.id = i; }
+        else if (row[i] > row[t.second]) { t.second = i; }
     }
-    return best;
+    t.v1 = row[t.id];
+    t.v2 = row[t.second];
+    return t;
 }
 
 static double nll_at(const float * logits, int n_vocab, llama_token target) {
@@ -84,35 +102,58 @@ static double nll_at(const float * logits, int n_vocab, llama_token target) {
     return lse - static_cast<double>(logits[target]);
 }
 
-static void clear_context(llama_context * ctx) {
-    llama_memory_t mem = llama_get_memory(ctx);
-    if (mem) llama_memory_clear(mem, true);
-}
-
-// Feed `tokens[begin..end)` at positions begin.., all outputs requested.
-// Uses llama.cpp's current `common_batch` + `llama_process` API (the one
-// llama-perplexity uses); the legacy `llama_batch`/`llama_decode` path does
-// not compute every requested output row on this build.
+// Feed `tokens[begin..end)` at positions begin.., request every output row.
 static bool decode_range(llama_context * ctx, const std::vector<llama_token> & tokens,
                          size_t begin, size_t end, int n_batch) {
     for (size_t offset = begin; offset < end; offset += static_cast<size_t>(n_batch)) {
-        const size_t count = std::min(static_cast<size_t>(n_batch), end - offset);
-        common_batch batch(ctx);
-        for (size_t i = 0; i < count; ++i) {
-            batch.add(tokens[offset + i], static_cast<llama_pos>(offset + i), 0, true);
+        const int count = static_cast<int>(std::min(static_cast<size_t>(n_batch), end - offset));
+        llama_batch batch = llama_batch_init(count, 0, 1);
+        for (int i = 0; i < count; ++i) {
+            batch.token[i] = tokens[offset + static_cast<size_t>(i)];
+            batch.pos[i] = static_cast<llama_pos>(offset + static_cast<size_t>(i));
+            batch.n_seq_id[i] = 1;
+            batch.seq_id[i][0] = 0;
+            batch.logits[i] = 1;
         }
-        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
+        batch.n_tokens = count;
+        const int rc = llama_decode(ctx, batch);
+        llama_batch_free(batch);
+        if (rc != 0) {
+            fprintf(stderr, "llama_decode failed at %zu (rc=%d)\n", offset, rc);
             return false;
         }
     }
     return true;
 }
 
+static std::string join_ids(const std::vector<llama_token> & ids) {
+    std::ostringstream out;
+    for (size_t i = 0; i < ids.size(); ++i) out << (i ? "," : "") << ids[i];
+    return out.str();
+}
+
+static std::string join_floats(const std::vector<float> & values) {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(6);
+    for (size_t i = 0; i < values.size(); ++i) out << (i ? "," : "") << values[i];
+    return out.str();
+}
+
+static void append_top2(std::ostringstream & out, const std::string & name, const std::string & id,
+                        const std::vector<int> & top1, const std::vector<int> & top2,
+                        const std::vector<float> & v1, const std::vector<float> & v2) {
+    out << name << "\t" << id << "\t" << join_ids(std::vector<llama_token>(top1.begin(), top1.end())) << "\n";
+    out << name << "_2nd\t" << id << "\t" << join_ids(std::vector<llama_token>(top2.begin(), top2.end())) << "\n";
+    out << name << "_logit\t" << id << "\t" << join_floats(v1) << "\n";
+    out << name << "_2nd_logit\t" << id << "\t" << join_floats(v2) << "\n";
+}
+
 int main(int argc, char ** argv) {
     if (argc < 7) {
         fprintf(stderr,
             "usage: %s MODEL PROMPTS_TSV CORPUS_U32 OUT_TSV LABEL SOURCE [SHA256] [TOOL]\n"
-            "       [--eval-start N] [--corpus-tokens N] [--corpus-blake3 HASH]\n", argv[0]);
+            "       [--eval-start N] [--corpus-tokens N] [--corpus-blake3 HASH]\n"
+            "       [--verify-final N] [--no-generate 1]\n", argv[0]);
         return 2;
     }
     const std::string model_path = argv[1];
@@ -125,17 +166,15 @@ int main(int argc, char ** argv) {
     std::string tool = argc > 8 ? argv[8] : "";
     int eval_start = 4096;
     int corpus_tokens = 8192;
+    int verify_final = 0;
+    bool generate = true;
     std::string corpus_blake3;
-    std::string only_prompt;
-    bool one_by_one = false;
-    bool ppl_one_by_one = false;
     for (int i = 9; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--eval-start") == 0) eval_start = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--corpus-tokens") == 0) corpus_tokens = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--corpus-blake3") == 0) corpus_blake3 = argv[i + 1];
-        else if (std::strcmp(argv[i], "--only") == 0) only_prompt = argv[i + 1];
-        else if (std::strcmp(argv[i], "--one-by-one") == 0) one_by_one = std::atoi(argv[i + 1]) != 0;
-        else if (std::strcmp(argv[i], "--ppl-one-by-one") == 0) ppl_one_by_one = std::atoi(argv[i + 1]) != 0;
+        else if (std::strcmp(argv[i], "--verify-final") == 0) verify_final = std::atoi(argv[i + 1]);
+        else if (std::strcmp(argv[i], "--no-generate") == 0) generate = std::atoi(argv[i + 1]) == 0;
     }
 
     const int n_threads = 4;
@@ -165,7 +204,7 @@ int main(int argc, char ** argv) {
     corpus.resize(corpus_tokens);
 
     std::ostringstream out;
-    out << "schema\tquant-drift-ref-v1\n";
+    out << "schema\tquant-drift-ref-v2\n";
     out << "model\t" << label << "\n";
     out << "model_sha256\t" << sha256 << "\n";
     out << "model_source\t" << source << "\n";
@@ -175,135 +214,108 @@ int main(int argc, char ** argv) {
     out << "corpus_slice_blake3\t" << corpus_blake3 << "\n";
     out << "prompts\t" << prompts.size() << "\n";
 
-    llama_context * ctx = llama_init_from_model(model, cparams);
-    if (!ctx) { fprintf(stderr, "context init failed\n"); return 1; }
-
+    int verified = 0;
+    double max_final_delta = 0.0;
     for (const Prompt & prompt : prompts) {
-        if (!only_prompt.empty() && prompt.id != only_prompt) continue;
-        // A fresh context per prompt: `llama_memory_clear` leaves the output
-        // mapping stale across a shorter prompt, which made every non-last
-        // position read a previous decode's row.
-        llama_free(ctx);
-        ctx = llama_init_from_model(model, cparams);
+        if (prompt.ids.empty()) { fprintf(stderr, "empty prompt %s\n", prompt.id.c_str()); return 1; }
+        llama_context * ctx = llama_init_from_model(model, cparams);
         if (!ctx) { fprintf(stderr, "context init failed\n"); return 1; }
-        if (prompt.ids.empty() || prompt.ids.size() + 64 > cparams.n_ctx) {
-            fprintf(stderr, "prompt %s does not fit\n", prompt.id.c_str());
-            return 1;
-        }
-        clear_context(ctx);
-        if (!decode_range(ctx, prompt.ids, 0, prompt.ids.size(), 512)) {
-            fprintf(stderr, "decode prompt %s failed\n", prompt.id.c_str());
-            return 1;
-        }
-        std::vector<llama_token> top1;
+        if (!decode_range(ctx, prompt.ids, 0, prompt.ids.size(), 512)) return 1;
+        std::vector<int> top1, top2;
+        std::vector<float> v1, v2;
         top1.reserve(prompt.ids.size());
-        const float * last_logits = nullptr;
-        const float * all_logits = llama_get_logits(ctx);
-        if (!all_logits) { fprintf(stderr, "no prompt logits\n"); return 1; }
+        top2.reserve(prompt.ids.size());
+        v1.reserve(prompt.ids.size());
+        v2.reserve(prompt.ids.size());
         for (size_t i = 0; i < prompt.ids.size(); ++i) {
-            const float * logits = all_logits + i * static_cast<size_t>(n_vocab);
-            if (!logits) { fprintf(stderr, "no logits at %zu\n", i); return 1; }
-            top1.push_back(static_cast<llama_token>(argmax(logits, n_vocab)));
-            if (i + 1 == prompt.ids.size()) last_logits = logits;
+            const float * row = llama_get_logits_ith(ctx, static_cast<int32_t>(i));
+            if (!row) { fprintf(stderr, "no logits at %zu\n", i); return 1; }
+            const Top2 t = top2_of(row, n_vocab);
+            top1.push_back(t.id);
+            top2.push_back(t.second);
+            v1.push_back(t.v1);
+            v2.push_back(t.v2);
         }
-        if (!only_prompt.empty() && prompt.ids.size() <= 8) {
-            const float * all = llama_get_logits(ctx);
-            for (size_t i = 0; i < prompt.ids.size(); ++i) {
-                const float * row = all + i * static_cast<size_t>(n_vocab);
-                int b0=-1,b1=-1,b2=-1; float v0=-1e30f,v1=-1e30f,v2=-1e30f;
-                for (int t=0;t<n_vocab;++t) {
-                    if (row[t]>v0) { v2=v1;b2=b1; v1=v0;b1=b0; v0=row[t];b0=t; }
-                    else if (row[t]>v1) { v2=v1;b2=b1; v1=row[t];b1=t; }
-                    else if (row[t]>v2) { v2=row[t];b2=t; }
-                }
-                fprintf(stderr, "ROW %zu top=[%d(%.3f) %d(%.3f) %d(%.3f)] want_next=%d\n",
-                        i,b0,v0,b1,v1,b2,v2, i+1<prompt.ids.size()?prompt.ids[i+1]:-1);
-            }
-        }
-        if (one_by_one) {
-            llama_free(ctx);
-            ctx = llama_init_from_model(model, cparams);
-            if (!ctx) { fprintf(stderr, "context init failed\n"); return 1; }
-            top1.clear();
-            std::vector<llama_token> history;
-            for (size_t i = 0; i < prompt.ids.size(); ++i) {
-                history.push_back(prompt.ids[i]);
-                decode_range(ctx, history, i, i + 1, 1);
-                const float * logits = llama_get_logits(ctx);
-                top1.push_back(static_cast<llama_token>(argmax(logits, n_vocab)));
-                if (i + 1 == prompt.ids.size()) last_logits = logits;
-            }
-        }
-
+        const float * last_logits = llama_get_logits_ith(ctx, static_cast<int32_t>(prompt.ids.size() - 1));
         std::vector<llama_token> generated;
-        llama_token next = static_cast<llama_token>(argmax(last_logits, n_vocab));
-        generated.push_back(next);
-        for (int step = 1; step < 32; ++step) {
-            const size_t position = prompt.ids.size() + static_cast<size_t>(step) - 1;
-            common_batch batch(ctx);
-            batch.add(next, static_cast<llama_pos>(position), 0, true);
-            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
-                fprintf(stderr, "decode step failed\n");
-                return 1;
+        std::vector<int> generated_top2;
+        std::vector<float> generated_logits;
+        std::vector<float> generated_top2_logits;
+        if (generate) {
+            Top2 choice = top2_of(last_logits, n_vocab);
+            generated.push_back(static_cast<llama_token>(choice.id));
+            generated_top2.push_back(choice.second);
+            generated_logits.push_back(choice.v1);
+            generated_top2_logits.push_back(choice.v2);
+            for (int step = 1; step < 32; ++step) {
+                const size_t position = prompt.ids.size() + static_cast<size_t>(step) - 1;
+                llama_batch batch = llama_batch_init(1, 0, 1);
+                batch.token[0] = generated.back();
+                batch.pos[0] = static_cast<llama_pos>(position);
+                batch.n_seq_id[0] = 1;
+                batch.seq_id[0][0] = 0;
+                batch.logits[0] = 1;
+                batch.n_tokens = 1;
+                const int rc = llama_decode(ctx, batch);
+                llama_batch_free(batch);
+                if (rc != 0) { fprintf(stderr, "decode step failed\n"); return 1; }
+                const float * row = llama_get_logits_ith(ctx, 0);
+                choice = top2_of(row, n_vocab);
+                generated.push_back(static_cast<llama_token>(choice.id));
+                generated_top2.push_back(choice.second);
+                generated_logits.push_back(choice.v1);
+                generated_top2_logits.push_back(choice.v2);
             }
-            const float * logits = llama_get_logits(ctx);
-            if (!logits) { fprintf(stderr, "no logits at step %d\n", step); return 1; }
-            next = static_cast<llama_token>(argmax(logits, n_vocab));
-            generated.push_back(next);
         }
 
-        out << "prompt\t" << prompt.id << "\n";
-        out << "prompt_ids\t" << prompt.id << "\t";
-        for (size_t i = 0; i < prompt.ids.size(); ++i) out << (i ? "," : "") << prompt.ids[i];
-        out << "\n";
-        out << "generated\t" << prompt.id << "\t";
-        for (size_t i = 0; i < generated.size(); ++i) out << (i ? "," : "") << generated[i];
-        out << "\n";
-        out << "top1\t" << prompt.id << "\t";
-        for (size_t i = 0; i < top1.size(); ++i) out << (i ? "," : "") << top1[i];
-        out << "\n";
+        // Correctness check: the multi-output row at position i must agree with
+        // the last-position row of a fresh context fed tokens[0..=i].
+        if (verify_final > 0) {
+            const size_t count = std::min(static_cast<size_t>(verify_final), prompt.ids.size());
+            for (size_t i = 0; i < count; ++i) {
+                llama_context * vctx = llama_init_from_model(model, cparams);
+                if (!vctx) { fprintf(stderr, "verify context init failed\n"); return 1; }
+                if (!decode_range(vctx, prompt.ids, 0, i + 1, 512)) return 1;
+                const float * final_row = llama_get_logits_ith(vctx, static_cast<int32_t>(i));
+                if (!final_row) { fprintf(stderr, "no final logits at %zu\n", i); return 1; }
+                const Top2 t = top2_of(final_row, n_vocab);
+                if (t.id != top1[i]) {
+                    fprintf(stderr, "VERIFY FINAL mismatch %s pos %zu batch=%d final=%d\n",
+                            prompt.id.c_str(), i, top1[i], t.id);
+                    return 1;
+                }
+                max_final_delta = std::max<double>(max_final_delta, std::fabs(t.v1 - v1[i]));
+                llama_free(vctx);
+                ++verified;
+            }
+        }
+        llama_free(ctx);
+
+        out << "prompt\t" << prompt.id << "\t" << prompt.text_hex << "\n";
+        out << "prompt_ids\t" << prompt.id << "\t" << join_ids(prompt.ids) << "\n";
+        out << "generated\t" << prompt.id << "\t" << join_ids(generated) << "\n";
+        if (!generated.empty()) {
+            out << "generated_2nd\t" << prompt.id << "\t"
+                << join_ids(std::vector<llama_token>(generated_top2.begin(), generated_top2.end())) << "\n";
+            out << "generated_logit\t" << prompt.id << "\t" << join_floats(generated_logits) << "\n";
+            out << "generated_2nd_logit\t" << prompt.id << "\t" << join_floats(generated_top2_logits) << "\n";
+        }
+        append_top2(out, "top1", prompt.id, top1, top2, v1, v2);
         fprintf(stderr, "prompt %s: %zu tokens, generated first=%d\n",
-                prompt.id.c_str(), prompt.ids.size(), generated.front());
+                prompt.id.c_str(), prompt.ids.size(), generated.empty() ? -1 : generated.front());
+    }
+    if (verify_final > 0) {
+        fprintf(stderr, "verify-final: %d positions, max |batch - final| top-1 logit = %.6f\n",
+                verified, max_final_delta);
+        out << "verify_final_positions\t" << verified << "\n";
+        out << "verify_final_max_logit_delta\t" << std::fixed << std::setprecision(9)
+            << max_final_delta << "\n";
     }
 
     // Corpus perplexity: NLL of token i+1 from the logits at position i, for
-    // i in [eval_start, len - 1) — 4,095 targets by default.
-    if (ppl_one_by_one) {
-        // One token per decode: the multi-output prompt path on this llama.cpp
-        // build returns stale rows for non-final positions, but a single-token
-        // decode's last (only) row is the one generation already trusts.
-        llama_free(ctx);
-        ctx = llama_init_from_model(model, cparams);
-        if (!ctx) { fprintf(stderr, "context init failed\n"); return 1; }
-        double nll = 0.0;
-        size_t count = 0;
-        for (size_t i = 0; i + 1 < corpus.size(); ++i) {
-            common_batch batch(ctx);
-            batch.add(corpus[i], static_cast<llama_pos>(i), 0, true);
-            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
-                fprintf(stderr, "corpus decode failed at %zu\n", i);
-                return 1;
-            }
-            if (static_cast<int>(i) < eval_start) continue;
-            const float * logits = llama_get_logits(ctx);
-            nll += nll_at(logits, n_vocab, corpus[i + 1]);
-            ++count;
-            if (i % 512 == 0) fprintf(stderr, "corpus %zu/%zu\r", i, corpus.size());
-        }
-        fprintf(stderr, "\n");
-        out << "corpus_nll_sum\t" << std::fixed << std::setprecision(17) << nll << "\n";
-        out << "corpus_nll_count\t" << count << "\n";
-        std::ofstream file(out_path);
-        if (!file) { fprintf(stderr, "write %s failed\n", out_path.c_str()); return 1; }
-        file << out.str();
-        fprintf(stderr, "%s: PPL %.6f over %zu targets\n", label.c_str(),
-                std::exp(nll / static_cast<double>(count)), count);
-        llama_free(ctx);
-        llama_model_free(model);
-        llama_backend_free();
-        return 0;
-    }
-    clear_context(ctx);
+    // i in [eval_start, len - 1).
+    llama_context * ctx = llama_init_from_model(model, cparams);
+    if (!ctx) { fprintf(stderr, "context init failed\n"); return 1; }
     double nll_sum = 0.0;
     size_t nll_count = 0;
     const size_t chunk = 512;
@@ -315,7 +327,7 @@ int main(int argc, char ** argv) {
         }
         for (size_t i = begin; i < end; ++i) {
             if (static_cast<int>(i) < eval_start || i + 1 >= corpus.size()) continue;
-            const float * logits = llama_get_logits(ctx) + (i - begin) * static_cast<size_t>(n_vocab);
+            const float * logits = llama_get_logits_ith(ctx, static_cast<int32_t>(i - begin));
             if (!logits) { fprintf(stderr, "no corpus logits at %zu\n", i); return 1; }
             nll_sum += nll_at(logits, n_vocab, corpus[i + 1]);
             ++nll_count;

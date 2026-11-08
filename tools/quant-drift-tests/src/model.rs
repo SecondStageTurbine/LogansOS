@@ -139,6 +139,16 @@ impl Model {
 
     /// Greedy-decode `max_new` tokens after `prompt` (32 in the KAT).
     pub fn greedy(&self, prompt: &[u32], max_new: usize) -> Vec<u32> {
+        self.greedy_with_steps(prompt, max_new)
+            .into_iter()
+            .map(|step| step.token)
+            .collect()
+    }
+
+    /// Greedy-decode `max_new` tokens, keeping each step's top-1/top-2 logits
+    /// so a cross-runtime divergence can be classified as a near-tie or a
+    /// clear gap.
+    pub fn greedy_with_steps(&self, prompt: &[u32], max_new: usize) -> Vec<DecodeStep> {
         let mut state = self.runtime(prompt.len() + max_new);
         let mut logits = Vec::new();
         for (position, &token) in prompt.iter().enumerate() {
@@ -146,8 +156,9 @@ impl Model {
         }
         let mut out = Vec::with_capacity(max_new);
         for step in 0..max_new {
-            let token = argmax(&logits).expect("non-empty logits") as u32;
-            out.push(token);
+            let choice = top_two(&logits);
+            let token = choice.token;
+            out.push(choice);
             if step + 1 < max_new {
                 logits = self.next_logits(token, prompt.len() + step, &mut state);
             }
@@ -164,6 +175,20 @@ impl Model {
         for (position, &token) in tokens.iter().enumerate() {
             let logits = self.next_logits(token, position, &mut state);
             out.push(argmax(&logits).expect("non-empty logits") as u32);
+        }
+        out
+    }
+
+    /// Top-1 and top-2 next-token at every position of `tokens`, teacher-forced
+    /// on the same IDs all three models receive. Used for the bar-A near-tie
+    /// evidence: a divergence at a wide gap is a forward-pass difference, a
+    /// divergence at a narrow gap is numerics.
+    pub fn top_two_per_position(&self, tokens: &[u32]) -> Vec<DecodeStep> {
+        let mut state = self.runtime(tokens.len());
+        let mut out = Vec::with_capacity(tokens.len());
+        for (position, &token) in tokens.iter().enumerate() {
+            let logits = self.next_logits(token, position, &mut state);
+            out.push(top_two(&logits));
         }
         out
     }

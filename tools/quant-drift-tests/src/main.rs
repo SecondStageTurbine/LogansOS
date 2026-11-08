@@ -37,6 +37,7 @@ fn main() -> ExitCode {
         "prompts" => cmd_prompts(&options),
         "run" => cmd_run(&options),
         "compare" => cmd_compare(&options),
+        "control" => cmd_control(&options),
         "encode" => cmd_encode(&options),
         "help" | "-h" | "--help" => {
             print_help();
@@ -55,7 +56,7 @@ fn main() -> ExitCode {
 
 fn print_help() {
     eprintln!(
-        "quant-drift-tests <prompts|run|compare>\n\
+        "quant-drift-tests <prompts|run|compare|control>\n\
          \n\
          prompts  --neom M.neom [--corpus-text test.txt] --out-prompts prompts.tsv "
     );
@@ -101,6 +102,7 @@ fn cmd_prompts(options: &BTreeMap<String, String>) -> Result<(), String> {
             ids,
             generated: Vec::new(),
             top1: Vec::new(),
+            ..Default::default()
         });
     }
     let out = required(options, "out-prompts")?;
@@ -150,6 +152,10 @@ fn cmd_run(options: &BTreeMap<String, String>) -> Result<(), String> {
         return Err("prompts file has an empty prompt_ids line".to_string());
     }
 
+    let prompts_only = options
+        .get("prompts-only")
+        .map(|value| value == "1" || value == "true")
+        .unwrap_or(false);
     let started = std::time::Instant::now();
     let mut run = RefRun {
         model: required(options, "label")?.to_string(),
@@ -160,14 +166,46 @@ fn cmd_run(options: &BTreeMap<String, String>) -> Result<(), String> {
     };
     for prompt in &mut input.prompts {
         // Every model receives the SAME token IDs (bar A/B comparability).
-        let generated = model.greedy(&prompt.ids, MAX_NEW);
-        let top1 = model.top1_per_position(&prompt.ids);
+        let generated_steps = model.greedy_with_steps(&prompt.ids, MAX_NEW);
+        let generated = generated_steps
+            .iter()
+            .map(|step| step.token)
+            .collect::<Vec<_>>();
+        let generated_top2 = generated_steps
+            .iter()
+            .map(|step| step.runner_up_token)
+            .collect::<Vec<_>>();
+        let generated_top1_logits = generated_steps
+            .iter()
+            .map(|step| step.logit)
+            .collect::<Vec<_>>();
+        let generated_top2_logits = generated_steps
+            .iter()
+            .map(|step| step.runner_up_logit)
+            .collect::<Vec<_>>();
+        let steps = model.top_two_per_position(&prompt.ids);
+        let top1 = steps.iter().map(|step| step.token).collect::<Vec<_>>();
+        let top2 = steps
+            .iter()
+            .map(|step| step.runner_up_token)
+            .collect::<Vec<_>>();
+        let top1_logits = steps.iter().map(|step| step.logit).collect::<Vec<_>>();
+        let top2_logits = steps
+            .iter()
+            .map(|step| step.runner_up_logit)
+            .collect::<Vec<_>>();
         run.prompts.push(report::PromptRun {
             id: prompt.id.clone(),
             text_hex: prompt.text_hex.clone(),
             ids: prompt.ids.clone(),
             generated,
             top1,
+            top1_logits,
+            top2,
+            top2_logits,
+            generated_top2,
+            generated_top1_logits,
+            generated_top2_logits,
         });
         eprintln!(
             "  {}: {} prompt tokens, {} generated ({:.1}s)",
@@ -178,7 +216,6 @@ fn cmd_run(options: &BTreeMap<String, String>) -> Result<(), String> {
         );
     }
 
-    let corpus_path = required(options, "corpus")?;
     let corpus_tokens = options
         .get("corpus-tokens")
         .map(|value| value.parse::<usize>())
@@ -191,30 +228,70 @@ fn cmd_run(options: &BTreeMap<String, String>) -> Result<(), String> {
         .transpose()
         .map_err(|_| "--eval-start must be an integer".to_string())?
         .unwrap_or(CORPUS_EVAL_START);
-    let corpus = read_u32_file(corpus_path)?;
-    if corpus.len() < corpus_tokens {
-        return Err(format!(
-            "corpus has {} tokens, need {corpus_tokens}",
-            corpus.len()
-        ));
-    }
-    let corpus = &corpus[..corpus_tokens];
-    let (nll_sum, nll_count) = model.nll_sum(corpus, eval_start);
+    let corpus_offset = options
+        .get("corpus-offset")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|_| "--corpus-offset must be an integer".to_string())?
+        .unwrap_or(0);
     run.corpus_tokens = corpus_tokens;
     run.corpus_eval_start = eval_start;
-    run.corpus_nll_sum = nll_sum;
-    run.corpus_nll_count = nll_count;
+    run.corpus_window_offset = corpus_offset;
     run.corpus_slice_blake3 = options.get("corpus-blake3").cloned().unwrap_or_default();
+    if !prompts_only {
+        let corpus_path = required(options, "corpus")?;
+        let corpus = read_u32_file(corpus_path)?;
+        if corpus.len() < corpus_offset + corpus_tokens {
+            return Err(format!(
+                "corpus has {} tokens, need offset {} + {}",
+                corpus.len(),
+                corpus_offset,
+                corpus_tokens
+            ));
+        }
+        let corpus = &corpus[corpus_offset..corpus_offset + corpus_tokens];
+        let (nll_sum, nll_count) = model.nll_sum(corpus, eval_start);
+        run.corpus_nll_sum = nll_sum;
+        run.corpus_nll_count = nll_count;
+    }
 
     let out = required(options, "out")?;
     std::fs::write(out, run.to_tsv()).map_err(|err| format!("write {out}: {err}"))?;
-    eprintln!(
-        "run {}: PPL {:.6} over {} targets, total {:.1}s -> {out}",
-        run.model,
-        run.perplexity(),
-        run.corpus_nll_count,
-        started.elapsed().as_secs_f64()
-    );
+    if prompts_only {
+        eprintln!(
+            "run {}: prompts only, total {:.1}s -> {out}",
+            run.model,
+            started.elapsed().as_secs_f64()
+        );
+    } else {
+        eprintln!(
+            "run {}: PPL {:.6} over {} targets, total {:.1}s -> {out}",
+            run.model,
+            run.perplexity(),
+            run.corpus_nll_count,
+            started.elapsed().as_secs_f64()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_control(options: &BTreeMap<String, String>) -> Result<(), String> {
+    let candidate = read_run(required(options, "candidate")?)?;
+    let reference = read_run(required(options, "reference")?)?;
+    let comparison = report::compare(&candidate, &reference)?;
+    let json = report::control_json(&comparison);
+    if let Some(path) = options.get("out") {
+        std::fs::write(path, &json).map_err(|err| format!("write {path}: {err}"))?;
+    }
+    print!("{json}");
+    let pass = comparison.top1_agreement() >= 0.98 && comparison.ppl_relative_delta <= 0.01;
+    if !pass {
+        return Err(format!(
+            "control C failed: top1 {:.4}% (bar 98%), PPL delta {:.4}% (bar 1%)",
+            comparison.top1_agreement() * 100.0,
+            comparison.ppl_relative_delta * 100.0
+        ));
+    }
     Ok(())
 }
 
@@ -264,6 +341,7 @@ fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {
         corpus_text_sha256: meta.get("corpus_text_sha256").cloned().unwrap_or_default(),
         corpus_tokens: ours.corpus_tokens,
         corpus_eval_start: ours.corpus_eval_start,
+        corpus_window_offset: ours.corpus_window_offset,
         corpus_slice_blake3: ours.corpus_slice_blake3.clone(),
     };
 
