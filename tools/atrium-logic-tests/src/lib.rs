@@ -67,6 +67,9 @@ mod shared_pixels_kats;
 // F7: `Rect::minus`, which a moved frame's repaint uses.
 #[cfg(test)]
 mod rect_minus_kats;
+// PR #58 re-check: `Rect::uncovered_px`, the drag frames' over-present count.
+#[cfg(test)]
+mod rect_uncovered_kats;
 // A9-D: the busy emblem composed over a client, as the WM layers it.
 #[cfg(test)]
 mod busy_emblem_kats;

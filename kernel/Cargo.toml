@@ -1133,6 +1133,9 @@ neo-test-desktop-pointer-boot = ["neo-test-desktop-pointer"]
 # desktop_pointer_boot.
 neo-test-desktop-drag-perf-boot = ["neo-test-desktop-pointer"]
 neo-test-desktop-drag-perf-control-boot = ["neo-test-desktop-pointer"]
+# PR #58 re-check: the drag with the probe app in the window, captured.
+neo-test-desktop-drag-cross-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-drag-cross-control-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # OT-88 A1a: the DS-1 session with the probe app as a second WM client, and
 # with it faulting; kernel-identical to desktop_pointer_boot (the WM's polling
 # loop needs SYS_TRY_RECV and the SAK), only the userland build differs.

@@ -94,6 +94,9 @@ desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
 # the old and new outlines (the behaviour before the fix), for the
 # before/after numbers of `desktop_drag_perf_*`.
 drag-union-damage-control = ["desktop-pointer"]
+# PR #58 re-check (`desktop_drag_cross_*`): after a drag's move, the WM
+# recomposes the whole screen and logs its digest for the harness's capture.
+drag-cross-witness = ["desktop-pointer", "desktop-session-boot-test"]
 # DS-1c: Arthur's `list /` blooms the Lens — a second client (neo-worker
 # `desktop-lens`) lent `/` read-only — beside the window; its Spine chip
 # switches to it (keyboard via Home; a click with `desktop-pointer`).

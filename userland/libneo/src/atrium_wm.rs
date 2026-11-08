@@ -194,6 +194,38 @@ impl Rect {
         ]
     }
 
+    /// The pixels of `self` outside every rect of `cover` (PR #58 re-check:
+    /// a drag frame's presented pixels outside what it needed). Up to 16 of
+    /// `cover` reach any one row (more are a caller's bug: the excess is
+    /// ignored, so the count can only grow).
+    pub fn uncovered_px(&self, cover: &[Rect]) -> u64 {
+        let mut total = 0u64;
+        for y in self.y..self.bottom() {
+            // The row's covered spans, clipped to `self`, sorted and merged.
+            let mut spans = [(0usize, 0usize); 16];
+            let mut n = 0;
+            for c in cover.iter().filter(|c| y >= c.y && y < c.bottom()) {
+                let (a, b) = (c.x.max(self.x), c.right().min(self.right()));
+                if a < b && n < spans.len() {
+                    spans[n] = (a, b);
+                    n += 1;
+                }
+            }
+            let spans = &mut spans[..n];
+            spans.sort_unstable();
+            let (mut covered, mut end) = (0usize, self.x);
+            for &(a, b) in spans.iter() {
+                let a = a.max(end);
+                if b > a {
+                    covered += b - a;
+                    end = b;
+                }
+            }
+            total += (self.w - covered) as u64;
+        }
+        total
+    }
+
     /// Smallest rect covering both. An empty operand is ignored.
     pub fn union(&self, other: &Rect) -> Rect {
         if self.is_empty() {

@@ -559,6 +559,10 @@ const SCENARIO: &str = "desktop_pointer_boot";
 const SCENARIO: &str = "desktop_drag_perf_boot";
 #[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
 const SCENARIO: &str = "desktop_drag_perf_control_boot";
+#[cfg(feature = "neo-test-desktop-drag-cross-boot")]
+const SCENARIO: &str = "desktop_drag_cross_boot";
+#[cfg(feature = "neo-test-desktop-drag-cross-control-boot")]
+const SCENARIO: &str = "desktop_drag_cross_control_boot";
 /// OT-88 A1a: the pointer session with the probe app as a second client.
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const SCENARIO: &str = "desktop_apps_boot";
@@ -631,6 +635,11 @@ const DESKTOP_PASS: &str = "desktop_arthur_scope=ok view=home scene=independent_
 const DESKTOP_PASS: &str = "desktop_drag_perf_boot=ok view=home drag=measured damage=edges";
 #[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
 const DESKTOP_PASS: &str = "desktop_drag_perf_control_boot=ok view=home drag=measured damage=union";
+#[cfg(feature = "neo-test-desktop-drag-cross-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_cross_boot=ok view=home drag=probe_app damage=edges";
+#[cfg(feature = "neo-test-desktop-drag-cross-control-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_drag_cross_control_boot=ok view=home drag=probe_app damage=union";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]
