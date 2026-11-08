@@ -42,6 +42,9 @@ one thread, interpreter only, and build option (c).
 
     Everything else (atomics, `ThreadLocal`, mutexes, condition variables) stays POSIX. `Poison.cpp` gets its own
     small `__neoplutarch__` branch, because WASI's calls a wasm builtin.
+  - `0004-jsglue-neoplutarch.patch`: `mozjs-sys/src/jsglue.cpp` (the Rust glue, compiled outside SpiderMonkey's own
+    build) picks `<malloc.h>` and `malloc_usable_size` by platform. Our target joins the Linux/WASI branch, since
+    musl has the header and neo-crt defines the function.
 - `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
   neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
   `__neoplutarch__` predefined. configure's test programs link against a stub that defines exactly the symbols in
