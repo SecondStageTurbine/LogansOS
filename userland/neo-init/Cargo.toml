@@ -211,6 +211,12 @@ setup-stub-pages = ["setup-menu"]
 # Comfort pair), and a store that can't be written is the volatile overlay.
 # Off: the menu writes nothing and the record is today's.
 setup-store = ["setup-menu", "atrium-settings-store", "settings-core/setup-keys"]
+# `setup_menu_store`: the menu's writes on a writable volume, over two boots
+# (login's VM layout), the second with no menu.
+setup-store-boot-test = ["setup-store", "login-boot-test"]
+# `setup_menu_store_try`: the menu's writes on the volatile overlay (the
+# intro session; QEMU's desktop has no NeoFS).
+setup-store-try-boot-test = ["setup-store", "setup-menu-boot-test"]
 # Test: force the volatile overlay (the Try session's store).
 setup-store-volatile-test = ["setup-store"]
 # The setup menu's boot test (`setup_menu_walk`).

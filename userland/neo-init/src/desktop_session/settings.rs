@@ -40,6 +40,17 @@ static LOADED: AtomicU8 = AtomicU8::new(0);
 /// record, and keeps every write in memory.
 static VOLATILE: AtomicU8 = AtomicU8::new(0);
 
+/// Whether `load` found a valid record on disk (F11 S2: an installed
+/// system's setup menu runs only until one exists, setup-menu THINK §2.4).
+static FOUND: AtomicU8 = AtomicU8::new(0);
+
+/// Whether the first-boot setup menu should run: on a Try session (the
+/// volatile overlay: nothing persists, so every boot), or on an installed
+/// system whose store held no valid record when this boot began.
+pub fn setup_due() -> bool {
+    volatile() || FOUND.load(Ordering::Acquire) == 0
+}
+
 /// Whether this session's store is the volatile overlay.
 pub fn volatile() -> bool {
     VOLATILE.load(Ordering::Acquire) == 1
@@ -225,12 +236,21 @@ fn file_name(file: File) -> &'static [u8] {
 }
 
 fn log_settings(line: Line, s: &Settings) -> Line {
-    line.s(b" rt=")
+    let line = line
+        .s(b" rt=")
         .n(u64::from(s.get(sc::Key::ReduceTransparency)))
         .s(b" rm=")
         .n(u64::from(s.get(sc::Key::ReduceMotion)))
         .s(b" idle=")
-        .n(u64::from(s.idle_lock_minutes))
+        .n(u64::from(s.idle_lock_minutes));
+    // F11 S2: the setup menu's keys.
+    #[cfg(feature = "setup-store")]
+    let line = line
+        .s(b" lang=")
+        .n(u64::from(s.language))
+        .s(b" kb=")
+        .n(u64::from(s.keyboard_layout));
+    line
 }
 
 /// Read the store at boot; with no record, migrate the presence files and
@@ -251,6 +271,7 @@ pub fn load() {
     let a = login::read_small(sc::SETTINGS_A);
     let b = login::read_small(sc::SETTINGS_B);
     if let Some(c) = sc::select(a.as_deref(), b.as_deref()) {
+        FOUND.store(1, Ordering::Release);
         store(Some(c), &c.record.settings);
         log_settings(
             Line::new()
