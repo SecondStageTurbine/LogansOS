@@ -161,10 +161,15 @@ jobs:
           set +e -u
           obj="$RUNNER_TEMP/obj-neo"
           [ -f "$obj/config.status" ] || { echo "no configured tree"; exit 1; }
+          # Until neo-crt's libc++ has localization on main (C3a THINK §10),
+          # compile against a copy of its __config_site with it on.
+          cfg="$RUNNER_TEMP/cxx-config"
+          rm -rf "$cfg" && cp -a "$GITHUB_WORKSPACE/userland/neo-crt/cxx" "$cfg"
+          sed -i '/_LIBCPP_HAS_NO_LOCALIZATION/d' "$cfg/__config_site"
           gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
-            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang NEO_CXX_CONFIG="$cfg" \
             make -C "$obj" -k -j"$(nproc)" compile > "$RUNNER_TEMP/compile-neo.log" 2>&1
           rc=$?
           echo "compile (neoplutarch) exit: $rc"

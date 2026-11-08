@@ -64,11 +64,11 @@ does the same. The crate is also what links those functions in, so the product b
 | Licence | Apache-2.0 OR MIT (`LICENSE-APACHE`, `LICENSE-MIT`, `COPYRIGHT`) |
 | Freshness | 0.2.6 (2020-05-13) is the latest release. It's a small, finished binding by `encoding_rs`'s author, and Firefox still links it. Seat D maintains our copy. |
 
-## The `<ostream>` shim: `generator/include/ostream`
+## libc++ with localization
 
-neo-crt's libc++ has no localization (C3a), so its `<ostream>` is an error. SpiderMonkey's headers include it only
-to declare `operator<<` templates that are never instantiated. For C++, `neo-cc` puts `generator/include` first, and
-its `ostream` is libc++'s `<iosfwd>`. Code that really writes to a stream still fails to compile.
+SpiderMonkey's headers and irregexp use `<ostream>`/`<sstream>`/`<iomanip>`, so it needs neo-crt's libc++ with
+localization. That change is its own PR (`claude/ot61-c3a-localization`; C3a THINK §10). Until it lands, the
+generator's compile probe points `neo-cc` (`NEO_CXX_CONFIG`) at a copy of `__config_site` with localization on.
 
 ## Left out of the copy
 
