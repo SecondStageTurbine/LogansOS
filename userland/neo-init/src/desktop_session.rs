@@ -1807,6 +1807,15 @@ fn arthur_session_turns(
         Ok(false) => return 21,
         Err(code) => return code,
     }
+    // F8: Arthur's `K` carries the user's zone (`[K, lo, hi]`) so he can
+    // answer the time in it; a bare `K` without `desktop-clock`.
+    #[cfg(feature = "desktop-clock")]
+    let k_msg = {
+        let z = scene.clock.mode().zone.to_le_bytes();
+        [b'K', z[0], z[1]]
+    };
+    #[cfg(not(feature = "desktop-clock"))]
+    let k_msg = [b'K'];
     // DS-1 (Chad DS-1a F1, `HANDOFF`): the route moves to Arthur, then
     // Arthur's first turn begins with its intent (it discards anything its
     // queue held before reading a key), then the focus light is shown.
@@ -1815,7 +1824,7 @@ fn arthur_session_turns(
         &mut libneo::atrium_handoff::Steps {
             swap: || home::swap_to(activator, 22),
             discard: || {
-                if sys_send(session, b"K") != 1 {
+                if sys_send(session, &k_msg) != k_msg.len() as i64 {
                     return Err(23);
                 }
                 if !home::send_intent(session, intent) {
@@ -1860,7 +1869,7 @@ fn arthur_session_turns(
         if let Err(code) = scene.present(true, scene.geo.focus_damage) {
             return 100 + code;
         }
-        if sys_send(session, b"K") != 1 {
+        if sys_send(session, &k_msg) != k_msg.len() as i64 {
             return 23;
         }
     }

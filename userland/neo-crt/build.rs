@@ -201,13 +201,20 @@ fn main() {
 
 /// libc++ 18.1.8 library sources for this configuration (`cxx/__config_site`).
 /// Left out, as libc++'s own CMake leaves them out under the same options:
-/// threads (atomic, barrier, condition_variable*, future, mutex*,
-/// shared_mutex, thread), localization and iostreams (fstream, ios*,
-/// iostream, locale, ostream, regex, strstream), random_device (random) and
-/// the time-zone database (tz, tzdb_list).
+/// localization and iostreams (fstream, ios*, iostream, locale, ostream,
+/// regex, strstream), random_device (random) and the time-zone database
+/// (tz, tzdb_list).
 const LIBCXX_SOURCES: &[&str] = &[
     "algorithm.cpp",
     "any.cpp",
+    "atomic.cpp",
+    "barrier.cpp",
+    "condition_variable.cpp",
+    "condition_variable_destructor.cpp",
+    "mutex.cpp",
+    "mutex_destructor.cpp",
+    "shared_mutex.cpp",
+    "thread.cpp",
     "bind.cpp",
     "call_once.cpp",
     "charconv.cpp",
@@ -215,6 +222,7 @@ const LIBCXX_SOURCES: &[&str] = &[
     "error_category.cpp",
     "exception.cpp",
     "functional.cpp",
+    "future.cpp",
     "hash.cpp",
     "legacy_pointer_safety.cpp",
     "memory.cpp",

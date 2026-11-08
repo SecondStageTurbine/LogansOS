@@ -485,6 +485,9 @@ neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"
 # a real-std process: libc checks against independent oracles, per-thread
 # errno, malloc from several threads.
 neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+# OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
+# caller-owned buffer, byte-compared with a hand-laid pattern.
+neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is

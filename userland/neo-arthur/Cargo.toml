@@ -60,6 +60,14 @@ arthur-compositor-product-integration = ["arthur-compositor"]
 # showcase surface/InputFocus; tolerates a missing model; never exits unless
 # the scenario-only `desktop-session-boot-test` marker ends it after one line.
 desktop-session = ["arthur-compositor", "libneo/atrium-damage"]
+# F8: "what time is it" / "what's the date" answered from the system clock in
+# the user's zone (the zone id rides the WM's `K`), before the model. Off:
+# the model answers, as before (the kill-switch). The product image turns it
+# on (xtask's `desktop-with-model` list), as it does `arthur-busy-emblem`.
+arthur-clock = ["desktop-session"]
+# F8's scenario (`desktop_clock_boot`): three answers before the session ends
+# (the time, the date, and a time question the clock leaves to the model).
+arthur-clock-boot-test = ["desktop-session-boot-test", "arthur-clock"]
 desktop-session-boot-test = ["desktop-session"]
 # DS-1: the WM sends the Home intent field's line after the session handshake;
 # Arthur answers it as its first input line.
