@@ -290,11 +290,14 @@ jobs:
             if diff -r "$committed" "$frozen" > "$RUNNER_TEMP/drift.txt"; then
               echo "drift check: the committed outputs match a fresh run"
             else
-              echo "DRIFT: the committed outputs differ from a fresh run:"
-              head -300 "$RUNNER_TEMP/drift.txt"
-              # The fresh set, so an intended change can be committed from
-              # here; the job still fails.
+              # The fresh set first, so an intended change can be committed
+              # from here (the job still fails). Then which files differ, and
+              # a short, printable excerpt: one generated line can be long
+              # enough, or odd enough, to cut a step's log off.
               emit
+              echo "DRIFT: the committed outputs differ from a fresh run:"
+              diff -rq "$committed" "$frozen" | sed "s|$GITHUB_WORKSPACE/||; s|$RUNNER_TEMP/||" || true
+              head -120 "$RUNNER_TEMP/drift.txt" | cut -c1-200 | tr -cd '[:print:]\n\t'
               exit 1
             fi
           else
