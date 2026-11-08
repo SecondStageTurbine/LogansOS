@@ -67,9 +67,9 @@ jobs:
             python3 "$MOZJS_SRC/mozjs-sys/mozjs/configure.py" \
               --enable-project=js \
               --disable-jit \
-              --disable-wasm \
               --without-intl-api \
               --disable-jemalloc \
+              --disable-shared-memory \
               --disable-shared-js \
               --disable-tests \
               --disable-debug \
