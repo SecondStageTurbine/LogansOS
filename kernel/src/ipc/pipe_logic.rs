@@ -56,6 +56,106 @@ pub const fn pack_ends(read: u32, write: u32) -> u64 {
 pub const fn unpack_ends(packed: u64) -> (u32, u32) {
     (packed as u32, (packed >> 32) as u32)
 }
+
+/// L1a.1 step 2b (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.2): the
+/// index byte in `SYS_SPAWN_STDIO`'s stdio word that means "no handle for
+/// this role".
+pub const STDIO_NO_INDEX: u8 = 0xFF;
+
+/// A spawn's stdio selection: for each role, the index into the spawn's
+/// `handles` array (which is also the child's slot), or `None`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StdioSel {
+    pub stdin: Option<u8>,
+    pub stdout: Option<u8>,
+    pub term: Option<u8>,
+}
+
+impl StdioSel {
+    /// No stdio selected: what `SYS_SPAWN` gives every child.
+    pub const NONE: Self = Self {
+        stdin: None,
+        stdout: None,
+        term: None,
+    };
+
+    pub const fn is_none(&self) -> bool {
+        self.stdin.is_none() && self.stdout.is_none() && self.term.is_none()
+    }
+}
+
+/// Decode `SYS_SPAWN_STDIO`'s stdio word for a spawn of `n` handles (THINK
+/// §2.2, error step 2). Byte 0 is stdin's index, byte 1 stdout's, byte 2 the
+/// term page's, `0xFF` for none. `None` (the syscall's `EINVAL`) when:
+/// - a bit in 24-63 is set;
+/// - an index is neither `0xFF` nor below `n`;
+/// - two roles name the same index;
+/// - a term index is given and `term_supported` is false (a kernel without
+///   `atrium-compositor-g1`, which has no buffers).
+///
+/// All three none (`0x00FF_FFFF`) is [`StdioSel::NONE`], the same child as
+/// `SYS_SPAWN`'s.
+pub const fn decode_stdio_word(word: u64, n: usize, term_supported: bool) -> Option<StdioSel> {
+    if word >> 24 != 0 {
+        return None;
+    }
+    let bytes = [word as u8, (word >> 8) as u8, (word >> 16) as u8];
+    let mut roles = [None; 3];
+    let mut i = 0;
+    while i < 3 {
+        let b = bytes[i];
+        if b != STDIO_NO_INDEX {
+            if b as usize >= n {
+                return None;
+            }
+            let mut j = 0;
+            while j < i {
+                if bytes[j] == b {
+                    return None;
+                }
+                j += 1;
+            }
+            roles[i] = Some(b);
+        }
+        i += 1;
+    }
+    if roles[2].is_some() && !term_supported {
+        return None;
+    }
+    Some(StdioSel {
+        stdin: roles[0],
+        stdout: roles[1],
+        term: roles[2],
+    })
+}
+
+/// `SYS_STDIO_INFO`'s record length (THINK §2.4).
+pub const STDIO_INFO_LEN: usize = 8;
+/// A slot field of the record that names no slot.
+pub const STDIO_INFO_NO_SLOT: u16 = 0xFFFF;
+/// The record's flags bit 0: a stdio was selected at spawn.
+pub const STDIO_INFO_SELECTED: u16 = 1;
+
+/// `SYS_STDIO_INFO`'s 8-byte record (THINK §2.4): the stdin, stdout and term
+/// page slots as little-endian `u16` (`0xFFFF` for none, or for a slot that no
+/// longer holds the selected handle), then the flags. The byte oracle is in
+/// `tools/pipe-logic-tests` (`stdio_info_oracle`).
+pub const fn encode_stdio_info(
+    stdin: Option<u16>,
+    stdout: Option<u16>,
+    term: Option<u16>,
+    selected: bool,
+) -> [u8; STDIO_INFO_LEN] {
+    const fn slot(s: Option<u16>) -> [u8; 2] {
+        match s {
+            Some(v) => v.to_le_bytes(),
+            None => STDIO_INFO_NO_SLOT.to_le_bytes(),
+        }
+    }
+    let (a, b, c) = (slot(stdin), slot(stdout), slot(term));
+    let f = (if selected { STDIO_INFO_SELECTED } else { 0 }).to_le_bytes();
+    [a[0], a[1], b[0], b[1], c[0], c[1], f[0], f[1]]
+}
 /// A write of at most this many bytes (and no more than the capacity) is
 /// atomic: it is stored whole or waits for room, so two writers' small
 /// writes never interleave (POSIX's minimum `PIPE_BUF`; step-2 THINK §2a).
