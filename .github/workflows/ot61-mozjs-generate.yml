@@ -64,7 +64,7 @@ jobs:
           cd "$obj"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
-            python3 "$MOZJS_SRC/mozjs-sys/mozjs/js/src/configure.py" \
+            python3 "$MOZJS_SRC/mozjs-sys/mozjs/configure.py" \
               --enable-project=js \
               --disable-jit \
               --disable-wasm \
