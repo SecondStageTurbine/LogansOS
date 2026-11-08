@@ -152,3 +152,8 @@ RELAY 331 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.
 RELAY 332 | jarvis | GPT-5.6-Luna | medium | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 332 (#83 batch-plan stderr; RETURN `Plans/RETURN-2026-11-08-pr83-review-jarvis.md`)
 RELAY 333 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-333-334-quant-drift.md | Section 333 (quant drift: Q8_0 control C, per-position logits, divergence gaps; RETURN `Plans/RETURN-2026-11-08-quant-drift-control-dexter.md`)
 RELAY 334 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-333-334-quant-drift.md | Section 334 (quant-drift harness review, after 333; RETURN `Plans/RETURN-2026-11-08-quant-drift-review-jarvis.md`)
+RELAY 335 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 335 (#14 = Sections 317 + 324, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr14-check-dexter.md`)
+RELAY 336 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 336 (#70 + #58 re-checks = Sections 315 + 316, rerouted; RETURNs `Plans/RETURN-2026-11-08-pr70-recheck-dexter.md`, `...pr58-recheck-dexter.md`)
+RELAY 337 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 337 (#83 = Section 332, rerouted; RETURN `Plans/RETURN-2026-11-08-pr83-review-dexter.md`)
+RELAY 338 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 338 (#73/#82 item-5 re-check; RETURN `Plans/RETURN-2026-11-08-pr73-recheck2-dexter.md`)
+RELAY 339 | prometheus | Qwen | - | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 339 (#76 survey = Section 321, rerouted; RETURN `Plans/RETURN-2026-11-08-pr76-survey-review-prometheus.md`)
