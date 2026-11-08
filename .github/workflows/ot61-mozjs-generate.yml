@@ -28,7 +28,14 @@ jobs:
   generate:
     name: SpiderMonkey configure, network off (C3c-1 probe)
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
+
+    # The compiler that produces the frozen set is pinned, as ot61-closure.yml
+    # pins neo-crt's: configure's probes, the compile database and bindgen's
+    # libclang all come from this one LLVM, and the drift check compares
+    # their output byte for byte. A runner-image bump can't move it silently.
+    env:
+      NEO_CLANG_MAJOR: "19"
 
     steps:
       - name: Checkout
@@ -47,11 +54,32 @@ jobs:
           done
           echo "MOZJS_SRC=$src" >> "$GITHUB_ENV"
 
+      # The Dockerfile's pin and this one must agree (ot61-closure.yml's
+      # crt-build does the same). lld for neo-cc's link checks, llvm for
+      # llvm-ar/llvm-nm, libclang for the bindgen step.
+      - name: Install clang (the Dockerfile's pinned major)
+        run: |
+          set -e
+          m="$NEO_CLANG_MAJOR"
+          grep -q "^ARG NEO_CRT_CLANG_MAJOR=${m}\$" Dockerfile \
+            || { echo "ERROR: Dockerfile pins a different clang major"; exit 1; }
+          need=
+          for c in "clang-$m" "ld.lld-$m" "llvm-ar-$m"; do command -v "$c" >/dev/null 2>&1 || need=1; done
+          [ -e "/usr/lib/llvm-$m/lib/libclang.so.1" ] || [ -n "$(ls /usr/lib/llvm-$m/lib/libclang*.so* 2>/dev/null)" ] || need=1
+          if [ -n "$need" ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "clang-$m" "lld-$m" "llvm-$m" "libclang1-$m"
+          fi
+          test "$("clang-$m" -dumpversion | cut -d. -f1)" = "$m"
+          echo "NEO_CLANG=clang-$m" >> "$GITHUB_ENV"
+          echo "NEO_LLVM_BIN=/usr/lib/llvm-$m/bin" >> "$GITHUB_ENV"
+
       - name: Tools present
         run: |
           set -e
           python3 --version
-          (command -v clang && clang --version | head -1) || echo "no clang on PATH"
+          make --version | head -1
+          "$NEO_CLANG" --version | head -1
           (command -v unshare && unshare --version) || echo "no unshare"
           (command -v ld.lld && ld.lld --version) || echo "no ld.lld"
 
@@ -65,6 +93,7 @@ jobs:
           cd "$obj"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
+            CC="$NEO_LLVM_BIN/clang" CXX="$NEO_LLVM_BIN/clang++" \
             python3 "$MOZJS_SRC/mozjs-sys/mozjs/configure.py" \
               --enable-project=js \
               --disable-jit \
@@ -118,8 +147,8 @@ jobs:
           run() {
             sudo unshare -n -- sudo -u "$(id -un)" env \
               PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
-              NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang \
-              CC="$gen/neo-cc" CXX="$gen/neo-c++" HOST_CC=clang HOST_CXX=clang++ \
+              NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" \
+              CC="$gen/neo-cc" CXX="$gen/neo-c++" HOST_CC="$NEO_LLVM_BIN/clang" HOST_CXX="$NEO_LLVM_BIN/clang++" \
               "$@"
           }
           run python3 "$MOZJS_SRC/mozjs-sys/mozjs/configure.py" \
@@ -169,7 +198,7 @@ jobs:
           gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
-            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang NEO_CXX_CONFIG="$cfg" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
             make -C "$obj" -k -j"$(nproc)" compile > "$RUNNER_TEMP/compile-neo.log" 2>&1
           rc=$?
           echo "compile (neoplutarch) exit: $rc"
@@ -181,7 +210,7 @@ jobs:
             | sort | uniq -c | sort -rn | head -150
           # The link gap: every symbol the objects reference that neither
           # another object nor neo-crt (generator/neo-crt-symbols.txt) defines.
-          nm=$(command -v llvm-nm || ls /usr/lib/llvm-*/bin/llvm-nm | tail -1)
+          nm="$NEO_LLVM_BIN/llvm-nm"
           find "$obj" -name '*.o' ! -path '*/host_*' ! -name 'host_*' > "$RUNNER_TEMP/objs.txt"
           xargs "$nm" --defined-only --extern-only --format=just-symbols < "$RUNNER_TEMP/objs.txt" 2>/dev/null \
             | grep -v ':$' | sort -u > "$RUNNER_TEMP/defined.txt"
@@ -209,16 +238,16 @@ jobs:
           cargo build -q --release --manifest-path "$gen/bindings/Cargo.toml" \
             --target-dir "$RUNNER_TEMP/bindgen-target"
           tool="$RUNNER_TEMP/bindgen-target/release/neo-mozjs-bindgen"
-          # libclang from the same LLVM as `clang`, whose resource headers
-          # neo-cc names (a newer libclang rejects older intrinsic headers).
-          libclang=$(cd "$(clang -print-resource-dir)/../.." && pwd)
-          echo "libclang from $libclang ($(clang --version | head -1))"
-          extra=$(NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang NEO_CXX_CONFIG="$cfg" \
+          # libclang from the pinned LLVM, whose resource headers neo-cc
+          # names (a newer libclang rejects older intrinsic headers).
+          libclang=$(cd "$("$NEO_CLANG" -print-resource-dir)/../.." && pwd)
+          echo "libclang from $libclang ($("$NEO_CLANG" --version | head -1))"
+          extra=$(NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
             "$gen/neo-c++" --neo-print-flags | tr '\n' ' ')
           cd "$MOZJS_SRC/mozjs-sys"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" NEO_OBJ="$obj" LIBCLANG_PATH="$libclang" \
-            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang NEO_CXX_CONFIG="$cfg" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
             TARGET=x86_64-unknown-neoplutarch HOST=x86_64-unknown-linux-gnu \
             OPT_LEVEL=2 DEBUG=false PROFILE=release OUT_DIR="$obj" \
             CARGO_CFG_TARGET_OS=neoplutarch CARGO_CFG_TARGET_ARCH=x86_64 \
@@ -226,7 +255,7 @@ jobs:
             CARGO_CFG_TARGET_POINTER_WIDTH=64 CARGO_CFG_TARGET_ENDIAN=little \
             CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2 \
             CXX_x86_64_unknown_neoplutarch="$gen/neo-c++" \
-            AR_x86_64_unknown_neoplutarch="$(dirname "$(readlink -f "$(command -v clang)")")/llvm-ar" \
+            AR_x86_64_unknown_neoplutarch="$NEO_LLVM_BIN/llvm-ar" \
             CRATE_CC_NO_DEFAULTS=1 \
             BINDGEN_EXTRA_CLANG_ARGS="$extra" \
             "$tool" 2>&1 | tail -40
