@@ -94,7 +94,7 @@ jobs:
           touch "$RUNNER_TEMP/before-export"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
-            make -C "$obj" -j"$(nproc)" export \
+            sh -c 'make -C "$1" -j"$(nproc)" pre-export && make -C "$1" -j"$(nproc)" export' sh "$obj" \
               2>&1 | tee "$RUNNER_TEMP/export.log"
           rc=${PIPESTATUS[0]}
           echo "export exit: $rc"
@@ -140,7 +140,9 @@ jobs:
           rc=${PIPESTATUS[0]}
           echo "configure (neoplutarch) exit: $rc"
           [ "$rc" = 0 ] || { tail -40 "$RUNNER_TEMP/configure-neo.log"; exit "$rc"; }
-          run make -C "$obj" -j"$(nproc)" export 2>&1 | tee "$RUNNER_TEMP/export-neo.log"
+          # pre-export runs install-manifests, which fills dist/include.
+          run sh -c 'make -C "$1" -j"$(nproc)" pre-export && make -C "$1" -j"$(nproc)" export' sh "$obj" \
+            2>&1 | tee "$RUNNER_TEMP/export-neo.log"
           rc=${PIPESTATUS[0]}
           echo "export (neoplutarch) exit: $rc"
           echo "== js-confdefs.h (neoplutarch)"; cat "$obj/js/src/js-confdefs.h"
