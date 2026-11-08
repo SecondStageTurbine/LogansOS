@@ -37,7 +37,9 @@ fn main() {
         .flag("-Werror")
         .define("_XOPEN_SOURCE", "700");
     system_includes(&mut c, &c_headers);
-    c.file("c/crt_checks.c").compile("crt_checks");
+    c.file("c/crt_checks.c")
+        .file("c/pthread_checks.c")
+        .compile("crt_checks");
     let mut cxx = cc::Build::new();
     cxx.compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
         .no_default_flags(true)
@@ -61,7 +63,9 @@ fn main() {
     system_includes(&mut cxx, &[inc("INCLUDE_CXX_CONFIG"), inc("INCLUDE_CXX")]);
     system_includes(&mut cxx, &c_headers);
     system_includes(&mut cxx, &[inc("INCLUDE_BUILTIN")]);
-    cxx.file("c/cxx_checks.cpp").compile("cxx_checks");
+    cxx.file("c/cxx_checks.cpp")
+        .file("c/cxx_thread_checks.cpp")
+        .compile("cxx_checks");
     // libc++'s configuration decides code that inlines into this crate's
     // C++ (the hardening checks), so a change to it must rebuild that too.
     println!(
