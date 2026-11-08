@@ -51,6 +51,25 @@ one thread, interpreter only, and build option (c).
   off, on the CI runners only (J.c., 2026-10-29), and commits its frozen outputs. The product build then runs `cc`
   over those outputs. No other build reads this tree, and the default kernel, image and userland are unchanged.
 
+## Also vendored: `vendor/encoding_c_mem-0.2.6/`
+
+`mfbt/Latin1.h` includes `encoding_rs_mem.h`, the C header of the `encoding_c_mem` crate (`mozjs-sys/Cargo.toml`:
+`encoding_c_mem = "0.2.6"`). `mozjs-sys`'s `build.rs` puts the crate's `include/` on the compile line, and the generator
+does the same. The crate is also what links those functions in, so the product build needs its Rust side too.
+
+| | |
+|---|---|
+| Upstream | `https://github.com/hsivonen/encoding_c_mem`, crates.io `encoding_c_mem` 0.2.6 |
+| Fetched | `https://static.crates.io/crates/encoding_c_mem/encoding_c_mem-0.2.6.crate`, sha256 `3a80a16821fe8c7cab96e0c67b57cd7090e021e9615e6ce6ab0cf866c44ed1f0`, unpacked unmodified |
+| Licence | Apache-2.0 OR MIT (`LICENSE-APACHE`, `LICENSE-MIT`, `COPYRIGHT`) |
+| Freshness | 0.2.6 (2020-05-13) is the latest release. It's a small, finished binding by `encoding_rs`'s author, and Firefox still links it. Seat D maintains our copy. |
+
+## The `<ostream>` shim: `generator/include/ostream`
+
+neo-crt's libc++ has no localization (C3a), so its `<ostream>` is an error. SpiderMonkey's headers include it only
+to declare `operator<<` templates that are never instantiated. For C++, `neo-cc` puts `generator/include` first, and
+its `ostream` is libc++'s `<iosfwd>`. Code that really writes to a stream still fails to compile.
+
 ## Left out of the copy
 
 | Path | Why |

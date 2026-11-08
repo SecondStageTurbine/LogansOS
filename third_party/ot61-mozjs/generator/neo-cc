@@ -30,11 +30,14 @@ done
 set -- --target=x86_64-unknown-none-elf -D__neoplutarch__ \
   -mno-red-zone -mcmodel=small -fno-pic -fno-pie -fno-stack-protector \
   -D_XOPEN_SOURCE=700 -nostdinc "$@"
-inc="-isystem $crt/musl-generated -isystem $crt/musl/arch/x86_64 \
+here=$(dirname "$0")
+inc="-isystem $repo/third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6/include \
+  -isystem $crt/musl-generated -isystem $crt/musl/arch/x86_64 \
   -isystem $crt/musl/arch/generic -isystem $crt/musl/include \
   -isystem $res/include"
 if [ -n "$cxx" ]; then
   inc="-nostdinc++ -fno-exceptions -fno-rtti \
+    -isystem $here/include \
     -isystem $repo/userland/neo-crt/cxx -isystem $crt/libcxx/include $inc"
   exe="$clang --driver-mode=g++"
 else
@@ -45,7 +48,7 @@ if [ -n "$link" ]; then
   # which finds ld.lld on PATH; put clang's own lld first.
   lld=$("$clang" -print-prog-name=ld.lld)
   case "$lld" in /*) PATH=$(dirname "$lld"):$PATH; export PATH ;; esac
-  syms=$(dirname "$0")/neo-crt-symbols.txt
+  syms=$here/neo-crt-symbols.txt
   stub=${TMPDIR:-/tmp}/neo-crt-stub-$(cksum <"$syms" | cut -d' ' -f1).o
   if [ ! -f "$stub" ]; then
     tmp=$stub.$$
