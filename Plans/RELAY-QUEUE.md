@@ -157,3 +157,5 @@ RELAY 336 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-
 RELAY 337 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 337 (#83 = Section 332, rerouted; RETURN `Plans/RETURN-2026-11-08-pr83-review-dexter.md`)
 RELAY 338 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 338 (#73/#82 item-5 re-check; RETURN `Plans/RETURN-2026-11-08-pr73-recheck2-dexter.md`)
 RELAY 339 | prometheus | Qwen | - | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 339 (#76 survey = Section 321, rerouted; RETURN `Plans/RETURN-2026-11-08-pr76-survey-review-prometheus.md`)
+RELAY 340 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 340 (#71 = Section 328, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr71-review-dexter.md`)
+RELAY 341 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 341 (#82 = Section 331, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr82-review-dexter.md`)

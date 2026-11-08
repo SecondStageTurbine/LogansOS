@@ -40,3 +40,14 @@ Run Section 321 of `Plans/DISPATCH-2026-11-08-relays-315-321.md`. It's a licence
 research lane. For each project the THINK names, fetch the licence file and the latest commit with `git` (`git ls-remote`, or a
 shallow clone), not a summarizing fetch, and give the SHA you checked.
 RETURN: `Plans/RETURN-2026-11-08-pr76-survey-review-prometheus.md` on `prometheus/pr76-survey-review`.
+
+## Section 340: Dexter, #71 (setup menu S2) first review. Head `50ca36e2`. Rerouted from Codex relay 328.
+Run Section 328 of `Plans/DISPATCH-2026-11-08-relays-325-328.md` as written.
+RETURN: `Plans/RETURN-2026-11-08-pr71-review-dexter.md` on `dexter/pr71-review`.
+
+## Section 341: Dexter, #82 (NeoFS cache index build) review. Head `c30975a3`. Rerouted from Codex relay 331.
+Run Section 331 of `Plans/DISPATCH-2026-11-08-relays-329-332.md` as written, at the new head (the `-off` leg now
+compiles the index out). You wrote the design reviews (319, 326), so also confirm the build matches the THINK at
+`4b2628c0`. Note: you are the same family as your own design review, so the cross-family check on the design came from
+your read of a Claude-authored THINK; that still holds for this build.
+RETURN: `Plans/RETURN-2026-11-08-pr82-review-dexter.md` on `dexter/pr82-review`.
