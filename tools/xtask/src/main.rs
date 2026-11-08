@@ -24184,6 +24184,42 @@ fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), Str
         }
     }
     if let Some((x, y, got)) = first {
+        // Where the wrong pixels are, and where the page's black ring landed
+        // on screen (searched near the expected rect), so a placement error
+        // reads off the log without the capture.
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        let mut colours: Vec<(u32, usize)> = Vec::new();
+        for yy in 0..ch {
+            for xx in 0..cw {
+                let got = rgb(&raster, cx + xx, cy + yy);
+                if got != expected(xx, yy) {
+                    (x0, y0) = (x0.min(xx), y0.min(yy));
+                    (x1, y1) = (x1.max(xx), y1.max(yy));
+                    match colours.iter_mut().find(|c| c.0 == got) {
+                        Some(c) => c.1 += 1,
+                        None => colours.push((got, 1)),
+                    }
+                }
+            }
+        }
+        colours.sort_by_key(|c| std::cmp::Reverse(c.1));
+        colours.truncate(6);
+        let (mut bx0, mut by0, mut bx1, mut by1) = (usize::MAX, usize::MAX, 0, 0);
+        for yy in cy.saturating_sub(120)..(cy + ch + 120).min(CAPTURE_H) {
+            for xx in cx.saturating_sub(120)..(cx + cw + 120).min(CAPTURE_W) {
+                if rgb(&raster, xx, yy) == 0 {
+                    (bx0, by0) = (bx0.min(xx), by0.min(yy));
+                    (bx1, by1) = (bx1.max(xx), by1.max(yy));
+                }
+            }
+        }
+        eprintln!(
+            "[xtask] desktop_browser_boot: wrong pixels span client x {x0}..={x1}, y {y0}..={y1}; commonest wrong colours {colours:06x?}; pure-black pixels near the rect span screen x {bx0}..={bx1}, y {by0}..={by1} (the page's ring is expected at x {}..={}, y {}..={})",
+            cx + 8,
+            cx + 121,
+            cy + 90,
+            cy + 143
+        );
         return Err(format!(
             "`{}` browser client rect: {wrong} pixels differ from the hand-derived frame; first at client ({x},{y}) = screen ({},{}): 0x{got:06x}, want 0x{:06x}; capture={}",
             scenario.name,
