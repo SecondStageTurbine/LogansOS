@@ -16,9 +16,20 @@
 //!     RFLAGS). All other GP regs preserved by the kernel's syscall path.
 
 #![no_std]
-#![feature(alloc_error_handler)]
+// The handler exists only when libneo owns the allocator; with the host-only
+// `image-decode` feature std owns it, so gate the unstable feature too (an
+// unused `feature` gate is a warning, and the close gate denies warnings).
+#![cfg_attr(not(feature = "image-decode"), feature(alloc_error_handler))]
 
 extern crate alloc;
+
+// Lane 2b: the image-decode implementation is std-only, so its `image-decode`
+// feature must never be enabled for the OS target. The re-export below is the
+// public API; the compile_error keeps a mistaken OS build loud.
+#[cfg(all(feature = "image-decode", target_os = "none"))]
+compile_error!(
+    "libneo's `image-decode` feature is host-only: the vendored `png` 0.18 decoder requires std"
+);
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::arch::asm;
@@ -37,13 +48,28 @@ pub mod atrium_desktop;
 pub mod atrium_handoff;
 #[cfg(feature = "atrium-launch")]
 pub mod atrium_launch;
+/// PR #15 re-check: a cap lent over a client's channel by tries (pure).
+pub mod atrium_lend;
 pub mod atrium_protocol;
 pub mod atrium_wm;
+/// L7.1: the `SYS_BOOT_TIMES` record and the boot-time lines, one source
+/// with the kernel's encoder.
+#[path = "../../../kernel/src/boot_time_logic.rs"]
+#[allow(dead_code)]
+pub mod boot_time_logic;
 /// OT-85: epoch → civil date/time, and its text (pure).
 pub mod civil;
+/// F8: Arthur's time and date answers (pure).
+pub mod clock_answer;
 pub mod grant_store;
 /// OT-61 C2.1: the `SYS_HANDLE_INFO` record (pure).
 pub mod handle_info;
+pub mod tz;
+/// Lane 2b: host-only image decode (`png` + `zune-jpeg`), bytes in, RGBA out.
+/// The implementation is the `neo-image-decode` crate; this re-export is the
+/// libneo-level API the OS's future image consumers call.
+#[cfg(feature = "image-decode")]
+pub use neo_image_decode as image_decode;
 /// OT-87 R4.4: the installer's disk list and run (kernel `installer`).
 pub mod install;
 /// OT-87 R4.4: the installer's ABI and text (pure).
@@ -53,6 +79,11 @@ pub mod mem_info;
 pub mod nsync;
 pub mod nthread;
 pub mod ntls;
+pub mod pipe_abi;
+/// OT-90 P4: `SYS_POWER`'s numbers and decision, one source with the kernel.
+#[path = "../../../kernel/src/acpi/power_abi.rs"]
+#[allow(dead_code)]
+pub mod power_abi;
 pub mod tls;
 pub mod wait_abi;
 
@@ -137,6 +168,10 @@ pub const SYS_VM_MAP: u64 = 0x40;
 pub const SYS_VM_UNMAP: u64 = 0x41;
 pub const SYS_VM_PROTECT: u64 = 0x42;
 pub const SYS_CLOCK_GETTIME: u64 = 0x43;
+/// `rtc-offset` (THINK-2026-11-02-time-zones §2.1): confirm realtime as UTC.
+pub const SYS_CLOCK_CONFIRM_REALTIME: u64 = 0x1C8;
+/// `rtc-offset`: whether realtime is confirmed UTC.
+pub const SYS_CLOCK_REALTIME_STATUS: u64 = 0x1C9;
 /// POSIX-canonical protection bits for [`sys_vm_map`]/[`sys_vm_protect`].
 pub const PROT_READ: u64 = 1;
 pub const PROT_WRITE: u64 = 2;
@@ -173,6 +208,9 @@ pub const SYS_SPAWN_BUDGETED: u64 = 0x52;
 pub const SYS_MEM_INFO: u64 = 0x53;
 /// OT-61 C2.2b: `SYS_SPAWN_BUDGETED` with an object budget too.
 pub const SYS_SPAWN_BUDGETED2: u64 = 0x54;
+/// L7.1: `SYS_BOOT_TIMES(out, 80)` writes the [`boot_time_logic`] record
+/// (`boot-time` kernels; ENOSYS otherwise).
+pub const SYS_BOOT_TIMES: u64 = 0x55;
 /// C1.2 test-only: `SYS_TEST_TLS(op, out)` — op 0 probes `{cpu, recorded
 /// FS.base, live IA32_FS_BASE}`, op 1 parks the caller, op 2 wakes the parked
 /// thread onto the caller's CPU (`threads_tls` kernels only). Must NOT ship.
@@ -275,12 +313,29 @@ pub const SYS_INPUT_POINTER_CLAIM: u64 = 0x1B1;
 pub const SYS_INPUT_POINTER_FORWARD: u64 = 0x1B2;
 pub const SYS_INPUT_SAK_TAKE: u64 = 0x1B3;
 pub const SYS_TRY_RECV: u64 = 0x1B4;
+/// OT-88 A0k: `SYS_SEND` / `SYS_GRANT` that complete only with the peer
+/// already parked in its receive; EAGAIN otherwise (ENOSYS on a kernel
+/// without `ipc-try-send`). They never park.
+pub const SYS_TRY_SEND: u64 = 0x1B7;
+pub const SYS_TRY_GRANT: u64 = 0x1B8;
+pub const SYS_TRY_RECV_GRANT: u64 = 0x1B9;
 /// OT-22 (kernel `wait-multiplex`; ENOSYS elsewhere): park until any of up
 /// to [`WAIT_ITEMS_MAX`] items is ready or a monotonic deadline passes.
 pub const SYS_WAIT_ANY: u64 = 0x1B5;
 /// Chad #177 item 4: unmap a borrowed buffer mapping (`sys_buffer_unmap`).
 pub const SYS_BUFFER_UNMAP: u64 = 0x1B6;
-pub use wait_abi::{WAIT_ITEMS_MAX, WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_SAK, WaitItem};
+/// L1a.1 step 2a (kernel `pipe`; ENOSYS elsewhere): a byte pipe. See
+/// [`sys_pipe_create`], [`sys_pipe_read`], [`sys_pipe_write`].
+pub use pipe_abi::{
+    PIPE_NONBLOCK, SYS_PIPE_CREATE, SYS_PIPE_READ, SYS_PIPE_WRITE, pipe_split_ends,
+};
+/// Pipe sizes the terminal uses (THINK L1a §3.3), and the largest allowed.
+pub const PIPE_STDIN_CAPACITY: u64 = 4 * 1024;
+pub const PIPE_STDOUT_CAPACITY: u64 = 64 * 1024;
+pub const PIPE_MAX_CAPACITY: u64 = 64 * 1024;
+pub use wait_abi::{
+    WAIT_ITEMS_MAX, WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_PIPE, WAIT_KIND_SAK, WaitItem,
+};
 
 pub const INPUT_EVENT_V1_LEN: usize = 8;
 /// Input event kinds (ADR-074 + the DI-1a amendment).
@@ -919,6 +974,10 @@ pub mod process_rights {
 
 pub mod net_dial_rights {
     pub const DIAL: u8 = 1 << 0;
+    /// OT-61 rung 5b: the cap may reach non-public addresses (root caps carry
+    /// it on a `net-dial-public-only` kernel; a cap derived without it dials
+    /// only public addresses).
+    pub const NON_PUBLIC: u8 = 1 << 1;
 }
 
 /// GPU P1 Slice 6 semantic rights.  These mirror the kernel's typed
@@ -1395,6 +1454,50 @@ pub fn sys_mem_info_v2() -> Result<mem_info::MemInfoV2, i64> {
         return Err(r);
     }
     mem_info::decode_v2(&rec).ok_or(EINVAL)
+}
+
+/// L7.1: the kernel's boot-time record. A `boot-time` kernel only.
+pub fn sys_boot_times() -> Result<boot_time_logic::BootTimes, i64> {
+    let mut rec = [0u8; boot_time_logic::BOOT_TIMES_V1_LEN];
+    // SAFETY: `rec` is a writable buffer of exactly the record length.
+    let r = unsafe { raw3(SYS_BOOT_TIMES, rec.as_mut_ptr() as u64, rec.len() as u64, 0) };
+    if r < 0 {
+        return Err(r);
+    }
+    boot_time_logic::decode(&rec).ok_or(EINVAL)
+}
+
+/// L7.1: `what`'s boot-time line now, e.g. `Sign-in 9.87 s after power-on
+/// (firmware 4.12 s).`, or `None` when the kernel has no `boot-time`.
+pub fn boot_milestone_line(what: &str) -> Option<alloc::string::String> {
+    let times = sys_boot_times().ok()?;
+    // SAFETY: RDTSC is unprivileged (CR4.TSD is clear) and has no side
+    // effects.
+    let now = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut line = alloc::string::String::new();
+    boot_time_logic::write_milestone(&mut line, what, &times, now).ok()?;
+    Some(line)
+}
+
+/// L7.1: the boot summary ending with `what` now, e.g. `From power-on:
+/// firmware 4.12 s, desktop 7.95 s, Arthur ready 21.70 s.`, or `None` when
+/// the kernel has no `boot-time`.
+pub fn boot_summary_line(what: &str) -> Option<alloc::string::String> {
+    let times = sys_boot_times().ok()?;
+    // SAFETY: as in `boot_milestone_line`.
+    let now = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut line = alloc::string::String::new();
+    boot_time_logic::write_summary(&mut line, what, &times, now).ok()?;
+    Some(line)
+}
+
+/// OT-90 P4: power off ([`power_abi::ACTION_POWER_OFF`]) or restart
+/// ([`power_abi::ACTION_RESTART`]). 0 once the clean shutdown has started;
+/// `EPERM` without the session root's `PowerControl` cap, `EBUSY` while one
+/// runs, `ENOSYS` on a kernel without `power-cap`.
+pub fn sys_power(action: u64) -> i64 {
+    // SAFETY: SYS_POWER takes two scalars and touches no user memory.
+    unsafe { raw3(power_abi::SYS_POWER, action, 0, 0) }
 }
 
 /// OT-61 C2.2: the caller's memory account. A `mem-quota` kernel only.
@@ -2239,6 +2342,26 @@ pub fn sys_clock_gettime(clock_id: u64) -> Result<u64, i64> {
     if r < 0 { Err(r) } else { Ok(r as u64) }
 }
 
+/// `rtc-offset`: confirm `CLOCK_REALTIME` as UTC, once, with the RTC's
+/// offset from UTC in seconds (0 when the RTC holds UTC). The input-system
+/// authority (the WM) only. Errors: `EPERM`, `EINVAL` (past ±24 h),
+/// `EALREADY`, `EAGAIN` (no RTC epoch), `ENOSYS` (kernel without the rung).
+#[inline]
+pub fn sys_clock_confirm_realtime(offset_s: i64) -> Result<(), i64> {
+    // SAFETY: SYS_CLOCK_CONFIRM_REALTIME(offset_s) → 0 or errno; no memory.
+    let r = unsafe { raw3(SYS_CLOCK_CONFIRM_REALTIME, offset_s as u64, 0, 0) };
+    if r < 0 { Err(r) } else { Ok(()) }
+}
+
+/// `rtc-offset`: whether `CLOCK_REALTIME` is confirmed UTC (`ENOSYS` from a
+/// kernel without the rung).
+#[inline]
+pub fn sys_clock_realtime_status() -> Result<bool, i64> {
+    // SAFETY: SYS_CLOCK_REALTIME_STATUS() → 0 | 1 or errno; no memory.
+    let r = unsafe { raw3(SYS_CLOCK_REALTIME_STATUS, 0, 0, 0) };
+    if r < 0 { Err(r) } else { Ok(r == 1) }
+}
+
 /// C1.1 (P2): thread-info record returned by [`sys_thread_get_info`]
 /// (v1, 40 bytes, must match the kernel's `ThreadInfoV1`). Downward-stack
 /// semantics: `usable_low..usable_low+usable_len` is the mapped stack; the
@@ -2697,6 +2820,11 @@ unsafe impl GlobalAlloc for LibneoHeap {
     }
 }
 
+// With `image-decode` (a host-only feature) std is linked and owns the global
+// allocator; the kernel-backed `LibneoHeap` would issue a `sys_map_region` at
+// the first host allocation and fail. Every OS-target build has the feature
+// off, so this is the same allocator as before.
+#[cfg(not(feature = "image-decode"))]
 #[global_allocator]
 static HEAP: LibneoHeap = LibneoHeap::new();
 
@@ -2704,6 +2832,7 @@ static HEAP: LibneoHeap = LibneoHeap::new();
 /// allocation cannot be satisfied; we surface the failure on stderr (well,
 /// stdout — Phase 1.5b's only fd) and exit. Userspace `Vec::push` and
 /// friends call this on OOM.
+#[cfg(not(feature = "image-decode"))]
 #[alloc_error_handler]
 fn on_alloc_error(layout: Layout) -> ! {
     const MSG: &[u8] = b"[ libneo ] allocation failed (OOM); exiting\n";
@@ -3025,6 +3154,99 @@ pub fn sys_wait_any(items: &[WaitItem], deadline_ns: u64) -> i64 {
             deadline_ns,
         )
     }
+}
+
+/// `sys_send` without parking: EAGAIN unless a receiver is already waiting.
+#[inline]
+pub fn sys_try_send(h: Handle, buf: &[u8]) -> i64 {
+    // SAFETY: buf is a valid slice; the kernel validates bounds.
+    unsafe {
+        raw3(
+            SYS_TRY_SEND,
+            h.0 as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+        )
+    }
+}
+
+/// L1a.1 step 2a: a new byte pipe of `capacity` bytes; `(read_end,
+/// write_end)`, or a negative errno.
+#[inline]
+pub fn sys_pipe_create(capacity: u64) -> Result<(Handle, Handle), i64> {
+    // SAFETY: one integer argument.
+    let r = unsafe { raw3(SYS_PIPE_CREATE, capacity, 0, 0) };
+    if r < 0 {
+        Err(r)
+    } else {
+        let (rd, wr) = pipe_split_ends(r as u64);
+        Ok((Handle(rd), Handle(wr)))
+    }
+}
+
+/// L1a.1 step 2a: read up to `buf.len()` bytes from a pipe's read end.
+/// Returns the count (0 at EOF) or a negative errno. Parks for the first
+/// byte unless `flags & PIPE_NONBLOCK` (`EAGAIN`).
+#[inline]
+pub fn sys_pipe_read(h: Handle, buf: &mut [u8], flags: u64) -> i64 {
+    // SAFETY: `buf` is a valid mutable slice; the kernel validates the range.
+    unsafe {
+        raw4(
+            SYS_PIPE_READ,
+            h.0 as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+            flags,
+        )
+    }
+}
+
+/// L1a.1 step 2a: write `buf` to a pipe's write end. Parks until all of it is
+/// written (at most 512 bytes go in atomically) unless `flags &
+/// PIPE_NONBLOCK`. Returns the count or a negative errno (`EPIPE` once no
+/// reader is left).
+#[inline]
+pub fn sys_pipe_write(h: Handle, buf: &[u8], flags: u64) -> i64 {
+    // SAFETY: `buf` is a valid slice; the kernel validates the range.
+    unsafe {
+        raw4(
+            SYS_PIPE_WRITE,
+            h.0 as u64,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+            flags,
+        )
+    }
+}
+
+/// `sys_grant` without parking: EAGAIN unless a `sys_recv_grant` is waiting.
+#[inline]
+pub fn sys_try_grant(channel: Handle, source: Handle, offered: CapRights) -> i64 {
+    // SAFETY: SYS_TRY_GRANT takes channel/source handle indices and packed rights.
+    unsafe {
+        raw3(
+            SYS_TRY_GRANT,
+            channel.0 as u64,
+            source.0 as u64,
+            offered.pack() as u64,
+        )
+    }
+}
+
+/// `sys_recv_grant` without parking: the new handle, or EAGAIN unless a
+/// grantor is already waiting (as `Err`).
+#[inline]
+pub fn sys_try_recv_grant(channel: Handle, max_rights: CapRights) -> Result<Handle, i64> {
+    // SAFETY: SYS_TRY_RECV_GRANT takes a channel handle index and packed rights.
+    let r = unsafe {
+        raw3(
+            SYS_TRY_RECV_GRANT,
+            channel.0 as u64,
+            max_rights.pack() as u64,
+            0,
+        )
+    };
+    if r < 0 { Err(r) } else { Ok(Handle(r as u32)) }
 }
 
 /// `sys_recv` without parking: EAGAIN when no sender is waiting.

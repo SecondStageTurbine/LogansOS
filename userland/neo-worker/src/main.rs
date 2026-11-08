@@ -55,6 +55,7 @@
         feature = "phase4-https-fetch",
         feature = "vault-phase-b",
         feature = "desktop-lens",
+        feature = "probe-app",
         feature = "installer-probe",
         feature = "record-guard-probe",
     ),
@@ -115,6 +116,8 @@ const MAIN: Handle = Handle(0);
 mod installer_probe;
 #[cfg(feature = "desktop-lens")]
 mod lens;
+#[cfg(feature = "probe-app")]
+mod probe_app;
 #[cfg(feature = "record-guard-probe")]
 mod record_guard;
 const BLOCK: Handle = Handle(1);
@@ -437,6 +440,11 @@ pub extern "C" fn _start() -> ! {
         sys_exit(lens::run());
     }
 
+    #[cfg(feature = "probe-app")]
+    {
+        sys_exit(probe_app::run());
+    }
+
     #[cfg(feature = "atrium-surface-protocol")]
     {
         sys_exit(atrium_surface_protocol_worker());
@@ -640,7 +648,8 @@ pub extern "C" fn _start() -> ! {
         feature = "threads-exit-group",
         feature = "desktop-lens",
         feature = "installer-probe",
-        feature = "record-guard-probe"
+        feature = "record-guard-probe",
+        feature = "probe-app"
     )))]
     {
         default_worker_main();
@@ -667,7 +676,9 @@ pub extern "C" fn _start() -> ! {
 ///    retire check; the retire IPI lands there, then the thread spins in
 ///    ring 3 with no syscall. Only a final check run with interrupts off
 ///    (the IPI then waits for ring 3) ends it: C1.3b review finding 2.
-/// Codes 50-59 and 60-65 report a setup failure.
+///
+/// Codes 50-59 and 60-67 report a setup failure (66/67: role 6's
+/// `SYS_TEST_TAIL_HOLD` on an unmapped word must be EFAULT).
 #[cfg(feature = "threads-exit-group")]
 fn threads_exit_group_worker() -> i32 {
     use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -809,6 +820,21 @@ fn threads_exit_group_worker() -> i32 {
             sys_exit(7)
         }
         6 => {
+            // CP-99: arming the hook with an unmapped flag word is EFAULT (it
+            // used to arm, and the tail's write then halted the kernel).
+            let rw = libneo::PROT_READ | libneo::PROT_WRITE;
+            let Ok(hole) = libneo::sys_vm_map(4096, rw, false) else {
+                return 66;
+            };
+            if libneo::sys_vm_unmap(hole, 4096).is_err() {
+                return 66;
+            }
+            // SAFETY: SYS_TEST_TAIL_HOLD(flag) only probes and later writes
+            // the user word at `flag`; an unmapped one must be refused.
+            let r = unsafe { libneo::raw3(libneo::SYS_TEST_TAIL_HOLD, hole as u64, 0, 0) };
+            if r != libneo::EFAULT {
+                return 67;
+            }
             if sys_test_thread_create_on(tail_holder, 0, 16 * 1024, 2).is_err() {
                 return 64;
             }

@@ -916,6 +916,42 @@ pub fn map_mmio_for_probe(phys: u64, len: u64) -> VirtAddr {
     crate::mm::phys_to_virt(PhysAddr::new(phys))
 }
 
+/// OT-90 P3b-2 (K6): every function with Bus Master Enable set, read before
+/// K4 (the scan allocates).
+#[cfg(feature = "power-quiesce")]
+pub fn bus_masters() -> Vec<Device> {
+    const PCI_COMMAND_BUS_MASTER: u16 = 1 << 2;
+    enumerate_all()
+        .into_iter()
+        .filter(|d| {
+            config_read_u16(d.bus, d.device, d.function, 0x04) & PCI_COMMAND_BUS_MASTER != 0
+        })
+        .collect()
+}
+
+/// OT-90 P3b-2 (K6): clear Bus Master Enable, so the function can start no
+/// more DMA. Config space through CF8/CFC, no lock: K6 runs alone. Returns
+/// whether the bit read back clear (Janus's #7 review, item 1): a function
+/// that keeps it set, or no longer answers (all ones), isn't confirmed
+/// stopped, and K6 then leaves the IOMMU on.
+#[cfg(feature = "power-quiesce")]
+pub fn clear_bus_master(dev: Device) -> bool {
+    const PCI_COMMAND_BUS_MASTER: u16 = 1 << 2;
+    let command = config_read_u16(dev.bus, dev.device, dev.function, 0x04);
+    config_write_u16(
+        dev.bus,
+        dev.device,
+        dev.function,
+        0x04,
+        command & !PCI_COMMAND_BUS_MASTER,
+    );
+    #[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+    if crate::test_harness::ot90_bme_stuck(dev) {
+        return false;
+    }
+    config_read_u16(dev.bus, dev.device, dev.function, 0x04) & PCI_COMMAND_BUS_MASTER == 0
+}
+
 /// Clear bus-master (DMA) rights (the I2C-HID touchpad is PIO only).
 #[cfg(feature = "i2c-hid-touchpad")]
 pub fn disable_bus_mastering(dev: Device) {
@@ -1080,6 +1116,91 @@ fn classify_network(dev: Device) -> NetworkKind {
         return NetworkKind::Other;
     }
     NetworkKind::Other
+}
+
+/// OT-90 P3b, K5's PCI result (review #6 item 3).
+#[cfg(feature = "power-stop-cpus")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StopMask {
+    /// PCI functions found.
+    pub functions: u32,
+    /// Functions whose MSI was enabled (now disabled).
+    pub msi_disabled: u32,
+    /// Functions whose MSI-X was enabled (now function-masked).
+    pub msix_masked: u32,
+    /// Functions still with MSI enabled or MSI-X unmasked when re-read
+    /// (should be 0).
+    pub left_on: u32,
+}
+
+/// OT-90 P3b, K5: silence every PCI function's interrupts at the source.
+/// MSI and MSI-X bypass the I/O APIC, so masking it isn't enough: for each
+/// function, MSI Enable is cleared, MSI-X's Function Mask is set (config
+/// space only, no table MMIO), and INTx is disabled in the command register.
+/// Then each is re-read. Called after K4 with the other CPUs parked (so the
+/// CF8/CFC pair has one user) and interrupts off; allocates nothing, maps
+/// nothing, takes no lock.
+#[cfg(feature = "power-stop-cpus")]
+pub fn mask_interrupts_for_stop() -> StopMask {
+    const MSI_ENABLE: u16 = 1 << 0;
+    const MSIX_ENABLE: u16 = 1 << 15;
+    const MSIX_FUNCTION_MASK: u16 = 1 << 14;
+    const COMMAND_INTX_DISABLE: u16 = 1 << 10;
+    let mut out = StopMask::default();
+    for bus in 0..=u8::MAX {
+        for device in 0..32u8 {
+            if config_read_u16(bus, device, 0, 0x00) == VENDOR_ID_NONE {
+                continue;
+            }
+            let functions =
+                if config_read_u8(bus, device, 0, 0x0e) & HEADER_TYPE_MULTI_FUNCTION != 0 {
+                    8
+                } else {
+                    1
+                };
+            for function in 0..functions {
+                let Some(dev) = read_device(bus, device, function) else {
+                    continue;
+                };
+                out.functions += 1;
+                let command = config_read_u16(bus, device, function, 0x04);
+                config_write_u16(bus, device, function, 0x04, command | COMMAND_INTX_DISABLE);
+                let msi = find_capability(dev, PCI_CAP_ID_MSI);
+                if let Some(cap) = msi {
+                    let control = config_read_u16(bus, device, function, cap + 2);
+                    if control & MSI_ENABLE != 0 {
+                        config_write_u16(bus, device, function, cap + 2, control & !MSI_ENABLE);
+                        out.msi_disabled += 1;
+                    }
+                }
+                let msix = find_capability(dev, PCI_CAP_ID_MSIX);
+                if let Some(cap) = msix {
+                    let control = config_read_u16(bus, device, function, cap + 2);
+                    if control & MSIX_ENABLE != 0 {
+                        config_write_u16(
+                            bus,
+                            device,
+                            function,
+                            cap + 2,
+                            control | MSIX_FUNCTION_MASK,
+                        );
+                        out.msix_masked += 1;
+                    }
+                }
+                let msi_on = msi.is_some_and(|cap| {
+                    config_read_u16(bus, device, function, cap + 2) & MSI_ENABLE != 0
+                });
+                let msix_open = msix.is_some_and(|cap| {
+                    let c = config_read_u16(bus, device, function, cap + 2);
+                    c & MSIX_ENABLE != 0 && c & MSIX_FUNCTION_MASK == 0
+                });
+                if msi_on || msix_open {
+                    out.left_on += 1;
+                }
+            }
+        }
+    }
+    out
 }
 
 fn config_read_u8(bus: u8, device: u8, function: u8, offset: u8) -> u8 {

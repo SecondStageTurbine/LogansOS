@@ -93,6 +93,13 @@ mod atrium_handoff;
 #[cfg(test)]
 mod handoff_kats;
 
+// PR #15 re-check item 3 (input B): a lend over a client's channel by tries.
+#[cfg(test)]
+#[path = "../../../userland/libneo/src/atrium_lend.rs"]
+mod atrium_lend;
+#[cfg(test)]
+mod lend_kats;
+
 // OT-22: the SYS_WAIT_ANY item ABI: the kernel's decoder (its own KATs) and
 // libneo's layout, each against the same hand-laid bytes.
 #[cfg(test)]
@@ -104,7 +111,9 @@ mod wait_any_logic;
 
 #[cfg(test)]
 mod wait_abi_kats {
-    use super::wait_abi::{WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_SAK, WaitItem};
+    use super::wait_abi::{
+        WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_PIPE, WAIT_KIND_SAK, WaitItem,
+    };
     use super::wait_any_logic as kernel;
 
     /// The byte oracle: `WaitItem { handle: 0x04030201, kind: 2 }` is these
@@ -130,6 +139,8 @@ mod wait_abi_kats {
         assert_eq!(WAIT_KIND_CHANNEL, kernel::WAIT_KIND_CHANNEL);
         assert_eq!(WAIT_KIND_INPUT, kernel::WAIT_KIND_INPUT);
         assert_eq!(WAIT_KIND_SAK, kernel::WAIT_KIND_SAK);
+        assert_eq!(WAIT_KIND_PIPE, kernel::WAIT_KIND_PIPE);
+        assert_eq!(WAIT_KIND_PIPE, 4);
     }
 }
 

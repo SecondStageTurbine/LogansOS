@@ -78,6 +78,21 @@ pub fn quiesce_local_cpu() -> LocalShootdownQuiesce {
     }
 }
 
+/// OT-90 P3b, K4 (review #6 item 1, CP-64): close TLB shootdowns for good
+/// before the shutdown CPU stops servicing IPIs. Taking the sender lock
+/// (interruptibly, as every sender does) waits out any sender in flight, so
+/// this CPU acknowledges its request first; the lock is then never released,
+/// so no sender starts again (a CPU that tries waits with interrupts on and
+/// takes the STOP IPI). Interrupts go off and this CPU leaves the ready set
+/// while no sender can race the change. Returns with IF=0, for good.
+#[cfg(feature = "power-stop-cpus")]
+pub fn close_for_stop() {
+    let barrier = acquire_shootdown_lock();
+    arch_x86_64::disable_interrupts();
+    per_cpu::set_current_tlb_shootdown_ready(false);
+    core::mem::forget(barrier);
+}
+
 #[cfg(feature = "neo-test-swapgs-irq-ring3")]
 static LOCK_PROBE_HELD: AtomicU32 = AtomicU32::new(0);
 #[cfg(feature = "neo-test-swapgs-irq-ring3")]
@@ -530,24 +545,12 @@ fn tsc_cycles_per_ms() -> Option<u64> {
 }
 
 fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
-    let eax: u32;
-    let ebx: u32;
-    let ecx: u32;
-    let edx: u32;
-    unsafe {
-        asm!(
-            "push rbx",
-            "cpuid",
-            "mov {ebx_out:e}, ebx",
-            "pop rbx",
-            inout("eax") leaf => eax,
-            inout("ecx") subleaf => ecx,
-            lateout("edx") edx,
-            ebx_out = lateout(reg) ebx,
-            options(nomem)
-        );
-    }
-    (eax, ebx, ecx, edx)
+    // `__cpuid_count`, not hand-written `push rbx; cpuid; mov {out:e}, ebx;
+    // pop rbx`: with a `reg` output the allocator may pick rbx itself, and the
+    // `pop` then discards CPUID's EBX (seen in the opt-level-3 product kernel,
+    // #52 follow-up: an AP read CPUID.(0DH,2):EBX as a stack address).
+    let r = core::arch::x86_64::__cpuid_count(leaf, subleaf);
+    (r.eax, r.ebx, r.ecx, r.edx)
 }
 
 fn read_tsc() -> u64 {

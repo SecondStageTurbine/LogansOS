@@ -148,6 +148,8 @@ mod tests {
                 kernel::KIND_MOUNT_AUTHORITY,
                 libneo::HandleKind::MountAuthority,
             ),
+            (kernel::KIND_POWER_CONTROL, libneo::HandleKind::PowerControl),
+            (kernel::KIND_PIPE, libneo::HandleKind::Pipe),
         ] {
             assert_eq!(libneo::HandleKind::from_code(code), kind, "code {code}");
         }

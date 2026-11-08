@@ -9,12 +9,18 @@
 //! registered device's write guard (`inner` is the `GuardedDevice`), which
 //! judges them against the whole disk, so a partition the guard did not arm
 //! stays unwritten.
+//!
+//! L3a (G7, `docs/THINK-2026-10-31-l3a-fat-readonly.md` §6a): the same view
+//! over a believed MBR entry ([`PartitionDevice::from_mbr`]), so a stick's
+//! FAT partition mounts as `"deviceN:pM"`.
 
 extern crate alloc;
 
 use alloc::sync::Arc;
 
-use super::gpt_logic::{self, Entry, Gpt};
+use super::gpt_logic;
+#[cfg(feature = "neofs-partition")]
+use super::gpt_logic::{Entry, Gpt};
 use super::{
     BlockDevice, BlockDeviceIdentity, BlockError, BlockGeometry, BlockOp, BlockRequest,
     BlockResult, DmaBuffer,
@@ -30,9 +36,29 @@ pub struct PartitionDevice {
 }
 
 impl PartitionDevice {
+    /// L3a (G7): the view of a believed MBR entry
+    /// ([`super::mbr_logic::partition`] checked it against `inner`'s size).
+    /// `None` when it does not fit the device.
+    #[cfg(feature = "mbr-partitions")]
+    pub fn from_mbr(inner: Arc<dyn BlockDevice>, entry: &super::mbr_logic::Entry) -> Option<Self> {
+        let end = entry.first_lba.checked_add(entry.lba_count)?;
+        if entry.lba_count == 0 || end > inner.geometry().block_count {
+            return None;
+        }
+        let identity = inner.identity().clone();
+        Some(Self {
+            inner,
+            first_lba: entry.first_lba,
+            lba_count: entry.lba_count,
+            index: entry.index,
+            identity,
+        })
+    }
+
     /// The view of `entry`, one of `gpt`'s validated entries (`gpt` came from
     /// `gpt_logic::read` of `inner`). `None` when the entry is not in the
     /// table or does not fit the device.
+    #[cfg(feature = "neofs-partition")]
     pub fn new(inner: Arc<dyn BlockDevice>, gpt: &Gpt, entry: &Entry) -> Option<Self> {
         if !gpt.entries.contains(entry) {
             return None;
@@ -80,6 +106,11 @@ impl PartitionDevice {
 }
 
 impl BlockDevice for PartitionDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<super::ShutdownStep> {
+        self.inner.shutdown_step()
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         &self.identity
     }

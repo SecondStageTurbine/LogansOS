@@ -606,6 +606,19 @@ fn run() -> i32 {
         let footer = backend.footer_model(model_ready);
         log_footer_model(&footer);
         showcase.set_footer(footer);
+        // L7.1: the boot summary, the first line of the transcript.
+        #[cfg(feature = "arthur-boot-time")]
+        if let Some(line) = libneo::boot_summary_line(if model_ready {
+            "Arthur ready"
+        } else {
+            "Arthur up (no model)"
+        }) {
+            let _ = libneo::sys_write(1, b"BOOT-TIME ".as_ptr(), 10);
+            let _ = libneo::sys_write(1, line.as_ptr(), line.len());
+            let _ = libneo::sys_write(1, b"\n".as_ptr(), 1);
+            showcase.write_text(line.as_bytes());
+            showcase.write_text(b"\n\n");
+        }
         let code = run_desktop_session(
             &mut showcase,
             &mut input,
@@ -996,10 +1009,19 @@ fn run_desktop_session(
     if sys_send(CONVERSATION, b"M") != 1 {
         return 50;
     }
-    let mut command = [0u8; 1];
-    if sys_recv(CONVERSATION, &mut command) != 1 || command[0] != b'K' {
+    // F8: under the WM's `desktop-clock` the `K` carries the user's zone id
+    // (`[K, lo, hi]`); a bare `K` means no zone (UTC).
+    let mut command = [0u8; 3];
+    let got = sys_recv(CONVERSATION, &mut command);
+    if !(got == 1 || got == 3) || command[0] != b'K' {
         return 53;
     }
+    #[cfg(feature = "arthur-clock")]
+    let clock_zone = if got == 3 {
+        u16::from_le_bytes([command[1], command[2]])
+    } else {
+        libneo::tz::UTC
+    };
     stage_b_log_line(b"DESKTOP arthur input focus=active source=live_hid");
     #[cfg(feature = "desktop-pointer-probe")]
     if !showcase_surface::probe_input_system_authority() {
@@ -1236,7 +1258,19 @@ fn run_desktop_session(
                 };
                 #[cfg(not(feature = "desktop-actions"))]
                 let handled = false;
+                // F8: the time and the date, from the system clock, before
+                // the model (which has none).
+                #[cfg(feature = "arthur-clock")]
+                let handled = handled || clock_reply(surface, &input[..input_len], clock_zone);
+                // OT-88 A1a boot test: open the probe app, a second client.
+                #[cfg(feature = "atrium-apps-probe")]
+                let probe_app = &input[..input_len] == b"open probe app";
+                #[cfg(not(feature = "atrium-apps-probe"))]
+                let probe_app = false;
                 if handled {
+                } else if probe_app {
+                    #[cfg(feature = "atrium-apps-probe")]
+                    open_probe_app(surface, launch_cap);
                 } else if action {
                     #[cfg(feature = "desktop-lens")]
                     {
@@ -1244,6 +1278,10 @@ fn run_desktop_session(
                         open_lens(surface, launch_cap, lens_token);
                     }
                 } else if model_ready {
+                    // F8 (Jarvis, #68): which path a line took, so a scenario
+                    // can show a question reached the model.
+                    #[cfg(feature = "desktop-session-boot-test")]
+                    stage_b_log_line(b"DESKTOP arthur turn path=model");
                     // A9-D: the WM turns the emblem while the model runs;
                     // the reply's commit ends it.
                     #[cfg(feature = "arthur-busy-emblem")]
@@ -1278,11 +1316,14 @@ fn run_desktop_session(
                     let _ = (&mut *reply, &mut *state, &mut *backend);
                     #[cfg(feature = "arthur-memory")]
                     let _ = &mut *memory;
+                    #[cfg(feature = "desktop-session-boot-test")]
+                    stage_b_log_line(b"DESKTOP arthur turn path=no-model");
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
+                // (Opening the probe app is not one of the boot test's answers.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                {
+                if !probe_app {
                     answers += 1;
                 }
                 #[cfg(all(
@@ -1290,7 +1331,14 @@ fn run_desktop_session(
                     feature = "desktop-session-boot-test",
                     not(feature = "desktop-home-cycle-test")
                 ))]
-                let session_done = answers >= 2;
+                // F8's scenario asks a third question (one the clock must
+                // leave to the model).
+                let session_done = answers
+                    >= if cfg!(feature = "arthur-clock-boot-test") {
+                        3
+                    } else {
+                        2
+                    };
                 #[cfg(feature = "desktop-home-cycle-test")]
                 let session_done = answers >= 2 || cycle_round;
                 #[cfg(all(feature = "desktop-session-boot-test", not(feature = "desktop-home")))]
@@ -1404,6 +1452,68 @@ fn run_desktop_session(
     }
 }
 
+/// OT-88 A1a boot test: launch the probe app through the LaunchCap. The WM
+/// brings it to the front before it answers, so the next keys are its.
+#[cfg(feature = "atrium-apps-probe")]
+fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Handle) {
+    const TOKEN: u64 = 0x5052_4F42_4150_544B;
+    let module = libneo::atrium_launch::MODULE_PROBE_APP;
+    match surface.launch(cap, module, TOKEN, Some(TOKEN)) {
+        Ok(()) => {
+            stage_b_log_line(b"DESKTOP arthur probe app opened");
+            surface.write_text(b"I opened the probe app.");
+            #[cfg(feature = "atrium-apps-arthur-flood")]
+            arthur_flood(surface);
+            #[cfg(feature = "atrium-apps-arthur-hang")]
+            surface.commit_and_hang();
+            #[cfg(feature = "atrium-apps-arthur-yield-hang")]
+            surface.yield_and_hang();
+        }
+        Err(_) => {
+            stage_b_log_line(b"DESKTOP arthur probe app refused");
+            surface.write_text(b"I could not open the probe app.");
+        }
+    }
+}
+
+/// PR #15 review item 3 boot test: commit back to back for `FLOOD_NS`, each
+/// commit a request the WM must serve and reply to, so a request of Arthur's
+/// is ready at nearly every poll. The probe app (in front) still gets its keys.
+#[cfg(feature = "atrium-apps-arthur-flood")]
+fn arthur_flood(surface: &mut showcase_surface::ArthurSurface) {
+    const FLOOD_NS: u64 = 10_000_000_000;
+    let now = || libneo::sys_clock_gettime(libneo::CLOCK_MONOTONIC).unwrap_or(u64::MAX);
+    let until = now().saturating_add(FLOOD_NS);
+    let mut commits = 0u64;
+    while now() < until {
+        if surface.commit_next().is_err() {
+            break;
+        }
+        commits += 1;
+    }
+    let mut line = [0u8; 64];
+    let head = b"DESKTOP arthur flood done commits=";
+    line[..head.len()].copy_from_slice(head);
+    let mut len = head.len();
+    let mut digits = [0u8; 20];
+    let mut n = commits;
+    let mut d = 0;
+    loop {
+        digits[d] = b'0' + (n % 10) as u8;
+        d += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    while d > 0 {
+        d -= 1;
+        line[len] = digits[d];
+        len += 1;
+    }
+    stage_b_log_line(&line[..len]);
+}
+
 /// DS-1c: the first token Arthur's Lens requests count up from.
 #[cfg(feature = "desktop-lens")]
 const LENS_TOKEN: u64 = 0x4C45_4E53_544F_4B00;
@@ -1499,6 +1609,48 @@ fn launch_probes(
     stage_b_log_u64(exit as u64);
     stage_b_log_newline();
     Ok(())
+}
+
+/// F8: if `line` asks the time or the date, write the answer from the
+/// system clock in `zone` and log it; `false` leaves the line to the model.
+#[cfg(feature = "arthur-clock")]
+fn clock_reply(
+    surface: &mut showcase_surface::ArthurSurface,
+    line: &[u8],
+    zone: libneo::tz::ZoneId,
+) -> bool {
+    use libneo::clock_answer::{Question, answer, question};
+    use libneo::tz::Basis;
+    let Some(q) = question(line) else {
+        return false;
+    };
+    // The status before the clock: a confirmed status means the clock read
+    // after it is UTC.
+    let basis = Basis::of(libneo::sys_clock_realtime_status());
+    let Ok(ns) = libneo::sys_clock_gettime(libneo::CLOCK_REALTIME) else {
+        return false;
+    };
+    let realtime = ns / 1_000_000_000;
+    let a = answer(q, realtime as i64, basis, zone);
+    surface.write_text(a.as_bytes());
+    stage_b_log_bytes(match q {
+        Question::Time => b"DESKTOP arthur clock question=time",
+        Question::Date => b"DESKTOP arthur clock question=date",
+    });
+    stage_b_log_bytes(match basis {
+        Basis::Utc => b" basis=utc",
+        Basis::Rtc => b" basis=rtc",
+        Basis::Legacy => b" basis=legacy",
+    });
+    stage_b_log_bytes(b" zone=");
+    stage_b_log_u64(u64::from(zone));
+    stage_b_log_bytes(b" realtime_s=");
+    stage_b_log_u64(realtime);
+    stage_b_log_bytes(b" reply=\"");
+    stage_b_log_bytes(a.as_bytes());
+    stage_b_log_bytes(b"\"");
+    stage_b_log_newline();
+    true
 }
 
 /// DS-1: receive Home's intent (`b"I"` + printable ASCII, possibly empty)

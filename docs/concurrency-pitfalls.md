@@ -142,6 +142,14 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-96 | **An authority checked only by a right the holder can mint itself** (found 2026-10-29, the L2 pre-merge AAG, F1). Moving the keyboard route needed only `ACTIVATE` on a focus handle, and any process could create a focus and mint itself an `ACTIVATE` sibling (meant to be granted to the WM) ⇒ any client could take the route and read every key typed: an intent, a sign-in or lock password | Input routing / capabilities | **Was EXPOSED on main → fixed:** `SYS_INPUT_FOCUS_ACTIVATE` also requires the caller to hold `InputSystem` (non-delegable, kernel-minted into the session root); the root holds it wherever the focus syscalls exist | **Yes (`desktop_pointer_boot`: Arthur creates, mints and self-activates, and gets `EPERM`)** |
 | CP-97 | **A security mode held only in a user-space server's own state** (found 2026-10-29, the L2 pre-merge AAG). The session lock was the WM's: on Super+L the WM swapped the keyboard route to its own focus. A WM parked in a synchronous send (CP-57: a reply to a client that never receives it) runs no code ⇒ the chord sits in the latch, the route stays the client's, and keys typed after Super+L reach the client | Input routing / lock (OT-66 L2b) | **Guarded (kernel `sak-lock-route`):** the lock is a kernel route state. The WM registers its focus as the lock focus; Super+L sets the locked bit in the latch itself (lock-free, before any WM code runs); while it is set every route read is the lock focus, so a client receive that starts after it gets nothing. A receive already past its check re-checks after its pop, and nothing a client's queue held across a lock survives the unlock (the lock epoch). Only the input-system holder releases it | **Yes (`login_lock_park`: the WM parked in a reply, Super+L, then `x`; Arthur never gets it. Falsified: without the kernel half, Arthur gets `x`. `lock_route_races`: Super+L forced between each route check and its effect (Jarvis #160 items 1, 6, 7); each leg falsified by reverting its fix)** |
 | CP-98 | **A kill that assumes its target is Ready or parked** (found 2026-10-29, S1 in A1a; OT-98). A force-kill claims the process and then looks for its thread in the scans it knows (ready queues, channel and token parks), asserting it found one ⇒ a target in a state no scan covers trips the assertion, which the product kernel keeps on: the kernel panics. States on main: a thread that called `sys_exit` and waits unreaped in a zombie ring (the natural exit claimed `exit_state` only at the reap), a thread parked in `sys_wait` (in the *waited-on* process's queue, which may be in `DYING`: FAIL-A), a waiter in transit from that queue to Ready (FAIL-B, Janus #174 F2), and a target running on another CPU (S1's SMP=4 panic). With the assertion off, the first loses the exit code and the second leaves a killed thread parked until its target exits. Also: a losing exit producer overwrote the winner's exit code (Janus #174 F1) | Thread lifecycle / kill (`terminate`) | **Was EXPOSED on main → fixed (OT-98):** `record_exit_code` claims `EXITING_NATURAL` at the commit point and only the winner stores the code; `terminate` extracts a `sys_wait`-parked target from `PROCESSES` and `DYING`; the completion wakes under the `waiters` lock; after its scans `terminate` recounts survivors and finds a thread that left the kernel meanwhile (zombie ring, the reaper's mark, the thread count); `close_peer` wakes under the endpoint guard; the kill completes by thread count (#204), and a thread no scan finds is a counted diagnostic, not a panic; the waiter parks owning nothing (CP-30); last `Arc`s under `SYS_KILL`'s IF-off go to the deferred drop (CP-91). A running target is #204's survivor (CP-95) | **Yes (`kill_at_exit`: legs E, C, exited, wait, D, A, B, F, G, F1, race; E, F and G kill from an AP; controls `-a`…`-d`, `-f`, `-g` fail `kae_kill_unlocated` in their legs, `-e` hangs leg E's wait, `-control` fails `kae_kill_of_exited_not_esrch`, `-f1` fails `kae_f1_loser_changed_code`)** |
+| CP-99 | **A kernel copy to or from user memory with no fault recovery** (found 2026-10-31, the PM on main). `validate_user_buf` checks only that a range is in the user half; the copy then ran as a plain `copy_nonoverlapping` inside the SMAP window. A page that is unmapped, read-only, or unmapped by another thread of the process between the check and the copy faults in ring 0, and the page-fault handler halts on every kernel-mode fault ⇒ any process stops the machine with one syscall and a bad pointer | Syscall user copies / page-fault entry | **Was EXPOSED on main → fixed (`user-copy-fixup`):** every syscall user copy goes through `arch::x86_64::user_copy`, one `rep movsb` at a known RIP. The page-fault shim, for a ring-0 fault at that RIP on a user-half CR2, rewrites the saved RIP to the fixup and `iretq`s, and the copy returns EFAULT. Any other kernel-mode fault still halts. A concurrent unmap is the same case: the TLB shootdown completes before `vm_unmap` returns, so the copying CPU faults and recovers. Futex's compare is a second registered instruction (one aligned 4-byte load); the IPC copy uses the routine on the caller's side and, on the peer's, a permission-checked walk (`translate_user`) under the peer's `inner` lock held until the copy is done (`with_user_frame`), so the peer's sibling can't free the frame mid-copy; the test tail hook checks its word in the page tables when armed and writes it through the routine. **No committed state on EFAULT, for these paths:** SYS_READ moves the offset only after its copy; SYS_INFER_RUN closes the handles it installed; SYS_THREAD_JOIN writes the status while it still holds the exit record; SYS_SOCKET_RECV (TCP and UDP) and SYS_SOCKET_RECVFROM copy out before the bytes leave the socket queue; SYS_NET_TCP_ENABLE_TLS wipes the key before installing TLS. **Outside that guarantee:** SYS_INPUT_FOCUS_RECV and stdin SYS_READ take an event or byte that can't be put back; they check the buffer in the page tables first, but a sibling's unmap after the check loses it. SYS_PIPE_READ (L1a.1, `pipe`) is the same per chunk: it checks each chunk's destination before taking its bytes, and an unmap after the check returns the bytes that reached the buffer and loses the rest of that chunk (at most 512 bytes) | **Yes (`user_copy_fault`: SYS_HANDLE_INFO and SYS_READDIR (unmapped, crossing and read-only outputs; a read-only cursor), SYS_WRITE (unmapped and crossing inputs), SYS_READ (offset kept), futex (unmapped, and unmapped under the queue lock), IPC (read-only, unmapped and crossing buffers, both directions; and a sibling on a third CPU unmapping the peer's page mid-copy, which must wait: with the lock released early it fails `ipc_unmap_race result=3`), join (still joinable), TLS key (EFAULT, a half read-only key kept), UDP receive (datagram kept); `threads_exit_group` role 6 arms the tail hook on an unmapped word; control `neo-test-user-copy-fault-control` halts on the first. The futex leg removes the page deterministically; the receive and join legs use static bad buffers, not a concurrent unmap)** |
+| CP-100 | **An XSAVE area sized from CPUID.(0DH,0):EBX alone** (found 2026-11-02, the preview under WHPX). EBX is "the size for the features enabled in XCR0", so it is only right if whoever answers CPUID tracks the guest's XCR0. QEMU under WHPX (`kernel-irqchip=off`) answered 576 (x87\|SSE) with XCR0 = x87\|SSE\|AVX ⇒ every `xsave` wrote AVX state 256 bytes past the area: in the timer stub, over the saved registers and the iretq frame copy, so the first LAPIC tick's `iretq` took a #GP(0) and the boot froze; per-thread save buffers on the heap overran the same way | Interrupt entry / FPU state (`fpu::finish_xsave_init`) | **Was EXPOSED → fixed:** the area is the largest of EBX, 576, and each enabled component's offset + size from CPUID.(0DH,i) (`fpu_logic::xsave_area_size`); an understated EBX is logged (`cpuid_0d_ebx=576 (understated; …)`) | **Yes (`xsave_ebx_understated`: EBX forced to 576, the YMM/XMM/x87 context-switch legs must pass with area 832; control `neo-test-xsave-ebx-understated-control` (EBX trusted) takes the same #GP at `timer_isr_entry+0xe0`; host KATs `fpu-logic-tests`)** |
+| CP-101 | **Withdrawn (2026-10-31).** Filed in 27ce30f0 as a loopback-pump reordering race (two CPUs pop `OUTBOUND` in order, then inject out of order) behind the `fetch_broker` lost request. A per-segment trace then showed every segment delivered in order; the real cause was the TLS fixture server dropping a request decrypted during its handshake (fixed in `libneo::tls`, dcf91989). The `LOOPBACK_PUMP` lock was removed. The shape is still possible in principle but has not been observed | Network / loopback TCP (`tcp::pump_loopback_egress`) | **Not guarded; unproven hazard**, no change | **No (the discriminator it cited was the fixture bug)** |
+| CP-102 | **A check against a route epoch, then an act that reads it again** (found 2026-11-02, Jarvis's review of #61). Key auto-repeat checked the held key's activation epoch, then staged the repeat with `stage_event`, which stamps the stage with the epoch read *then* ⇒ a focus change or Super+L between the check and the stage (another CPU) gives a repeat checked for the old owner to the new owner or the lock screen | Input routing / key auto-repeat (`key-autorepeat`) | **Guarded:** the repeat carries the epoch it was checked under (`key_repeat::poll` returns it); `stage_event_at` drops it if the epoch has moved and otherwise stamps the stage with *that* epoch, so a move after staging is caught by the flush's comparison under `DELIVERY` (where every route change bumps it). The legacy routed path compares under `DELIVERY` (`route_event_at`). Pure decision: `key_repeat_logic::stage_action`, host-KAT'd | **Yes (`key_repeat_epoch`: a focus change and Super+L forced between the check and the stage, and Super+L between the stage and the flush; nothing reaches B or the lock screen. Falsified by `neo-test-key-repeat-epoch-control`, the fresh-read shape: FAIL `reason=repeat_crossed_focus_change`)** |
+| CP-108 | **A per-CPU init that republishes a global policy** (found 2026-11-02, #52 review). Every CPU ran `enable_sse`, and each AP's `finish_xsave_init` stored its own XSAVE size and mask into the globals every CPU saves with. An AP whose CPUID differed (a hybrid part, a hypervisor CPU model) would resize areas other CPUs had already allocated and were saving into: a smaller size overruns them (CP-100's shape), a larger mask faults XRSTOR elsewhere | SMP bringup / FPU state (`fpu::finish_xsave_init`, `smp::ap_entry`) | **Was EXPOSED → fixed:** the boot CPU publishes the policy once (`POLICY_PUBLISHED`); an AP only checks it (`fpu_logic::ap_verdict`: XSAVE support, XCR0 takes the mask exactly, its own area need <= the policy's) and never stores it; a CPU that fails stays offline, and bringup moves on (`APS_REJECTED`) | **Yes (`xsave_ap_policy`: the first AP needs 64 bytes more (must stay offline), the second 64 bytes less (online, policy unchanged), and every AP counted as started signalled ready; controls `neo-test-xsave-ap-policy-control` (APs republish) FAILs `larger_ap_not_rejected`, `neo-test-xsave-ap-policy-late-sample` (rejection baseline read after launch) times out; host KATs `fpu-logic-tests::ap_policy`)** |
+| CP-109 | **A fatal trap that prints before it panics** (found 2026-11-02, #52 review). The kernel-mode #GP/#PF/… handlers printed their diagnostics through `serial_println!` (a blocking `SERIAL` lock) and only then reached the panic handler, whose console takeover is the part that never waits. A CPU that faults while holding `SERIAL` (mid-print) spins on its own lock forever: no panic screen, on a target with no serial port | Exception entry / panic path (`idt::fatal_kernel_trap`) | **Was EXPOSED → fixed:** every fatal kernel-mode exception panics first, its diagnostics (name, err, cr2 for #PF, rip, `link_rip`, rsp, cs, ss, rflags) in the panic message; the test harness keeps print-then-fail-by-name | **Yes (`fb_gp_holding_serial`: a kernel #GP while holding `SERIAL` must paint the panic on screen and report over raw UART; control `neo-test-fb-gp-holding-serial-control` (print first) times out; the product witness `product-xsave-boot.sh control` ends in the panic screen with the #GP line)** |
+| CP-110 | **Inline asm that saves a register around an instruction and lets the allocator pick it for an output** (found 2026-11-02, the product-kernel witness). `push rbx; cpuid; mov {out:e}, ebx; pop rbx` with `out = lateout(reg)`: at opt-level 3 the allocator chose rbx for `out`, so `pop rbx` threw CPUID's EBX away and the caller read whatever rbx held (a stack address). An AP then computed a 2 GiB XSAVE need. Three copies (`fpu`, `cpuid_leaf7_ebx` (SMEP/SMAP), `tlb_shootdown`) | Any CPUID read | **Was EXPOSED → fixed:** `core::arch::x86_64::__cpuid_count` everywhere; no hand-written CPUID asm with an EBX output remains | **Yes (`product-xsave-boot.sh witness`: the opt-level-3 product kernel must admit the AP; the defective asm left it offline)** |
+| CP-111 | **A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O** (standing rule, 2026-11-08, from J.c.'s architecture read). The general form of CP-91 and CP-92, and CP-56's `Drop` blind spot at a global lock: cleanup that waits on another CPU (a shootdown), takes another lock, or does I/O, run inside the locked (often IF-off) section, can wait on what a CPU spinning for that lock must provide | Any global lock (`CAP_GRAPH` today; the tensor and model object paths next) | **Guard: the last reference is detached and released at a deferral point outside the locked section (the reaper, a post-unlock tail in the caller, or a work queue). A `Drop` that only decrements a count and returns is fine anywhere** | **Yes for its instances (CP-91, CP-92, CP-98 discriminators); every new object with drop-time teardown adds its own** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
 prevents it and there is (or should be) a discriminator; *N-A* = the construct doesn't exist in our kernel
@@ -4506,3 +4514,331 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   exit becomes irrevocable, and must know every place a live thread can be, including the moves between
   places; an assertion over a list of places is only as good as the list. The payload of a claim is written
   by its winner only.
+
+### CP-99 — A kernel copy to or from user memory with no fault recovery
+
+- **Shape.**
+  - A syscall checks that a user range is in the user half (`validate_user_buf`), then copies with an
+    ordinary load or store inside `with_user_access`.
+  - The check says nothing about whether the pages are mapped or writable. The kernel can't make it say
+    that: another thread of the same process can `vm_unmap` or `vm_protect` the page between the check and
+    the copy.
+  - The resulting ring-0 page fault reaches the handler's kernel-mode branch, which halts. So one syscall
+    from any process stops the machine.
+- **Why translating first is not a guard.** A walk of the page tables before the copy only moves the
+  window (check-then-use). The fault itself has to be survivable.
+- **Guard (`user-copy-fixup`).**
+  - The kernel touches user memory through one routine, `arch::x86_64::user_copy::copy`: a `rep movsb`
+    at the symbol `neo_user_copy_insn`, followed by a fixup that returns RCX (the bytes left).
+  - The page fault's entry shim checks before it calls into Rust. For a CPL-0 fault whose saved RIP is
+    that instruction and whose CR2 is below 2^47, it rewrites the saved RIP to `neo_user_copy_fixup`, drops
+    the error code and `iretq`s.
+  - The shim saves and restores the one register it uses. The CPU frame restores the copy's RFLAGS (AC=1
+    in its SMAP window, its IF). At CPL 0 there is no GS to swap (CP-44).
+  - Every other fault takes the old path, so a kernel bug still halts. That includes a fault in the
+    routine on a kernel-half address.
+  - Prior art, read for principle only: Linux's exception table (`__ex_table`, GPL), FreeBSD's
+    `pcb_onfault`, and Redox's `arch_copy_to_user` RIP range (MIT).
+- **SMP.**
+  - Thread A copies while thread B unmaps the page. B's `vm_unmap` clears the PTE and shoots down the TLB
+    on every CPU running the address space before it returns.
+  - So A either completes the copy before the shootdown, with the old translation, or faults after it and
+    gets EFAULT.
+  - The copy runs with the SMAP window open, never across a switch (CP-49), and holds no lock the fault
+    path takes. The fixup path takes none.
+- **Discriminator.**
+  - `user_copy_fault` drives SYS_HANDLE_INFO and SYS_READDIR (its entry and its cursor) with an
+    unmapped, a page-crossing and a read-only output buffer, and SYS_WRITE with an unmapped and a
+    page-crossing input buffer (a read-only input is readable, so valid). Each must return EFAULT, and
+    then a well-formed call must work.
+  - Its control, `neo-test-user-copy-fault-control`, turns off the shim's recovery. Its first leg then
+    halts (`unexpected_trap trap=page_fault`, CR2 the unmapped page).
+- **The other sites (cross-family review of PR #13).**
+  - Futex's compare-before-park reads its 32-bit word with `user_copy::try_load_u32`: one aligned
+    `mov eax, [rdi]` at `neo_user_load_u32_insn`, the shim's second registered RIP, sharing the fixup (RCX
+    is 4 before the load). The compare stays a single access. A fault returns EFAULT from `wait_on_key`,
+    unparked, and the queue guard drops normally.
+  - The IPC rendezvous copies between two address spaces. The side live on this CPU goes through the
+    routine at its user VA. The other side goes through the HHDM inside `Pmap::with_user_frame`, which
+    takes that Pmap's `inner` lock, resolves the page with `Pmap::translate_user` (present and user at
+    every level, a 4 KiB leaf, and writable for a destination) and holds the lock until the chunk is
+    copied. A receiver's read-only page is EFAULT, where the HHDM copy used to write it, and a sibling of
+    the peer that unmaps the buffer waits for the copy: every path that frees a mapped frame clears its
+    PTE under `inner` first (CP-37). Lock order: channel guard → a peer Pmap's `inner`; with neither side
+    live (harness callers), a bounce buffer takes one Pmap's lock at a time.
+  - `tail_hold_for_test` checks its flag mapped user-writable in the page tables when armed (no write)
+    and writes it through the routine.
+- **No partial state on EFAULT (the paths it covers).** A fault recovered mid-syscall leaves no kernel
+  state committed on these paths, because the user copy happens before the commit, under the same lock:
+  - SYS_READ advances the offset only after its copy (`OpenFile::read_as_then`).
+  - SYS_INFER_RUN closes the output handles it installed.
+  - SYS_THREAD_JOIN writes the status under the registry lock before it collects the exit record, and
+    un-claims it if the write faults.
+  - SYS_SOCKET_RECV and SYS_SOCKET_RECVFROM copy out (address, its length, data) under the socket lock
+    before the bytes or datagram leave the queue (`TcpSocket::recv_stream_with`,
+    `Socket::recv_from_with`); an address buffer too small for the source is EINVAL with the datagram
+    still queued.
+  - SYS_NET_TCP_ENABLE_TLS wipes the caller's key before installing TLS. Its pages are checked writable
+    in the page tables first, so a key that is partly read-only stays whole; a sibling's unmap after that
+    check can still leave it half wiped, with TLS not installed.
+- **Outside the guarantee.** SYS_INPUT_FOCUS_RECV pops an event that can't be put back (Super+L's
+  re-check must follow the pop, so the copy can't go first), and stdin SYS_READ takes bytes from device
+  FIFOs. Both check their buffer in the page tables first (`check_user_writable`, no write), so a static
+  bad buffer is EFAULT with nothing taken; a sibling that unmaps the buffer after the check makes the
+  event or bytes lost. Neither has a scenario leg.
+- **Discriminator.**
+  - `user_copy_fault` also drives SYS_READ (an unmapped, a crossing and a read-only buffer, then a
+    well-formed read that must return the file's first bytes), SYS_READDIR with a read-only cursor,
+    futex waits on an unmapped word and on a word whose page the scenario kernel unmaps between the
+    translation and the re-check, IPC rendezvous with read-only, unmapped and crossing buffers in both
+    directions, a join with a faulting status pointer (the thread must still be joinable), TLS with a
+    read-only and a half read-only key (the writable half must be unchanged), and UDP receives into an
+    unmapped and a read-only buffer and with a read-only address buffer (the datagram must still arrive
+    whole). These use static bad buffers; the TCP receive has no leg (it needs an established
+    connection).
+  - Its parallel-unmap IPC leg pins a sender, a receiver and an unmapping sibling to CPUs 3, 1 and 2. The
+    scenario kernel holds a 72-byte copy open until the sibling's unmap is waiting on the peer's lock, then
+    a while longer (both waits bounded in TSC cycles, inside the TLB shootdown timeout), and records
+    whether the peer's page stayed mapped; the harness requires it (7).
+    Revert-checked: releasing the lock before the copy fails it (`ipc_unmap_race result=3`).
+  - The control's halt is recorded in `Plans/EVIDENCE-2026-11-01-pr13-user-copy-fault-control.serial.log`.
+  - `threads_exit_group` role 6 arms the tail hook with an unmapped word and expects EFAULT.
+- **Open.** Input-focus receive and stdin (above): a sibling's unmap after the check loses the event or
+  bytes; the loss stays inside that process.
+
+### CP-100 — An XSAVE area sized from CPUID.(0DH,0):EBX alone
+
+- **Shape.**
+  - `finish_xsave_init` set XCR0 to x87|SSE|AVX, then took the XSAVE area size from CPUID.(0DH,0):EBX.
+  - EBX is defined as the size for the features *currently enabled in XCR0*. A hypervisor that answers CPUID
+    from its own idea of XCR0 can get it wrong. QEMU under Windows Hypervisor Platform (WHPX,
+    `kernel-irqchip=off`) answered 576, the x87|SSE size, after the guest had enabled AVX.
+  - `xsave` with RFBM = x87|SSE|AVX then writes the AVX component at offsets 576..832, past the area's end.
+    In the timer stub the area sits just below the anchor slot, the 15 saved registers and the iretq frame
+    copy, so they were overwritten; the stub's `iretq` popped a null CS and took a #GP(0) on the first LAPIC
+    tick (`timer_isr_entry+0xe0`). Each thread's heap-allocated save buffer, sized the same way, overran
+    its allocation on every switch.
+  - TCG (and real CPUs) answer EBX = 832, so CI never saw it.
+- **Guard.** `fpu_logic::xsave_area_size`: the largest of EBX, the legacy region plus header (576), and, for
+  each component i >= 2 enabled in XCR0, CPUID.(0DH,i):EBX (its offset in the standard format) plus
+  CPUID.(0DH,i):EAX (its size), rounded up to 64. The per-component values are static properties of the
+  CPU model, not of XCR0. The boot log names EBX and says when it was understated.
+- **How it was found.** The preview's photo gave `rip=…9d79b01c`. The exact preview kernel (`bef433fa`) was
+  rebuilt with `cargo xtask image-kernel-build`; Limine's KASLR slide is page-aligned, and the only
+  instruction at page offset 0x01c that can #GP(0) was the timer stub's `iretq`. Its boot line
+  `FPU save=xsave area=576 mask=0x7` named the cause. The `#GP` line now also prints `link_rip=` (the
+  KASLR slide removed), so the next photo maps straight to the ELF.
+- **Discriminator.** `xsave_ebx_understated` forces EBX to 576 and runs `xsave_ymm_context_switch`'s legs
+  (YMM/XMM/x87 preserved across a context switch, timer ticks live); it must pass with area 832. Its
+  control, `neo-test-xsave-ebx-understated-control`, trusts EBX and takes the same #GP at
+  `timer_isr_entry+0xe0` under TCG. Host KATs (`tools/fpu-logic-tests`) check the size against the SDM's
+  component offsets.
+- **Related, not fixed here.** `timer_isr_entry` stashes r10/r11 in one global `TIMER_SCRATCH` for all
+  CPUs (its comment says "Phase 2+ SMP will need per-CPU scratch"): two CPUs entering at once can hand each
+  other's interrupted threads the wrong r10/r11.
+### CP-101 — Withdrawn: loopback pump reordering (not the cause)
+
+- **Status.** Withdrawn 2026-10-31. Filed in 27ce30f0 to explain `fetch_broker`'s lost first request (OT-61
+  rung 5c) as two CPUs draining `tcp::pump_loopback_egress` and injecting one connection's segments out of
+  order. That was an inference, not an observation.
+- **What the trace showed.** A per-segment trace in `inject_segment` (each segment's seq, length, flags and
+  the receiver's `rcv_nxt` before and after) caught failing runs with every segment, the request included,
+  delivered in order and accepted. The request reached the server's socket; the server lost it in user space.
+- **The real cause.** When the client's Finished and its request arrive in one read, rustls (unbuffered API)
+  completes the handshake in `ReadTraffic` and counts the yielded record as consumed. The fixture server took
+  that state as "done" without reading it, so the request went out with the handshake bytes. Fixed in
+  `libneo::tls` (dcf91989); `LOOPBACK_PUMP` removed; 8 of 8 first attempts pass.
+- **Left open.** Pop-then-release-then-inject from many CPUs could still reorder in principle. Nothing has shown
+  it, and the number stays reserved so it isn't reused. Anyone who sees an out-of-order loopback segment drop
+  (`tcp: loopback segment dropped` stays in the log) should reopen it with a trace.
+- **Lesson.** Instrument before guarding: a lock added on an inferred race "fixed" a flake by timing alone.
+
+### CP-105 — Stopping the other CPUs: an in-flight shootdown, a CPU that never stops, a lock a parked CPU holds
+
+- **Shape.** A shutdown (or panic, or kexec) path stops every other CPU with an IPI, an NMI as the
+  fallback, then carries on as if it were alone. Three traps, each independent:
+  1. **The stopper stops answering too early.** It masks interrupts before sending STOP. A sender already
+     in its IF=0 ack wait has targeted the stopper; the stopper can't ACK, the sender can't take STOP, and
+     the sender's shootdown deadline (50 ms) fires before the stopper's NMI escalation (CP-64's shape, on
+     the shutdown path).
+  2. **A CPU that never stops is assumed stopped.** Some CPU takes neither the STOP IPI nor the NMI (an
+     earlier NMI still running blocks the second; a wedged CPU). Code after the stop then forces a lock
+     open, programs a shared register pair (I/O APIC index/data, PCI CF8/CFC), or waits on a lock that CPU
+     holds. A wait bounded only by a timer that has stopped (a PM timer reading a constant) never reaches
+     the fallback at all.
+  3. **A parked CPU holds a lock.** STOP is taken only with interrupts on, so its parks hold no IRQ-safe
+     lock, but they can hold a plain spin lock taken with interrupts on; an NMI park can hold anything. Any
+     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free. **That includes
+     the heap allocator's lock, taken by any drop of a heap value** (a `Vec` going out of scope), so a
+     plan built before the stop and dropped after it hangs the stopper before the power-off.
+- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5; the allocator-lock case
+  and the per-step waits by his review of P3b-2 (#7), items 2a and 3.
+- **Guard (OT-90 P3b-1).**
+  - The stopper takes the TLB-shootdown sender lock with interrupts on (waiting out and acknowledging any
+    sender in flight), then masks interrupts and leaves the ready set, and never releases the lock
+    (`tlb_shootdown::close_for_stop`). A CPU that later tries to send waits with interrupts on and takes
+    STOP.
+  - Each wait is bounded twice: the PM timer, and a poll count with a POST-port write per poll.
+  - After the stop the stopper takes no shared lock: the UART is written lock-free (bytes may interleave
+    with a holdout's), and the power plan is read from a copy taken before the stop.
+  - With any holdout, the single-CPU steps (I/O APIC and PCI masking) are skipped and the path goes straight
+    to the power-off or reset, which ends every CPU. The holdouts are reported.
+  - **(P3b-2, K6.)** K6's plan (heap vectors, built before the stop) is held in `ManuallyDrop`, so no path
+    after the stop frees it, the holdout return included. Every K6 wait is bounded by a poll count as well
+    as the timer (`power_logic::wait_bounded`), so a frozen timer can't hold it either.
+- **Discriminators.** `ot90_stop_shootdown`: an AP sends IF=0 shootdowns at every other CPU while K4
+  starts; every AP must park by STOP (with the old mask-first order it fails 4/4, the sender parked only
+  by the NMI). `ot90_stop_wedged`: the highest AP ignores STOP and, in its NMI handler, takes the UART lock
+  and never acknowledges; the PM timer reads as frozen. K4 must end on its poll count, report that AP as
+  the holdout, skip K5 and reach S5. `ot90_quiesce_heap_held` (P3b-2): the highest AP ignores STOP, takes
+  the allocator's lock in its NMI handler and parks holding it; K6 must run and S5 must still come (with the
+  plan dropped at the end of `stop_world` it hangs, 4 of 4). Host KAT `a_k6_wait_ends_on_a_frozen_pm_timer`:
+  the real `pm_wait` on a timer reading 0, with a controller that never finishes.
+- **Source.** Ours, with the principle from Linux's `smp_send_stop` / `crash_smp_send_stop` (read for
+  principle only): the stop is best-effort, the caller must not assume it worked, and panic-time printing
+  uses a lock-free console path.
+
+### CP-106 — A C library's "unlocked until threads exist" streams, in a process whose threads aren't its own
+
+- **Shape.** musl starts the standard streams unlocked (`stdout`/`stderr` have `lock = -1`) and turns locking
+  on in `pthread_create` (`libc.threaded`, `__stdio_*` locks). That is sound in a process where only
+  `pthread_create` makes threads. In a bundle process the threads are std's (`std::thread::spawn` over
+  `SYS_THREAD_CREATE`), and any of them can call into C. neo-crt compiles none of musl's pthread code, so
+  locking never turns on. Two threads in `printf` on the same stream then share `__fwritex`'s static buffer
+  with no lock: a run with no newline overruns the buffer (two threads, a 600-byte string each). The
+  outcome is memory corruption next to the buffer, not just interleaved text.
+- **The general form.** A runtime that keys a safety mode on "has this program made a thread yet?" breaks
+  when the program's threads come from somewhere the runtime can't see: a host language's thread API, a
+  foreign pool, a callback from another runtime's thread.
+- **Guard (#261, C3a).**
+  - neo-crt's `c/stdout.c` and `c/stderr.c` are musl's with `.lock = 0`, so every `FLOCK` locks, with or
+    without pthreads.
+  - `__lockfile`/`__unlockfile` are Rust (`userland/neo-crt/src/lib.rs`): an owner table under a std
+    `Mutex` and `Condvar`, keyed by the stream's address, with musl's contract (1 = this call took the lock,
+    0 = this thread already holds it). musl's own versions need `__pthread_self()->tid` and its futex,
+    which neo-crt doesn't have.
+  - The other half of the same gap: libc++ is built `_LIBCPP_HAS_NO_THREADS` in C3a (`shared_ptr` counts
+    not atomic, `call_once` unsynchronised), so no multi-threaded C++ until C3b's pthread rebuild (C3a THINK
+    §6.1, a hard rule).
+- **Discriminators (`cxx_runtime_smoke`).**
+  - `ok(16)`: a thread holds stdout's lock through `__lockfile`, and a second thread's `fputs` to stdout
+    must not return for 200 ms, then return once the lock is let go; the holder taking it again gets 0.
+    Control: musl's `stdout.c` (`lock = -1`) makes the `fputs` return at once, `FAIL(16)`.
+  - `ok(17)`: six threads print 600-byte runs with no newline at once (the bounce's repro).
+- **Source.** The PM's AAG on #261 (2026-10-31). Principle: musl's `__stdio_*` locking and `libc.threaded`
+  (`src/thread/pthread_create.c`), read for the design only.
+
+### CP-107 — A sequence condvar that wakes after dropping its lock, on a futex that wakes the lowest slot first
+
+- **Shape.**
+  - A condvar built as "a sequence number under a lock, plus a wait queue": a waiter records the number, releases
+    the caller's mutex, and sleeps until the number changes; `signal` bumps the number and wakes one sleeper.
+  - If `signal` releases the lock **before** it wakes, a thread can arrive in the gap, record the *new* number and
+    start sleeping. If the wake can reach that late thread, it sees no change and sleeps again. The signal is
+    spent, and the waiter it was for (asleep at the time of the call, as POSIX requires) sleeps on.
+  - Whether the late thread can be woken first depends on the wait queue. Our futex puts a waiter in the first free
+    queue slot and wakes the lowest slot first (`kernel/src/sched/futex.rs`), so a late waiter can take a slot
+    freed by an unrelated waiter and be first in line. A FIFO queue hides the bug.
+- **Guard (#67, C3b).** `neo-crt/src/seqcond.rs`: `signal` and `broadcast` wake while holding the sequence lock. A
+  thread can only record a number while holding that lock, so every thread the wake can reach recorded the old
+  number and returns to its caller.
+- **Discriminators.**
+  - Host KAT `tools/neo-crt-logic-tests`, `signal_reaches_the_waiter_it_was_for`. A model condvar wakes the newest
+    waiter first and, inside `notify_one`, waits for one more waiter to register. Waiter A waits; the producer
+    signals; waiter B starts waiting during the wake. A must get the signal.
+  - Its control, `control_waking_after_unlock_loses_the_signal`, runs the old order (bump, unlock, wake), and A
+    must **not** get the signal. That keeps the model honest: if the control ever passes, the KAT no longer
+    reproduces the race.
+  - On target, `cxx_runtime_smoke` items 22 and 27 (condvar wake and timeout, pthread and libc++).
+- **Source.** Chad's cross-family review of #67 (relay 299, item 2): a deterministic scheduling model of the first
+  version reproduced both waiters asleep after `signal` returned. Principle: the standard "signal under the
+  condvar's internal lock" rule for sequence-counter condvars (as in std's own futex condvar, which bumps and wakes
+  in one step on the futex word).
+
+### CP-108 — A per-CPU init that republishes a global policy
+
+- **Shape.** `enable_sse` runs on every CPU. The boot CPU decided the XSAVE size and mask and stored them in
+  the globals the timer stub, the syscall path and every `FpuState` use. Each AP's `finish_xsave_init` then
+  recomputed them from its own CPUID and stored them again. With identical CPUs that is harmless; with an AP
+  whose CPUID differs it silently changes the save area every CPU already uses.
+- **Guard.** One policy, owned by the boot CPU and immutable once published (`POLICY_PUBLISHED`). An AP runs
+  `check_ap`: XSAVE support for the policy's components, XCR0 reads back exactly the policy's mask, and its
+  own area need fits the policy's area (`fpu_logic::ap_verdict`). A CPU that fails halts before any per-CPU
+  init and stays offline; `bring_up_aps` sees `APS_REJECTED` move and goes on to the next AP. A CPU under an
+  FXSAVE policy is always admitted. A rejected AP is also kept out of the AVX2 census and HWP.
+- **Discriminator.** `xsave_ap_policy` (NEO_SMP>=3): the first AP checked needs 64 bytes more than the policy
+  (must stay offline), the second 64 bytes less (must come online without shrinking it); the YMM/XMM/x87
+  context-switch legs then run on the admitted CPUs. Control: each AP republishes, as before.
+- **Second trap, in the guard itself (#57 re-check, relay 274).** `bring_up_aps` read the rejection count
+  *after* `cpu.bootstrap` had published the AP's entry. A rejecting AP increments it as its first act, so it
+  could land before that read: the rejection was lost, the BSP waited out its spin limit and counted the AP
+  as started. The baseline is now read before `bootstrap` (bringup is serialized, so the next increment is
+  this AP's). Discriminator: `xsave_ap_policy` holds the BSP until the AP decides (the window always open)
+  and requires `aps_started == aps_ready`; control `neo-test-xsave-ap-policy-late-sample` (the read after
+  launch) times out.
+- **Third, from CP-105's stop path.** A rejected AP halts before its IDT is loaded, but it was registered
+  (`apic::register_lapic_id`) before launch, and `cpu_stop::stop_others` sends a STOP IPI and then an NMI to
+  every registered CPU. Bringup now unregisters it (`apic::unregister_lapic_id`). `xsave_ap_policy` requires
+  CPU 1 (the rejected one) out of the registry and CPU 2 in it; with the unregister removed it FAILs
+  `rejected_ap_still_registered`.
+
+### CP-109 — A fatal trap that prints before it panics
+
+- **Shape.** A kernel-mode exception handler printed its trap lines with `serial_println!`, then called the
+  panic handler. `serial_println!` takes `SERIAL` and waits. If the fault happened while this CPU held
+  `SERIAL` (a fault inside a print), the handler deadlocks on its own lock before the panic handler's
+  takeover (`panic_takeover` + `serial::enter_panic`, which never waits) runs.
+- **Guard.** `idt::fatal_kernel_trap`: outside the test harness it panics first, with every diagnostic in
+  the panic message (`FatalTrap`'s `Display`); nothing blocking runs before it. The ring-0-fault-halts hook
+  still runs first. Builds without `fb-progress-console` have no lock-free panic print at all; the product
+  image has it.
+- **Discriminator.** `fb_gp_holding_serial`: takes `SERIAL`, never releases it, and loads through a
+  non-canonical address; the panic must reach the screen and the raw UART, and come from the #GP path.
+  Control: print first (must time out).
+
+### CP-110 — An asm output that aliases the register the asm saves
+
+- **Shape.** Hand-written CPUID: `push rbx`, `cpuid`, `mov {out:e}, ebx`, `pop rbx`, with `out` a `reg`
+  operand. Nothing stops the allocator from picking rbx for `out` (it did, at opt-level 3, in
+  `fpu::cpuid_count` inlined into the AP check); the `pop` then restores the old rbx over the result.
+  Debug builds happened to pick another register, so every scenario kernel passed.
+- **Guard.** Use `core::arch::x86_64::__cpuid_count`, which handles rbx correctly. Any future asm that saves
+  and restores a register around an instruction must give its outputs explicit registers that differ from
+  the saved one.
+- **Discriminator.** `product-xsave-boot.sh witness` boots the opt-level-3 product kernel on two CPUs; the
+  defective read left the AP offline (`AreaTooSmall { need: 2146115904, … }`).
+
+### CP-111 — A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O
+
+- **Trap.** An object's `Drop` has side effects: it waits on another CPU (a TLB shootdown), takes another lock, or
+  does I/O. If the last reference is dropped while a global lock is held, or inside an interrupts-off section that
+  holds one, the cleanup can wait on something a CPU locked out by that lock must provide, and the system hangs.
+  CP-56's "known blind spot" names the general trap (a `Drop` has no call site to audit; it runs wherever the last
+  reference dies). This is its global-lock instance, made a standing rule.
+- **The checkable condition.** The danger starts at the first wait, lock or I/O inside the cleanup. A `Drop` that
+  only decrements a count and returns is fine anywhere. "Global lock" is the practical scope; the review question
+  that makes it enforceable is whether the cleanup can block.
+- **Known instances.**
+  - **CP-91.** A `CAP_GRAPH` scan held the last reference to a process; its drop freed the page tables and waited on
+    a TLB shootdown that a CPU spinning on the same lock with interrupts off could never answer. Fix: the scan keeps
+    every touched process alive (`CapGraph` pins scanned `Arc`s); after the unlock, a last one is handed to the
+    reaper (`Arc::into_inner`).
+  - **CP-92.** A last tensor release under `CAP_GRAPH` could park on a Reserved slot with interrupts-off waiters
+    behind it. Fix: removals return `Detached`; tensor counts are released after the unlock.
+  - **CP-98.** The kill path: last `Arc`s under `SYS_KILL`'s IF-off section go to the deferred drop.
+- **Standing rule.** Any object whose drop-time cleanup can wait on another CPU, take any other lock, or do I/O must
+  not have its last reference dropped under a global lock. The release is handed to a deferral point (the reaper, a
+  post-unlock tail in the caller, or a work queue), never inside the locked section.
+- **Review checklist** (part of every concurrency-touching review that adds or moves a release):
+  1. Can this `Drop` run while a global lock is held, directly or through a function that takes one?
+  2. If so, does its cleanup wait on another CPU, take another lock, or do I/O?
+  3. If both, is the last reference detached and released at a deferral point outside the locked section?
+- **Discriminators.** Per instance: the `cap_graph_revoke` F1 leg and the `Pmap::drop` witness (CP-91), the F2 leg
+  and the `release_tensor` and park witnesses (CP-92), and the `kill_at_exit` legs (CP-98). Each new object type with
+  drop-time teardown brings a witness that its release under the lock is deferred, and a control that drops it in
+  place and must fail.
+- **Forward note.** As tensors and models become first-class objects with drop-time teardown (page tables,
+  accelerator memory release, DMA unmap), this rule applies to every path that can release them under `CAP_GRAPH`
+  or an equivalent global lock.
+- **Source.** J.c.'s architecture read of the README (2026-11-08), drafted from the 10-27/28 review finds (Janus F1
+  and F2 on #166).

@@ -268,6 +268,59 @@ pub fn pm_wait(
     }
 }
 
+/// OT-90 K6 (Janus's #7 review, item 2a): polls allowed per microsecond of a
+/// K6 wait, independent of the timer. Each poll on real hardware reads the PM
+/// timer port or writes the POST port (about 1 us), so 4 polls per us keeps
+/// the timed bound the one that ends first on a working timer and bounds a
+/// frozen one (a PM timer that reads a constant) at a few times the wait.
+pub const K6_POLLS_PER_US: u64 = 4;
+
+/// OT-90 K6: wait up to `us` for `cond`, bounded twice: by `wait` (the PM
+/// timer, `power::spin_us`) and by `us * polls_per_us` calls of `cond`, a
+/// count no timer can freeze. Returns whether `cond` held; running out of
+/// either bound is `false`, never mistaken for completion.
+pub fn wait_bounded(
+    us: u64,
+    polls_per_us: u64,
+    wait: &dyn Fn(u64, &mut dyn FnMut() -> bool) -> bool,
+    cond: &mut dyn FnMut() -> bool,
+) -> bool {
+    let cap = us.saturating_mul(polls_per_us).max(1);
+    let mut polls = 0u64;
+    let mut met = false;
+    wait(us, &mut || {
+        if cond() {
+            met = true;
+            return true;
+        }
+        polls += 1;
+        polls >= cap
+    });
+    met
+}
+
+/// OT-90 K6's outcome, counted as it runs. A disk counts as stopped only
+/// when its controller confirmed the stop, and a bus master as cleared only
+/// when Bus Master Enable read back clear.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct K6Tally {
+    pub disks_stopped: u32,
+    pub disks_failed: u32,
+    pub bus_masters_cleared: u32,
+    pub bus_masters_failed: u32,
+}
+
+impl K6Tally {
+    /// Janus's #7 review, item 1: the IOMMU's translation goes off only once
+    /// every bus master is confirmed stopped. Otherwise it stays on, so a
+    /// function still doing DMA stays inside its domain until K7's power-off
+    /// or reset ends it. A disk whose own stop failed is covered by its
+    /// function's Bus Master Enable, which this checks.
+    pub fn iommu_may_go_off(&self) -> bool {
+        self.bus_masters_failed == 0
+    }
+}
+
 /// The highest physical address a SystemMemory register may name: 52 bits,
 /// the x86-64 architectural MAXPHYADDR limit (so `PhysAddr::new` accepts it),
 /// less the 8-bit register itself.
@@ -508,6 +561,19 @@ pub enum ResetStep {
     Cf9,
     /// A zero-limit IDT, then `int3`.
     TripleFault,
+}
+
+/// OT-90 P3b (Janus's #6 re-check, item 2): whether `step` uses a register
+/// pair another CPU could be in the middle of using: a FADT reset register
+/// in PCI configuration space goes through 0xCF8 (address) then 0xCFC (data),
+/// and a CPU still running between the two writes redirects the reset byte
+/// to its own function. With a K4 holdout such a step is skipped and the
+/// chain goes on (the keyboard pulse, 0xCF9 and the triple fault are single
+/// port writes, or no port at all).
+// Used by the kernel only with `power-stop-cpus`.
+#[allow(dead_code)]
+pub fn step_uses_shared_ports(step: &ResetStep) -> bool {
+    matches!(step, ResetStep::FadtRegister { reg, .. } if reg.space == SPACE_PCI_CONFIG)
 }
 
 /// The restart chain, in order. At most four steps.

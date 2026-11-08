@@ -352,9 +352,9 @@ impl ArthurSurface {
             .map_err(|_| 46)
     }
 
-    /// A9-D: show the WM's busy emblem right of the caret until the next
-    /// commit: reserve its rect (scrolling a line if it must), commit what
-    /// that and the text before it drew, then send `OP_BUSY`. A WM that
+    /// A9-D: show the WM's busy emblem in the header until the next commit:
+    /// put the quiet "…" on the reply line, commit it and the text before
+    /// it, then send `OP_BUSY` for the header's emblem rect. A WM that
     /// refuses the rect shows no emblem; the generation goes on without one.
     #[cfg(feature = "arthur-busy-emblem")]
     pub fn show_busy(&mut self) -> Result<(), i32> {
@@ -634,6 +634,63 @@ impl ArthurSurface {
         }
         self.client_serial = serial;
         Ok(serial)
+    }
+
+    /// PR #15 re-check item 3 boot test: send one commit and never receive
+    /// its reply, then never take another message (the WM must end this
+    /// Arthur alone and keep its other clients).
+    #[cfg(feature = "atrium-apps-arthur-hang")]
+    pub fn commit_and_hang(&mut self) -> ! {
+        let serial = self.client_serial.saturating_add(1);
+        let (x, y, width, height) = self.damage();
+        let damage = encode_damage_rect(x, y, width, height);
+        let _ = sys_buffer_commit_damage(self.buffer, &damage);
+        let request_id = self.next_request_id();
+        let sent = send_request(
+            self.surface,
+            request_id,
+            Request::CommitDamage(libneo::atrium_protocol::CommitDamage {
+                identity: self.identity,
+                client_serial: serial,
+                x,
+                y,
+                width,
+                height,
+            }),
+        );
+        crate::stage_b_log_line(if sent {
+            b"DESKTOP arthur hanging reply=never-received"
+        } else {
+            b"DESKTOP arthur hanging send=failed"
+        });
+        loop {
+            libneo::sys_sched_yield();
+        }
+    }
+
+    /// PR #15 re-check 2 boot test: hand the keyboard back (`OP_YIELD_FOCUS`)
+    /// and never receive the reply, then never take another message. The WM
+    /// settles the owed reply for up to its deadline, serving the other
+    /// clients and its own input (the pointer, the SAK chords) meanwhile.
+    #[cfg(feature = "atrium-apps-arthur-yield-hang")]
+    pub fn yield_and_hang(&mut self) -> ! {
+        let request_id = self.next_request_id();
+        let sent = send_request(
+            self.surface,
+            request_id,
+            Request::Yield(libneo::atrium_protocol::YieldFocus {
+                identity: self.identity,
+                yield_serial: self.client_serial.max(1),
+            }),
+        );
+        crate::stage_b_log_line(if sent {
+            b"DESKTOP arthur hanging yield=never-received"
+        } else {
+            b"DESKTOP arthur hanging send=failed"
+        });
+        loop {
+            libneo::sys_sched_yield();
+        }
     }
 
     /// Boot-test probe (desktop_resize_boot): one request the WM must refuse
@@ -986,7 +1043,7 @@ pub const LOCK_PROBE_COLORS: [u32; 3] = [0x00ff_00ff, 0x0000_ffff, 0x00ff_ff00];
 impl ArthurSurface {
     /// The `n`-th picture: commit it, then `OP_BUSY`.
     pub fn lock_probe(&mut self, n: usize) -> Result<(), i32> {
-        let busy = self.text.reserve_busy(self.pixels);
+        let busy = self.text.busy_rect();
         let color = LOCK_PROBE_COLORS[n % LOCK_PROBE_COLORS.len()];
         for y in 0..self.height {
             self.pixels[y * BUFFER_WIDTH..y * BUFFER_WIDTH + self.width].fill(color);

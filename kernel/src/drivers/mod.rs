@@ -30,12 +30,20 @@ pub mod i2c_hid;
 /// Compiled out by default (the kill-switch); `vtd` turns it on.
 #[cfg(feature = "vtd")]
 pub mod iommu;
+#[cfg(any(feature = "ps2-keyboard", feature = "usb-host"))]
+pub mod key_locks;
+#[cfg(any(feature = "ps2-keyboard", feature = "usb-host"))]
+#[allow(dead_code)] // `printable` is read by test scenarios and userland
+pub mod keymap_us_logic;
 pub mod net;
 pub mod pci;
 /// The i8042 (PS/2) keyboard. Compiled out by default (the kill-switch);
 /// `ps2-keyboard` turns it on.
 #[cfg(feature = "ps2-keyboard")]
 pub mod ps2;
+/// OT-90 P3b-2: K6, the shutdown's device quiesce.
+#[cfg(feature = "power-quiesce")]
+pub mod quiesce;
 /// Phase 7.5 BUILD-A (ADR-046): the USB host stack. Compiled out by default
 /// (the kill-switch); `usb-host` turns it on.
 #[cfg(feature = "usb-host")]

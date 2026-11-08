@@ -11,7 +11,7 @@
 //! Linux keeps `dmesg` going forever.
 
 use core::fmt::{self, Write};
-#[cfg(feature = "fb-progress-console")]
+#[cfg(any(feature = "fb-progress-console", feature = "power-stop-cpus"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use uart_16550::SerialPort;
@@ -23,6 +23,40 @@ const COM1: u16 = 0x3F8;
 /// we can call `serial_println!` from anywhere — including interrupt
 /// handlers — without tearing.
 static SERIAL: Mutex<Option<SerialPort>> = Mutex::new(None);
+
+/// OT-90 P3b: set once K4 has stopped the other CPUs. Printing then goes to
+/// the UART (and the fb console, which only tries its locks) and never to
+/// the log sink, whose lock a parked CPU may hold.
+#[cfg(feature = "power-stop-cpus")]
+static STOPPED_WORLD: AtomicBool = AtomicBool::new(false);
+
+/// OT-90 P3b: after K4, every print writes the UART without `SERIAL`'s
+/// lock (review #6 item 2): a CPU parked by NMI may hold it for good, and a
+/// holdout may still be printing through it. Waiting could be forever;
+/// forcing the lock could overlap a live owner. A lock-free write can at
+/// worst interleave bytes with a holdout's.
+#[cfg(feature = "power-stop-cpus")]
+pub fn enter_stopped_world() {
+    STOPPED_WORLD.store(true, Ordering::Release);
+}
+
+/// The stopped world's print: a second handle on COM1 that only writes the
+/// transmit register (COM1 was initialized by `init` long before K4).
+#[cfg(feature = "power-stop-cpus")]
+fn print_stopped(args: fmt::Arguments) {
+    crate::arch::x86_64::without_interrupts(|| {
+        // SAFETY: COM1 is initialized; this handle takes no lock and only
+        // writes bytes.
+        let mut port = unsafe { SerialPort::new(COM1) };
+        let _ = port.write_fmt(args);
+    });
+}
+
+/// Whether K4 has stopped the other CPUs (`log::flush` skips the sink then).
+#[cfg(feature = "power-stop-cpus")]
+pub fn stopped_world() -> bool {
+    STOPPED_WORLD.load(Ordering::Acquire)
+}
 
 /// Set by the panic handler (`enter_panic`): from then on `_print` never
 /// waits for `SERIAL`.
@@ -97,6 +131,40 @@ pub fn panic_holding_lock_for_test() -> ! {
     panic!("fb_panic_holding_serial: panicked holding SERIAL");
 }
 
+/// `ot90_stop_wedged`: take `SERIAL` (waiting for a holder to finish) and
+/// never release it.
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+pub fn hold_forever_for_test() {
+    loop {
+        if let Some(guard) = SERIAL.try_lock() {
+            core::mem::forget(guard);
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// `fb_gp_holding_serial` (#52 review, item 4): a kernel-mode #GP while this
+/// CPU holds `SERIAL`, as a fault in the middle of a print would be. The
+/// guard is never released; the fatal-trap path must reach the panic screen
+/// without printing first.
+#[cfg(feature = "neo-test-fb-gp-holding-serial")]
+pub fn gp_holding_lock_for_test() -> ! {
+    x86_64::instructions::interrupts::disable();
+    let guard = SERIAL.lock();
+    core::mem::forget(guard);
+    // SAFETY: a load through a non-canonical address raises #GP(0) before
+    // any memory is read; the fatal path never returns here.
+    unsafe {
+        core::arch::asm!(
+            "mov {0}, qword ptr [{0}]",
+            inout(reg) 0x8000_0000_0000_0000u64 => _,
+            options(nostack, readonly)
+        );
+    }
+    panic!("fb_gp_holding_serial: the non-canonical load did not fault");
+}
+
 /// Whether `SERIAL` is held (by anyone).
 #[cfg(feature = "neo-test-fb-panic-holding-serial")]
 pub fn locked_for_test() -> bool {
@@ -110,6 +178,13 @@ pub fn _print(args: fmt::Arguments) {
     #[cfg(feature = "fb-progress-console")]
     if PANICKING.load(Ordering::Acquire) {
         print_panicking(args);
+        return;
+    }
+    #[cfg(feature = "power-stop-cpus")]
+    if STOPPED_WORLD.load(Ordering::Acquire) {
+        print_stopped(args);
+        #[cfg(feature = "fb-progress-console")]
+        crate::drivers::fb::progress::write_fmt(args);
         return;
     }
     crate::arch::x86_64::without_interrupts(|| {
@@ -147,6 +222,11 @@ pub fn _print(args: fmt::Arguments) {
 /// register writes.
 #[cfg(any(feature = "neo-test", feature = "power-control"))]
 pub fn _print_isr(args: fmt::Arguments) {
+    #[cfg(feature = "power-stop-cpus")]
+    if STOPPED_WORLD.load(Ordering::Acquire) {
+        print_stopped(args);
+        return;
+    }
     crate::arch::x86_64::without_interrupts(|| {
         if let Some(port) = SERIAL.lock().as_mut() {
             let _ = port.write_fmt(args);

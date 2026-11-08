@@ -30,6 +30,12 @@
 //! publication against a peer completing the rendezvous on another CPU.
 
 extern crate alloc;
+/// L1a.1: the byte pipe (step 1's state machine and step 2a's object).
+#[cfg(feature = "pipe")]
+pub mod pipe;
+#[cfg(feature = "pipe")]
+pub mod pipe_logic;
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::cmp::min;
@@ -37,7 +43,6 @@ use core::cmp::min;
 use x86_64::VirtAddr;
 
 use crate::errno::{EFAULT, EPERM, EPIPE};
-use crate::mm::phys_to_virt;
 use crate::mm::pmap::Pmap;
 use crate::sched;
 use crate::sched::process::{self, CapId, CapRights, GrantInstallError, ProcessId};
@@ -324,6 +329,169 @@ impl Channel {
         }
     }
 
+    /// OT-88 A0k `SYS_TRY_SEND` body: `send`, except that it completes only
+    /// with a receiver already parked on the peer side. Anything else restores
+    /// the peer's state and returns `EAGAIN` (`EPIPE` if closed); it never
+    /// parks, so it adds no park, wait-queue or park-teardown edge. A WM's
+    /// reply to a client that isn't receiving stays the WM's to retry.
+    #[cfg(feature = "ipc-try-send")]
+    pub fn try_send(
+        self: &Arc<Self>,
+        my_side: EndpointSide,
+        buf_user_va: u64,
+        len: usize,
+        my_pmap: Arc<Pmap>,
+    ) -> i64 {
+        let mut guard = self.state.lock();
+        let peer_idx = my_side.other().idx();
+        match core::mem::take(&mut guard[peer_idx]) {
+            // Exactly `send`'s receiver-parked handoff, under the same guard.
+            EndpointState::RecvBlocked {
+                buf_user_va: dst_va,
+                max_len,
+                receiver_pmap,
+                waiter: recv_thread,
+            } => {
+                let n = min(len, max_len);
+                let copy_result = cross_pmap_copy(&my_pmap, buf_user_va, &receiver_pmap, dst_va, n);
+                drop(guard);
+                match copy_result {
+                    Ok(()) => {
+                        handoff_to_rendezvous_peer(recv_thread, n as i64);
+                        n as i64
+                    }
+                    Err(()) => {
+                        handoff_to_rendezvous_peer(recv_thread, EFAULT);
+                        EFAULT
+                    }
+                }
+            }
+            EndpointState::Closed => {
+                guard[peer_idx] = EndpointState::Closed;
+                EPIPE
+            }
+            existing => {
+                guard[peer_idx] = existing;
+                crate::errno::EAGAIN
+            }
+        }
+    }
+
+    /// OT-88 A0k `SYS_TRY_GRANT` body: `grant`, completing only with a
+    /// `recv_grant` already parked on the peer side; otherwise `EAGAIN` (or
+    /// `EPIPE`), nothing installed and nothing parked.
+    #[cfg(feature = "ipc-try-send")]
+    pub fn try_grant(self: &Arc<Self>, my_side: EndpointSide, payload: GrantPayload) -> i64 {
+        let mut guard = self.state.lock();
+        let peer_idx = my_side.other().idx();
+        match core::mem::take(&mut guard[peer_idx]) {
+            // Exactly `grant`'s receiver-parked handoff.
+            EndpointState::RecvGrantBlocked {
+                recipient_pid,
+                max_rights,
+                waiter: recv_thread,
+            } => {
+                let completion = process::complete_grant(
+                    payload.grantor_pid,
+                    payload.source_cap_id,
+                    payload.offered,
+                    recipient_pid,
+                    max_rights,
+                );
+                drop(guard);
+                match completion {
+                    Ok(handle_idx) => {
+                        handoff_to_rendezvous_peer(recv_thread, handle_idx as i64);
+                        0
+                    }
+                    Err(GrantInstallError::EmptyIntersection) => {
+                        handoff_to_rendezvous_peer(recv_thread, EPERM);
+                        EPERM
+                    }
+                    Err(GrantInstallError::GrantorBadCap) => {
+                        handoff_to_rendezvous_peer(recv_thread, EPIPE);
+                        crate::errno::EBADF
+                    }
+                    Err(GrantInstallError::GrantorMissingGrant) => {
+                        handoff_to_rendezvous_peer(recv_thread, EPIPE);
+                        EPERM
+                    }
+                    Err(GrantInstallError::RecipientGone) => EPIPE,
+                }
+            }
+            EndpointState::Closed => {
+                guard[peer_idx] = EndpointState::Closed;
+                EPIPE
+            }
+            existing => {
+                guard[peer_idx] = existing;
+                crate::errno::EAGAIN
+            }
+        }
+    }
+
+    /// OT-88 A0k `SYS_TRY_RECV_GRANT` body: `recv_grant`, completing only
+    /// with a grantor already parked on the peer side; otherwise `EAGAIN` (or
+    /// `EPIPE`), nothing installed and nothing parked. The WM receives a
+    /// client's buffer and activator this way, so a client that never grants
+    /// can't park it.
+    #[cfg(feature = "ipc-try-send")]
+    pub fn try_recv_grant(
+        self: &Arc<Self>,
+        my_side: EndpointSide,
+        recipient_pid: ProcessId,
+        max_rights: CapRights,
+    ) -> i64 {
+        let mut guard = self.state.lock();
+        let peer_idx = my_side.other().idx();
+        match core::mem::take(&mut guard[peer_idx]) {
+            // Exactly `recv_grant`'s grantor-parked handoff.
+            EndpointState::GrantBlocked {
+                payload,
+                waiter: grant_thread,
+            } => {
+                let completion = process::complete_grant(
+                    payload.grantor_pid,
+                    payload.source_cap_id,
+                    payload.offered,
+                    recipient_pid,
+                    max_rights,
+                );
+                drop(guard);
+                match completion {
+                    Ok(handle_idx) => {
+                        continue_current_after_receive(grant_thread, 0);
+                        handle_idx as i64
+                    }
+                    Err(GrantInstallError::EmptyIntersection) => {
+                        continue_current_after_receive(grant_thread, EPERM);
+                        EPERM
+                    }
+                    Err(GrantInstallError::GrantorBadCap) => {
+                        continue_current_after_receive(grant_thread, crate::errno::EBADF);
+                        EPIPE
+                    }
+                    Err(GrantInstallError::GrantorMissingGrant) => {
+                        continue_current_after_receive(grant_thread, EPERM);
+                        EPIPE
+                    }
+                    Err(GrantInstallError::RecipientGone) => {
+                        continue_current_after_receive(grant_thread, EPIPE);
+                        EPIPE
+                    }
+                }
+            }
+            EndpointState::Closed => {
+                guard[peer_idx] = EndpointState::Closed;
+                EPIPE
+            }
+            existing => {
+                guard[peer_idx] = existing;
+                crate::errno::EAGAIN
+            }
+        }
+    }
+
     /// `sys_grant` body. Syscall callers keep the whole IPC handoff under
     /// `without_interrupts`; `Channel.state` itself is IRQ-safe by type.
     /// Completes with a waiting `sys_recv_grant` or parks the grantor on its
@@ -498,17 +666,27 @@ impl Channel {
         }
     }
 
-    #[cfg(feature = "neo-test-smp-grant-cross-cpu")]
+    #[cfg(any(
+        feature = "neo-test-smp-grant-cross-cpu",
+        feature = "neo-test-ipc-try-send"
+    ))]
     pub fn debug_endpoint_is_grant_blocked(&self, side: EndpointSide) -> bool {
         let guard = self.state.lock();
         matches!(guard[side.idx()], EndpointState::GrantBlocked { .. })
+    }
+
+    #[cfg(feature = "neo-test-ipc-try-send")]
+    pub fn debug_endpoint_is_recv_grant_blocked(&self, side: EndpointSide) -> bool {
+        let guard = self.state.lock();
+        matches!(guard[side.idx()], EndpointState::RecvGrantBlocked { .. })
     }
 
     #[cfg(any(
         feature = "neo-test-q8c-close-peer-my-side-extract",
         feature = "neo-test-smp-cross-cpu-migration-reap",
         feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-        feature = "neo-test-smp-c11-migration-reservation"
+        feature = "neo-test-smp-c11-migration-reservation",
+        feature = "neo-test-ipc-try-send"
     ))]
     pub fn debug_endpoint_is_send_blocked(&self, side: EndpointSide) -> bool {
         let guard = self.state.lock();
@@ -519,7 +697,8 @@ impl Channel {
         feature = "neo-test-q8c-blocked-kill-walk",
         feature = "neo-test-q8c-blocked-kill-foreign-parked",
         feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-        feature = "neo-test-smp-c11-migration-reservation"
+        feature = "neo-test-smp-c11-migration-reservation",
+        feature = "neo-test-ipc-try-send"
     ))]
     pub fn debug_endpoint_is_recv_blocked(&self, side: EndpointSide) -> bool {
         let guard = self.state.lock();
@@ -709,12 +888,31 @@ fn continue_current_after_receive(thread: Box<Thread>, return_value: i64) {
 
 // === User→user copy via two Pmap translates =============================
 
-/// Copy `n` bytes from `src_va` in `src_pmap` to `dst_va` in `dst_pmap` via
-/// HHDM, using `Pmap::translate` to walk each side's page tables.
+/// Copy `n` bytes from `src_va` in `src_pmap` to `dst_va` in `dst_pmap`.
 ///
-/// Page-by-page: each iteration translates the next 4 KiB-aligned chunk on
-/// both sides and copies the smaller of (remaining, src-page-tail,
-/// dst-page-tail). Returns Err(()) if any translate fails.
+/// Page-by-page: each iteration copies the smaller of (remaining,
+/// src-page-tail, dst-page-tail). Returns Err(()) (EFAULT to both sides) if
+/// a page can't be accessed the way ring 3 would need to: unmapped, not
+/// user-accessible, or (destination) read-only. Some prefix may have been
+/// copied by then.
+///
+/// CP-99:
+/// - The side whose address space is live on this CPU (the caller's, for a
+///   syscall) is read or written at its user VA through the registered
+///   fault-tolerant copy (`user_copy::try_copy`): a fault there, a read-only
+///   page under CR0.WP, or a sibling's unmap mid-copy (its shootdown makes
+///   the access fault) is recovered.
+/// - The other side is reached through the HHDM, inside
+///   `Pmap::with_user_frame`: its `inner` lock is held from the
+///   permission-checked walk until the chunk is copied, so a sibling of the
+///   peer can't unmap and free the frame mid-copy; its unmap waits.
+/// - When neither is live (a kernel-thread caller in the test harness), each
+///   chunk goes through a small bounce buffer, one Pmap's lock at a time
+///   (never both: two copies in opposite directions would take them in
+///   opposite orders).
+///
+/// Lock order: the channel guard (held by every caller) → a peer Pmap's
+/// `inner`. Nothing takes a channel guard under `inner`.
 fn cross_pmap_copy(
     src_pmap: &Pmap,
     src_va: u64,
@@ -722,28 +920,141 @@ fn cross_pmap_copy(
     dst_va: u64,
     n: usize,
 ) -> Result<(), ()> {
+    use crate::arch::x86_64::user_copy::try_copy;
+
     if n == 0 {
         return Ok(());
     }
+    let live = x86_64::registers::control::Cr3::read().0;
+    let src_live = src_pmap.cr3().0 == live;
+    let dst_live = !src_live && dst_pmap.cr3().0 == live;
     let mut copied: usize = 0;
     while copied < n {
         let s = src_va + copied as u64;
         let d = dst_va + copied as u64;
-        let src_phys = src_pmap.translate(VirtAddr::new(s)).ok_or(())?;
-        let dst_phys = dst_pmap.translate(VirtAddr::new(d)).ok_or(())?;
         // How much of THIS iteration stays inside both pages?
         let src_page_tail = 0x1000 - (s & 0xFFF) as usize;
         let dst_page_tail = 0x1000 - (d & 0xFFF) as usize;
-        let chunk = (n - copied).min(src_page_tail).min(dst_page_tail);
-        // SAFETY: HHDM gives a kernel-virt mapping for any phys we hold.
-        // src and dst are in distinct user-half ranges of distinct
-        // processes, so non-overlapping.
-        unsafe {
-            let src_kern = phys_to_virt(src_phys).as_ptr::<u8>();
-            let dst_kern = phys_to_virt(dst_phys).as_mut_ptr::<u8>();
-            core::ptr::copy_nonoverlapping(src_kern, dst_kern, chunk);
+        let mut chunk = (n - copied).min(src_page_tail).min(dst_page_tail);
+        let ok = if src_live {
+            dst_pmap
+                .with_user_frame(VirtAddr::new(d), true, |dst_kern| {
+                    #[cfg(feature = "neo-test-user-copy-fault")]
+                    copy_race_test::hold(n, s, dst_pmap, d);
+                    // SAFETY: the destination is `chunk` bytes of one user
+                    // frame, kept mapped by the held lock; the source is the
+                    // live user VA, in the user half (the syscall validated
+                    // it), and a fault on it is recovered.
+                    unsafe { try_copy(dst_kern, s as *const u8, chunk) }
+                })
+                .ok_or(())?
+        } else if dst_live {
+            src_pmap
+                .with_user_frame(VirtAddr::new(s), false, |src_kern| {
+                    #[cfg(feature = "neo-test-user-copy-fault")]
+                    copy_race_test::hold(n, d, src_pmap, s);
+                    // SAFETY: as above, with the roles swapped.
+                    unsafe { try_copy(d as *mut u8, src_kern, chunk) }
+                })
+                .ok_or(())?
+        } else {
+            let mut bounce = [0u8; 256];
+            chunk = chunk.min(bounce.len());
+            src_pmap
+                .with_user_frame(VirtAddr::new(s), false, |src_kern| {
+                    // SAFETY: `chunk` bytes of one user frame, kept mapped by
+                    // the held lock, into the kernel stack buffer.
+                    unsafe { core::ptr::copy_nonoverlapping(src_kern, bounce.as_mut_ptr(), chunk) }
+                })
+                .ok_or(())?;
+            dst_pmap
+                .with_user_frame(VirtAddr::new(d), true, |dst_kern| {
+                    // SAFETY: as above, out of the kernel stack buffer.
+                    unsafe { core::ptr::copy_nonoverlapping(bounce.as_ptr(), dst_kern, chunk) }
+                })
+                .ok_or(())?;
+            true
+        };
+        if !ok {
+            return Err(());
         }
         copied += chunk;
     }
     Ok(())
+}
+
+/// `user_copy_fault` test only: make a sibling's unmap of the peer's buffer
+/// land in the middle of an IPC copy, and record whether the frame stayed
+/// mapped. An IPC copy of exactly `RACE_LEN` bytes tells the process that
+/// the copy is under way by writing the peer page's address into the first 8
+/// bytes of the live side's buffer (the copy overwrites them after, if that
+/// side is the destination), where an unmapping sibling on another CPU polls.
+/// It then holds the peer's frame, and its `inner` lock, until that unmap is
+/// waiting on the lock, or a spin bound runs out. `RESULT` then holds bit 0
+/// "the hold ran", bit 1 "the unmap was seen waiting" and bit 2 "the frame
+/// was still mapped".
+#[cfg(feature = "neo-test-user-copy-fault")]
+pub(crate) mod copy_race_test {
+    use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+    use crate::mm::pmap::Pmap;
+
+    /// The IPC length that arms the hold (neo-init's race leg sends this).
+    pub const RACE_LEN: usize = 72;
+    static HOLDING: AtomicBool = AtomicBool::new(false);
+    static UNMAP_WAITING: AtomicBool = AtomicBool::new(false);
+    pub static RESULT: AtomicU8 = AtomicU8::new(0);
+
+    /// From `Pmap::unmap_user_range`, before it takes `inner`.
+    pub fn note_unmap_waiting() {
+        if HOLDING.load(Ordering::Acquire) {
+            UNMAP_WAITING.store(true, Ordering::Release);
+        }
+    }
+
+    pub(super) fn hold(n: usize, live_va: u64, peer_pmap: &Pmap, peer_va: u64) {
+        if n != RACE_LEN || RESULT.load(Ordering::Acquire) != 0 {
+            return;
+        }
+        UNMAP_WAITING.store(false, Ordering::Release);
+        HOLDING.store(true, Ordering::Release);
+        // The go for the unmapping sibling: which page to unmap.
+        let _ = crate::arch::x86_64::syscall::write_user(live_va as *mut u64, peer_va & !0xFFF);
+        // Both waits are bounded in TSC cycles, far inside the TLB
+        // shootdown timeout (500M cycles): this CPU, and the sibling spinning
+        // on `inner`, have interrupts off meanwhile, so a shootdown from a
+        // third CPU waits for them.
+        // SAFETY: RDTSC has no preconditions.
+        let tsc = || unsafe { core::arch::x86_64::_rdtsc() };
+        let start = tsc();
+        let mut seen = false;
+        while tsc().wrapping_sub(start) < 150_000_000 {
+            if UNMAP_WAITING.load(Ordering::Acquire) {
+                seen = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        // Keep holding a while longer: an unmap that is NOT blocked by the
+        // held lock clears the PTE inside this window (it flagged itself
+        // just before taking the lock), so a frame that goes away here is
+        // the defect.
+        let peer = x86_64::VirtAddr::new(peer_va);
+        let mut mapped = peer_pmap.translate_user(peer, false).is_some();
+        if seen {
+            let held = tsc();
+            while tsc().wrapping_sub(held) < 30_000_000 {
+                if peer_pmap.translate_user(peer, false).is_none() {
+                    mapped = false;
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+        }
+        HOLDING.store(false, Ordering::Release);
+        RESULT.store(
+            1 | u8::from(seen) << 1 | u8::from(mapped) << 2,
+            Ordering::Release,
+        );
+    }
 }

@@ -76,13 +76,24 @@ pub enum Key {
     ReduceMotion = 2,
     /// `Minutes`: 0 (Off), 5, 10 or 30; default 10 (J.c., OT-66 THINK).
     IdleLockMinutes = 3,
+    /// `Choice`: a zone id of libneo's generated tz table, below
+    /// [`TZ_ZONE_COUNT`]; default 0 (`Etc/UTC`, shown as "not set").
+    /// `docs/THINK-2026-11-02-time-zones.md` §2.3.
+    TimeZone = 4,
+    /// `Bool`: 1 = the RTC holds local time (Windows' convention); default 1.
+    RtcLocal = 5,
 }
 
-pub const KEYS: [Key; 3] = [
+pub const KEYS: [Key; 5] = [
     Key::ReduceTransparency,
     Key::ReduceMotion,
     Key::IdleLockMinutes,
+    Key::TimeZone,
+    Key::RtcLocal,
 ];
+
+mod tz_ids;
+pub use tz_ids::TZ_ZONE_COUNT;
 
 /// The idle-lock choices, in minutes (0: off; Super+L still locks).
 pub const IDLE_CHOICES: [u32; 4] = [0, 5, 10, 30];
@@ -93,6 +104,8 @@ impl Key {
             1 => Some(Self::ReduceTransparency),
             2 => Some(Self::ReduceMotion),
             3 => Some(Self::IdleLockMinutes),
+            4 => Some(Self::TimeZone),
+            5 => Some(Self::RtcLocal),
             _ => None,
         }
     }
@@ -103,8 +116,8 @@ impl Key {
 
     pub const fn kind(self) -> Type {
         match self {
-            Self::ReduceTransparency => Type::Bool,
-            Self::ReduceMotion => Type::Choice,
+            Self::ReduceTransparency | Self::RtcLocal => Type::Bool,
+            Self::ReduceMotion | Self::TimeZone => Type::Choice,
             Self::IdleLockMinutes => Type::Minutes,
         }
     }
@@ -115,6 +128,8 @@ impl Key {
             Self::ReduceTransparency => value <= 1,
             Self::ReduceMotion => value <= 2,
             Self::IdleLockMinutes => matches!(value, 0 | 5 | 10 | 30),
+            Self::TimeZone => value < TZ_ZONE_COUNT,
+            Self::RtcLocal => value <= 1,
         }
     }
 
@@ -125,14 +140,15 @@ impl Key {
     pub const fn client_writable(self) -> bool {
         match self {
             Self::ReduceTransparency | Self::ReduceMotion => true,
-            Self::IdleLockMinutes => false,
+            Self::IdleLockMinutes | Self::TimeZone | Self::RtcLocal => false,
         }
     }
 
     pub const fn default_value(self) -> u32 {
         match self {
-            Self::ReduceTransparency | Self::ReduceMotion => 0,
+            Self::ReduceTransparency | Self::ReduceMotion | Self::TimeZone => 0,
             Self::IdleLockMinutes => 10,
+            Self::RtcLocal => 1,
         }
     }
 }
@@ -170,6 +186,10 @@ pub struct Settings {
     pub reduce_motion: Motion,
     /// One of [`IDLE_CHOICES`].
     pub idle_lock_minutes: u32,
+    /// A tz table id (0: not set).
+    pub time_zone: u16,
+    /// The RTC holds local time.
+    pub rtc_local: bool,
 }
 
 impl Default for Settings {
@@ -178,6 +198,8 @@ impl Default for Settings {
             reduce_transparency: false,
             reduce_motion: Motion::Full,
             idle_lock_minutes: 10,
+            time_zone: 0,
+            rtc_local: true,
         }
     }
 }
@@ -197,6 +219,8 @@ impl Settings {
             Key::ReduceTransparency => self.reduce_transparency as u32,
             Key::ReduceMotion => self.reduce_motion.value(),
             Key::IdleLockMinutes => self.idle_lock_minutes,
+            Key::TimeZone => self.time_zone as u32,
+            Key::RtcLocal => self.rtc_local as u32,
         }
     }
 
@@ -211,6 +235,8 @@ impl Settings {
             Key::ReduceTransparency => next.reduce_transparency = value == 1,
             Key::ReduceMotion => next.reduce_motion = Motion::from_value(value),
             Key::IdleLockMinutes => next.idle_lock_minutes = value,
+            Key::TimeZone => next.time_zone = value as u16,
+            Key::RtcLocal => next.rtc_local = value == 1,
         }
         Ok(next)
     }

@@ -15,6 +15,8 @@
 //! Phase 1.1+ will add hardware IRQ vectors (timer, keyboard, etc.); Phase 1.3
 //! adds the syscall vector (or moves to SYSCALL/SYSRET).
 
+#[cfg(feature = "power-stop-cpus")]
+use crate::arch::x86_64::cpu_stop::stop_ipi;
 use core::arch::global_asm;
 #[cfg(feature = "neo-test")]
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -157,6 +159,78 @@ macro_rules! set_error_code_entry {
     }};
 }
 
+/// The page fault's entry: `set_error_code_entry!`'s shim, with the user-copy
+/// fixup in front of the call (`user_copy`).
+///
+/// A ring-0 fault whose saved RIP is one of the two registered instructions,
+/// `neo_user_copy_insn` (the copy's one `rep movsb`) or
+/// `neo_user_load_u32_insn` (the futex word's one aligned load), on a
+/// user-half address (CR2 below 2^47) resumes at
+/// `neo_user_copy_fixup` instead: the saved RIP is rewritten, the error code
+/// dropped and `iretq` returns to it. RCX still counts the bytes left (4 for
+/// the load), which the fixup returns. Nothing else is touched: RAX is saved and restored, the
+/// CPU frame's RFLAGS (the copy's AC=1, its IF) comes back with `iretq`, and
+/// at CPL 0 there is no GS to swap (CP-44). Every other fault, at any RIP or
+/// address, takes the unchanged path into `page_fault` (CP-40's flags mask,
+/// CP-46's alignment), so a kernel bug still halts.
+///
+/// Off (`user-copy-fixup` not built, or the `neo-test-user-copy-fault-control`
+/// revert-check): the comparison is skipped, and every fault takes that path.
+#[unsafe(naked)]
+pub(crate) extern "C" fn page_fault_shim() {
+    core::arch::naked_asm!(
+        "pushfq",
+        "and qword ptr [rsp], -263169", // ~(AC (1<<18) | DF (1<<10))
+        "popfq",
+        // [rsp]: error code, [rsp+8]: RIP, [rsp+16]: CS.
+        "test qword ptr [rsp + 16], 3",
+        "jnz 2f",
+        "push rax",
+        // [rsp+16]: RIP now.
+        "lea rax, [rip + {insn}]",
+        "cmp rax, qword ptr [rsp + 16]",
+        "je 3f",
+        "lea rax, [rip + {insn32}]",
+        "cmp rax, qword ptr [rsp + 16]",
+        "jne 1f",
+        "3:",
+        "cmp byte ptr [rip + {enabled}], 0",
+        "je 1f",
+        "mov rax, cr2",
+        "shr rax, 47",
+        "jnz 1f",
+        "lea rax, [rip + {fixup}]",
+        "mov qword ptr [rsp + 16], rax",
+        "pop rax",
+        "add rsp, 8", // the error code
+        "iretq",
+        "1:",
+        "pop rax",
+        "2:",
+        "mov rdi, rsp", // &ErrorCodeFrame
+        "and rsp, -16",
+        "call {body}",
+        "ud2",
+        insn = sym neo_user_copy_insn,
+        insn32 = sym neo_user_load_u32_insn,
+        fixup = sym neo_user_copy_fixup,
+        enabled = sym USER_COPY_FIXUP_ENABLED,
+        body = sym page_fault,
+    )
+}
+
+unsafe extern "C" {
+    static neo_user_copy_insn: u8;
+    static neo_user_load_u32_insn: u8;
+    static neo_user_copy_fixup: u8;
+}
+
+/// Whether the page-fault shim recovers a user-copy fault (the kill-switch,
+/// fixed at build time; a byte the shim can test without a register).
+static USER_COPY_FIXUP_ENABLED: u8 = (cfg!(feature = "user-copy-fixup")
+    && !cfg!(feature = "neo-test-user-copy-fault-control"))
+    as u8;
+
 /// # Safety
 ///
 /// `shim` must be a `set_error_code_entry!` shim.
@@ -207,7 +281,10 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     set_error_code_entry!(idt.segment_not_present, segment_not_present);
     set_error_code_entry!(idt.stack_segment_fault, stack_segment_fault);
     set_error_code_entry!(idt.general_protection_fault, general_protection_fault);
-    set_error_code_entry!(idt.page_fault, page_fault);
+    // The page fault's shim also recovers a user-copy fault (`user_copy`).
+    // SAFETY: `page_fault_shim` is `set_error_code_entry!`'s shim for
+    // `page_fault` with the user-copy fixup in front of the call.
+    unsafe { install_error_code_shim(&mut idt.page_fault, page_fault_shim) };
     set_exception_entry!(idt.x87_floating_point, x87_floating_point);
     set_error_code_entry!(idt.alignment_check, alignment_check);
     set_exception_entry!(idt.simd_floating_point, simd_floating_point);
@@ -221,6 +298,10 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     unsafe { double_fault_options.set_stack_index(DOUBLE_FAULT_IST_INDEX) };
     let nmi_options = set_exception_entry!(idt.non_maskable_interrupt, nmi);
     unsafe { nmi_options.set_stack_index(NMI_IST_INDEX) };
+    // OT-90 P3b: the shutdown's STOP IPI (an interrupt gate: IF clears on
+    // entry, and the handler never returns).
+    #[cfg(feature = "power-stop-cpus")]
+    set_exception_entry!(idt[apic::STOP_IPI_VECTOR], stop_ipi);
     // SAFETY: as above for the timer's IST slot; every address below is a
     // hand-written entry stub that preserves the interrupted context.
     unsafe {
@@ -591,6 +672,20 @@ pub fn reschedule_ipi_ring3_entries_for_test() -> u64 {
     IRQ_RING3_ENTRIES[IRQ_RING3_RESCHEDULE].load(Ordering::Relaxed)
 }
 
+/// The kernel's link-time base (`linker.ld`): KASLR slides the image by
+/// whole pages from here.
+const KERNEL_LINK_BASE: u64 = 0xffff_ffff_8000_0000;
+
+/// `rip` as the kernel ELF's own address (KASLR slide removed), so a fault
+/// line on screen maps straight to `objdump` output; `rip` itself when it
+/// isn't in the kernel image (or the slide is unknown).
+fn link_rip(rip: u64) -> u64 {
+    match crate::executable_address() {
+        Some((_, virt)) if rip >= virt => KERNEL_LINK_BASE.wrapping_add(rip - virt),
+        _ => rip,
+    }
+}
+
 fn dump(name: &str, sf: &InterruptStackFrame) {
     serial_println!("[ trap  ] {} {:?}", name, sf);
 }
@@ -620,27 +715,139 @@ fn contain_user_fault(vector: Vector, sf: &InterruptStackFrame, detail: u64) {
     }
 }
 
-/// OT-83: the CPL-0 end of a routed exception — a kernel bug, so halt, exactly
-/// as before. The `ring0_fault_halts` control scenario proves a kernel-mode
-/// fault reaches here and not the kill path.
-fn halt_kernel_fault(vector: Vector) -> ! {
+/// A fatal kernel-mode CPU exception, as its panic message (or, in the test
+/// harness, its trap line) reports it.
+struct FatalTrap<'a> {
+    name: &'static str,
+    sf: &'a InterruptStackFrame,
+    err: Option<u64>,
+    cr2: Option<u64>,
+}
+
+impl core::fmt::Display for FatalTrap<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.name)?;
+        if let Some(err) = self.err {
+            write!(f, " err=0x{:x}", err)?;
+        }
+        if let Some(cr2) = self.cr2 {
+            write!(f, " cr2=0x{:016x}", cr2)?;
+        }
+        let sf = self.sf;
+        let rip = sf.instruction_pointer.as_u64();
+        write!(
+            f,
+            " rip=0x{:016x} link_rip=0x{:016x} rsp=0x{:016x} cs=0x{:04x} ss=0x{:04x} rflags=0x{:016x}",
+            rip,
+            link_rip(rip),
+            sf.stack_pointer.as_u64(),
+            sf.code_segment.0,
+            sf.stack_segment.0,
+            sf.cpu_flags.bits()
+        )
+    }
+}
+
+/// Whether a fatal kernel-mode exception enters the panic handler before it
+/// prints anything (#52 review, item 4). A print takes the `SERIAL` lock and
+/// waits for it; if this CPU faulted while holding it (mid-print), the print
+/// never returns and the screen never gets the panic. The panic handler's
+/// console takeover (`panic_takeover` + `serial::enter_panic`) never waits,
+/// so every diagnostic goes into the panic message instead. Product builds
+/// always do this. In the test harness the trap line is printed and the
+/// scenario fails by name, except in `fb_gp_holding_serial`, which proves
+/// the product order; its `-control` restores print-first (must time out).
+const FATAL_TRAP_PANICS_FIRST: bool = cfg!(any(
+    not(feature = "neo-test"),
+    all(
+        feature = "neo-test-fb-gp-holding-serial",
+        not(feature = "neo-test-fb-gp-holding-serial-control")
+    )
+));
+
+/// `fb_gp_holding_serial`: the fatal path ran for a #GP.
+#[cfg(feature = "neo-test-fb-gp-holding-serial")]
+static FATAL_GP_SEEN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// `fb_gp_holding_serial`: whether the panic came from the #GP fatal path.
+#[cfg(feature = "neo-test-fb-gp-holding-serial")]
+pub fn fatal_gp_seen_for_test() -> bool {
+    FATAL_GP_SEEN.load(Ordering::Acquire)
+}
+
+/// OT-83: the CPL-0 end of a routed exception, a kernel bug. The
+/// `ring0_fault_halts` control scenario proves a kernel-mode fault reaches
+/// here and not the kill path. `test_trap` names the trap for
+/// `unexpected_trap` in the test harness (else the harness halts, as before).
+fn fatal_kernel_trap(
+    vector: Option<Vector>,
+    trap: FatalTrap<'_>,
+    test_trap: Option<&'static str>,
+) -> ! {
     #[cfg(feature = "neo-test-ring0-fault-halts")]
-    crate::test_harness::ring0_fault_reached_halt(vector);
+    if let Some(vector) = vector {
+        crate::test_harness::ring0_fault_reached_halt(vector);
+    }
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    if vector == Some(Vector::GeneralProtection) {
+        FATAL_GP_SEEN.store(true, Ordering::Release);
+    }
     let _ = vector;
+    if FATAL_TRAP_PANICS_FIRST {
+        // Ends in the panic screen (KERNEL PANIC bar; with the progress
+        // console the message is on screen too), not a log that just stops
+        // (the preview's WHPX #GP, 2026-11-02).
+        panic!("fatal CPU exception in kernel mode: {}", trap);
+    }
+    // Test harness: one line at a time, so a fault mid-print of the frame
+    // still leaves the first line.
+    serial_println!("[ trap  ] {}", trap);
+    serial_println!("[ trap  ] {} {:?}", trap.name, trap.sf);
+    #[cfg(feature = "neo-test")]
+    if let Some(kind) = test_trap {
+        crate::test_harness::unexpected_trap(kind);
+    }
+    let _ = test_trap;
     halt_forever();
+}
+
+/// A fatal exception without an error code.
+fn fatal(vector: Vector, name: &'static str, sf: &InterruptStackFrame) -> ! {
+    fatal_kernel_trap(
+        Some(vector),
+        FatalTrap {
+            name,
+            sf,
+            err: None,
+            cr2: None,
+        },
+        None,
+    )
+}
+
+/// A fatal exception with an error code.
+fn fatal_err(vector: Vector, name: &'static str, f: &ErrorCodeFrame) -> ! {
+    fatal_kernel_trap(
+        Some(vector),
+        FatalTrap {
+            name,
+            sf: &f.frame,
+            err: Some(f.error_code),
+            cr2: None,
+        },
+        None,
+    )
 }
 
 extern "x86-interrupt" fn divide_error(sf: InterruptStackFrame) {
     contain_user_fault(Vector::DivideError, &sf, 0);
-    dump("DIVIDE_ERROR (#DE)", &sf);
-    halt_kernel_fault(Vector::DivideError);
+    fatal(Vector::DivideError, "DIVIDE_ERROR (#DE)", &sf);
 }
 
 extern "x86-interrupt" fn debug(sf: InterruptStackFrame) {
     // OT-83: ring 3 can raise #DB on itself (RFLAGS.TF via popfq).
     contain_user_fault(Vector::Debug, &sf, 0);
-    dump("DEBUG (#DB)", &sf);
-    halt_kernel_fault(Vector::Debug);
+    fatal(Vector::Debug, "DEBUG (#DB)", &sf);
 }
 
 #[cfg(feature = "neo-test-exception-entry-flags")]
@@ -672,52 +879,49 @@ extern "x86-interrupt" fn breakpoint(sf: InterruptStackFrame) {
 
 extern "x86-interrupt" fn overflow(sf: InterruptStackFrame) {
     contain_user_fault(Vector::Overflow, &sf, 0);
-    dump("OVERFLOW (#OF)", &sf);
-    halt_kernel_fault(Vector::Overflow);
+    fatal(Vector::Overflow, "OVERFLOW (#OF)", &sf);
 }
 
 extern "x86-interrupt" fn bound_range(sf: InterruptStackFrame) {
     contain_user_fault(Vector::BoundRange, &sf, 0);
-    dump("BOUND_RANGE_EXCEEDED (#BR)", &sf);
-    halt_kernel_fault(Vector::BoundRange);
+    fatal(Vector::BoundRange, "BOUND_RANGE_EXCEEDED (#BR)", &sf);
 }
 
 extern "x86-interrupt" fn invalid_opcode(sf: InterruptStackFrame) {
     contain_user_fault(Vector::InvalidOpcode, &sf, 0);
-    dump("INVALID_OPCODE (#UD)", &sf);
-    halt_kernel_fault(Vector::InvalidOpcode);
+    fatal(Vector::InvalidOpcode, "INVALID_OPCODE (#UD)", &sf);
 }
 
 extern "x86-interrupt" fn device_not_available(sf: InterruptStackFrame) {
     contain_user_fault(Vector::DeviceNotAvailable, &sf, 0);
-    dump("DEVICE_NOT_AVAILABLE (#NM)", &sf);
-    halt_kernel_fault(Vector::DeviceNotAvailable);
+    fatal(
+        Vector::DeviceNotAvailable,
+        "DEVICE_NOT_AVAILABLE (#NM)",
+        &sf,
+    );
 }
 
 extern "C" fn invalid_tss(f: &ErrorCodeFrame) -> ! {
-    serial_println!("[ trap  ] INVALID_TSS (#TS) err=0x{:x}", f.error_code);
-    dump("INVALID_TSS (#TS)", &f.frame);
-    halt_forever();
+    fatal_kernel_trap(
+        None,
+        FatalTrap {
+            name: "INVALID_TSS (#TS)",
+            sf: &f.frame,
+            err: Some(f.error_code),
+            cr2: None,
+        },
+        None,
+    )
 }
 
 extern "C" fn segment_not_present(f: &ErrorCodeFrame) -> ! {
     contain_user_fault(Vector::SegmentNotPresent, &f.frame, f.error_code);
-    serial_println!(
-        "[ trap  ] SEGMENT_NOT_PRESENT (#NP) err=0x{:x}",
-        f.error_code
-    );
-    dump("SEGMENT_NOT_PRESENT (#NP)", &f.frame);
-    halt_kernel_fault(Vector::SegmentNotPresent);
+    fatal_err(Vector::SegmentNotPresent, "SEGMENT_NOT_PRESENT (#NP)", f);
 }
 
 extern "C" fn stack_segment_fault(f: &ErrorCodeFrame) -> ! {
     contain_user_fault(Vector::StackSegment, &f.frame, f.error_code);
-    serial_println!(
-        "[ trap  ] STACK_SEGMENT_FAULT (#SS) err=0x{:x}",
-        f.error_code
-    );
-    dump("STACK_SEGMENT_FAULT (#SS)", &f.frame);
-    halt_kernel_fault(Vector::StackSegment);
+    fatal_err(Vector::StackSegment, "STACK_SEGMENT_FAULT (#SS)", f);
 }
 
 extern "C" fn general_protection_fault(f: &ErrorCodeFrame) -> ! {
@@ -735,20 +939,12 @@ extern "C" fn general_protection_fault(f: &ErrorCodeFrame) -> ! {
     );
     contain_user_fault(Vector::GeneralProtection, sf, f.error_code);
 
-    serial_println!(
-        "[ trap  ] GENERAL_PROTECTION_FAULT (#GP) err=0x{:x} (selector index)",
-        f.error_code
+    // The error code is a selector index (0 for most #GPs).
+    fatal_err(
+        Vector::GeneralProtection,
+        "GENERAL_PROTECTION_FAULT (#GP)",
+        f,
     );
-    serial_println!(
-        "[ trap  ] #GP rip=0x{:016x} rsp=0x{:016x} cs=0x{:04x} ss=0x{:04x} rflags=0x{:016x}",
-        sf.instruction_pointer.as_u64(),
-        sf.stack_pointer.as_u64(),
-        sf.code_segment.0,
-        sf.stack_segment.0,
-        sf.cpu_flags.bits()
-    );
-    dump("GENERAL_PROTECTION_FAULT (#GP)", sf);
-    halt_kernel_fault(Vector::GeneralProtection);
 }
 
 #[cfg(any(
@@ -851,49 +1047,44 @@ extern "C" fn page_fault(f: &ErrorCodeFrame) -> ! {
         );
     }
 
-    // Print the most useful diagnostics one line at a time, so a fault
-    // mid-Debug-print (e.g., stack overflow into the dump path) still
-    // leaves enough on serial to localize.
-    serial_println!("[ trap  ] PAGE_FAULT (#PF) cr2=0x{:016x}", Cr2::read_raw());
-    serial_println!("[ trap  ] PAGE_FAULT err = {:?}", err);
-    serial_println!(
-        "[ trap  ] PAGE_FAULT rip=0x{:016x} cs={:#x} rflags={:#x} rsp=0x{:016x} ss={:#x}",
-        sf.instruction_pointer.as_u64(),
-        sf.code_segment.0,
-        sf.cpu_flags.bits(),
-        sf.stack_pointer.as_u64(),
-        sf.stack_segment.0,
-    );
-    #[cfg(feature = "neo-test")]
-    crate::test_harness::unexpected_trap("page_fault");
-    #[cfg(not(feature = "neo-test"))]
-    halt_forever();
+    fatal_kernel_trap(
+        Some(Vector::PageFault),
+        FatalTrap {
+            name: "PAGE_FAULT (#PF)",
+            sf,
+            err: Some(f.error_code),
+            cr2: Some(Cr2::read_raw()),
+        },
+        Some("page_fault"),
+    )
 }
 
 extern "x86-interrupt" fn x87_floating_point(sf: InterruptStackFrame) {
     contain_user_fault(Vector::X87FloatingPoint, &sf, 0);
-    dump("X87_FP_EXCEPTION (#MF)", &sf);
-    halt_kernel_fault(Vector::X87FloatingPoint);
+    fatal(Vector::X87FloatingPoint, "X87_FP_EXCEPTION (#MF)", &sf);
 }
 
 extern "C" fn alignment_check(f: &ErrorCodeFrame) -> ! {
     contain_user_fault(Vector::AlignmentCheck, &f.frame, f.error_code);
-    serial_println!("[ trap  ] ALIGNMENT_CHECK (#AC) err=0x{:x}", f.error_code);
-    dump("ALIGNMENT_CHECK (#AC)", &f.frame);
-    halt_kernel_fault(Vector::AlignmentCheck);
+    fatal_err(Vector::AlignmentCheck, "ALIGNMENT_CHECK (#AC)", f);
 }
 
 extern "x86-interrupt" fn simd_floating_point(sf: InterruptStackFrame) {
     // OT-83: ring-3 float code with unmasked exceptions kills its process.
     contain_user_fault(Vector::SimdFloatingPoint, &sf, 0);
-    dump("SIMD_FP_EXCEPTION (#XF)", &sf);
     // SSE code raised an exception its MXCSR left unmasked in ring 0: kernel
-    // code on a ring-3 MXCSR (CP-41). Fail the scenario by name now instead of
-    // hanging until the QEMU budget.
-    #[cfg(feature = "neo-test")]
-    crate::test_harness::unexpected_trap("simd_floating_point");
-    #[cfg(not(feature = "neo-test"))]
-    halt_forever();
+    // code on a ring-3 MXCSR (CP-41). The harness fails the scenario by name
+    // instead of hanging until the QEMU budget.
+    fatal_kernel_trap(
+        Some(Vector::SimdFloatingPoint),
+        FatalTrap {
+            name: "SIMD_FP_EXCEPTION (#XF)",
+            sf: &sf,
+            err: None,
+            cr2: None,
+        },
+        Some("simd_floating_point"),
+    )
 }
 
 extern "C" fn double_fault(f: &ErrorCodeFrame) -> ! {
@@ -917,6 +1108,15 @@ extern "C" fn double_fault(f: &ErrorCodeFrame) -> ! {
         let hit = crate::mm::inference_stack::guard_hit(cr2)
             .or_else(|| crate::mm::inference_stack::guard_hit(rsp));
         if let Some(hit) = hit {
+            if FATAL_TRAP_PANICS_FIRST {
+                panic!(
+                    "fatal CPU exception in kernel mode: DOUBLE_FAULT (#DF) inference stack overflow guard={:?} cr2={:#x} rsp={:#x} rip={:#x}",
+                    hit,
+                    cr2,
+                    rsp,
+                    f.frame.instruction_pointer.as_u64()
+                );
+            }
             serial_println!(
                 "[ trap  ] inference stack overflow guard={:?} cr2={:#x} rsp={:#x} rip={:#x} — halting",
                 hit,
@@ -930,18 +1130,30 @@ extern "C" fn double_fault(f: &ErrorCodeFrame) -> ! {
             halt_forever();
         }
     }
-    serial_println!(
-        "[ trap  ] DOUBLE_FAULT (#DF) err=0x{:x} — kernel state is unrecoverable",
-        f.error_code
-    );
-    dump("DOUBLE_FAULT (#DF)", &f.frame);
-    halt_forever();
+    fatal_kernel_trap(
+        None,
+        FatalTrap {
+            name: "DOUBLE_FAULT (#DF)",
+            sf: &f.frame,
+            err: Some(f.error_code),
+            cr2: None,
+        },
+        None,
+    )
 }
 
 extern "x86-interrupt" fn machine_check(sf: InterruptStackFrame) -> ! {
-    serial_println!("[ trap  ] MACHINE_CHECK (#MC) — hardware reported uncorrected error");
-    dump("MACHINE_CHECK (#MC)", &sf);
-    halt_forever();
+    // Hardware reported an uncorrected error.
+    fatal_kernel_trap(
+        None,
+        FatalTrap {
+            name: "MACHINE_CHECK (#MC)",
+            sf: &sf,
+            err: None,
+            cr2: None,
+        },
+        None,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -1175,6 +1387,10 @@ extern "C" fn spurious_interrupt_body(from_ring3: u64) {
 /// NMI runs on IST 1 so a corrupted thread stack can't wedge it. Phase 1.3
 /// has no real NMI source we expect — this handler exists as defense-in-depth.
 extern "x86-interrupt" fn nmi(sf: InterruptStackFrame) {
+    // OT-90 P3b: during a shutdown, a CPU that never took the STOP IPI is
+    // parked here, quietly (no dump: it would take the serial lock).
+    #[cfg(feature = "power-stop-cpus")]
+    crate::arch::x86_64::cpu_stop::park_from_nmi();
     dump("NMI", &sf);
     // NMI is non-fatal in principle; for Phase 1.3 we have no recovery story
     // so we halt to avoid silently masking a hardware fault.

@@ -182,6 +182,12 @@ pub mod model_rights {
 pub mod net_dial_rights {
     /// Authorise one outbound dial within the immutable handle scope.
     pub const DIAL: u8 = 1 << 0;
+    /// OT-61 rung 5b (`net-dial-public-only`): the dial may reach non-public
+    /// addresses (loopback, private, link-local; `net_dial_cap_logic::
+    /// v4_public`/`v6_public`). Root caps carry it, so they dial as before; a
+    /// cap derived without it reaches only public addresses, checked after
+    /// the kernel's own resolution (the fetch broker's per-request caps).
+    pub const NON_PUBLIC: u8 = 1 << 1;
 }
 
 /// OT-61 C1.1 — semantic rights for the `BrowserRuntime` cap (the thread/VM
@@ -217,6 +223,31 @@ pub mod system_store_rights {
 #[cfg(feature = "mount-authority")]
 pub mod mount_authority_rights {
     pub const MOUNT: u8 = 1 << 0;
+}
+/// OT-90 P4: semantic rights for the `PowerControl` cap (`acpi::power_abi`).
+#[cfg(feature = "power-cap")]
+pub mod power_control_rights {
+    pub use crate::acpi::power_abi::{RIGHT_POWER_OFF, RIGHT_RESTART};
+}
+
+/// L1a.1 step 2a: semantic rights of a pipe handle. A read end carries
+/// `READ`, a write end `WRITE`; a handle may only do what its end allows.
+#[cfg(feature = "pipe")]
+pub mod pipe_rights {
+    pub const READ: u8 = 1 << 0;
+    pub const WRITE: u8 = 1 << 1;
+}
+
+/// Full rights for a new pipe end: every meta right (`REVOKE` too, so a
+/// process can take back an end it granted: Dexter #56 F5), and the end's
+/// own semantic right.
+#[cfg(feature = "pipe")]
+pub fn full_pipe_rights(end: crate::ipc::pipe_logic::End) -> CapRights {
+    let semantic = match end {
+        crate::ipc::pipe_logic::End::Read => pipe_rights::READ,
+        crate::ipc::pipe_logic::End::Write => pipe_rights::WRITE,
+    };
+    CapRights::new(full_meta_rights(), semantic)
 }
 
 /// OT-63 Rung 1 Slice 2 — semantic rights for the scarce `GpuSubmit` cap.
@@ -371,9 +402,30 @@ pub const fn system_store_cap_rights() -> CapRights {
 pub const fn mount_authority_cap_rights() -> CapRights {
     CapRights::new(meta_rights::USE, mount_authority_rights::MOUNT)
 }
+/// OT-90 P4: the `PowerControl` cap's rights: `USE` and the power-off and
+/// restart bits. No `DERIVE`, no `GRANT`: it stays in the session root, so
+/// holding it is exact. `SLEEP` is reserved and not minted.
+#[cfg(feature = "power-cap")]
+pub const fn power_control_cap_rights() -> CapRights {
+    CapRights::new(
+        meta_rights::USE,
+        power_control_rights::RIGHT_POWER_OFF | power_control_rights::RIGHT_RESTART,
+    )
+}
 
+#[cfg(not(feature = "net-dial-public-only"))]
 pub const fn full_net_dial_rights() -> CapRights {
     CapRights::new(full_meta_rights(), net_dial_rights::DIAL)
+}
+
+/// With `net-dial-public-only`, a root cap also carries `NON_PUBLIC`, so every
+/// existing holder dials exactly as without the feature.
+#[cfg(feature = "net-dial-public-only")]
+pub const fn full_net_dial_rights() -> CapRights {
+    CapRights::new(
+        full_meta_rights(),
+        net_dial_rights::DIAL | net_dial_rights::NON_PUBLIC,
+    )
 }
 
 /// Full (compositor root) GPU-submit rights: SUBMIT + full meta. Minted only by
@@ -1000,6 +1052,22 @@ pub enum Handle {
     /// syscall, never inherited or granted.
     #[cfg(feature = "mount-authority")]
     MountAuthority { cap_id: CapId, rights: CapRights },
+    /// OT-90 P4: the authority to power the machine off or restart it
+    /// (`SYS_POWER`). No object. Minted only by `root_power_control_cap()`
+    /// into neo-init at spawn; no create syscall, never inherited or granted.
+    #[cfg(feature = "power-cap")]
+    PowerControl { cap_id: CapId, rights: CapRights },
+    /// L1a.1 step 2a: one end of a byte pipe. Endpoints are counted per
+    /// table entry (`retain_pipe` / `release_pipe`), so a granted copy keeps
+    /// its end open after the original closes. Semantic rights:
+    /// `pipe_rights::READ` on a read end, `pipe_rights::WRITE` on a write end.
+    #[cfg(feature = "pipe")]
+    Pipe {
+        pipe: Arc<crate::ipc::pipe::PipeObject>,
+        end: crate::ipc::pipe_logic::End,
+        cap_id: CapId,
+        rights: CapRights,
+    },
     /// GPU P1 Slice 6 — post-Slice-5 userland compute capabilities.  The
     /// nested kind realizes the concrete three-cap split without adding a
     /// second handle table: `Buffer` is a generation-tagged immutable range,
@@ -1057,6 +1125,10 @@ impl Handle {
             Handle::SystemStore { cap_id, .. } => *cap_id,
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { cap_id, .. } => *cap_id,
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { cap_id, .. } => *cap_id,
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { cap_id, .. } => *cap_id,
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { cap_id, .. }
             | Handle::InputFocus { cap_id, .. }
@@ -1084,6 +1156,10 @@ impl Handle {
             Handle::SystemStore { rights, .. } => *rights,
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { rights, .. } => *rights,
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { rights, .. } => *rights,
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { rights, .. } => *rights,
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { rights, .. }
             | Handle::InputFocus { rights, .. }
@@ -1131,6 +1207,10 @@ impl Handle {
             Handle::SystemStore { .. } => hi::KIND_SYSTEM_STORE,
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => hi::KIND_MOUNT_AUTHORITY,
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => hi::KIND_POWER_CONTROL,
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { .. } => hi::KIND_PIPE,
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { .. } => hi::KIND_BUFFER,
             #[cfg(feature = "atrium-compositor-g1")]
@@ -1239,6 +1319,15 @@ impl Handle {
             Handle::SystemStore { .. } => Handle::SystemStore { cap_id, rights },
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Handle::MountAuthority { cap_id, rights },
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => Handle::PowerControl { cap_id, rights },
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { pipe, end, .. } => Handle::Pipe {
+                pipe,
+                end,
+                cap_id,
+                rights,
+            },
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { buffer, .. } => Handle::Buffer {
                 buffer,
@@ -1387,6 +1476,15 @@ pub fn root_mount_authority_cap() -> Handle {
     Handle::MountAuthority {
         cap_id: alloc_cap_id(),
         rights: mount_authority_cap_rights(),
+    }
+}
+/// OT-90 P4: mint the `PowerControl` cap. Kernel-only, no syscall twin;
+/// installed into neo-init at spawn. Without it `SYS_POWER` is `EPERM`.
+#[cfg(feature = "power-cap")]
+pub fn root_power_control_cap() -> Handle {
+    Handle::PowerControl {
+        cap_id: alloc_cap_id(),
+        rights: power_control_cap_rights(),
     }
 }
 
@@ -1704,6 +1802,12 @@ pub mod obj_weights {
             }
             Handle::NetDial { .. } => NET_DIAL,
             Handle::Model { .. } => MODEL,
+            // L1a.1 step 2a: the object and its storage. A pipe shared by
+            // two ends is counted once per handle, like a channel.
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { pipe, .. } => {
+                (ARC + size_of::<crate::ipc::pipe::PipeObject>() + pipe.capacity()) as u64
+            }
             _ => 0,
         }
     }
@@ -1775,6 +1879,7 @@ impl Detached {
             HandleTable::release_tensor(handle);
             HandleTable::release_net(handle);
             HandleTable::release_process(handle);
+            HandleTable::release_pipe(handle);
         }
     }
 
@@ -1978,6 +2083,28 @@ impl HandleTable {
         });
     }
 
+    /// L1a.1 step 2a: a pipe handle entering a table is one more endpoint on
+    /// its end (the socket count's pattern; same chokepoints).
+    #[cfg_attr(not(feature = "pipe"), allow(unused_variables))]
+    fn retain_pipe(h: &Handle) {
+        #[cfg(feature = "pipe")]
+        if let Handle::Pipe { pipe, end, .. } = h {
+            pipe.retain(*end);
+        }
+    }
+
+    /// The pipe handle left: one endpoint fewer. The last one of an end wakes
+    /// everyone parked on the other side (EOF for readers, EPIPE for
+    /// writers). Runs where `Detached` releases, after the `CAP_GRAPH`
+    /// section; the wakes take the scheduler lock.
+    #[cfg_attr(not(feature = "pipe"), allow(unused_variables))]
+    fn release_pipe(h: &Handle) {
+        #[cfg(feature = "pipe")]
+        if let Handle::Pipe { pipe, end, .. } = h {
+            pipe.release(*end);
+        }
+    }
+
     /// OT-22 (Jarvis rung-1 F1): a channel handle leaving a table wakes any
     /// `SYS_WAIT_ANY` waiter watching what it named, so a wait on a closed,
     /// revoked or drained handle re-resolves it (EBADF) instead of sleeping
@@ -1989,6 +2116,12 @@ impl HandleTable {
         if let Handle::Channel { channel, side, .. } = h {
             crate::sched::wait_any::fire_handle_gone(channel.wait_key(*side));
         }
+        // L1a.1 step 2a, CP-61: a pipe handle leaving fires its key too, so a
+        // wait on a closed or reused slot re-resolves.
+        #[cfg(feature = "pipe")]
+        if let Handle::Pipe { pipe, end, .. } = h {
+            crate::sched::wait_any::fire_handle_gone(pipe.wait_key(*end));
+        }
     }
 
     /// Install `h` at the lowest unused index. Returns the assigned index.
@@ -1996,6 +2129,7 @@ impl HandleTable {
         Self::retain_tensor(&h);
         Self::retain_net(&h);
         Self::retain_process(&h);
+        Self::retain_pipe(&h);
         for (i, slot) in self.entries.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(h);
@@ -2056,6 +2190,7 @@ impl HandleTable {
         Self::retain_tensor(&h);
         Self::retain_net(&h);
         Self::retain_process(&h);
+        Self::retain_pipe(&h);
         for (i, slot) in self.entries.iter_mut().enumerate() {
             if slot.is_none() && !excluded.contains(&(i as u32)) {
                 *slot = Some(h);
@@ -2277,6 +2412,22 @@ impl HandleTable {
 
     /// OT-66 L1: does this table hold the system-store authority (`USE` and
     /// `STORE`)?
+    /// OT-90 P4: the semantic rights of the `PowerControl` caps held, OR'd
+    /// (0 without one). A cap without `USE` counts for nothing.
+    #[cfg(feature = "power-cap")]
+    pub fn power_control_rights(&self) -> u8 {
+        self.entries
+            .iter()
+            .flatten()
+            .filter_map(|handle| match handle {
+                Handle::PowerControl { rights, .. } if rights.has_meta(meta_rights::USE) => {
+                    Some(rights.semantic)
+                }
+                _ => None,
+            })
+            .fold(0, |acc, r| acc | r)
+    }
+
     #[cfg(feature = "system-store")]
     pub fn holds_system_store(&self) -> bool {
         self.entries.iter().flatten().any(|handle| {
@@ -4787,7 +4938,8 @@ pub fn thread_create_for_current(entry: u64, arg: u64, stack_size: usize, guard:
 /// Panics if the placement fails: this scenario's target ring is never full.
 #[cfg(any(
     feature = "neo-test-threads-tls",
-    feature = "neo-test-threads-exit-group"
+    feature = "neo-test-threads-exit-group",
+    feature = "neo-test-user-copy-fault"
 ))]
 pub fn thread_create_for_current_on_cpu(
     entry: u64,
@@ -4941,7 +5093,16 @@ pub fn thread_exit_current(code: i32) -> ! {
 /// ENCODED exit status (`WAIT_EXITED_TAG | code`) or a negative errno; the
 /// syscall layer decodes and writes the user out-param.
 #[cfg(feature = "browser-runtime")]
-pub fn thread_join_for_current(target_tid: u64) -> i64 {
+///
+/// `deliver` receives the exit code under the registry lock, BEFORE the
+/// record is collected (CP-99): `SYS_THREAD_JOIN` writes the caller's status
+/// word there. If it fails (EFAULT), its error is returned and the record is
+/// left as it was, still done and joinable, so a faulting status pointer
+/// commits nothing.
+pub fn thread_join_for_current(
+    target_tid: u64,
+    deliver: impl FnOnce(i32) -> Result<(), i64>,
+) -> i64 {
     use crate::errno::{EINVAL, ESRCH};
 
     let pid = scheduler::current_pid();
@@ -4985,6 +5146,9 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
             // the created-stack unmap (blocker B) still happens exactly once.
             let code = rec.exit_code;
             let reaped = rec.reaped;
+            if let Err(e) = deliver(code) {
+                return e;
+            }
             if reaped {
                 reg.records.remove(pos);
             } else {
@@ -5015,7 +5179,7 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
         }
         let r = crate::sched::futex::wait_on_key(
             crate::sched::futex::join_key(target_tid),
-            || unsafe { (*done_word_ptr).load(Ordering::Acquire) } == 0,
+            || Ok(unsafe { (*done_word_ptr).load(Ordering::Acquire) } == 0),
             crate::sched::futex::DEADLINE_INFINITE,
         );
         if r == ESRCH {
@@ -5031,6 +5195,11 @@ pub fn thread_join_for_current(target_tid: u64) -> i64 {
     let mut reg = reg_lock.lock();
     if let Some(pos) = reg.records.iter().position(|r| r.tid == target_tid) {
         let code = reg.records[pos].exit_code;
+        if let Err(e) = deliver(code) {
+            // Un-claim: the record is done, so the next join collects it.
+            reg.records[pos].join_claimed = false;
+            return e;
+        }
         if reg.records[pos].reaped {
             reg.records.remove(pos);
         } else {
@@ -5485,11 +5654,13 @@ pub fn tail_hold_for_test() {
         return;
     }
     let flag = TAIL_HOLD_FLAG.load(Ordering::Acquire);
-    // SAFETY: `flag` was validated as a 4-byte user range when armed, and
-    // this is the arming thread, so its address space is the active one.
-    crate::arch::x86_64::with_user_access(|| unsafe {
-        core::ptr::write_volatile(flag as *mut u32, 1)
-    });
+    // `flag` was validated as a 4-byte user range (and checked writable) when
+    // armed, and this is the arming thread, so its address space is the
+    // active one. The write goes through the fault-tolerant copy (CP-99): if
+    // the page was unmapped since, nobody can see the go, so don't hold.
+    if crate::arch::x86_64::syscall::write_user(flag as *mut u32, 1u32).is_err() {
+        return;
+    }
     let pid = scheduler::current_pid();
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
     let start = ticks();

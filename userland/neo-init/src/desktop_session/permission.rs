@@ -59,12 +59,24 @@ enum Choice {
 /// Without `arthur-action-log` there is no log and every note succeeds.
 #[allow(unused_variables)]
 fn note(kind: u8, action: u16, detail: u32, path: &str, intent: &str) -> bool {
+    // Boot test: the append of an Always for this one path fails (as a log
+    // over its read limit, or a full disk, would make it).
+    #[cfg(feature = "arthur-actions-test")]
+    if kind == ALLOWED_ALWAYS && path == NOLOG_PATH {
+        Line::new().s(b"ACTIONLOG append=failed\n").emit();
+        return false;
+    }
     #[cfg(feature = "arthur-action-log")]
     if let Some(kind) = action_log_core::Kind::from_u8(kind) {
         return super::action_log::append(kind, action, detail, path, intent);
     }
     true
 }
+
+/// Boot test: the path whose Always can't be logged. It is no longer than
+/// todo.txt, so it fits the seeded record's one free slot.
+#[cfg(feature = "arthur-actions-test")]
+const NOLOG_PATH: &str = "/neofs/nolg.txt";
 
 /// The `NAL1` kinds and refusal reasons the prompt logs (action-log-core's).
 const ASKED: u8 = 1;
@@ -410,6 +422,9 @@ pub fn serve(
         note(REFUSED, action, REASON_OPEN, path, intent);
         return Ok(refuse(STATUS_PERMISSION_PATH));
     };
+    // The record as it was before an Always is saved (put back if the
+    // Always can't be logged).
+    let mut before = None;
     let (status, kind) = if from_record {
         log(b"lent from record", action, path);
         (STATUS_PERMISSION_GRANTED_ALWAYS, LENT_FROM_RECORD)
@@ -418,6 +433,7 @@ pub fn serve(
         (STATUS_PERMISSION_GRANTED, ALLOWED_ONCE)
     } else {
         log(b"answer=always", action, path);
+        before = Some(read_record().unwrap_or_default());
         // An Always that couldn't be saved is answered, and logged, as what
         // it is: a grant for this action only (Dexter 203 note).
         if record(action, path) {
@@ -431,6 +447,16 @@ pub fn serve(
     if !note(kind, action, 0, path, intent) {
         let _ = sys_revoke(cap);
         log(b"refused reason=log", action, path);
+        // Nor is a grant saved that the log doesn't hold (PM, #253 AAG).
+        if kind == ALLOWED_ALWAYS
+            && let Some(before) = before
+        {
+            if login::write_whole(RECORD, &before) {
+                log(b"record undone", action, path);
+            } else {
+                log(b"record undo=failed", action, path);
+            }
+        }
         return Ok(refuse(STATUS_PERMISSION_DENIED));
     }
     session.lent = Some(cap);
@@ -443,6 +469,14 @@ pub fn serve(
 
 /// After the reply: lend the answer's cap over `surface`. `false`: the
 /// client didn't take it (its session is over).
+/// The cap (and its rights) the answer lends, if any (the client table's
+/// bounded lend, `apps::lend_arthur`).
+#[cfg_attr(not(feature = "atrium-apps"), allow(dead_code))]
+pub(super) fn lent(answer: &Answer) -> Option<(Handle, CapRights)> {
+    answer.lend
+}
+
+#[cfg_attr(feature = "atrium-apps", allow(dead_code))]
 pub fn lend(surface: Handle, answer: &Answer) -> bool {
     match answer.lend {
         Some((cap, rights)) => grant_over(surface, cap, rights),
@@ -509,6 +543,7 @@ pub fn seed() {
         ("/neofs/todo.txt", &b"call ada"[..]),
         ("/neofs/escape.txt", &b"esc"[..]),
         ("/neofs/full.txt", &b"full"[..]),
+        (NOLOG_PATH, &b"nolog"[..]),
     ] {
         if login::read_small_up_to(path, 64).is_none() && !login::write_whole(path, text) {
             Line::new()

@@ -278,9 +278,11 @@ impl Inner {
                     #[cfg(feature = "key-autorepeat")]
                     self.repeat.on_modifiers(report[0]);
                     for event in &events[..n] {
-                        let event = crate::atrium::input_logic::InputEventV1::key(
+                        let locks = crate::drivers::key_locks::on_key(event.keycode, event.pressed);
+                        let event = crate::atrium::input_logic::InputEventV1::key_locked(
                             event.keycode,
                             event.modifiers,
+                            locks,
                             event.pressed,
                         );
                         // DI-1 SAK (`atrium-sak`): a chord goes to the
@@ -327,13 +329,9 @@ impl Inner {
         // Key auto-repeat: the repeat due now (see the i8042 pump).
         #[cfg(feature = "key-autorepeat")]
         if crate::atrium::input_routing_enabled()
-            && let Some(event) = crate::atrium::key_repeat::poll(&mut self.repeat, now_ns)
+            && let Some((event, epoch)) = crate::atrium::key_repeat::poll(&mut self.repeat, now_ns)
         {
-            if cfg!(feature = "atrium-input-stage-legacy") {
-                crate::atrium::focus::route_event(event);
-            } else {
-                crate::atrium::focus::stage_event(&mut self.stage, event);
-            }
+            crate::atrium::key_repeat::deliver(&mut self.stage, event, epoch);
         }
         // Every pump retries what an earlier contended flush left staged.
         #[cfg(feature = "atrium-input-routing")]

@@ -88,7 +88,7 @@ Surface is active under development. Expect additions, struct layout changes, an
 |---------|----------|
 | **AI syscalls** (0x100–0x12F) | Tensor/model/inference calls added across Phase 5–8. `SYS_GENERATE*` changes shape with `real-lm`; without it they return `EINVAL`. |
 | **Network syscalls** (0x180–0x190) | TCP/DNS/TLS stack functional; the optional `net-dial-cap` build changes several argument shapes. |
-| **Atrium/GPU/input syscalls** (0x1A0–0x1B6) | Gated by `atrium-compositor-g1`/`atrium-pointer-forward`/`desktop-session` and a runtime switch; shapes may still move with the desktop. |
+| **Atrium/GPU/input syscalls** (0x1A0–0x1B9) | Gated by `atrium-compositor-g1`/`atrium-pointer-forward`/`desktop-session` and a runtime switch; shapes may still move with the desktop. |
 
 ### BREAKS FREELY
 
@@ -172,7 +172,7 @@ of the listed features compiles the arm), `A` (image A), `libneo` (wrapper in `u
 | 11 | 0x0B | `SYS_RECV_GRANT` | `channel_h: u32, max_rights: u16` | new handle index | `ENOSYS` (no grant pending), `EBADF`, `EPERM` | always | yes | `sys_recv_grant` |
 | 12 | 0x0C | `SYS_OPEN` | `path: ptr, path_len, flags: u32, rights: u32` | fd | `EINVAL`, `EPERM` (`system-store`/`cap-rooted-open`), `ENOENT`, `EACCES`, `EEXIST`, `EISDIR`, `ENOTDIR`, `EBUSY`, `ESTALE`, `EIO`, `EBADMSG` (`flags` 0 = open, `1<<0` = create regular) | always | yes | `sys_open` |
 | 13 | 0x0D | `SYS_READ` | `fd: u32, buf: ptr, len` | bytes read | `EINVAL` (len > `MAX_FILE_IO`), `EBADF`, `EACCES`, `EPERM`, VFS errors | always | yes | `sys_read`, `sys_read_fd` |
-| 14 | 0x0E | `SYS_CLOSE` | `fd: u32` (file or channel) | 0 | `EBADF` (unallocated, wrong kind, or stdio fd) | always | yes | `sys_close`, `sys_channel_close` |
+| 14 | 0x0E | `SYS_CLOSE` | `fd: u32` (file, channel or, under `pipe`, a pipe end, also in slot 0 or 1; more kinds under `close-object-handles` and `net-dial-public-only`) | 0 | `EBADF` (unallocated, wrong kind, or stdio fd) | always | yes | `sys_close`, `sys_channel_close` |
 | 15 | 0x0F | `SYS_FSYNC` | `fd: u32` | 0 (needs no file right) | `EBADF`, VFS errors | always | yes | `sys_fsync` |
 | 16 | 0x10 | `SYS_READDIR` | `fd: u32, out: ptr, out_len, cursor: ptr<u64>` | bytes of one `NeoDirentV1` record; 0 at EOF | `EINVAL`, `EBADF`, `EACCES`, `ENOTDIR`, `EPERM`, VFS errors | always | yes | `sys_readdir` |
 | 17 | 0x11 | `SYS_MOUNT` | `dir_fd: u32, req: ptr, req_len, flags: u32` | 0 | `EINVAL`, `EBADF`, `EPERM`, `ENOENT`, `EACCES`, `EEXIST`, `ENOTDIR`, `ENOSYS`, `EIO`, `EBADMSG` (`MountRequestV1`) | always | yes | `sys_mount` |
@@ -183,6 +183,7 @@ of the listed features compiles the arm), `A` (image A), `libneo` (wrapper in `u
 | 22 | 0x16 | `SYS_OBSERVE` | `out: ptr, out_len` (`KernelObservabilityV1`) | 0, fills the snapshot | `EINVAL` (size), `EFAULT`, `ENOSYS` | `kernel-observability` | **no** | `sys_observe` |
 | 23 | 0x17 | `SYS_FTRUNCATE` | `fd: u32, new_len: u64` | 0 | `EINVAL`, `EBADF`, `EACCES`, `EPERM`, `ESTALE`, VFS errors | always | yes | `sys_ftruncate` |
 | 24 | 0x18 | `SYS_FILE_REPLACE` | `fd: u32, bytes: ptr, len` | 0 | `EINVAL`, `EBADF`, `EACCES`, `EPERM`, `EBUSY`, `EEXIST`, `EIO`, `EISDIR`, `ENOENT`, `ENOMEM`, `ENOSYS`, `ENOTDIR`, `ESTALE` | `neofs-file-replace` | **no** | `sys_file_replace` |
+| 25 | 0x19 | `SYS_POWER` | `action: u64` (1 = power off, 2 = restart), `flags: u64` (0) | 0: the clean shutdown started (the caller is spared until the power goes) | `EINVAL` (action, flags), `EPERM` (no `PowerControl` cap, or the cap lacks that action's right), `EBUSY` (a shutdown is already running), `ENOSYS` (a kernel without `power-cap`) | `power-cap` | **no** | `sys_power` |
 
 Notes:
 - `SYS_SPAWN` inherits only handles carrying `GRANT` (and a spawned own-directory cap); a `File` handle
@@ -225,6 +226,7 @@ Notes:
 | 82 | 0x52 | `SYS_SPAWN_BUDGETED` | `name, name_len, handles, n, budget_bytes: u64` | packed pid \| `ProcessHandle` | `EINVAL`, `ENOMEM`, plus `SYS_SPAWN`'s (`ENOENT`, `EAGAIN`, `EPERM`, `EBADF`) | `mem-quota` | **no** | `sys_spawn_budgeted` |
 | 83 | 0x53 | `SYS_MEM_INFO` | `out: ptr, len` (32 = v1, 48 = v2) | 0, fills the account record | `EINVAL` (size), `EFAULT` | `mem-quota` | **no** | `sys_mem_info`, `sys_mem_info_v2` |
 | 84 | 0x54 | `SYS_SPAWN_BUDGETED2` | `name, name_len, handles, n, frame_bytes, obj_bytes` | packed pid \| `ProcessHandle` | `EINVAL` (`obj_bytes` 0), `EAGAIN` (object quota), `ENOMEM`, plus `SYS_SPAWN`'s | `obj-quota` | **no** | `sys_spawn_budgeted2` |
+| 85 | 0x55 | `SYS_BOOT_TIMES` | `out: ptr, len` (80 = v1) | 0, fills the boot-time record (flags: bit 0 firmware times present, bit 1 estimated TSC rate) | `EINVAL` (len), `EFAULT` (`out`) | `boot-time` | **no** (only `iso --boot-time`) | `sys_boot_times` |
 
 Notes:
 - `SYS_VM_MAP` enforces W^X: `PROT_WRITE|PROT_EXEC` is `EINVAL`. `guard != 0` leaves an unmapped page
@@ -303,7 +305,7 @@ Notes:
 - `SYS_NET_SHUTDOWN_TCP` and `SYS_NET_CONNECT_TCP` have libneo number constants but no wrapper
   functions.
 
-### Atrium: compositor, GPU, input (0x1A0–0x1B6)
+### Atrium: compositor, GPU, input (0x1A0–0x1B9)
 
 All are compiled under `atrium-compositor-g1` (or the narrower feature named) and additionally guarded
 by the Atrium runtime switch: with the switch off they return `ENOSYS`.
@@ -332,6 +334,9 @@ by the Atrium runtime switch: with the switch off they return `ENOSYS`.
 | 436 | 0x1B4 | `SYS_TRY_RECV` | `h: u32, buf: ptr, max_len` | bytes received, or `EAGAIN` | `EAGAIN` (no sender), `EINVAL`, `EFAULT`, `EBADF`, `EPERM` | `atrium-pointer-forward` | yes | `sys_try_recv` |
 | 437 | 0x1B5 | `SYS_WAIT_ANY` | `items: ptr, n, deadline_ns: u64` | ready mask (bit `i`), or `ETIMEDOUT` | `EPIPE`, `EAGAIN`, `EINVAL`, `EFAULT`, `EBADF`, `EPERM`, `ETIMEDOUT` | `wait-multiplex` | **no** | `sys_wait_any` |
 | 438 | 0x1B6 | `SYS_BUFFER_UNMAP` | `va: u64` (a `SYS_BUFFER_MAP` base) | 0 | `EINVAL` (no mapping at `va`) | `atrium-compositor-g1` | rt | `sys_buffer_unmap` |
+| 439 | 0x1B7 | `SYS_TRY_SEND` | `h: u32, buf: ptr, len` | bytes sent, or `EAGAIN` | `EAGAIN` (no receiver parked), `EINVAL`, `EFAULT`, `EBADF`, `EPERM` | `ipc-try-send` | yes | `sys_try_send` |
+| 440 | 0x1B8 | `SYS_TRY_GRANT` | `channel: u32, src: u32, rights: u16` | 0, or `EAGAIN` | `EAGAIN` (no `SYS_RECV_GRANT` parked), `EBADF`, `EPERM`, `EINVAL` | `ipc-try-send` | yes | `sys_try_grant` |
+| 441 | 0x1B9 | `SYS_TRY_RECV_GRANT` | `channel: u32, max: u16` (rights) | new handle, or `EAGAIN` | `EAGAIN` (no grantor parked), `EBADF`, `EPERM`, `EINVAL` | `ipc-try-send` | yes | `sys_try_recv_grant` |
 
 Notes:
 - `BufferDescV1` = `{ width, height, stride, format: u32, bytes: u64 }` (24 bytes);
@@ -347,6 +352,34 @@ Notes:
 - `SYS_WAIT_ANY` items are 8 bytes each (`u32 handle, u32 kind`); `deadline_ns` is absolute monotonic,
   and `n == 0` with `u64::MAX` (wait forever on nothing) is `EINVAL`.
 
+### Pipes (0x1BA–0x1BC)
+
+A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wiring.md`). Compiled under
+`pipe` (which needs `wait-multiplex`); without it the numbers return `ENOSYS`.
+
+| # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
+|---|-----|------|------|---------|--------|------|---|--------|
+| 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (512..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
+| 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
+| 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
+
+Notes:
+- `SYS_PIPE_CREATE`'s return packs the read end's handle in bits 0–31 and the write end's in bits 32–63:
+  handles `(0x11223344, 0x55667788)` return `0x5566778811223344`, little-endian bytes
+  `44 33 22 11 88 77 66 55` (the byte oracle: `tools/pipe-logic-tests` `abi_byte_oracle`, which checks the
+  kernel's packer and libneo's `pipe_abi.rs` against those bytes). `PIPE_NONBLOCK` is bit 0 of `flags`; other bits are ignored.
+- A handle carries every meta right (`USE`, `GRANT`, `DERIVE`, `REVOKE`) and only its end's semantic right
+  (`READ` = bit 0 on a read end, `WRITE` = bit 1 on a write end); the wrong end is `EPERM`.
+- A write of at most 512 bytes (`PIPE_ATOMIC`) that fits the capacity is atomic. A `SYS_WAIT_ANY` item of
+  kind 4 (`WAIT_KIND_PIPE`) on a write end is ready when a write of `min(512, capacity)` bytes would fit,
+  or no reader is left; on a read end, when bytes are buffered or no writer is left.
+- A timed read is `SYS_WAIT_ANY` with a deadline, then a `PIPE_NONBLOCK` read.
+- The capacity is at least 512 (`PIPE_ATOMIC`), so a write of at most 512 bytes is always atomic; a smaller
+  capacity is `EINVAL`.
+- A read checks each chunk's destination before taking its bytes. If a sibling thread unmaps the buffer between
+  that check and the copy, the read returns the bytes that reached the buffer (`EFAULT` only if none did), and
+  the rest of that chunk (at most 512 bytes) is lost, as with stdin (`docs/concurrency-pitfalls.md` CP-99).
+
 ### Installer (0x1C0–0x1C1)
 
 | # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
@@ -359,6 +392,18 @@ Notes:
 inherited only by the shell.
 
 ---
+
+### Clock (0x1C8–0x1C9)
+
+| # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
+|---|-----|------|------|---------|--------|------|---|--------|
+| 456 | 0x1C8 | `SYS_CLOCK_CONFIRM_REALTIME` | `offset_s: i64` (the RTC's offset from UTC, seconds east) | 0 | `EPERM` (not input-system holder), `EINVAL` (past ±24 h), `EALREADY` (confirmed once), `EAGAIN` (no RTC epoch), `ENOSYS` (no `rtc-offset`) | `rtc-offset` | **no** | `sys_clock_confirm_realtime` |
+| 457 | 0x1C9 | `SYS_CLOCK_REALTIME_STATUS` | — | 1 confirmed UTC, 0 unconfirmed | `ENOSYS` (no `rtc-offset`) | `rtc-offset` | yes | `sys_clock_realtime_status` |
+
+`rtc-offset` (`docs/THINK-2026-11-02-time-zones.md` §2.1): `CLOCK_REALTIME` is UTC. The RTC epoch starts
+unconfirmed; the session (the WM, which has the zone) confirms it once with the RTC's offset from UTC (0 when the RTC
+holds UTC), which moves realtime by that offset. Read the status before the clock: a `1` means the realtime read after
+it is UTC.
 
 ## Test-only syscalls (not SDK)
 
@@ -450,12 +495,15 @@ Nested structs (no independent version, inherit the parent's versioning):
 |-------|---------|--------|
 | 0–23 | Base: process, IPC, file, memory, status | **Populated** |
 | 24 | Base extension: whole-file replace | Populated under `neofs-file-replace` |
-| 0x25–0x3F | Reserved for base extensions | Empty |
+| 25 | Base extension: power-off and restart | Populated under `power-cap` |
+| 26–0x3F | Reserved for base extensions | Empty |
 | 0x40–0x54 | Browser host runtime: VM, clock, futex/threads, per-process accounts | Populated under `browser-runtime` / quotas |
-| 0x55–0xFF | Reserved | Empty |
+| 0x55 | Boot-time record (L7.1) | Populated under `boot-time` |
+| 0x56–0xFF | Reserved | Empty |
 | 0x100–0x17F | AI: tensors, models, inference (Bible Article 6.1) | **Formally reserved**; 0x100–0x123 populated |
 | 0x180–0x190 | Network: sockets, TCP, DNS, TLS, CSPRNG | Populated |
-| 0x1A0–0x1B6 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
+| 0x1A0–0x1B9 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
+| 0x1BA–0x1BF | Pipes; 0x1BA–0x1BC populated under `pipe` | 0x1BD–0x1BF empty |
 | 0x1C0–0x1C1 | Installer | Populated under `installer` |
 | 0xF00–0xF0A | Test-only probes | **Never ships** |
 | 0x4E, 0x1AC | Test-only probes in production ranges | **Never ships** |

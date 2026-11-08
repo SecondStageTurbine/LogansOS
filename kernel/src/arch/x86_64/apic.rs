@@ -27,6 +27,9 @@ use crate::serial_println;
 pub const RESCHEDULE_IPI_VECTOR: u8 = 0xfd;
 pub const TLB_SHOOTDOWN_IPI_VECTOR: u8 = 0xfc;
 pub const SPURIOUS_VECTOR: u8 = 0xff;
+/// OT-90 P3b: the shutdown's STOP IPI (`cpu_stop`).
+#[cfg(feature = "power-stop-cpus")]
+pub const STOP_IPI_VECTOR: u8 = 0xfb;
 
 const INVALID_LAPIC_ID: u32 = u32::MAX;
 const APIC_BASE_MSR_ADDR_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -58,6 +61,17 @@ pub fn register_lapic_id(cpu_id: u32, lapic_id: u32) {
     debug_assert!(idx < per_cpu::MAX_CPUS, "apic: cpu_id exceeds MAX_CPUS");
     if idx < per_cpu::MAX_CPUS {
         LAPIC_IDS[idx].store(lapic_id, Ordering::Release);
+    }
+}
+
+/// Forget `cpu_id`'s local APIC ID: an AP that was started but stayed offline
+/// (it cannot run under the FPU save policy). It halts before its IDT is
+/// loaded, so nothing may target it: `cpu_stop::stop_others` sends a STOP IPI
+/// and then an NMI to every registered CPU (#57 re-check).
+pub fn unregister_lapic_id(cpu_id: u32) {
+    let idx = cpu_id as usize;
+    if idx < per_cpu::MAX_CPUS {
+        LAPIC_IDS[idx].store(INVALID_LAPIC_ID, Ordering::Release);
     }
 }
 
@@ -198,6 +212,42 @@ pub fn send_tlb_shootdown_ipi(target_cpu: u32) {
     send_fixed_ipi(target_cpu, TLB_SHOOTDOWN_IPI_VECTOR);
 }
 
+/// OT-90 P3b: the STOP IPI to `target_cpu` (`cpu_stop`).
+#[cfg(feature = "power-stop-cpus")]
+pub fn send_stop_ipi(target_cpu: u32) {
+    send_fixed_ipi(target_cpu, STOP_IPI_VECTOR);
+}
+
+/// OT-90 P3b: an NMI to `target_cpu`, for a CPU that never took the STOP
+/// IPI (interrupts off too long). ICR delivery mode 100b; the vector field
+/// is ignored.
+#[cfg(feature = "power-stop-cpus")]
+pub fn send_nmi_ipi(target_cpu: u32) {
+    const ICR_DELIVERY_NMI: u32 = 0b100 << 8;
+    send_ipi_low(target_cpu, ICR_LEVEL_ASSERT | ICR_DELIVERY_NMI);
+}
+
+/// Whether `cpu_id` has a registered local APIC (it was started).
+#[cfg(any(feature = "power-stop-cpus", feature = "neo-test-xsave-ap-policy"))]
+pub fn cpu_registered(cpu_id: u32) -> bool {
+    (cpu_id as usize) < per_cpu::MAX_CPUS && lapic_id_for_cpu(cpu_id) != INVALID_LAPIC_ID
+}
+
+/// OT-90 P3b: this CPU's index, found from its own local APIC ID rather than
+/// GS (a STOP IPI or NMI can land in ring 3, with the user's GS). `None` if
+/// no registered CPU has this ID.
+#[cfg(feature = "power-stop-cpus")]
+pub fn cpu_from_own_lapic_id() -> Option<u32> {
+    const APIC_ID: u64 = 0x020;
+    let raw = read_reg(APIC_ID);
+    let own = if mode() == ApicMode::X2Apic {
+        raw
+    } else {
+        raw >> 24
+    };
+    (0..per_cpu::MAX_CPUS as u32).find(|&cpu| lapic_id_for_cpu(cpu) == own)
+}
+
 fn send_fixed_ipi(target_cpu: u32, vector: u8) {
     let target = lapic_id_for_cpu(target_cpu);
     debug_assert_ne!(
@@ -209,6 +259,52 @@ fn send_fixed_ipi(target_cpu: u32, vector: u8) {
     }
 
     let icr_low = ICR_LEVEL_ASSERT | vector as u32;
+    if mode() == ApicMode::X2Apic {
+        // A WRMSR to the x2APIC ICR is not serializing, unlike the xAPIC
+        // ICR's uncached MMIO store: without a fence the target can take the
+        // IPI before it can see the stores the sender made first (the queued
+        // work, the shootdown request). `mfence; lfence` is the SDM-documented
+        // ordering for x2APIC MSR writes.
+        // SAFETY: fences only; no memory or register state is changed.
+        unsafe {
+            core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
+        }
+        // SAFETY: the x2APIC ICR, written in x2APIC mode (fixed at init).
+        unsafe {
+            Msr::new(apic_logic::x2apic_msr(APIC_ICR_LOW))
+                .write(apic_logic::x2apic_icr(target, icr_low));
+        }
+        return;
+    }
+    // An ID above 255 cannot be named in xAPIC mode (such a CPU is never
+    // started: `smp::bring_up_aps`); masking it would hit another CPU.
+    let Some((icr_high, icr_low)) = apic_logic::xapic_icr(target, icr_low) else {
+        if XAPIC_IPI_REFUSED.fetch_add(1, Ordering::AcqRel) == 0 {
+            serial_println!(
+                "[ kernel ] apic: IPI REFUSED to lapic_id={} - above 255 in xAPIC mode",
+                target
+            );
+        }
+        return;
+    };
+    write_reg(APIC_ICR_HIGH, icr_high);
+    write_reg(APIC_ICR_LOW, icr_low);
+}
+
+/// OT-90 P3b: [`send_fixed_ipi`]'s body for any ICR low word (the NMI's
+/// delivery mode). A separate copy, so the feature-off `send_fixed_ipi` is the
+/// unchanged function (review #6 item 4: feature-off binary identity).
+#[cfg(feature = "power-stop-cpus")]
+fn send_ipi_low(target_cpu: u32, icr_low: u32) {
+    let target = lapic_id_for_cpu(target_cpu);
+    debug_assert_ne!(
+        target, INVALID_LAPIC_ID,
+        "apic: target CPU has no registered LAPIC id"
+    );
+    if target == INVALID_LAPIC_ID {
+        return;
+    }
+
     if mode() == ApicMode::X2Apic {
         // A WRMSR to the x2APIC ICR is not serializing, unlike the xAPIC
         // ICR's uncached MMIO store: without a fence the target can take the
@@ -333,7 +429,11 @@ pub fn spurious_vector_register() -> u32 {
 }
 
 /// The local APIC ID registered for `cpu_id` (`INVALID_LAPIC_ID` if none).
-#[cfg(any(feature = "ps2-keyboard", feature = "i2c-hid-touchpad"))]
+#[cfg(any(
+    feature = "ps2-keyboard",
+    feature = "i2c-hid-touchpad",
+    feature = "power-stop-cpus"
+))]
 pub fn lapic_id_of(cpu_id: u32) -> u32 {
     lapic_id_for_cpu(cpu_id)
 }

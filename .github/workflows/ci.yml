@@ -5,6 +5,36 @@ on:
   # touch kernel/, tools/xtask/, scenario definitions, or Cargo.*. Routine branch
   # pushes stay cheap; the coder/PM triggers this on the branch ref before merge.
   workflow_dispatch:
+    inputs:
+      # OT-58 (docs/THINK-2026-11-01-ot58-tiered-gate.md): `full` is the gate
+      # as it always was (4 QEMU shards). `quick` runs one QEMU job instead:
+      # the 31-scenario smoke list plus the scenarios the branch adds or edits
+      # (`cargo neo-test --tier quick`), within a 12-minute budget.
+      tier:
+        description: "full (4 QEMU shards) or quick (the smoke tier)"
+        type: choice
+        options: [full, quick]
+        default: full
+      # OT-58 S2b (THINK 2.4): the full tier over a batch. Every job builds
+      # the same tree (base + each PR merged in order) and checks its hash.
+      batch:
+        description: "PR numbers to gate as one batch, in landing order (space-separated); empty = this branch"
+        type: string
+        default: ""
+      base_sha:
+        description: "Batch base SHA (default: main's tip at plan time)"
+        type: string
+        default: ""
+      prefix:
+        description: "Bisect leg: only the first N batch members (0 = the base alone); empty = all"
+        type: string
+        default: ""
+      # THINK 2.5 (Dexter #47 item 2.4): a bisect leg runs only the batch's
+      # failing scenarios, in one job. `batch-report` prints the list to paste.
+      scenarios:
+        description: "Bisect leg only: the failing scenarios to run (space-separated, from batch-report)"
+        type: string
+        default: ""
   # Nightly schedule REMOVED 2026-10-17 (PL decision): it re-ran CI on an
   # unchanged `main` daily — including through months with no work — and the
   # QEMU half has had no runner since ~2026-10-13. The QEMU gate now runs only
@@ -16,8 +46,11 @@ on:
   # jobs on the same two self-hosted runners and queued ahead of it. The gate
   # (required before every merge) runs the full host + QEMU set on the exact
   # head, so nothing merges unchecked.
+  # OT-58 S2: PRs also run on every push (`synchronize`) and get the quick
+  # tier's QEMU smoke job. On GitHub-hosted runners a re-run costs only a
+  # free-tier slot, and the concurrency group below cancels the stale run.
   pull_request:
-    types: [opened, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
       - 'Plans/**'
       - 'docs/**'
@@ -59,9 +92,17 @@ env:
 # Same event + same ref = same group → newer run cancels older.
 # workflow_dispatch and schedule use distinct event_name so they can't be
 # cancelled by branch pushes and vice-versa.
+# OT-58: a batch and its bisect legs are dispatched on `main`; the batch
+# inputs keep two different batches (or a batch and a leg) from cancelling
+# each other.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ inputs.batch }}-${{ inputs.prefix }}
   cancel-in-progress: true
+
+# Every job reads only: a batch runs PR code in a dispatch run, so no job's
+# token can write (Dexter #47 item 2.8). The plan job adds the reads it needs.
+permissions:
+  contents: read
 
 jobs:
   # NIGHTLY SKIP: a scheduled run on a main SHA that already had a green
@@ -87,8 +128,25 @@ jobs:
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
     permissions:
       actions: read
+      contents: read
+      pull-requests: read
     outputs:
       skip: ${{ steps.check.outputs.skip }}
+      # OT-58 S2b: a batch's resolved plan (empty when not a batch).
+      batch_base: ${{ steps.batch.outputs.base }}
+      batch_members: ${{ steps.batch.outputs.members }}
+      batch_tree: ${{ steps.batch.outputs.tree }}
+      # OT-58: the QEMU matrix. `["quick"]` (one smoke job) for a PR or a
+      # `tier: quick` dispatch; the four shards otherwise.
+      shards: ${{ steps.tier.outputs.shards }}
+      # "true" when this run is the full tier (4 shards): a dispatch with
+      # tier: full, the schedule, or a PR that gate-plan puts in full-alone.
+      # "false" for the quick tier and for `main`'s push run (host-only).
+      full: ${{ steps.tier.outputs.full }}
+      # The base SHA the quick tier was planned against (empty otherwise).
+      gate_base: ${{ steps.tier.outputs.gate_base }}
+      # quick | full | bisect | host (main's push run).
+      mode: ${{ steps.tier.outputs.mode }}
     steps:
       - id: check
         env:
@@ -103,9 +161,138 @@ jobs:
           fi
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
+      # OT-58 (THINK 2.3; Dexter #45 item 2): a PR or a `tier: quick` dispatch
+      # takes the quick tier only if gate-plan says so. A diff in the
+      # concurrency core, the test machinery, the workflow or the build
+      # configuration (or one gate-plan can't classify) gets the 4 shards on
+      # this same run: the full tier on its own.
+      - name: Checkout (tier plan)
+        if: github.event_name == 'pull_request' || inputs.tier == 'quick'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain (tier plan)
+        if: github.event_name == 'pull_request' || inputs.tier == 'quick'
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+      # The plan is the single source of truth for the tier: the smoke job
+      # reads `gate_base` from here instead of planning again (Dexter #45
+      # item 2, note 1). A gate-plan that fails, or prints no tier, is
+      # full-alone.
+      - id: tier
+        shell: bash
+        env:
+          BASE: origin/${{ github.base_ref || 'main' }}
+          EVENT: ${{ github.event_name }}
+          WANT_QUICK: ${{ github.event_name == 'pull_request' || inputs.tier == 'quick' }}
+          TIER: ${{ inputs.tier }}
+          BATCH: ${{ inputs.batch }}
+          PREFIX: ${{ inputs.prefix }}
+          SCENARIOS: ${{ inputs.scenarios }}
+        run: |
+          set -uo pipefail
+          full=true
+          gate_base=""
+          if [ -n "$BATCH$PREFIX$SCENARIOS" ]; then
+            # OT-58 THINK 2.4/2.5 (Dexter #47 items 2.3, 2.4): a batch is
+            # always the full tier, and a bisect leg is one job running the
+            # named scenarios. Neither can be the quick tier, so a quick run
+            # can never pass itself off as a batch.
+            if [ -z "$BATCH" ]; then
+              echo "::error::prefix/scenarios need a batch"; exit 1
+            fi
+            if [ "$TIER" = quick ]; then
+              echo "::error::a batch is the full tier; dispatch it with tier: full"; exit 1
+            fi
+            if [ -n "$PREFIX" ]; then
+              if ! grep -qx '[0-9]\+' <<<"$PREFIX"; then
+                echo "::error::prefix must be a number, got '$PREFIX'"; exit 1
+              fi
+              if ! grep -qx '[a-z0-9_]\+\( [a-z0-9_]\+\)*' <<<"$SCENARIOS"; then
+                echo "::error::a bisect leg (prefix) runs the batch's failing scenarios: set scenarios to batch-report's list"; exit 1
+              fi
+              echo "mode=bisect" >> "$GITHUB_OUTPUT"
+              echo "full=false" >> "$GITHUB_OUTPUT"
+              echo 'shards=["bisect"]' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if [ -n "$SCENARIOS" ]; then
+              echo "::error::scenarios applies only to a bisect leg (with prefix)"; exit 1
+            fi
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo "full=true" >> "$GITHUB_OUTPUT"
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$EVENT" = push ]; then
+            # `main`'s post-landing run is host-only (THINK section 4): the
+            # batch run that preceded the landing is its QEMU evidence. No
+            # full-tier extras (RNG boot, fuzz) here; they ran in the batch.
+            full=false
+          elif [ "$WANT_QUICK" = true ]; then
+            gate_base="$(git rev-parse "$BASE")"
+            if plan="$(cargo run -q -p xtask -- gate-plan --base "$gate_base")"; then
+              :
+            else
+              echo "::warning::gate-plan failed (exit $?); treating this run as full-alone"
+              plan='tier=full-alone'
+            fi
+            echo "$plan"
+            tier="$(sed -n 's/^tier=//p' <<<"$plan" | tail -n 1)"
+            if [ "$tier" = quick ]; then
+              full=false
+            else
+              echo "::notice::gate-plan: ${tier:-no tier}, so this run is the full tier (4 QEMU shards). $(sed -n 's/^reasons=//p' <<<"$plan")"
+            fi
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "gate_base=$gate_base" >> "$GITHUB_OUTPUT"
+          # A push never runs the QEMU job; its shards value is unused.
+          if [ "$full" = false ] && [ "$EVENT" != push ]; then
+            echo "mode=quick" >> "$GITHUB_OUTPUT"
+            echo 'shards=["quick"]' >> "$GITHUB_OUTPUT"
+          else
+            [ "$EVENT" = push ] && echo "mode=host" >> "$GITHUB_OUTPUT" || echo "mode=full" >> "$GITHUB_OUTPUT"
+            echo 'shards=[1,2,3,4]' >> "$GITHUB_OUTPUT"
+          fi
+
+      # OT-58 S2b: resolve a batch once (heads, quick-green, gate-plan, tree).
+      - name: Checkout (batch plan)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain (batch plan)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+      - name: Plan the batch
+        id: batch
+        if: inputs.batch != '' || inputs.prefix != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BATCH: ${{ inputs.batch }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          PREFIX: ${{ inputs.prefix }}
+        # `shell: bash` runs with -o pipefail, and the plan is written to a
+        # file first: a failed plan fails this step, never a run whose jobs
+        # start with empty outputs (Dexter #47 item 2.7).
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/batch-plan.sh > "$RUNNER_TEMP/batch-plan.out"
+          cat "$RUNNER_TEMP/batch-plan.out"
+          cat "$RUNNER_TEMP/batch-plan.out" >> "$GITHUB_OUTPUT"
+
   neo-test:
-    name: QEMU Integration Tests (shard ${{ matrix.shard }}/4)
-    needs: [nightly-skip, host-checks, product-build]
+    name: ${{ matrix.shard == 'quick' && 'QEMU smoke (quick tier)' || matrix.shard == 'bisect' && 'QEMU bisect leg (named scenarios)' || format('QEMU Integration Tests (shard {0}/4)', matrix.shard) }}
+    # OT-58 S2: no longer waits for host-checks and product-build. On hosted
+    # runners a slot is the scarce thing, not minutes, and the quick tier's
+    # critical path is its smoke job alone (THINK 2.1).
+    needs: [nightly-skip]
     # HERMETICITY (gate invariant): every scenario in this 4-shard QEMU gate
     # MUST be hermetic — no dependence on the live internet or any other
     # host-variable input. A scenario that needs real external network is
@@ -129,7 +316,7 @@ jobs:
     # (A per-commit "run-on-main-only-if-kernel-changed" refinement was evaluated
     # and rejected: Cargo.lock churns for host-crate additions too, so path-based
     # kernel detection is leaky in the exact host-only case this fix targets.)
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     # Public repo: GitHub-hosted by default. A self-hosted pool can be opted in with the
     # QEMU_RUNNER_LABELS repo variable (e.g. ["self-hosted","qemu-shard"]); never for fork PRs.
     runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
@@ -165,8 +352,8 @@ jobs:
       # result so a real failure isn't masked by a sibling shard dying first.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-    timeout-minutes: 240
+        shard: ${{ fromJSON(needs.nightly-skip.outputs.shards) }}
+    timeout-minutes: ${{ matrix.shard == 'quick' && 45 || 240 }}
 
     steps:
       # Pre-flight RAM guard (INFRA, not a test). Fails FAST with correct
@@ -239,6 +426,19 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The quick tier diffs against the base branch (gate-plan,
+          # --changed-from), so it needs history; a shard does not. Strings,
+          # not numbers: `&& 0 ||` would yield 1, since 0 is falsy here.
+          fetch-depth: ${{ matrix.shard == 'quick' && '0' || '1' }}
+
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
 
       - name: Prepare container cache directories
         run: mkdir -p .docker .home .rustup-home .cargo-home
@@ -378,8 +578,78 @@ jobs:
             -e NEO_SMP=4 \
             -e CARGO_HTTP_MULTIPLEXING \
             -e CARGO_NET_RETRY \
+            -e SHARD="${{ matrix.shard }}" \
+            -e BATCH="${{ inputs.batch }}" \
+            -e SCENARIOS="${{ inputs.scenarios }}" \
+            -e GATE_BASE="${{ needs.nightly-skip.outputs.gate_base }}" \
             neo \
-            cargo neo-test --shard ${{ matrix.shard }}/4
+            bash -c '
+              set -e
+              if [ "$SHARD" = quick ]; then
+                mkdir -p target/neo-test
+                git config --global --add safe.directory /workspace
+                exec cargo neo-test --tier quick --changed-from "$GATE_BASE" --keep-going
+              fi
+              # OT-58 THINK 2.5: a bisect leg runs only the named failing
+              # scenarios (the plan job checked the names). A batch shard runs
+              # every scenario and re-runs each timeout once before anyone
+              # bisects; the timing table classifies what is left.
+              # The workflow comes from the dispatch ref but xtask from the
+              # batch tree, which can predate --rerun-timeouts (a prefix=0 leg
+              # on a main without it): pass it only when the tree knows it.
+              rerun=""
+              if cargo xtask neo-test --help 2>/dev/null | grep -q -- --rerun-timeouts; then
+                rerun=--rerun-timeouts
+              else
+                echo "::warning::this tree'"'"'s xtask has no --rerun-timeouts; timeouts are not re-run"
+              fi
+              if [ "$SHARD" = bisect ]; then
+                exec cargo neo-test $SCENARIOS --keep-going $rerun
+              fi
+              if [ -n "$BATCH" ]; then
+                exec cargo neo-test --shard "$SHARD/4" --keep-going $rerun
+              fi
+              exec cargo neo-test --shard "$SHARD/4"
+            '
+
+      # OT-58 S2: the quick tier's budget (THINK 2.1). Twelve minutes of
+      # scenario wall time; over it, the job is red and names the slowest, so a
+      # slow scenario is a decision, not a silent drift.
+      - name: Quick-tier budget (12 min of scenarios)
+        if: matrix.shard == 'quick'
+        run: |
+          tsv=target/neo-test/timings.tsv
+          total=$(awk -F'\t' 'NR > 1 { s += $2 } END { printf "%d", s }' "$tsv")
+          echo "quick tier: ${total} s of scenario wall time (budget 720 s)"
+          if [ "$total" -gt 720 ]; then
+            echo "::error::quick tier over budget: ${total} s > 720 s. Slowest:"
+            tail -n +2 "$tsv" | sort -t$'\t' -k2,2 -rn | head -5
+            exit 1
+          fi
+
+      # OT-58 S0: per-scenario timings (wall, QEMU, build) on the job's summary
+      # page and as an artifact, pass or fail. The job-log API returns only the
+      # last 5,000 lines of a shard's ~33k-line log, so this is where the
+      # numbers survive. Diagnostics only: never a test verdict.
+      - name: neo-test timing summary
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ -f target/neo-test/timings-summary.md ]; then
+            cat target/neo-test/timings-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload neo-test timings
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: neo-test-timings-shard-${{ matrix.shard }}
+          path: |
+            target/neo-test/timings.tsv
+            target/neo-test/timings-summary.md
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Dump neo-test serial logs on failure
         if: failure()
@@ -391,11 +661,20 @@ jobs:
             exit 0
           fi
 
+          # Only the logs that never reached `event=PASS` (OT-58 S0): dumping
+          # all ~230 pushed the failure out of the 5,000-line tail the job-log
+          # API returns. Every log is still in the artifact below.
+          shown=0
           for log in "${logs[@]}"; do
+            if grep -q 'NEO_TEST/1 event=PASS' "${log}"; then
+              continue
+            fi
+            shown=$((shown + 1))
             echo "::group::${log}"
             tail -n 240 "${log}"
             echo "::endgroup::"
           done
+          echo "dumped ${shown} of ${#logs[@]} serial log(s): those without event=PASS"
 
       # An artifact/storage-upload failure is infra, never a test verdict: a
       # full GitHub artifact-storage quota must NOT flip a shard whose tests
@@ -414,6 +693,22 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+      # OT-58 S0: the failures and the timing table again, last, so they sit in
+      # the tail of the job log even after the dump above.
+      - name: neo-test failures and timings (end of log)
+        if: always()
+        continue-on-error: true
+        run: |
+          tsv=target/neo-test/timings.tsv
+          if [ ! -f "$tsv" ]; then
+            echo "no $tsv"
+            exit 0
+          fi
+          echo "--- failed scenarios ---"
+          awk -F'\t' 'NR > 1 && $6 != "pass"' "$tsv"
+          echo "--- all scenarios, slowest first (scenario wall_s qemu_s build_s qemu_runs result) ---"
+          tail -n +2 "$tsv" | sort -t$'\t' -k2,2 -rn
+
       - name: Probe disk usage (after QEMU tests)
         if: always()
         run: |
@@ -422,74 +717,218 @@ jobs:
           du -sh "${{ github.workspace }}/target" 2>/dev/null || true
 
 
-  spdx-lint:
-    name: SPDX License Headers
+  # Escaped-defect contract item 4 (#43): the production CSPRNG seed path,
+  # booted. `neo-test` seeds the DRBG with a fixed seed, so no scenario reaches
+  # `Csprng::init`; an inverted RDRAND carry check there panicked every
+  # non-test `kernel-rng` kernel (the product image) at boot while the gate
+  # stayed green. scripts/ci/rng-seed-boot.sh boots a non-test `kernel-rng`
+  # kernel under `-cpu max` and needs the DRBG seeded with no panic. Hermetic
+  # (no model, no network); same trigger as the QEMU shards.
+  rng-seed-boot:
+    name: Production RNG seed boot (no neo-test)
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 5
-
+    # OT-58: the full tier only (a dispatch, the schedule, or a full-alone PR).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 90
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
+      - name: Free disk space (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check SPDX headers on source files
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
+      - name: Prepare container cache directories
+        run: mkdir -p .docker .home .rustup-home .cargo-home
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Restore-only: the QEMU shards own this cache entry's save.
+      - name: Restore Docker layers
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Build dev container (with buildx cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+
+      - name: Restore cargo registry, git, and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.rustup-home
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            ${{ github.workspace }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-rng-seed-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Bootstrap pinned Rust toolchain on cache miss
         run: |
-          echo "Checking SPDX-License-Identifier headers..."
-          missing=0
-
-          # Rust source files (MPL-2.0)
-          for f in $(find kernel/ userland/ tools/ -name '*.rs' 2>/dev/null); do
-            if ! head -5 "$f" | grep -q 'SPDX-License-Identifier'; then
-              echo "MISSING: $f"
-              missing=$((missing + 1))
-            fi
-          done
-
-          # TOML config files (MPL-2.0)
-          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './target/*' 2>/dev/null); do
-            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier'; then
-              echo "MISSING: $f"
-              missing=$((missing + 1))
-            fi
-          done
-
-          if [ $missing -gt 0 ]; then
-            echo ""
-            echo "ERROR: $missing file(s) missing SPDX-License-Identifier header."
-            echo "Every first-party source file must start with:"
-            echo "  // SPDX-License-Identifier: MPL-2.0  (for .rs)"
-            echo "  # SPDX-License-Identifier: MPL-2.0   (for .toml/.sh/.ps1)"
-            exit 1
+          TOOLCHAIN=nightly-2026-04-16-x86_64-unknown-linux-gnu
+          if [ ! -x ".rustup-home/toolchains/${TOOLCHAIN}/bin/cargo" ]; then
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview,rustfmt,clippy \
+                --target x86_64-unknown-none,aarch64-unknown-none
           fi
 
-          echo "All source files have SPDX headers."
+      - name: Boot a non-test kernel-rng kernel to a seeded DRBG
+        run: |
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e LIMINE_DIR=/opt/limine \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            neo \
+            bash scripts/ci/rng-seed-boot.sh
 
-  monolithic-identity:
-    name: Monolithic Identity Guard
-    # Catches the recurring drift where first-party docs call NeoPlutarch a
-    # "microkernel" (we are monolithic — Bible Article 4.1, ADR-001). This has
-    # recurred 3x; this mechanical guard stops the 4th. Lightweight, no Docker,
-    # runs on every push/PR/schedule. Checks docs/ and Plans/ (excluding archive/
-    # and the authoritative Bible/ADR-001 which are already correct).
+  # #52 review item 3: the product kernel (`iso --product-kernel`: the image's
+  # features and opt-level, no model), booted with the preview's WHPX CPUID
+  # (CPUID.(0DH,0):EBX=576 with AVX enabled). The witness needs the area sized
+  # from the components, the AP admitted under the boot CPU's FPU policy and
+  # the scheduler on LAPIC ticks; the control (EBX trusted, as before the fix)
+  # must end in the product panic screen with the #GP diagnostics (item 4).
+  # The `cpu-*` modes make the EMULATOR answer 576 (QEMU's gdbstub and
+  # scripts/ci/cpuid-0d-model.py, no kernel hook; #57 re-check, relay 274).
+  # Its first run caught a CPUID asm defect only the opt-level-3 kernel hit.
+  # Hermetic (no model, no network); same tier as rng-seed-boot.
+  product-xsave-boot:
+    name: Product kernel boot, WHPX XSAVE CPUID (no neo-test)
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 2
-
+    # OT-58: the full tier only (a dispatch, the schedule, or a full-alone PR).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ${{ fromJSON(vars.QEMU_RUNNER_LABELS || '"ubuntu-latest"') }}
+    timeout-minutes: 90
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     steps:
+      - name: Free disk space (GitHub-hosted only)
+        if: runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Check monolithic identity in docs
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
+      - name: Prepare container cache directories
+        run: mkdir -p .docker .home .rustup-home .cargo-home
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Restore-only: the QEMU shards own this cache entry's save.
+      - name: Restore Docker layers
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Build dev container (with buildx cache)
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-${{ runner.environment == 'github-hosted' && 'gh' || runner.name }}
+
+      - name: Restore cargo registry, git, and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.rustup-home
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            ${{ github.workspace }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-product-xsave-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Bootstrap pinned Rust toolchain on cache miss
         run: |
-          echo "Checking for microkernel-identity drift..."
-          bash scripts/check-monolithic-identity.sh
+          TOOLCHAIN=nightly-2026-04-16-x86_64-unknown-linux-gnu
+          if [ ! -x ".rustup-home/toolchains/${TOOLCHAIN}/bin/cargo" ]; then
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview,rustfmt,clippy \
+                --target x86_64-unknown-none,aarch64-unknown-none
+          fi
+
+      - name: Boot the product kernel with CPUID.(0DH,0):EBX=576 (emulator-side, then kernel hook; witness and control each)
+        run: |
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e LIMINE_DIR=/opt/limine \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            neo \
+            bash -c "for m in cpu-witness cpu-control witness control; do bash scripts/ci/product-xsave-boot.sh \$m || exit 1; done"
 
   host-checks:
     name: Host Tests, Format & Lint
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    # A bisect leg is the one QEMU job (THINK 2.5).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.mode != 'bisect' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
     # RUNNER HISTORY — read both halves before moving this again.
     #   2026-07-22 (d6dc133): self-hosted -> ubuntu-latest, dropping the
@@ -525,6 +964,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
 
       # dtolnay/rust-toolchain drives `rustup` and does not install it. That is
       # safe on ubuntu-latest (preinstalled) but NOT guaranteed on a self-hosted
@@ -602,6 +1049,12 @@ jobs:
       - name: neo-test shard coverage (4-way partition is complete + disjoint)
         run: cargo run -p xtask -- shard-coverage 4
 
+      # OT-61: crates vendored by `cargo vendor` (third_party/*/vendor) are
+      # reached through [patch] paths, which Cargo never checksums. Every file
+      # must still match its .cargo-checksum.json; patches go in patched/.
+      - name: vendored crates match crates.io (xtask vendor-verify)
+        run: cargo run -p xtask -- vendor-verify
+
       - name: cargo clippy --workspace --all-targets (blocking)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
@@ -618,7 +1071,8 @@ jobs:
             -p neo-init \
             -p neo-worker \
             -p neo-shell \
-            -p vault-core
+            -p vault-core \
+            -p fetch-proto
 
       - name: cargo clippy kernel (blocking)
         run: |
@@ -657,19 +1111,100 @@ jobs:
             -- -D warnings -A dead_code 2>&1
           echo "::endgroup::"
 
-  # OT-78: the feature set that ships must be a blocking build, not an
-  # operator-only command. Keep this separate from the deliberately
-  # non-blocking OT-69 lint matrix below: a product-only compile regression
-  # must make the workflow red and prevent the expensive QEMU gate from
-  # starting.
-  product-build:
-    name: Product Feature Build (blocking)
+  # Lane 2c: the decoder fuzz guardrail (docs/THINK-2026-10-31-lived-in-os-lanes.md
+  # §4 item 3). Four targets, each with a fixed 60 s budget.
+  # GitHub-hosted on purpose: the targets are short, and this job must not
+  # compete for the QEMU shard pool.
+  #
+  # `timeout(1)` is the backstop for a decoder that never returns. The harness
+  # stops itself at --seconds; a SIGKILL from timeout means a hang and fails the
+  # job. A panic aborts (the workspace builds panic = "abort"), and the harness's
+  # panic hook writes the exact input to target/image-decode-fuzz/crashes, which
+  # the failure artifact step uploads.
+  #
+  # OT-58 (Dexter #45 item 4): a full-tier check (a dispatch, a full-alone PR,
+  # a batch), not a per-push one, and ONE job that runs the four targets in
+  # turn on one build (about 5 minutes) instead of four jobs. Every target runs;
+  # the job fails with the list of those that failed.
+  decoder-fuzz:
+    name: Decoder Fuzz (inflate-zlib, inflate-raw, png, jpeg)
     needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.full == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
+      - name: Install pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: nightly-2026-04-16
+          components: rust-src,llvm-tools-preview
+          targets: x86_64-unknown-none,aarch64-unknown-none
+
+      - name: Build the fuzz harness
+        run: cargo build -p image-decode-fuzz
+
+      - name: Fuzz every target (60 s each)
+        run: |
+          budget=60
+          failed=()
+          for target in inflate-zlib inflate-raw png jpeg; do
+            echo "::group::Fuzz ${target} (${budget} s)"
+            # +60 s of slack over the harness's own budget; if timeout(1)
+            # fires, the decoder hung and the target fails with SIGKILL.
+            if ! timeout --signal=KILL $((budget + 60)) \
+                ./target/debug/image-decode-fuzz \
+                  --target "$target" \
+                  --seconds "$budget" \
+                  --seed 234; then
+              failed+=("$target")
+            fi
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::decoder fuzz failed: ${failed[*]}"
+            exit 1
+          fi
+
+      - name: Upload crash inputs on failure
+        if: failure()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: decoder-fuzz-crashes
+          path: target/image-decode-fuzz/crashes/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # OT-58 (THINK 2.1 `Quick: build-checks`; Dexter #45 item 4): one job for
+  # every build-only check, so a PR's quick tier is three jobs (host-checks,
+  # build-checks, the smoke shard) after the plan job, not seven. It shares one
+  # checkout, one toolchain install and one target dir. Each check after the
+  # first runs even if an earlier one failed (`success() || failure()`), so a
+  # red job still reports every check.
+  #   - SPDX headers and the monolithic-identity guard (seconds);
+  #   - OT-78: the feature set that ships is a blocking build, not an
+  #     operator-only command;
+  #   - OT-69: the 13 feature-gated kernel clippy configurations (below).
+  build-checks:
+    name: Build Checks (product build, feature clippy, SPDX, identity)
+    needs: nightly-skip
+    # A bisect leg is the one QEMU job (THINK 2.5).
+    if: needs.nightly-skip.outputs.skip != 'true' && needs.nightly-skip.outputs.mode != 'bisect' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
     # self-hosted (2026-08-10): free minutes. See the runner-history note on
     # host-checks for the full rationale.
     runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
     # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
@@ -688,6 +1223,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Assemble the batch tree (OT-58)
+        if: inputs.batch != '' || inputs.prefix != ''
+        uses: ./.github/actions/assemble-batch
+        with:
+          base: ${{ needs.nightly-skip.outputs.batch_base }}
+          members: ${{ needs.nightly-skip.outputs.batch_members }}
+          tree: ${{ needs.nightly-skip.outputs.batch_tree }}
+
       - name: Ensure rustup is present (self-hosted runners)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
@@ -703,8 +1246,8 @@ jobs:
         uses: dtolnay/rust-toolchain@v1
         with:
           toolchain: nightly-2026-04-16
-          components: rust-src,llvm-tools-preview
-          targets: x86_64-unknown-none
+          components: rust-src,llvm-tools-preview,clippy
+          targets: x86_64-unknown-none,aarch64-unknown-none
 
       # No actions/cache — see the note in host-checks: the self-hosted
       # workspace is already warm, and a target/ upload costs minutes + quota.
@@ -718,6 +1261,7 @@ jobs:
       # and opt-level 3 (Arthur latency NOTE, fix 1). The clippy matrix checks
       # these features but never codegens at the shipped opt-level; this does.
       - name: xtask image-kernel-build (the shipped kernel, opt-level 3, blocking)
+        if: success() || failure()
         run: cargo run -p xtask -- image-kernel-build
 
       # L7.2: subtraction as a gate. Two numbers image A must pay for — the
@@ -795,6 +1339,7 @@ jobs:
       # production features (the QEMU scenario builds the -boot-test variants),
       # so build them here or a break would pass every gate.
       - name: cargo build neo-init + neo-arthur --features desktop-session, clippy desktop-glass (blocking)
+        if: success() || failure()
         run: |
           (cd userland/neo-init && cargo build -Zjson-target-spec --bin neo-init --features desktop-session)
           (cd userland/neo-arthur && cargo build -Zjson-target-spec --bin neo-arthur --features desktop-session)
@@ -810,6 +1355,8 @@ jobs:
           # OT-87 R4.4b: the intro Home with the installer (the Install chip).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)
+          # F8: Arthur with and without the clock answers (`arthur-clock`, the kill-switch).
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home,arthur-clock -- -D warnings)
           # DI-1a's pointer WM: the polled, deadline-bounded LaunchCap proof
           # (Janus DS-1b) is compiled only here.
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-pointer -- -D warnings)
@@ -843,6 +1390,7 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-motion-rm-boot-test -- -D warnings)
 
       - name: cargo build kernel --no-default-features (FXSAVE asm, blocking)
+        if: success() || failure()
         working-directory: kernel
         run: cargo build -Zjson-target-spec --bin kernel --no-default-features
 
@@ -851,163 +1399,261 @@ jobs:
       # build with default features). threads-futex runs ring-3 threads under
       # browser-runtime, the closest scenario to the context-switch paths.
       - name: cargo build kernel --no-default-features + neo-test scenario (FXSAVE asm, blocking)
+        if: success() || failure()
         working-directory: kernel
         run: cargo build -Zjson-target-spec --bin kernel --no-default-features --features neo-test,neo-test-threads-futex
 
-  # OT-69: feature-gated subsystem coverage (BLOCKING since 2026-10-16).
-  # The kernel clippy steps in host-checks run DEFAULT features + one neo-test
-  # scenario. Whole subsystems sit behind non-default #[cfg(feature = "...")]:
-  # the USB stack (~6.5K LoC), Intel GPU driver (~5K), WiFi driver (~3.7K),
-  # Atrium compositor (~1.5K), VT-d/IOMMU (~1.2K), threaded matmul (~700), and
-  # many smaller features. A deliberately planted syntax error in mt7601u/ survived
-  # a green cargo build (proven by Oracle, 2026-08-01).
-  #
-  # This job closes the hole. It ran NON-BLOCKING while the gated surface carried
-  # pre-existing clippy debt; that debt was paid down (the three USB
-  # result_large_err sites are banked by item-level allows pending the CB-4
-  # error-type refactor) and the job was flipped blocking — OT-69's close
-  # condition. The matrix respects mutually-exclusive features:
-  # neo-test scenarios conflict with each other, so the subsystem arms carry
-  # none. The exception is the scenario arms at the end: each is exactly
-  # ONE scenario (so no conflict), added because those scenarios pull in
-  # feature sets (real-lm, inference-stack) that the single neo-test step in
-  # host-checks never compiles, and B1c's scenario landed clippy-red unseen.
-  #
-  # Feature matrix design (7 subsystem builds covering every non-default feature, plus 6 scenario builds):
-  #   wifi-usb:     mt7601u,wpa3-sae          -> mt7601u, wifi, usb-host, wpa3-sae, kernel-rng
-  #   gpu-iommu:    accel-intel,vtd           -> accel-intel, vtd (ACPI/DMAR)
-  #   atrium-ai:    atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
-  #                 -> atrium-compositor-g1, threaded-matmul, phase9-real-quant, gguf, ai-generate,
-  #                    forward-perf, ot16-graph-walker, phase9-data-driven-config
-  #   misc:         browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
-  #                 -> browser-runtime, net-dial-cap, virtio-accel, framebuffer-console, kernel-rng,
-  #                    model-boot-module (B1a: boot-module registry + second allocator zone)
-  #   boot-eth0:    boot-eth0                         -> usb-host, interface-identity
-  #   desktop:      desktop                           -> the shipped desktop set: product +
-  #                 desktop-session (atrium-input-routing, usb-hid, usb-hid-mouse) +
-  #                 SYS_FB_OUTPUT_QUERY + the production session boot path in main.rs
-  #   product-real-lm: desktop,atrium-pointer-forward,real-lm,model-boot-module,boot-model-preload
-  #                 -> the B1c product image's kernel: real-lm (phase9-real-quant, inference-stack,
-  #                 MAX_ORDER 16), and the boot model built once at boot (Zenbook ask-freeze)
-  #   kill-*:       one force-kill scenario each (B1c inference_stack_kill, its
-  #                 control, CP-66's admission_park_kill control and CP-67's
-  #                 ipc_park_kill control; each control is a superset of its
-  #                 base scenario's features)
-  #   real-lm-generate: B1c's real generation scenario (real-lm)
-  #   preemptible-liveness: the inference-preemptible liveness probe
-  #
-  # -A dead_code is deliberate: cross-feature scaffolding gated at the umbrella
-  # level is "never used" when only a subset of features is enabled in one build.
-  # Those findings are a cfg-granularity artifact, not rot (same rationale as the
-  # neo-test-gated step above).
-  feature-gated-coverage:
-    name: Feature-Gated Coverage (blocking, matrix ${{ matrix.name }})
-    needs: nightly-skip
-    if: needs.nightly-skip.outputs.skip != 'true'
-    # self-hosted (2026-08-10): free minutes. See the runner-history note on
-    # host-checks. This job was the single largest GH-hosted consumer — 5 matrix
-    # arms per run, all billable (it was NON-BLOCKING at the time).
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      # max-parallel bounds this job's claim on the self-hosted fleet. Without
-      # it, 5 arms can occupy 5 of ~6 runners and starve the host-checks/
-      # product-build jobs that a workflow_dispatch QEMU gate `needs:`. Kept at
-      # 2 after the OT-69 blocking flip: the QEMU gate does not `need` this job,
-      # so it must still never delay the gate.
-      max-parallel: 2
-      matrix:
-        include:
-          - name: wifi-usb
-            features: mt7601u,wpa3-sae
-          - name: gpu-iommu
-            features: accel-intel,vtd
-          - name: atrium-ai
-            features: atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
-          - name: misc
-            features: browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
-          - name: boot-eth0
-            features: boot-eth0
-          - name: desktop
-            features: desktop
-          # B1c: the product image's kernel (real generation from the boot
-          # module) — the cfg-ownership matrix is only enforced if it builds.
-          # Exactly image A's set (`xtask iso --with-model`), including the
-          # Zenbook boot console + LAPIC tick, the freeze watchdog overlay, the
-          # I2C-HID touchpad, key auto-repeat, the RTL8125 driver with its
-          # no-IOMMU opt-in (PL, 2026-10-24), the HWP performance request (in
-          # image A since the Zenbook A/B, 2026-10-25; this arm absorbed the
-          # old `product-real-lm-hwp`) and, through `desktop`, the xHCI
-          # silicon bring-up and USB port service.
-          - name: product-real-lm
-            features: desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick
-          # Force-kill scenarios (one scenario per arm; see the header note).
-          - name: kill-inference
-            features: neo-test-inference-kill
-          - name: kill-inference-control
-            features: neo-test-inference-kill-control
-          - name: kill-admission-park-control
-            features: neo-test-admission-park-kill-control
-          # B1c's real generation probe (the same real-lm feature set, and
-          # the same unseen clippy rot).
-          - name: real-lm-generate
-            features: neo-test-real-lm-generate
-          # CP-67's IPC kill scenario (its control is a superset).
-          - name: kill-ipc-park-control
-            features: neo-test-ipc-park-kill-control
-          # The preemptible-liveness probe (the one consumer of the
-          # instrumentation re-export; it was clippy-red unseen too).
-          - name: preemptible-liveness
-            features: neo-test-inference-preemptible-liveness
-
-    # ISOLATED TOOLCHAIN ROOTS -- load-bearing on self-hosted, see 2026-08-11.
-    # ryzen-1..6 are separate RUNNERS sharing ONE box and ONE $HOME
-    # (/home/neo), so a shared ~/.rustup made concurrent jobs fight: rustup has
-    # no cross-process lock, and jobs requesting different --component sets
-    # actively REMOVE each other's components. product-build's `--profile
-    # minimal` stripped rustfmt/clippy out from under host-checks and died on
-    # "detected conflict: lib/rustlib/.../bin/llc". github.workspace is
-    # per-runner, so this restores the isolation ubuntu-latest gave for free
-    # (and matches the pre-2026-07-22 Docker layout's .rustup-home/.cargo-home).
-    env:
-      RUSTUP_HOME: ${{ github.workspace }}/.rustup-home
-      CARGO_HOME: ${{ github.workspace }}/.cargo-home
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Ensure rustup is present (self-hosted runners)
+    # OT-69: feature-gated subsystem coverage (BLOCKING since 2026-10-16).
+    # The kernel clippy steps in host-checks run DEFAULT features + one neo-test
+    # scenario. Whole subsystems sit behind non-default #[cfg(feature = "...")]:
+    # the USB stack (~6.5K LoC), Intel GPU driver (~5K), WiFi driver (~3.7K),
+    # Atrium compositor (~1.5K), VT-d/IOMMU (~1.2K), threaded matmul (~700), and
+    # many smaller features. A deliberately planted syntax error in mt7601u/ survived
+    # a green cargo build (proven by Oracle, 2026-08-01).
+    #
+    # This job closes the hole. It ran NON-BLOCKING while the gated surface carried
+    # pre-existing clippy debt; that debt was paid down (the three USB
+    # result_large_err sites are banked by item-level allows pending the CB-4
+    # error-type refactor) and the job was flipped blocking — OT-69's close
+    # condition. The matrix respects mutually-exclusive features:
+    # neo-test scenarios conflict with each other, so the subsystem arms carry
+    # none. The exception is the scenario arms at the end: each is exactly
+    # ONE scenario (so no conflict), added because those scenarios pull in
+    # feature sets (real-lm, inference-stack) that the single neo-test step in
+    # host-checks never compiles, and B1c's scenario landed clippy-red unseen.
+    #
+    # Feature matrix design (7 subsystem builds covering every non-default feature, plus 6 scenario builds):
+    #   wifi-usb:     mt7601u,wpa3-sae          -> mt7601u, wifi, usb-host, wpa3-sae, kernel-rng
+    #   gpu-iommu:    accel-intel,vtd           -> accel-intel, vtd (ACPI/DMAR)
+    #   atrium-ai:    atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
+    #                 -> atrium-compositor-g1, threaded-matmul, phase9-real-quant, gguf, ai-generate,
+    #                    forward-perf, ot16-graph-walker, phase9-data-driven-config
+    #   misc:         browser-runtime,net-dial-cap,virtio-accel,framebuffer-console,kernel-rng,model-boot-module
+    #                 -> browser-runtime, net-dial-cap, virtio-accel, framebuffer-console, kernel-rng,
+    #                    model-boot-module (B1a: boot-module registry + second allocator zone)
+    #   boot-eth0:    boot-eth0                         -> usb-host, interface-identity
+    #   desktop:      desktop                           -> the shipped desktop set: product +
+    #                 desktop-session (atrium-input-routing, usb-hid, usb-hid-mouse) +
+    #                 SYS_FB_OUTPUT_QUERY + the production session boot path in main.rs
+    #   product-real-lm: desktop,atrium-pointer-forward,real-lm,model-boot-module,boot-model-preload
+    #                 -> the B1c product image's kernel: real-lm (phase9-real-quant, inference-stack,
+    #                 MAX_ORDER 16), and the boot model built once at boot (Zenbook ask-freeze)
+    #   kill-*:       one force-kill scenario each (B1c inference_stack_kill, its
+    #                 control, CP-66's admission_park_kill control and CP-67's
+    #                 ipc_park_kill control; each control is a superset of its
+    #                 base scenario's features)
+    #   real-lm-generate: B1c's real generation scenario (real-lm)
+    #   preemptible-liveness: the inference-preemptible liveness probe
+    #
+    # -A dead_code is deliberate: cross-feature scaffolding gated at the umbrella
+    # level is "never used" when only a subset of features is enabled in one build.
+    # Those findings are a cfg-granularity artifact, not rot (same rationale as the
+    # neo-test-gated step above).
+      - name: "cargo clippy kernel, every feature-gated configuration (blocking)"
+        if: success() || failure()
         run: |
-          mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
-          if ! command -v rustup >/dev/null 2>&1; then
-            echo "rustup not found on ${RUNNER_NAME:-runner}; bootstrapping"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-              | sh -s -- -y --default-toolchain none --profile minimal --no-modify-path
+          configs=(
+            "wifi-usb|mt7601u,wpa3-sae"
+            "gpu-iommu|accel-intel,vtd"
+            "atrium-ai|atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config"
+            "misc|browser-runtime,net-dial-cap,net-dial-public-only,virtio-accel,framebuffer-console,kernel-rng,model-boot-module"
+            "boot-eth0|boot-eth0"
+            "desktop|desktop"
+            "product-real-lm|desktop,atrium-pointer-forward,real-lm,model-boot-module,fb-progress-console,lapic-timer,boot-model-preload,freeze-watchdog,i2c-hid-touchpad,i2c-hid-bar-assign,key-autorepeat,rtl8125,rtl8125-dma-without-iommu,prefill-perf,matmul-steal-grace-time,tick-sleep,hwp-performance,net-tick"
+            "kill-inference|neo-test-inference-kill"
+            "kill-inference-control|neo-test-inference-kill-control"
+            "kill-admission-park-control|neo-test-admission-park-kill-control"
+            "real-lm-generate|neo-test-real-lm-generate"
+            "kill-ipc-park-control|neo-test-ipc-park-kill-control"
+            "preemptible-liveness|neo-test-inference-preemptible-liveness"
+          )
+          failed=()
+          for entry in "${configs[@]}"; do
+            name="${entry%%|*}"
+            features="${entry#*|}"
+            echo "::group::Feature-gated clippy — ${name} [features=${features}] (blocking)"
+            if ! (cd kernel && cargo clippy -Zjson-target-spec --features "${features}" -- -D warnings -A dead_code 2>&1); then
+              failed+=("$name")
+            fi
+            echo "::endgroup::"
+          done
+          if [ "${#failed[@]}" -gt 0 ]; then
+            echo "::error::feature-gated clippy failed: ${failed[*]}"
+            exit 1
           fi
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
-          echo "$RUSTUP_HOME/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+          echo "all ${#configs[@]} feature-gated configurations clean"
 
-      - name: Install pinned Rust toolchain
-        uses: dtolnay/rust-toolchain@v1
-        with:
-          toolchain: nightly-2026-04-16
-          components: rust-src,llvm-tools-preview,rustfmt,clippy
-          targets: x86_64-unknown-none,aarch64-unknown-none
-
-      # No actions/cache — see the note in host-checks. Expect cold rebuilds
-      # here specifically: which matrix arm lands on which runner is not
-      # controlled, and a feature-set change forces a full kernel rebuild
-      # regardless. That cost is wall-clock on a lint-only job, which is
-      # exactly the cost we are willing to pay.
-
-      - name: "cargo clippy kernel (feature-gated: ${{ matrix.name }}, blocking)"
+      # The toolchain lives in the workspace here (.rustup-home, .cargo-home),
+      # so the TOML scan skips those directories.
+      - name: Check SPDX headers on source files
+        if: success() || failure()
         run: |
-          echo "::group::Feature-gated clippy — ${{ matrix.name }} [features=${{ matrix.features }}] (blocking)"
-          status=0
-          cd kernel && cargo clippy -Zjson-target-spec \
-            --features "${{ matrix.features }}" \
-            -- -D warnings -A dead_code 2>&1 || status=$?
-          echo "::endgroup::"
-          exit $status
+          echo "Checking SPDX-License-Identifier headers..."
+          missing=0
+
+          # Rust source files (MPL-2.0)
+          for f in $(find kernel/ userland/ tools/ -name '*.rs' 2>/dev/null); do
+            if ! head -5 "$f" | grep -q 'SPDX-License-Identifier'; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
+            fi
+          done
+
+          # TOML config files (MPL-2.0)
+          for f in $(find . -maxdepth 3 -name '*.toml' ! -path './.cargo-home/*' ! -path './.rustup-home/*' ! -path './target/*' 2>/dev/null); do
+            if ! head -3 "$f" | grep -q 'SPDX-License-Identifier'; then
+              echo "MISSING: $f"
+              missing=$((missing + 1))
+            fi
+          done
+
+          if [ $missing -gt 0 ]; then
+            echo ""
+            echo "ERROR: $missing file(s) missing SPDX-License-Identifier header."
+            echo "Every first-party source file must start with:"
+            echo "  // SPDX-License-Identifier: MPL-2.0  (for .rs)"
+            echo "  # SPDX-License-Identifier: MPL-2.0   (for .toml/.sh/.ps1)"
+            exit 1
+          fi
+
+          echo "All source files have SPDX headers."
+
+      # Monolithic identity guard: catches the recurring drift where
+      # first-party docs call NeoPlutarch a "microkernel" (we are monolithic,
+      # Bible Article 4.1, ADR-001). It recurred 3x; this mechanical guard stops
+      # the 4th. Checks docs/ and Plans/ (excluding archive/ and the
+      # authoritative Bible/ADR-001).
+      - name: Check monolithic identity in docs
+        if: success() || failure()
+        run: |
+          echo "Checking for microkernel-identity drift..."
+          bash scripts/check-monolithic-identity.sh
+
+  # OT-58 S2b (THINK 2.4, 2.5): the batch's verdict. It reads every QEMU job's
+  # timing table and classifies what went wrong (Dexter #47 items 2.3-2.5):
+  #   - scenario failures (`FAIL`), build failures (`FAIL-build`: no QEMU run)
+  #     and timeouts that failed their re-run: these are bisected;
+  #   - timeouts that passed their one re-run: not failures; raise the timeout;
+  #   - a QEMU job with no timing table: infra, re-fire it; never bisect it.
+  # It is green only for a full-tier batch (mode full, all K shards present and
+  # green) with every other job green, and only then does it print "merge
+  # evidence: yes". A bisect leg prints its own verdict and is never evidence.
+  batch-report:
+    name: Batch report
+    needs: [nightly-skip, neo-test, host-checks, build-checks, rng-seed-boot, product-xsave-boot, decoder-fuzz]
+    if: always() && inputs.batch != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download every QEMU job's timings
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: neo-test-timings-shard-*
+          path: timings
+      - name: Report
+        shell: bash
+        env:
+          BASE: ${{ needs.nightly-skip.outputs.batch_base }}
+          MEMBERS: ${{ needs.nightly-skip.outputs.batch_members }}
+          TREE: ${{ needs.nightly-skip.outputs.batch_tree }}
+          MODE: ${{ needs.nightly-skip.outputs.mode }}
+          FULL: ${{ needs.nightly-skip.outputs.full }}
+          SHARDS: ${{ needs.nightly-skip.outputs.shards }}
+          PREFIX: ${{ inputs.prefix }}
+          PLAN_RESULT: ${{ needs.nightly-skip.result }}
+          QEMU_RESULT: ${{ needs.neo-test.result }}
+          HOST_RESULT: ${{ needs.host-checks.result }}
+          BUILD_RESULT: ${{ needs.build-checks.result }}
+          RNG_RESULT: ${{ needs.rng-seed-boot.result }}
+          XSAVE_RESULT: ${{ needs.product-xsave-boot.result }}
+          FUZZ_RESULT: ${{ needs.decoder-fuzz.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -uo pipefail
+          out="$RUNNER_TEMP/report.md"
+          k=$(jq 'length' <<<"${SHARDS:-[]}" 2>/dev/null || echo 0)
+          present=$(ls -d timings/*/ 2>/dev/null | wc -l)
+          # Every row of every table, as: shard \t scenario \t result \t wall.
+          rows="$RUNNER_TEMP/rows.tsv"
+          : > "$rows"
+          for tsv in timings/*/timings.tsv; do
+            [ -f "$tsv" ] || continue
+            shard="$(basename "$(dirname "$tsv")")"
+            tail -n +2 "$tsv" | awk -F'\t' -v s="${shard#neo-test-timings-shard-}" '{ print s "\t" $1 "\t" $6 "\t" $2 }' >> "$rows"
+          done
+          # A scenario's final word is its re-run's, if it had one.
+          final="$RUNNER_TEMP/final.tsv"
+          awk -F'\t' '{ k = $1 "\t" $2; r = $3; sub(/^rerun-/, "", r); if (!(k in st) || $3 ~ /^rerun-/) st[k] = r; if ($3 ~ /^rerun-/) rr[k] = 1 }
+                      END { for (k in st) print k "\t" st[k] "\t" ((k in rr) ? "rerun" : "") }' "$rows" | sort > "$final"
+          list() { awk -F'\t' -v want="$1" -v rr="$2" '$3 == want && (rr == "" || $4 == rr) { printf "- `%s` (shard %s)\n", $2, $1 }' "$final"; }
+          scen_fail="$(awk -F'\t' '$3 == "FAIL"' "$final" | wc -l)"
+          build_fail="$(awk -F'\t' '$3 == "FAIL-build"' "$final" | wc -l)"
+          timeout_fail="$(awk -F'\t' '$3 == "FAIL-timeout"' "$final" | wc -l)"
+          timeout_flaky="$(awk -F'\t' '$3 == "pass" && $4 == "rerun"' "$final" | wc -l)"
+          failing="$(awk -F'\t' '$3 ~ /^FAIL/ { print $2 }' "$final" | sort -u | tr '\n' ' ' | sed 's/ $//')"
+          missing=$(( k - present ))
+          [ "$missing" -lt 0 ] && missing=0
+
+          green=true
+          [ "$MODE" = full ] && [ "$FULL" = true ] && [ "$k" -eq 4 ] || green=false
+          for r in "$PLAN_RESULT" "$QEMU_RESULT" "$HOST_RESULT" "$BUILD_RESULT" "$RNG_RESULT" "$XSAVE_RESULT" "$FUZZ_RESULT"; do
+            [ "$r" = success ] || green=false
+          done
+          [ -z "$failing" ] && [ "$missing" -eq 0 ] || green=false
+
+          {
+            if [ "$MODE" = bisect ]; then
+              echo "### Bisect leg: prefix ${PREFIX}"
+            else
+              echo "### Batch"
+            fi
+            echo
+            echo "- base: \`$BASE\`"
+            echo "- members (PR:head, landing order): \`$MEMBERS\`"
+            echo "- tree: \`$TREE\`"
+            echo "- run: $RUN_URL"
+            echo "- mode: \`$MODE\`, $k QEMU job(s), $present with a timing table"
+            echo "- jobs: plan $PLAN_RESULT, QEMU $QEMU_RESULT, host $HOST_RESULT, build $BUILD_RESULT, RNG boot $RNG_RESULT, product XSAVE boot $XSAVE_RESULT, fuzz $FUZZ_RESULT"
+            echo
+            echo "#### Scenario failures ($scen_fail): bisect"
+            list FAIL ""
+            echo
+            echo "#### Build failures ($build_fail): a scenario's kernel, userland or image did not build; bisect"
+            list FAIL-build ""
+            echo
+            echo "#### Timeouts that failed their re-run too ($timeout_fail): bisect"
+            list FAIL-timeout ""
+            echo
+            echo "#### Timeouts that passed their one re-run ($timeout_flaky): not failures; raise each timeout"
+            list pass rerun
+            if [ "$missing" -gt 0 ]; then
+              echo
+              echo "**Infra: ${missing} QEMU job(s) left no timing table (runner loss, disk, OOM). Re-fire the run; don't bisect.**"
+            fi
+            if [ -n "$failing" ]; then
+              echo
+              echo "Next bisect leg: dispatch with this batch, \`prefix\`, and \`scenarios\`:"
+              echo
+              echo "    $failing"
+            fi
+            echo
+            if [ "$MODE" = bisect ]; then
+              if [ -z "$failing" ] && [ "$missing" -eq 0 ] && [ "$QEMU_RESULT" = success ]; then
+                echo "**Verdict: prefix ${PREFIX} passes.** A bisect leg is never merge evidence."
+              else
+                echo "**Verdict: prefix ${PREFIX} fails.** A bisect leg is never merge evidence."
+              fi
+            elif [ "$green" = true ]; then
+              echo "**Verdict: GREEN, full tier (4 shards + host, build, RNG boot, fuzz) on tree \`$TREE\`. Merge evidence: yes.**"
+            else
+              echo "**Verdict: NOT GREEN. Merge evidence: no.**"
+            fi
+          } > "$out"
+          cat "$out"
+          cat "$out" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$MODE" = bisect ]; then
+            [ -z "$failing" ] && [ "$missing" -eq 0 ] && [ "$QEMU_RESULT" = success ]
+          else
+            [ "$green" = true ]
+          fi

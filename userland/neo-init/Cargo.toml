@@ -26,6 +26,9 @@ settings-core = { path = "../settings-core", optional = true }
 action-log-core = { path = "../action-log-core", optional = true }
 # Desktop S3 (feature `desktop-glass`): the glass chrome scene.
 neo-atrium = { path = "../neo-atrium", optional = true }
+# OT-61 rung 5c: the fetch broker's wire format (the content side of the
+# fetch_broker scenario).
+fetch-proto = { path = "../fetch-proto", optional = true }
 
 [features]
 default = []
@@ -81,6 +84,11 @@ desktop-arthur-scope-test = ["desktop-home-boot-test", "cap-rooted-open"]
 # route, draws the sprite, forwards clicks in Arthur's client area, and the
 # SAK / a Spine click / a window click move the keyboard. Off = DS-1 exactly.
 desktop-pointer = ["desktop-home"]
+# OT-88 A1a (`docs/THINK-2026-10-29-ot88-app-model.md` §2.3): a client table
+# beside Arthur. The probe app is launched through Arthur's LaunchCap, takes
+# its own turns, and Super+Tab moves the front between the clients. Off:
+# today's Arthur-only WM.
+atrium-apps = ["desktop-pointer"]
 desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
 # DS-1c: Arthur's `list /` blooms the Lens — a second client (neo-worker
 # `desktop-lens`) lent `/` read-only — beside the window; its Spine chip
@@ -169,6 +177,13 @@ login = ["desktop-intro", "dep:login-core"]
 # OT-66 K1b: with `cap-rooted-open`, as the product's WM (the kernel side is
 # `neo-test-login`'s).
 login-boot-test = ["login", "desktop-session-boot-test", "cap-rooted-open"]
+# L7.1 (the `--boot-time` evidence image): Home's intro card shows the boot
+# summary as its second row (firmware handoff, model ready, desktop start
+# and Home, from power-on, read once as Home first shows), and the sign-in
+# or first-boot card, when one shows, a row of its own; each is logged as
+# `BOOT-TIME` (`SYS_BOOT_TIMES` on a `boot-time` kernel). Off: no rows, as
+# before.
+boot-time = ["desktop-intro"]
 # OT-88 S1: the settings store (`.system/settings.a`/`.b`, NEOSET1), with the
 # WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
 # time come from it and are set live by OP_SETTING. Off => the presence
@@ -281,6 +296,8 @@ socket-teardown-test = []
 exit-codes-test = []
 # Dexter #187 item 3a: the mount_authority scenario.
 mount-authority-test = []
+# The user_copy_fault scenario (user-copy-fixup).
+user-copy-fault-test = ["libneo/neo-test"]
 # OT-66 K1a: hand Arthur and the shell a derived RootDirCap at spawn (for a
 # `cap-rooted-open` kernel).
 cap-rooted-open = ["libneo/cap-rooted-open"]
@@ -378,4 +395,10 @@ phase4-socket-udp-loopback = []
 phase4-slaac-udp-ipv6-loopback = []
 net-dial-cap = []
 phase4-https-fetch = ["net-dial-cap"]
+# OT-61 rung 5b: phase4's flow plus a NON_PUBLIC-narrowed cap that must not
+# reach the loopback fixture (scenario net_dial_public_only).
+net-dial-public-only = ["phase4-https-fetch"]
+# OT-61 rung 5c: neo-init plays the content process of the fetch broker
+# (scenario fetch_broker); the worker serves the HTTPS fixture.
+fetch-broker = ["net-dial-cap", "dep:fetch-proto"]
 net-dial-cap-kill-switch = []

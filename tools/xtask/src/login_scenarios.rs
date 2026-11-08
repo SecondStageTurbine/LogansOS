@@ -211,7 +211,13 @@ const PERMISSION1: &[SerialScriptStep] = &[
     step(b"PERMISSION done", READ_NOTES),
     step(b"PERMISSION prompt action=read path=/neofs/notes.txt", b"3"),
     step(b"PERMISSION answer=deny", READ_NOTES),
-    step(b"PERMISSION refused reason=denied-this-session", READ_TODO),
+    // PM #253 follow-up: an Always whose log entry can't be appended is
+    // refused, and its record entry undone: the same read prompts again.
+    step(b"PERMISSION refused reason=denied-this-session", READ_NOLG),
+    step(b"PERMISSION prompt action=read path=/neofs/nolg.txt", b"2"),
+    step(b"PERMISSION record undone", READ_NOLG),
+    step(b"PERMISSION prompt action=read path=/neofs/nolg.txt", b"1"),
+    step(b"PERMISSION done", READ_TODO),
     step(b"PERMISSION prompt action=read path=/neofs/todo.txt", b"2"),
     step(b"PERMISSION done", b"\x80write /neofs/notes.txt hello\n"),
     step(b"PERMISSION refused reason=read-only", b"\x80escapeprobe\n"),
@@ -314,6 +320,7 @@ const STALL_ACTIVITY: &[u8] = b"\x80\x80\x80\x80\x80\x80\x80\x80\x08\x80\x80\x80
 const READ_NOTES: &[u8] = b"\x80read /neofs/notes.txt\n";
 const READ_TODO: &[u8] = b"\x80read /neofs/todo.txt\n";
 const READ_FULL: &[u8] = b"\x80read /neofs/full.txt\n";
+const READ_NOLG: &[u8] = b"\x80read /neofs/nolg.txt\n";
 
 /// `login_lock_idle`: keys 3 s apart (each one restarts the 6 s idle time),
 /// then none: the idle lock, then the password.
@@ -663,7 +670,10 @@ fn two_boot(
         &[
             "LOGIN screen shown",
             "LOGIN password refused failures=1 next_delay_s=0",
+            // F9 (J.c.): the wrong try is said, on the row nearest the field.
+            "LOGIN note=\"Incorrect password. Try again.\" row=last",
             "LOGIN password refused failures=2 next_delay_s=0",
+            "LOGIN note=\"Incorrect password. Try again.\" row=last",
             "LOGIN password refused failures=3 next_delay_s=1",
             "LOGIN backoff wait_s=1",
             "LOGIN signed in failures=3",
@@ -1105,6 +1115,7 @@ impl ActionLog {
             path,
             intent,
             prev: self.link,
+            flags: 0,
         })
         .expect("a scenario record fits");
         self.link = action_log_core::link(&bytes);
@@ -1167,6 +1178,17 @@ fn arthur_permission(
             // The denial is remembered: no prompt.
             &notes("PERMISSION refused reason=denied-this-session"),
             "DESKTOP arthur permission action=read path=/neofs/notes.txt status=31",
+            // An Always the log can't hold: refused, and the record put back
+            // (so todo.txt's Always below still finds the record's free slot).
+            "PERMISSION prompt action=read path=/neofs/nolg.txt",
+            "PERMISSION answer=always action=read path=/neofs/nolg.txt",
+            "ACTIONLOG append=failed",
+            "PERMISSION refused reason=log action=read path=/neofs/nolg.txt",
+            "PERMISSION record undone action=read path=/neofs/nolg.txt",
+            "DESKTOP arthur permission action=read path=/neofs/nolg.txt status=31",
+            "PERMISSION prompt action=read path=/neofs/nolg.txt",
+            "PERMISSION answer=once action=read path=/neofs/nolg.txt",
+            "PERMISSION done outcome=0 revoked=1",
             // Always: recorded, lent, revoked after the action as well.
             &todo("PERMISSION prompt"),
             &todo("PERMISSION answer=always"),
@@ -1276,6 +1298,12 @@ fn arthur_permission(
         n,
         rn,
     );
+    let (g, rg) = ("/neofs/nolg.txt", "read /neofs/nolg.txt");
+    // Asked; the Always isn't appended (the test fails it).
+    log.push(Asked, 1, 0, g, rg);
+    log.push(Asked, 1, 0, g, rg);
+    log.push(AllowedOnce, 1, 0, g, rg);
+    log.push(Done, 1, 0, g, rg);
     log.push(Asked, 1, 0, t, rt);
     log.push(AllowedAlways, 1, 0, t, rt);
     log.push(Done, 1, 0, t, rt);
@@ -1322,16 +1350,16 @@ fn arthur_permission(
         ],
         "boot 1's action log: the seeded torn tail repaired (a rewrite over 4 KiB), rotated past the cap with the chain intact, then exactly its records",
     )?;
-    absent(
-        scenario,
-        &first,
-        "ACTIONLOG append=failed",
-        "every append must land",
-    )?;
     let serial = read_serial(&first)?;
-    if serial.matches("PERMISSION prompt").count() != 8 {
+    if serial.matches("ACTIONLOG append=failed").count() != 1 {
         return Err(format!(
-            "`{}` boot 1: eight prompts expected (once, deny, always, the two escaped reads, the full record's two, the locked list)",
+            "`{}` boot 1: every append but the test's failed Always must land",
+            scenario.name
+        ));
+    }
+    if serial.matches("PERMISSION prompt").count() != 10 {
+        return Err(format!(
+            "`{}` boot 1: ten prompts expected (once, deny, the unlogged Always and its retry, always, the two escaped reads, the full record's two, the locked list)",
             scenario.name
         ));
     }
@@ -1410,6 +1438,8 @@ fn lock_session_checks(
             "LOCK route deferred to=",
             "DESKTOP arthur lock probe committed picture=0 busy=sent",
             "LOCK password refused failures=1 next_delay_s=0",
+            // F9 (J.c.): the lock screen says so too.
+            "LOCK note=\"Incorrect password. Try again.\" row=last",
             "LOCK unlocked failures=1 to=client",
             "DESKTOP arthur keystroke ascii=113",
             "DESKTOP arthur lock probe committed picture=1 busy=sent",

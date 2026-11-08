@@ -17,6 +17,19 @@
 //! - **K3:** flush the log sink.
 //! - **K7:** P2's S5 write or reset chain (`acpi::power`).
 //!
+//! - **K4** (`power-stop-cpus`, P3b): stop every other CPU (`cpu_stop`): the
+//!   STOP IPI, then an NMI for any that didn't park in 100 ms. From here the
+//!   kernel prints to the UART only and takes no shared lock.
+//! - **K5** (`power-stop-cpus`): stop this CPU's LAPIC tick and mask every
+//!   I/O APIC entry (prepared before K4: no mapping after it).
+//!
+//! - **K6** (`power-quiesce`): stop each guard-armed disk's controller,
+//!   clear every function's Bus Master Enable, then turn the IOMMU off
+//!   (`drivers::quiesce`; planned before K4).
+//!
+//! Without `power-stop-cpus`, P2's paths run with the other CPUs live, as
+//! they already do.
+//!
 //! **The whole of K1-K3 is bounded too** (Chad #199 item 2). K2's bound is
 //! checked between drain passes, so a block request whose completion never
 //! comes (a device that accepts a write and goes quiet) would hold K2 in its
@@ -24,9 +37,10 @@
 //! the drain lock in such a wait, or K3's sink lock and its write. So K1-K3
 //! run in their own kernel thread (`power-clean`), and the shutdown thread
 //! waits for it for at most [`DEADLINE_TICKS`]. Past that it abandons the
-//! work where it stands and logs the step it was in. The abandoned thread
-//! keeps whatever locks it holds; nothing after the deadline takes one of
-//! them.
+//! work where it stands, logs the step it was in, and goes on to K4 (or
+//! straight to K7 without `power-stop-cpus`). The abandoned thread keeps
+//! whatever locks it holds; nothing after the deadline takes one of them,
+//! and K4 parks its CPU if it runs.
 //!
 //! **After K1-K3, done or abandoned, the log sink is closed**
 //! (`log::close_sink`) before the power path runs: K3 was its last flush,
@@ -34,9 +48,6 @@
 //! and restart print and call `log::flush()` themselves, with no deadline of
 //! their own; a sink disk that stopped answering after K3 would otherwise
 //! hold them for good (#267, Chad 3b). The UART still gets every line.
-//!
-//! K4-K6 (stop the other CPUs, mask interrupt sources, quiesce DMA) are P3b;
-//! until then P2's paths run with the other CPUs live, as they already do.
 //!
 //! **Lock discipline.** No step here holds a lock across another: K1 calls
 //! `terminate` and `reap` one process at a time, K2 releases the mount table
@@ -95,16 +106,22 @@ fn ticks() -> u64 {
     crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed)
 }
 
+/// Whether a shutdown has started.
+#[allow(dead_code)] // `SYS_POWER`'s EBUSY (`power-cap`)
+pub fn running() -> bool {
+    KIND.load(Ordering::Acquire) != 0
+}
+
 /// Start the shutdown in its own kernel thread, sparing `keep` in K1. The
 /// thread ends in S5 or a reset; the caller carries on until K1 reaches it
-/// (or forever, when it is the spared one). A second call while one runs
-/// does nothing.
-pub fn start(kind: Kind, keep: Option<ProcessId>) {
+/// (or forever, when it is the spared one). Returns whether this call
+/// started it: a second call while one runs does nothing and returns false.
+pub fn start(kind: Kind, keep: Option<ProcessId>) -> bool {
     if KIND
         .compare_exchange(0, kind as u8, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return;
+        return false;
     }
     KEEP.store(keep.map_or(0, |p| p.0), Ordering::Release);
     let id = crate::sched::kthread::spawn_detached("power-shutdown", |_stop| run());
@@ -114,6 +131,7 @@ pub fn start(kind: Kind, keep: Option<ProcessId>) {
         KEEP.load(Ordering::Acquire),
         id.slot()
     );
+    true
 }
 
 fn run() -> ! {
@@ -162,6 +180,8 @@ fn run() -> ! {
             ticks().saturating_sub(start)
         );
     }
+    #[cfg(feature = "power-stop-cpus")]
+    stop_world();
     match kind {
         Kind::PowerOff => super::power::power_off(),
         Kind::Restart => super::power::restart(),
@@ -212,6 +232,115 @@ fn clean(kind: Kind, keep: Option<ProcessId>) {
     crate::log::flush();
     crate::serial_println!("[ power ] K3 log flushed");
     STEP.store(Step::Done as u8, Ordering::Release);
+}
+
+/// K4 and K5. Everything they need is read and mapped first, while the other
+/// CPUs still run; then TLB shootdowns are closed for good (CP-64), and from
+/// there interrupts stay off on this CPU until K7, nothing is allocated or
+/// mapped, and no shared lock is taken (the UART is written lock-free, the
+/// power plan read from its copy). With holdouts (CPUs that took neither the
+/// STOP IPI nor the NMI) K5 is skipped: its masking assumes one CPU at the
+/// I/O APIC and PCI config ports, and K7's power-off or reset ends every CPU
+/// anyway (`cpu_stop`, Holdouts).
+#[cfg(feature = "power-stop-cpus")]
+fn stop_world() {
+    use crate::arch::x86_64::cpu_stop;
+    let timer = super::power::stop_timer();
+    // K6's plan is read now, while every CPU runs (it takes driver locks
+    // and scans PCI). It holds heap vectors, and after K4 a parked CPU may
+    // hold the allocator's lock, so it must never be dropped (Janus's #7
+    // review, item 3: `stop_world` returns to K7, normally or with
+    // holdouts, and a drop there spun on that lock). `ManuallyDrop` leaks it
+    // on every path; K7 never returns, so nothing is lost.
+    #[cfg(feature = "power-quiesce")]
+    let quiesce = core::mem::ManuallyDrop::new(crate::drivers::quiesce::Plan::prepare());
+    let ioapics =
+        super::madt(super::power::rsdp()).map(|m| crate::arch::x86_64::ioapic::MaskPlan::new(&m));
+    crate::serial_println!("[ power ] K4 start");
+    // `ot90_stop_shootdown`: start the AP's sender and let it run, so one is
+    // likely in flight at the close (interrupts are still on here).
+    #[cfg(feature = "neo-test-ot90-stop-shootdown")]
+    {
+        use core::sync::atomic::Ordering;
+        crate::test_harness::OT90_STORM_GO.store(true, Ordering::Release);
+        let start = ticks();
+        while crate::test_harness::OT90_STORM_SENT.load(Ordering::Acquire) < 50
+            && ticks().saturating_sub(start) < 500
+        {
+            core::hint::spin_loop();
+        }
+        crate::serial_println!(
+            "[ power ] test: storm sent={} before the close",
+            crate::test_harness::OT90_STORM_SENT.load(Ordering::Acquire)
+        );
+    }
+    // Waits out any shootdown in flight (acknowledging it), then IF=0 for good.
+    crate::mm::tlb_shootdown::close_for_stop();
+    #[cfg(not(feature = "neo-test-ot90-stop-wedged"))]
+    let report = cpu_stop::stop_others(|us, done| super::power::spin_us(timer.as_ref(), us, done));
+    // `ot90_stop_wedged`: a PM timer that never advances; only `done` (and
+    // with it K4's poll count) can end a wait.
+    #[cfg(feature = "neo-test-ot90-stop-wedged")]
+    let report = {
+        let _ = timer;
+        cpu_stop::stop_others(|_, done| {
+            loop {
+                if done() {
+                    return true;
+                }
+            }
+        })
+    };
+    crate::drivers::console::serial::enter_stopped_world();
+    crate::serial_println!(
+        "[ power ] K4 targets={:#x} parked_by_ipi={:#x} parked_by_nmi={:#x} holdouts={:#x} shootdowns=closed",
+        report.targets,
+        report.parked_by_ipi,
+        report.parked_by_nmi,
+        report.holdouts
+    );
+    if report.holdouts != 0 {
+        super::power::note_holdouts();
+        crate::serial_println!(
+            "[ power ] K5 skipped: holdouts={:#x} still run; straight to K7",
+            report.holdouts
+        );
+        return;
+    }
+    #[cfg(feature = "lapic-timer")]
+    crate::arch::x86_64::lapic_timer::disarm_for_shutdown();
+    let masked = ioapics.map(|plan| plan.mask_all());
+    let pci = crate::drivers::pci::mask_interrupts_for_stop();
+    crate::serial_println!(
+        "[ power ] K5 lapic_timer={} ioapic={} pci_functions={} msi_disabled={} msix_masked={} msi_left_on={}",
+        if cfg!(feature = "lapic-timer") {
+            "disarmed"
+        } else {
+            "none"
+        },
+        IoapicMasked(masked),
+        pci.functions,
+        pci.msi_disabled,
+        pci.msix_masked,
+        pci.left_on
+    );
+    #[cfg(feature = "power-quiesce")]
+    quiesce.run(&|us, done| super::power::spin_us(timer.as_ref(), us, done));
+}
+
+/// K5's I/O APIC part of the log line: `masked=N`, or `no-madt` when the
+/// firmware has no MADT (so there was nothing to mask by).
+#[cfg(feature = "power-stop-cpus")]
+struct IoapicMasked(Option<u32>);
+
+#[cfg(feature = "power-stop-cpus")]
+impl core::fmt::Display for IoapicMasked {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(n) => write!(f, "masked={n}"),
+            None => write!(f, "no-madt"),
+        }
+    }
 }
 
 /// K1: terminate every user process but `keep`, reaping as they go, for at

@@ -9,6 +9,10 @@
 //! dual-boots Windows, which keeps it that way. There is no time zone, no DST
 //! rule and no UTC offset: the base is "the wall time the RTC reported", and
 //! the display formats it with no offset (see `rtc_logic`'s module doc).
+//! With `rtc-offset` (THINK-2026-11-02-time-zones §2.1) that reading starts
+//! **unconfirmed**: the session, which has the zone, confirms it as UTC once
+//! ([`confirm`]), moving the base by the RTC's offset from UTC (0 for an RTC
+//! that holds UTC). The kernel still has no zone and no DST rule.
 //!
 //! **Write once, monotonic untouched.** [`seed`] runs once on the BSP at boot,
 //! before any user process. It stores the base and then publishes it; a
@@ -45,6 +49,57 @@ const UIP_POLLS: u32 = 100_000;
 const INDEX: u16 = 0x70;
 #[cfg_attr(feature = "rtc-epoch-force-invalid", allow(dead_code))]
 const DATA: u16 = 0x71;
+
+/// `rtc-offset`: whether the session has confirmed realtime as UTC
+/// ([`confirm`]). 0 unconfirmed, 1 a confirm in progress, 2 confirmed.
+#[cfg(feature = "rtc-offset")]
+static CONFIRM: AtomicU8 = AtomicU8::new(0);
+
+/// Why [`confirm`] refused.
+#[cfg(feature = "rtc-offset")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConfirmError {
+    /// No RTC epoch (the fallback): realtime is boot-relative, not a reading.
+    NotSeeded,
+    /// Already confirmed (write once).
+    Already,
+    /// The offset is out of range.
+    Range,
+}
+
+/// `rtc-offset` (THINK-2026-11-02-time-zones §2.1, the PM's option 3): the
+/// session, which knows the zone and whether the RTC holds local time,
+/// confirms realtime as UTC once. `offset_s` is the RTC's offset from UTC
+/// (0 when the RTC holds UTC). The base moves by the offset in one atomic
+/// store, published before the confirmed flag (release), so a reader that
+/// sees the flag (acquire) reads the moved base. Monotonic is untouched.
+#[cfg(feature = "rtc-offset")]
+pub fn confirm(offset_s: i64) -> Result<(), ConfirmError> {
+    if STATE.load(Ordering::Acquire) != SEEDED {
+        return Err(ConfirmError::NotSeeded);
+    }
+    if CONFIRM
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(ConfirmError::Already);
+    }
+    let Some(base) = rtc_logic::confirmed_base_ns(BASE_NS.load(Ordering::Relaxed), offset_s) else {
+        CONFIRM.store(0, Ordering::Release);
+        return Err(ConfirmError::Range);
+    };
+    BASE_NS.store(base, Ordering::Release);
+    CONFIRM.store(2, Ordering::Release);
+    crate::serial_println!("rtc: realtime confirmed as utc offset_s={}", offset_s);
+    Ok(())
+}
+
+/// Whether realtime is confirmed UTC. Read this before the clock: a reader
+/// that sees `true` then reads the confirmed base.
+#[cfg(feature = "rtc-offset")]
+pub fn confirmed() -> bool {
+    CONFIRM.load(Ordering::Acquire) == 2
+}
 
 /// `CLOCK_REALTIME`'s base: the seeded one, else 0 (boot-relative).
 pub fn realtime_base_ns() -> u64 {

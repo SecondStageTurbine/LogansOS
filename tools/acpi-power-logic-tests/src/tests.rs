@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 use crate::power_logic::{
-    FadtPower, Gas, NoPowerOff, PM_TIMER_HZ, PM1_ALL_FIXED_STATUS, PowerOffPlan, RESET_REG_SUP,
-    ResetStep, S5Error, SPACE_PCI_CONFIG, SPACE_SYSTEM_IO, SPACE_SYSTEM_MEMORY, SleepType,
-    StatusEnable, TMR_VAL_EXT, WalkFault, acpi_enable_command, cf9_values, decode_s5,
-    decode_s5_report, io_range_ok, parse_fadt, pci_config_ok, phys_ok, plan_power_off,
-    pm_timer_elapsed, pm_timer_ticks, pm_wait, pm1_sleep_values, reset_chain, sleep_control_value,
-    split_block,
+    FadtPower, Gas, K6_POLLS_PER_US, K6Tally, NoPowerOff, PM_TIMER_HZ, PM1_ALL_FIXED_STATUS,
+    PowerOffPlan, RESET_REG_SUP, ResetStep, S5Error, SPACE_PCI_CONFIG, SPACE_SYSTEM_IO,
+    SPACE_SYSTEM_MEMORY, SleepType, StatusEnable, TMR_VAL_EXT, WalkFault, acpi_enable_command,
+    cf9_values, decode_s5, decode_s5_report, io_range_ok, parse_fadt, pci_config_ok, phys_ok,
+    plan_power_off, pm_timer_elapsed, pm_timer_ticks, pm_wait, pm1_sleep_values, reset_chain,
+    sleep_control_value, split_block, step_uses_shared_ports, wait_bounded,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1117,6 +1117,74 @@ fn long_waits_end_on_a_24_bit_pm_timer() {
     assert_eq!(polls, 3);
 }
 
+/// Janus's #7 review, item 2a: an NVMe controller that never reports
+/// shutdown (CSTS.SHST stays 0) and a PM timer that always reads zero. The
+/// bare `pm_wait` never returns then; K6's wait is bounded by its poll count
+/// too, ends, and reports the timeout as a timeout.
+#[test]
+fn a_k6_wait_ends_on_a_frozen_pm_timer() {
+    let frozen = |us: u64, done: &mut dyn FnMut() -> bool| pm_wait(us, false, || 0, done);
+    let mut polls = 0u64;
+    let held = wait_bounded(1_000_000, K6_POLLS_PER_US, &frozen, &mut || {
+        polls += 1;
+        false
+    });
+    assert!(
+        !held,
+        "a frozen timer's give-up is a timeout, not completion"
+    );
+    assert_eq!(polls, 1_000_000 * K6_POLLS_PER_US);
+    // The same controller with a running timer: the timer ends it first.
+    let timer = std::cell::RefCell::new(model_timer(1_000, false));
+    let running = |us: u64, done: &mut dyn FnMut() -> bool| {
+        pm_wait(us, false, || (timer.borrow_mut())(), done)
+    };
+    let mut polls = 0u64;
+    assert!(!wait_bounded(1_000, K6_POLLS_PER_US, &running, &mut || {
+        polls += 1;
+        false
+    }));
+    assert!(polls < 1_000 * K6_POLLS_PER_US, "polls={polls}");
+    // A controller that finishes is reported as finished, frozen timer or not.
+    let mut polls = 0u64;
+    assert!(wait_bounded(
+        1_000_000,
+        K6_POLLS_PER_US,
+        &frozen,
+        &mut || {
+            polls += 1;
+            polls == 3
+        }
+    ));
+    assert_eq!(polls, 3);
+}
+
+/// Janus's #7 review, item 1: a bus master whose Bus Master Enable didn't
+/// read back clear keeps the IOMMU on; a disk stop that failed alone doesn't.
+#[test]
+fn the_iommu_stays_on_unless_every_bus_master_is_stopped() {
+    let all_clear = K6Tally {
+        disks_stopped: 1,
+        disks_failed: 0,
+        bus_masters_cleared: 5,
+        bus_masters_failed: 0,
+    };
+    assert!(all_clear.iommu_may_go_off());
+    let stuck_bme = K6Tally {
+        bus_masters_cleared: 4,
+        bus_masters_failed: 1,
+        ..all_clear
+    };
+    assert!(!stuck_bme.iommu_may_go_off());
+    let disk_failed = K6Tally {
+        disks_stopped: 0,
+        disks_failed: 1,
+        ..all_clear
+    };
+    assert!(disk_failed.iommu_may_go_off());
+    assert!(K6Tally::default().iommu_may_go_off());
+}
+
 #[test]
 fn memory_registers_must_be_valid_physical_addresses() {
     // The AAG's F2: RESET_REG_SUP with a SystemMemory register at a
@@ -1316,4 +1384,33 @@ fn hw_reduced_sleep_registers_need_their_acpi_geometry() {
             value: 0x3c
         }
     );
+}
+
+/// Janus's #6 re-check, item 2: with a K4 holdout, K7 skips a FADT reset
+/// register in PCI configuration space (the CF8/CFC pair), and only that.
+#[test]
+fn a_pci_config_reset_register_uses_shared_ports() {
+    use ResetStep::{Cf9, FadtRegister, Keyboard, TripleFault};
+    let reg = |space| Gas {
+        space,
+        bit_width: 8,
+        bit_offset: 0,
+        access_size: 1,
+        address: 0x0000_001f_0000_0044,
+    };
+    assert!(step_uses_shared_ports(&FadtRegister {
+        reg: reg(SPACE_PCI_CONFIG),
+        value: 6
+    }));
+    assert!(!step_uses_shared_ports(&FadtRegister {
+        reg: reg(SPACE_SYSTEM_IO),
+        value: 6
+    }));
+    assert!(!step_uses_shared_ports(&FadtRegister {
+        reg: reg(SPACE_SYSTEM_MEMORY),
+        value: 6
+    }));
+    for step in [Keyboard, Cf9, TripleFault] {
+        assert!(!step_uses_shared_ports(&step));
+    }
 }

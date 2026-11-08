@@ -84,6 +84,8 @@ mod atrium_wm;
 // `serial_println!`, and the `asm` import. Every item inside is gated on
 // `neo-test-ai-latency-oracle`, so this is a no-op unless that scenario is built.
 include!("test_harness_latency_oracle.rs");
+// L1a.1 step 2a: the pipe scenarios.
+include!("test_harness_pipe.rs");
 
 #[cfg(any(
     feature = "neo-test-smep-catch",
@@ -163,8 +165,14 @@ const SCENARIO: &str = "servo_host_smoke";
     not(feature = "neo-test-servo-closure-smoke-avx")
 ))]
 const SCENARIO: &str = "servo_closure_smoke";
+#[cfg(feature = "neo-test-stylo-smoke")]
+const SCENARIO: &str = "stylo_smoke";
 #[cfg(feature = "neo-test-servo-closure-smoke-avx")]
 const SCENARIO: &str = "servo_closure_smoke_avx";
+#[cfg(feature = "neo-test-cxx-runtime-smoke")]
+const SCENARIO: &str = "cxx_runtime_smoke";
+#[cfg(feature = "neo-test-swgl-smoke")]
+const SCENARIO: &str = "swgl_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -242,8 +250,16 @@ const SCENARIO: &str = "irqsafe_mutex_if_restore";
 const SCENARIO: &str = "irqsafe_mutex_bench";
 #[cfg(feature = "neo-test-ai-latency-oracle")]
 const SCENARIO: &str = "ai_latency_oracle";
-#[cfg(feature = "neo-test-xsave-ymm-context-switch")]
+#[cfg(all(
+    feature = "neo-test-xsave-ymm-context-switch",
+    not(feature = "neo-test-xsave-ebx-understated"),
+    not(feature = "neo-test-xsave-ap-policy")
+))]
 const SCENARIO: &str = "xsave_ymm_context_switch";
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+const SCENARIO: &str = "xsave_ap_policy";
+#[cfg(feature = "neo-test-xsave-ebx-understated")]
+const SCENARIO: &str = "xsave_ebx_understated";
 #[cfg(all(
     feature = "neo-test-irq-xmm-preserve",
     not(feature = "neo-test-irq-xmm-preserve-fxsave")
@@ -338,6 +354,8 @@ const SCENARIO: &str = "net_tick_retransmit";
 const SCENARIO: &str = "tcp_listen_bounds";
 #[cfg(feature = "neo-test-exit-codes-bounded")]
 const SCENARIO: &str = "exit_codes_bounded";
+#[cfg(feature = "neo-test-user-copy-fault")]
+const SCENARIO: &str = "user_copy_fault";
 #[cfg(feature = "neo-test-file-cap-derive-grant")]
 const SCENARIO: &str = "file_cap_derive_grant";
 #[cfg(feature = "neo-test-vault-phase-b")]
@@ -542,6 +560,29 @@ const SCENARIO: &str = "desktop_lens_fault_boot";
 /// end view; the sprite is hidden whenever Home is shown).
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const SCENARIO: &str = "desktop_pointer_boot";
+/// OT-88 A1a: the pointer session with the probe app as a second client.
+#[cfg(feature = "neo-test-desktop-apps-boot")]
+const SCENARIO: &str = "desktop_apps_boot";
+#[cfg(feature = "neo-test-desktop-apps-fault-boot")]
+const SCENARIO: &str = "desktop_apps_fault_boot";
+#[cfg(feature = "neo-test-desktop-apps-hang-boot")]
+const SCENARIO: &str = "desktop_apps_hang_boot";
+#[cfg(feature = "neo-test-desktop-apps-stall-boot")]
+const SCENARIO: &str = "desktop_apps_stall_boot";
+#[cfg(feature = "neo-test-desktop-apps-drop-boot")]
+const SCENARIO: &str = "desktop_apps_drop_boot";
+#[cfg(feature = "neo-test-desktop-apps-handoff-death-boot")]
+const SCENARIO: &str = "desktop_apps_handoff_death_boot";
+#[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
+const SCENARIO: &str = "desktop_apps_reuse_boot";
+#[cfg(feature = "neo-test-desktop-apps-flood-boot")]
+const SCENARIO: &str = "desktop_apps_flood_boot";
+#[cfg(feature = "neo-test-desktop-apps-arthur-hang-boot")]
+const SCENARIO: &str = "desktop_apps_arthur_hang_boot";
+#[cfg(feature = "neo-test-desktop-apps-arthur-yield-hang-boot")]
+const SCENARIO: &str = "desktop_apps_arthur_yield_hang_boot";
+#[cfg(feature = "neo-test-desktop-apps-grab-boot")]
+const SCENARIO: &str = "desktop_apps_grab_boot";
 /// DL-1: every desktop feature on — the Lens docked to a window that moves
 /// and resizes (same oracle, same Home end view).
 #[cfg(feature = "neo-test-desktop-full-boot")]
@@ -587,6 +628,29 @@ const DESKTOP_PASS: &str = "desktop_icons_boot=ok view=home scene=independent_or
 const DESKTOP_PASS: &str = "desktop_home_cycle=ok view=home scene=independent_oracle_digest labels=ink arthur_rounds_past_pin_cap=ok";
 #[cfg(feature = "neo-test-desktop-arthur-scope")]
 const DESKTOP_PASS: &str = "desktop_arthur_scope=ok view=home scene=independent_oracle_digest labels=ink arthur_scopes_only=ok";
+#[cfg(feature = "neo-test-desktop-apps-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
+#[cfg(feature = "neo-test-desktop-apps-fault-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_fault_boot=ok view=home clients=arthur,probe_app probe_app_exit=7 fault=ends_that_client_only front=back_to_arthur";
+#[cfg(feature = "neo-test-desktop-apps-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_hang_boot=ok view=home probe_app=never_receives_reply wm=live sak_tab=served probe_app_end=hung_then_killed";
+#[cfg(feature = "neo-test-desktop-apps-stall-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_stall_boot=ok view=home probe_app=never_finishes_handshake launch=refused wm=live";
+#[cfg(feature = "neo-test-desktop-apps-drop-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_drop_boot=ok view=home probe_app=exits_before_reply ends=that_client_only front=back_to_arthur";
+#[cfg(feature = "neo-test-desktop-apps-handoff-death-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_handoff_death_boot=ok view=home probe_app=dies_mid_handoff route=back_to_arthur handles=released";
+#[cfg(feature = "neo-test-desktop-apps-reuse-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_reuse_boot=ok view=home slot=reused generation=new handles=released stale_activator=refused";
+#[cfg(feature = "neo-test-desktop-apps-arthur-yield-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_arthur_yield_hang_boot=ok view=home arthur=yield_unreceived sak_tab=served_during_settle ended=arthur_only";
+#[cfg(feature = "neo-test-desktop-apps-arthur-hang-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_arthur_hang_boot=ok view=home arthur=hung ended=arthur_only probe_app=kept_served wm=live";
+#[cfg(feature = "neo-test-desktop-apps-flood-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_apps_flood_boot=ok view=home arthur=floods probe_app_keys=served sak_tab=served";
+#[cfg(feature = "neo-test-desktop-apps-grab-boot")]
+const DESKTOP_PASS: &str = "desktop_apps_grab_boot=ok view=home grab=consumed_on_switch_and_death";
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const DESKTOP_PASS: &str = "desktop_pointer_boot=ok view=home scene=independent_oracle_digest sprite=hidden_on_home pointer=b_ref_forward sak=escape click=refocus_then_forward";
 #[cfg(feature = "neo-test-desktop-lens-fault-boot")]
@@ -727,6 +791,10 @@ const SCENARIO: &str = "hid_contention";
 const SCENARIO: &str = "wait_any_core";
 #[cfg(feature = "neo-test-lock-route-races")]
 const SCENARIO: &str = "lock_route_races";
+#[cfg(feature = "neo-test-ipc-try-send")]
+const SCENARIO: &str = "ipc_try_send";
+#[cfg(feature = "neo-test-key-repeat-epoch")]
+const SCENARIO: &str = "key_repeat_epoch";
 #[cfg(feature = "neo-test-di1-forward")]
 const SCENARIO: &str = "di1_forward";
 #[cfg(feature = "neo-test-ipc-rendezvous-translate-fault")]
@@ -794,6 +862,18 @@ const SCENARIO: &str = "phase3_fat32_exec_blocked_by_default";
 const SCENARIO: &str = "phase3_fat32_exec_with_opt_in";
 #[cfg(feature = "neo-test-phase3-fat32-type-import-is-regular")]
 const SCENARIO: &str = "phase3_fat32_type_import_is_regular";
+#[cfg(feature = "neo-test-phase3-fat32-mbr-mount-read")]
+const SCENARIO: &str = "phase3_fat32_mbr_mount_read";
+#[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
+const SCENARIO: &str = "phase3_fat32_mbr_off";
+#[cfg(feature = "neo-test-phase3-fat32-fat16-read")]
+const SCENARIO: &str = "phase3_fat32_fat16_read";
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+const SCENARIO: &str = "phase3_fat32_readonly_no_write";
+#[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+const SCENARIO: &str = "phase3_fat32_loop_chain";
+#[cfg(feature = "neo-test-phase3-fat32-native-control")]
+const SCENARIO: &str = "phase3_fat32_native_control";
 #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
 const SCENARIO: &str = "phase3_ext4_mount_readonly";
 #[cfg(feature = "neo-test-phase3-ext4-readdir-root")]
@@ -860,6 +940,10 @@ const SCENARIO: &str = "dhcp_rx_real_lease";
 const SCENARIO: &str = "phase4_tcp_connect_stream_close";
 #[cfg(feature = "neo-test-phase4-https-fetch")]
 const SCENARIO: &str = "phase4_https_fetch";
+#[cfg(feature = "neo-test-net-dial-public-only")]
+const SCENARIO: &str = "net_dial_public_only";
+#[cfg(feature = "neo-test-fetch-broker")]
+const SCENARIO: &str = "fetch_broker";
 #[cfg(feature = "neo-test-net-dial-cap-kill-switch")]
 const SCENARIO: &str = "net_dial_cap_kill_switch";
 #[cfg(feature = "neo-test-tensor-create-query-drop")]
@@ -910,6 +994,12 @@ const SCENARIO: &str = "dma_arena_fence";
 const SCENARIO: &str = "vtd_fence";
 #[cfg(feature = "neo-test-graphics-vtd-domain")]
 const SCENARIO: &str = "graphics_vtd_domain";
+#[cfg(feature = "neo-test-usb-storage-read")]
+const SCENARIO: &str = "usb_storage_read";
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+const SCENARIO: &str = "usb_storage_unplug";
+#[cfg(feature = "neo-test-usb-storage-off")]
+const SCENARIO: &str = "usb_storage_off";
 #[cfg(feature = "neo-test-usb-enumerate")]
 const SCENARIO: &str = "usb_enumerate";
 #[cfg(feature = "neo-test-usb-storm")]
@@ -954,6 +1044,10 @@ const SCENARIO: &str = "admission_park_kill_threaded";
 const SCENARIO: &str = "admission_park_kill_sink_held";
 #[cfg(feature = "neo-test-ipc-park-kill")]
 const SCENARIO: &str = "ipc_park_kill";
+#[cfg(feature = "neo-test-pipe-core")]
+const SCENARIO: &str = "pipe_core";
+#[cfg(feature = "neo-test-pipe-park-kill")]
+const SCENARIO: &str = "pipe_park_kill";
 #[cfg(feature = "neo-test-kill-at-exit")]
 const SCENARIO: &str = "kill_at_exit";
 #[cfg(all(
@@ -969,8 +1063,13 @@ const SCENARIO: &str = "install_claim_identity";
 const SCENARIO: &str = "install_claim_nvme_events";
 #[cfg(feature = "neo-test-fb-progress")]
 const SCENARIO: &str = "fb_progress_console";
-#[cfg(feature = "neo-test-fb-panic-holding-serial")]
+#[cfg(all(
+    feature = "neo-test-fb-panic-holding-serial",
+    not(feature = "neo-test-fb-gp-holding-serial")
+))]
 const SCENARIO: &str = "fb_panic_holding_serial";
+#[cfg(feature = "neo-test-fb-gp-holding-serial")]
+const SCENARIO: &str = "fb_gp_holding_serial";
 #[cfg(feature = "neo-test-x2apic-smp")]
 const SCENARIO: &str = "x2apic_smp_ipi";
 #[cfg(all(
@@ -1025,6 +1124,20 @@ const SCENARIO: &str = "ot90_stuck_disk";
 const SCENARIO: &str = "ot90_stuck_sink_off";
 #[cfg(feature = "neo-test-ot90-stuck-sink-restart")]
 const SCENARIO: &str = "ot90_stuck_sink_restart";
+#[cfg(feature = "neo-test-ot90-stop-cpus")]
+const SCENARIO: &str = "ot90_stop_cpus";
+#[cfg(feature = "neo-test-ot90-stop-holdout")]
+const SCENARIO: &str = "ot90_stop_holdout";
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+const SCENARIO: &str = "ot90_stop_shootdown";
+#[cfg(feature = "neo-test-ot90-stop-wedged")]
+const SCENARIO: &str = "ot90_stop_wedged";
+#[cfg(feature = "neo-test-ot90-quiesce")]
+const SCENARIO: &str = "ot90_quiesce";
+#[cfg(feature = "neo-test-ot90-cap")]
+const SCENARIO: &str = "ot90_cap";
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+const SCENARIO: &str = "ot90_quiesce_heap_held";
 #[cfg(feature = "neo-test-sys-getrandom")]
 const SCENARIO: &str = "sys_getrandom";
 #[cfg(feature = "neo-test-phase3-kthread-spawn-join-smoke")]
@@ -1083,6 +1196,8 @@ const SCENARIO: &str = "phase3_neofs_write_readback_same_boot";
 const SCENARIO: &str = "phase3_neofs_cache_evict";
 #[cfg(feature = "neo-test-phase3-neofs-cache-evict-off")]
 const SCENARIO: &str = "phase3_neofs_cache_evict_off";
+#[cfg(feature = "neo-test-boot-time")]
+const SCENARIO: &str = "boot_time";
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
 const SCENARIO: &str = "phase3_neofs_allocator_reuse_guard";
 #[cfg(feature = "neo-test-phase3-neofs-reboot-persistence-small-file")]
@@ -1209,6 +1324,9 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-std-sealed-ambient",
     feature = "neo-test-servo-host-smoke",
     feature = "neo-test-servo-closure-smoke",
+    feature = "neo-test-stylo-smoke",
+    feature = "neo-test-cxx-runtime-smoke",
+    feature = "neo-test-swgl-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -1291,6 +1409,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-tcp-listen-bounds",
     feature = "neo-test-exit-codes-bounded",
     feature = "neo-test-mount-authority",
+    feature = "neo-test-user-copy-fault",
     feature = "neo-test-vault-phase-b",
     feature = "neo-test-arthur-grant-revoke",
     feature = "neo-test-sys-wait-blocking",
@@ -1359,6 +1478,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-usb-hid-mouse",
     feature = "neo-test-usb-xhci-select",
     feature = "neo-test-usb-hotplug",
+    feature = "neo-test-usb-storage-unplug",
     feature = "neo-test-ps2-keyboard",
     feature = "neo-test-ps2-key-repeat",
     feature = "neo-test-rtl8125-absent",
@@ -1369,6 +1489,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-wait-any-core",
     feature = "neo-test-di1-forward",
     feature = "neo-test-lock-route-races",
+    feature = "neo-test-ipc-try-send",
+    feature = "neo-test-key-repeat-epoch",
     feature = "neo-test-ipc-rendezvous-translate-fault",
     feature = "neo-test-phase3-pci-virtio-blk-probe-smoke",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
@@ -1406,6 +1528,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
+    feature = "neo-test-boot-time",
     feature = "neo-test-phase3-neofs-allocator-reuse-guard",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -1472,6 +1595,12 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-phase3-fat32-exec-blocked-by-default",
     feature = "neo-test-phase3-fat32-exec-with-opt-in",
     feature = "neo-test-phase3-fat32-type-import-is-regular",
+    feature = "neo-test-phase3-fat32-mbr-mount-read",
+    feature = "neo-test-phase3-fat32-mbr-off",
+    feature = "neo-test-phase3-fat32-fat16-read",
+    feature = "neo-test-phase3-fat32-readonly-no-write",
+    feature = "neo-test-phase3-fat32-loop-chain",
+    feature = "neo-test-phase3-fat32-native-control",
     feature = "neo-test-phase3-ext4-mount-readonly",
     feature = "neo-test-phase3-ext4-readdir-root",
     feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -1505,6 +1634,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-dhcp-rx-real-lease",
     feature = "neo-test-phase4-tcp-connect-stream-close",
     feature = "neo-test-phase4-https-fetch",
+    feature = "neo-test-net-dial-public-only",
+    feature = "neo-test-fetch-broker",
     feature = "neo-test-net-dial-cap-kill-switch",
     feature = "neo-test-tensor-create-query-drop",
     feature = "neo-test-model-load-cascade",
@@ -1532,6 +1663,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-vtd-fence",
     feature = "neo-test-graphics-vtd-domain",
     feature = "neo-test-usb-enumerate",
+    feature = "neo-test-usb-storage-read",
+    feature = "neo-test-usb-storage-off",
     feature = "neo-test-usb-storm",
     feature = "neo-test-usb-baremetal-probe",
     feature = "neo-test-usb-ethernet",
@@ -1548,6 +1681,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-accel-admission-livepath",
     feature = "neo-test-admission-park-kill",
     feature = "neo-test-ipc-park-kill",
+    feature = "neo-test-pipe-core",
+    feature = "neo-test-pipe-park-kill",
     feature = "neo-test-kill-at-exit",
     feature = "neo-test-block-write-guard",
     feature = "neo-test-install-claim",
@@ -1577,7 +1712,14 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ot90-stuck-disk",
     feature = "neo-test-ot90-stuck-sink-off",
     feature = "neo-test-ot90-stuck-sink-restart",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-ot90-straggler-forced",
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-shootdown",
+    feature = "neo-test-ot90-stop-wedged",
+    feature = "neo-test-ot90-cap",
     feature = "neo-test-sys-getrandom",
     feature = "neo-test-interface-identity-select",
     feature = "neo-test-interface-cap-derive-revoke",
@@ -1721,6 +1863,7 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-usb-hid-mouse",
         feature = "neo-test-usb-xhci-select",
         feature = "neo-test-usb-hotplug",
+        feature = "neo-test-usb-storage-unplug",
         feature = "neo-test-ps2-keyboard",
         feature = "neo-test-ps2-key-repeat",
         feature = "neo-test-rtl8125-absent",
@@ -1810,6 +1953,12 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-phase3-fat32-exec-blocked-by-default",
         feature = "neo-test-phase3-fat32-exec-with-opt-in",
         feature = "neo-test-phase3-fat32-type-import-is-regular",
+        feature = "neo-test-phase3-fat32-mbr-mount-read",
+        feature = "neo-test-phase3-fat32-mbr-off",
+        feature = "neo-test-phase3-fat32-fat16-read",
+        feature = "neo-test-phase3-fat32-readonly-no-write",
+        feature = "neo-test-phase3-fat32-loop-chain",
+        feature = "neo-test-phase3-fat32-native-control",
         feature = "neo-test-phase3-ext4-mount-readonly",
         feature = "neo-test-phase3-ext4-readdir-root",
         feature = "neo-test-phase3-ext4-open-read-regular-file",
@@ -1843,6 +1992,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-dhcp-rx-real-lease",
         feature = "neo-test-phase4-tcp-connect-stream-close",
         feature = "neo-test-phase4-https-fetch",
+        feature = "neo-test-net-dial-public-only",
+        feature = "neo-test-fetch-broker",
         feature = "neo-test-net-dial-cap-kill-switch",
         feature = "neo-test-model-load-cascade",
         feature = "neo-test-infer-mlp-forward",
@@ -1869,6 +2020,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-vtd-fence",
         feature = "neo-test-graphics-vtd-domain",
         feature = "neo-test-usb-enumerate",
+        feature = "neo-test-usb-storage-read",
+        feature = "neo-test-usb-storage-off",
         feature = "neo-test-usb-storm",
         feature = "neo-test-usb-baremetal-probe",
         feature = "neo-test-usb-ethernet",
@@ -2624,6 +2777,65 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         );
     }
 
+    // OT-61 C2.4: stylo-smoke, upstream Stylo (vendored) styling an
+    // html5ever document with one sequential traversal; every computed value
+    // is checked against a hand-derived one, and it exits 0 only on a match.
+    // Its frames must all come back (the global live-frame count, as S3b).
+    #[cfg(feature = "neo-test-stylo-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 256 * 256; // 256 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=stylo_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let frames_before = crate::mm::frame::frames_in_use();
+        let smoke = process::spawn_user_by_name_budgeted("stylo-smoke", &handles, SMOKE_FRAMES)
+            .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!("[ kernel ] proc: stylo-smoke pid={} (256 MiB)", smoke.0);
+        let mut frames_peak = frames_before;
+        while process::any_user_process() {
+            frames_peak = frames_peak.max(crate::mm::frame::frames_in_use());
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let frames_after = crate::mm::frame::frames_in_use();
+        serial_println!(
+            "[ kernel ] proc: stylo-smoke exit {}, frames in use {} (before {}, peak {})",
+            code,
+            frames_after,
+            frames_before,
+            frames_peak
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if frames_peak <= frames_before {
+            fail_with(
+                "frames_not_observed",
+                frames_peak as i64,
+                frames_before as i64,
+            );
+        }
+        if frames_after != frames_before {
+            fail_with("frames_leaked", frames_after as i64, frames_before as i64);
+        }
+        pass(
+            "stylo_smoke=ran exit=0 stylo=0.22.0 traversal=sequential cascade=exact frames_returned=1",
+        );
+    }
+
     // OT-61 C2.3b: servo-closure-smoke, the vendored html5ever + selectors
     // closure on-target (parse, match, the parking_lot_core parker, memchr
     // on yielding threads), spawned with the browser-runtime cap under its
@@ -2721,6 +2933,134 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         #[cfg(feature = "xsave-fpu")]
         pass(
             "servo_closure_smoke_avx=ran exit=100 html5ever=parsed selectors=matched parking_lot=parked memchr=avx2 xsave=live frames_returned=1",
+        );
+    }
+
+    // OT-61 C3a: cxx-runtime-smoke, the private C/C++ runtime on-target. The
+    // smoke runs its libc and libc++ checks, then errno, malloc and a
+    // function-local static from several threads at once, and exits 0 only if
+    // all pass. Its twin reads a std::vector out of bounds: libc++'s hardening
+    // must trap (ud2), killing only that process with 128 + SIGILL. Every
+    // frame of both must come back.
+    #[cfg(feature = "neo-test-cxx-runtime-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 64 * 256; // 64 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=cxx_runtime_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke =
+            process::spawn_user_by_name_budgeted("cxx-runtime-smoke", &handles, SMOKE_FRAMES)
+                .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!(
+            "[ kernel ] proc: cxx-runtime-smoke pid={} (64 MiB)",
+            smoke.0
+        );
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: cxx-runtime-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        let trap =
+            process::spawn_user_by_name_budgeted("cxx-hardening-trap", &handles, SMOKE_FRAMES)
+                .unwrap_or_else(|_| fail_with("spawn_trap", 0, 0));
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let trap_code = process::take_spawned_exit_code(trap).unwrap_or(255);
+        let want_trap = 128 + crate::user_fault_logic::SIGILL;
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: cxx-hardening-trap exit {} (want {}), root used {} (baseline {})",
+            trap_code,
+            want_trap,
+            used,
+            baseline
+        );
+        if trap_code != want_trap {
+            fail_with("hardening_did_not_trap", trap_code as i64, want_trap as i64);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("trap_frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "cxx_runtime_smoke=ran exit=0 libc=oracle libcxx=checked errno=per_thread malloc=threads static_guard=once hardening=trap frames_returned=1",
+        );
+    }
+
+    // OT-61 rung 4 (SWGL S1): swgl-smoke rasters a hand-laid pattern through
+    // upstream SWGL into its own padded-stride buffer and byte-compares it;
+    // it exits 0 only on an exact match, and every frame must come back.
+    #[cfg(feature = "neo-test-swgl-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 64 * 256; // 64 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=swgl_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke = process::spawn_user_by_name_budgeted("swgl-smoke", &handles, SMOKE_FRAMES)
+            .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!("[ kernel ] proc: swgl-smoke pid={} (64 MiB)", smoke.0);
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: swgl-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "swgl_smoke=ran exit=0 swgl=0.70.0 pattern=exact stride=padded canaries=intact frames_returned=1",
         );
     }
 
@@ -3163,6 +3503,37 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
             exit_code,
             frames_before,
             frames_after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+
+    // user-copy-fixup: neo-init's syscalls with unmapped, page-crossing and
+    // read-only buffers each return EFAULT; reaching here at all means none
+    // of their faults halted the kernel.
+    #[cfg(feature = "neo-test-user-copy-fault")]
+    {
+        let exit_code = _ipc_smoke();
+        // CP-99: neo-init's parallel-unmap IPC leg. 7 = the hold ran (1), a
+        // sibling's unmap was seen waiting on the peer's lock (2), and the
+        // frame was still mapped when the copy finished (4).
+        let race = crate::ipc::copy_race_test::RESULT.load(Ordering::Acquire);
+        if exit_code == 0 && race != 7 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ipc_unmap_race result={}",
+                SCENARIO,
+                race
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+        if exit_code == 0 {
+            pass(
+                "user_copy_fault=ok unmapped=efault crossing=efault read_only=efault ipc_unmap_race=held kernel_alive=1",
+            );
+        }
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=user_copy_fault code={}",
+            SCENARIO,
+            exit_code
         );
         debug_exit(EXIT_FAILURE);
     }
@@ -4430,6 +4801,11 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-lock-route-races")]
     run_lock_route_races();
+    #[cfg(feature = "neo-test-ipc-try-send")]
+    run_ipc_try_send();
+
+    #[cfg(feature = "neo-test-key-repeat-epoch")]
+    run_key_repeat_epoch();
 
     #[cfg(feature = "neo-test-phase3-pci-virtio-blk-probe-smoke")]
     run_phase3_pci_virtio_blk_probe_smoke();
@@ -4682,6 +5058,15 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     #[cfg(feature = "neo-test-usb-enumerate")]
     run_usb_enumerate();
 
+    #[cfg(feature = "neo-test-usb-storage-read")]
+    run_usb_storage_read();
+
+    #[cfg(feature = "neo-test-usb-storage-off")]
+    run_usb_storage_off();
+
+    #[cfg(feature = "neo-test-usb-storage-unplug")]
+    run_usb_storage_unplug();
+
     #[cfg(feature = "neo-test-usb-storm")]
     run_usb_storm();
 
@@ -4729,6 +5114,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ipc-park-kill")]
     run_ipc_park_kill();
+
+    #[cfg(feature = "neo-test-pipe-core")]
+    run_pipe_core();
+
+    #[cfg(feature = "neo-test-pipe-park-kill")]
+    run_pipe_park_kill();
 
     #[cfg(feature = "neo-test-kill-at-exit")]
     run_kill_at_exit();
@@ -4811,12 +5202,29 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ot90-stuck-disk")]
     run_ot90_stuck_disk();
+    #[cfg(any(
+        feature = "neo-test-ot90-stop-cpus",
+        feature = "neo-test-ot90-stop-holdout",
+        feature = "neo-test-ot90-stop-wedged"
+    ))]
+    run_ot90_stop_cpus();
+    #[cfg(feature = "neo-test-ot90-stop-shootdown")]
+    run_ot90_stop_shootdown();
 
     #[cfg(any(
         feature = "neo-test-ot90-stuck-sink-off",
         feature = "neo-test-ot90-stuck-sink-restart"
     ))]
     run_ot90_stuck_sink();
+
+    #[cfg(any(
+        feature = "neo-test-ot90-quiesce",
+        feature = "neo-test-ot90-quiesce-heap-held"
+    ))]
+    run_ot90_quiesce();
+
+    #[cfg(feature = "neo-test-ot90-cap")]
+    run_ot90_cap();
 
     #[cfg(feature = "neo-test-sys-getrandom")]
     {
@@ -4825,6 +5233,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(any(
         feature = "neo-test-phase4-https-fetch",
+        feature = "neo-test-net-dial-public-only",
+        feature = "neo-test-fetch-broker",
         feature = "neo-test-net-dial-cap-kill-switch"
     ))]
     {
@@ -4844,14 +5254,41 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         {
             fail("reason=https_fetch_dns_a_inject_failed");
         }
+        // OT-61 rung 5c: a second name on loopback, outside the broker's
+        // fixture allowance, for the kernel's NON_PUBLIC refusal.
+        #[cfg(feature = "neo-test-fetch-broker")]
+        {
+            const REBIND: &[u8] = &[
+                6, b'r', b'e', b'b', b'i', b'n', b'd', 4, b't', b'e', b's', b't', 0,
+            ];
+            let mut v6_loopback = [0u8; 16];
+            v6_loopback[15] = 1;
+            let answers: [(u16, &[u8]); 2] = [
+                (crate::net::dns::TYPE_AAAA, &v6_loopback),
+                (crate::net::dns::TYPE_A, &[127, 0, 0, 1]),
+            ];
+            for (rr_type, rdata) in answers {
+                if crate::net::dns::inject(&phase4_dns_response(REBIND, rr_type, rdata)).is_err() {
+                    fail("reason=fetch_broker_dns_rebind_inject_failed");
+                }
+            }
+        }
         let exit_code = _ipc_smoke();
         if exit_code == 0 {
+            #[cfg(feature = "neo-test-fetch-broker")]
+            pass(
+                "fetch_broker=ok https_via_broker=body_ok private_literal=refused cleartext=refused loopback_name=kernel_refused",
+            );
             #[cfg(feature = "neo-test-phase4-https-fetch")]
             pass(
                 "https_fetch=ok dns=ok happy_eyeballs=ok tls13=rustls ktls=ok http_body=ok netdialcap=no_cap_denied,in_scope_ok,out_of_scope_denied,post_revoke_denied",
             );
             #[cfg(feature = "neo-test-net-dial-cap-kill-switch")]
             pass("netdialcap_kill_switch=ok enforcement=off ambient_dial=ok equality=pre_feature");
+            #[cfg(feature = "neo-test-net-dial-public-only")]
+            pass(
+                "net_dial_public_only=ok https_fetch=ok root_cap=loopback_ok narrowed_cap=loopback_denied",
+            );
         }
         serial_println!(
             "NEO_TEST/1 event=FAIL name={} reason=https_fetch_exit_nonzero code={}",
@@ -4899,6 +5336,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-phase3-neofs-cache-evict-off"
     ))]
     run_neofs_cache_evict();
+    #[cfg(feature = "neo-test-boot-time")]
+    run_boot_time();
 
     #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
     run_phase3_neofs_allocator_reuse_guard();
@@ -5095,6 +5534,24 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-phase3-fat32-type-import-is-regular")]
     run_phase3_fat32_type_import_is_regular();
+
+    #[cfg(any(
+        feature = "neo-test-phase3-fat32-mbr-mount-read",
+        feature = "neo-test-phase3-fat32-mbr-off"
+    ))]
+    run_phase3_fat32_mbr();
+
+    #[cfg(any(
+        feature = "neo-test-phase3-fat32-fat16-read",
+        feature = "neo-test-phase3-fat32-native-control"
+    ))]
+    run_phase3_fat32_fixture_read();
+
+    #[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+    run_phase3_fat32_readonly_no_write();
+
+    #[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+    run_phase3_fat32_loop_chain();
 
     #[cfg(feature = "neo-test-phase3-ext4-mount-readonly")]
     run_phase3_ext4_mount_readonly();
@@ -6297,6 +6754,69 @@ fn run_xsave_ymm_context_switch() -> ! {
     }
 
     crate::sched::reap();
+    // `xsave_ebx_understated`: CPUID.(0DH,0):EBX answered 576 (x87|SSE),
+    // as under WHPX, while XCR0 holds x87|SSE|AVX. The area must still be
+    // sized for AVX (its component ends at 576 + 256 = 832), and the timer
+    // ticks and context switches above must have survived it.
+    #[cfg(feature = "neo-test-xsave-ebx-understated")]
+    {
+        let (ebx, understated) = crate::arch::x86_64::fpu::ebx_report();
+        let area = crate::arch::x86_64::fpu::save_area_size();
+        if ebx != 576 || !understated || area < 832 {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=ebx_understated_not_handled ebx={} understated={} area={}",
+                SCENARIO,
+                ebx,
+                understated,
+                area
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
+    // `xsave_ap_policy` (#52 review item 1): the policy is the boot CPU's.
+    // The first AP needed more than it holds and stayed offline; the second
+    // needed less and came online without shrinking it. The YMM/XMM/x87
+    // checks above ran on the admitted CPUs under that policy.
+    #[cfg(feature = "neo-test-xsave-ap-policy")]
+    {
+        let (published, checks) = crate::arch::x86_64::fpu::ap_policy_for_test();
+        let area = crate::arch::x86_64::fpu::save_area_size();
+        let rejected = crate::arch::x86_64::smp::aps_rejected_for_test();
+        serial_println!(
+            "xsave_ap_policy: published_area={} area={} ap_checks={} aps_rejected={}",
+            published,
+            area,
+            checks,
+            rejected
+        );
+        if checks < 2 {
+            fail("reason=needs_two_aps (NEO_SMP>=3)");
+        }
+        if area != published {
+            fail("reason=ap_changed_policy");
+        }
+        if rejected != 1 {
+            fail("reason=larger_ap_not_rejected");
+        }
+        // #57 re-check: bringup attributed the rejection to the AP that made
+        // it, so every AP it counts as started signalled ready.
+        let (started, ready) = crate::arch::x86_64::smp::aps_started_ready_for_test();
+        serial_println!(
+            "xsave_ap_policy: aps_started={} aps_ready={}",
+            started,
+            ready
+        );
+        if started != ready {
+            fail("reason=rejected_ap_counted_as_started");
+        }
+        // The rejected AP (the first launched, cpu_id 1) has no kernel IDT, so
+        // it must be out of the registry `cpu_stop::stop_others` targets; the
+        // admitted ones stay in it.
+        use crate::arch::x86_64::smp::cpu_registered_for_test as registered;
+        if registered(1) || !registered(2) {
+            fail("reason=rejected_ap_still_registered");
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fpu=xsave area={} mask=0x{:x} ymm=preserved xmm=preserved x87=preserved",
         SCENARIO,
@@ -10157,11 +10677,17 @@ compat_mode_probe_end:
 
     pub(super) fn run() -> ! {
         let gdt_bad = gdt_ring3_bad_slots();
-        // SAFETY: reading IA32_CSTAR / IA32_SYSENTER_CS has no side effects.
+        // SAFETY: reading IA32_CSTAR / IA32_SYSENTER_CS has no side effects;
+        // the latter exists only with SEP (without it SYSENTER is #UD, and 0
+        // reports that nothing is open).
         let (cstar, sysenter_cs) = unsafe {
             (
                 Msr::new(IA32_CSTAR).read(),
-                Msr::new(IA32_SYSENTER_CS).read(),
+                if crate::arch::x86_64::syscall::has_sep() {
+                    Msr::new(IA32_SYSENTER_CS).read()
+                } else {
+                    0
+                },
             )
         };
         GDT_BAD.store(gdt_bad, Ordering::Release);
@@ -16561,6 +17087,255 @@ fn run_graphics_vtd_domain() -> ! {
 /// address fenced (admits > 0, refusals == 0 — the driver never even
 /// ATTEMPTED an out-of-arena address), the F4 command counters balanced,
 /// and MSI delivery observed (the F6 counted side).
+/// L3u-2: QEMU's `usb-storage` (Bulk-Only, 46f4:0001) holds the FAT32
+/// fixture. The driver binds it, its capacity is the image's, and FAT on it
+/// mounts as `deviceN` and reads back byte-exact (file, subdirectory, LFN);
+/// a write open is refused.
+#[cfg(feature = "neo-test-usb-storage-read")]
+fn run_usb_storage_read() -> ! {
+    let Some((index, device)) = crate::drivers::block::find_device_by_driver("usb-storage") else {
+        fail("reason=usb_storage_not_registered");
+    };
+    let g = device.geometry();
+    if g.logical_block_size != 512 || g.block_count != USB_STORAGE_FIXTURE_BLOCKS {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_storage_capacity block_len={} blocks={}",
+            SCENARIO,
+            g.logical_block_size,
+            g.block_count
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    // Boundary (U12, Chad's #20 review): the reported last LBA reads; one
+    // past it, and a two-block read that ends one past it, are refused
+    // before any command is sent.
+    {
+        use crate::drivers::block::{BlockError, DmaBuffer};
+        let one = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+        let two = DmaBuffer::alloc_in_arena(1024).unwrap_or_else(|_| fail("reason=alloc"));
+        let last = g.block_count - 1;
+        let at_last = device.read_block(last, core::slice::from_ref(&one));
+        let past = device.read_block(last + 1, core::slice::from_ref(&one));
+        let straddle = device.read_block(last, core::slice::from_ref(&two));
+        if at_last.is_err()
+            || past != Err(BlockError::InvalidRequest)
+            || straddle != Err(BlockError::InvalidRequest)
+        {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=usb_storage_boundary last={} at_last={:?} past={:?} straddle={:?}",
+                SCENARIO,
+                last,
+                at_last,
+                past,
+                straddle
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let source = alloc::format!("device{index}");
+    let req = mount4b_build_request_v1(3, &source, "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=usb_storage_mount_rc", rc as u64);
+    }
+    let entries = fat32_collect_dirents("/fat32");
+    fat32_expect_dirent(&entries, "hello.txt", 2);
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    fat32_expect_file_bytes("/fat32/long filename with spaces.txt", b"LFN test\n");
+    match crate::fs::open_root_temporary(
+        "/fat32/hello.txt",
+        crate::fs::OPEN_ROOT_TEMPORARY,
+        crate::fs::FileRights::WRITE,
+    ) {
+        Err(crate::fs::VfsError::InsufficientRights) => {}
+        Err(err) => neofs_2c_fail_vfs("usb_storage_write_open_wrong_error", err),
+        Ok(_) => fail("reason=usb_storage_write_open_allowed"),
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} device_index={} blocks={} block_len=512 last_lba=read past_last=refused source={} entries={} hello=match nested=match lfn=match write=refused",
+        SCENARIO,
+        index,
+        g.block_count,
+        source,
+        entries.len()
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// `usb_storage_unplug`: the device the reader thread reads, its reads that
+/// succeeded, and the error that ended it (0 = none yet; else 1 + the
+/// `BlockError` discriminant: NoDevice is 1).
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_DEVICE: spin::Once<alloc::sync::Arc<dyn crate::drivers::block::BlockDevice>> =
+    spin::Once::new();
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_READS: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+static UNPLUG_READER_ERR: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+fn unplug_err_code(e: crate::drivers::block::BlockError) -> u64 {
+    use crate::drivers::block::BlockError as E;
+    match e {
+        E::NoDevice => 1,
+        E::Unsupported => 2,
+        E::InvalidRequest => 3,
+        E::Io => 4,
+        E::WriteRefused => 5,
+    }
+}
+
+/// The reader: reads block after block from the stick until a read fails,
+/// records that error, and exits. The stick is pulled while it runs, so one
+/// of its reads is in flight or next when the detach lands.
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+extern "C" fn usb_unplug_reader() -> ! {
+    let device = UNPLUG_DEVICE
+        .get()
+        .expect("reader started after the device");
+    let buffer = crate::drivers::block::DmaBuffer::alloc_in_arena(4096)
+        .unwrap_or_else(|_| fail("reason=unplug_reader_alloc"));
+    let mut lba = 0u64;
+    loop {
+        match device.read_block(lba, core::slice::from_ref(&buffer)) {
+            Ok(()) => {
+                UNPLUG_READS.fetch_add(1, Ordering::Release);
+                lba = (lba + 8) % 1024;
+            }
+            Err(e) => {
+                UNPLUG_READER_ERR.store(unplug_err_code(e), Ordering::Release);
+                crate::sched::exit();
+            }
+        }
+    }
+}
+
+/// #30 (Jarvis, relay 238): hot-unplug of a bound stick. xtask plugs a
+/// usb-storage stick into root port 2; it binds and registers. A held handle
+/// reads block 0, and a reader thread reads continuously. xtask then removes
+/// the stick. The port service must tell the driver: the reader's read fails
+/// (NoDevice) and the thread ends, the held handle's next read is NoDevice,
+/// the registry slot answers NoDevice and is named `detached`, and no
+/// `usb-storage` device is found any more.
+#[cfg(feature = "neo-test-usb-storage-unplug")]
+fn run_usb_storage_unplug() -> ! {
+    use crate::drivers::block::{self, BlockError, DmaBuffer};
+    use crate::drivers::usb::{self, xhci};
+
+    fn wait_for(ticks: u64, mut done: impl FnMut() -> bool) -> bool {
+        let start = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
+        loop {
+            if done() {
+                return true;
+            }
+            let now = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
+            if now.saturating_sub(start) >= ticks {
+                return false;
+            }
+            usb::nap_ticks(5);
+        }
+    }
+
+    if block::find_device_by_driver("usb-storage").is_some() {
+        fail("reason=stick_bound_before_plug");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} msc-unplug=ready-for-plug",
+        SCENARIO
+    );
+    if !wait_for(3000, || {
+        block::find_device_by_driver("usb-storage").is_some()
+    }) {
+        fail("reason=stick_not_bound");
+    }
+    let Some((index, held)) = block::find_device_by_driver("usb-storage") else {
+        fail("reason=stick_not_bound");
+    };
+    let buffer = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+    if held.read_block(0, core::slice::from_ref(&buffer)).is_err() {
+        fail("reason=read_before_unplug_failed");
+    }
+    UNPLUG_DEVICE.call_once(|| held.clone());
+    crate::sched::scheduler::push_ready(crate::sched::thread::Thread::new(
+        "msc-unplug-reader",
+        usb_unplug_reader,
+    ));
+    if !wait_for(1000, || UNPLUG_READS.load(Ordering::Acquire) >= 3) {
+        fail("reason=reader_not_reading");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} msc-unplug=unplug-now",
+        SCENARIO
+    );
+    if !wait_for(3000, || xhci::hotplug::counters().2 >= 1) {
+        fail("reason=unplug_not_seen");
+    }
+    if !wait_for(1000, || UNPLUG_READER_ERR.load(Ordering::Acquire) != 0) {
+        fail("reason=reader_still_running_after_unplug");
+    }
+    let reader_err = UNPLUG_READER_ERR.load(Ordering::Acquire);
+    let reads = UNPLUG_READS.load(Ordering::Acquire);
+    let held_after = held.read_block(0, core::slice::from_ref(&buffer));
+    let by_index = block::get_device(index);
+    let index_after = by_index
+        .as_ref()
+        .map(|d| d.read_block(0, core::slice::from_ref(&buffer)));
+    let index_name = by_index.as_ref().map(|d| d.identity().driver);
+    let still_found = block::find_device_by_driver("usb-storage").is_some();
+    if reader_err != 1
+        || held_after != Err(BlockError::NoDevice)
+        || index_after != Some(Err(BlockError::NoDevice))
+        || index_name != Some("detached")
+        || still_found
+    {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=unplug_not_handled reader_err={} held_after={:?} index_after={:?} index_driver={:?} still_found={}",
+            SCENARIO,
+            reader_err,
+            held_after,
+            index_after,
+            index_name,
+            still_found
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} usb_storage_unplug=ok index={} reads_before={} reader=NoDevice held=NoDevice registry=detached lookup=none",
+        SCENARIO,
+        index,
+        reads
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// The FAT32 fixture image's size in 512-byte blocks (xtask's 64 MiB).
+#[cfg(feature = "neo-test-usb-storage-read")]
+const USB_STORAGE_FIXTURE_BLOCKS: u64 = 64 * 1024 * 1024 / 512;
+
+/// L3u-2 kill-switch: built without `usb-storage`, the same stick enumerates
+/// (46f4:0001, interface class 8) and no block device is registered for it.
+#[cfg(feature = "neo-test-usb-storage-off")]
+fn run_usb_storage_off() -> ! {
+    let devices = crate::drivers::usb::devices();
+    if !devices
+        .iter()
+        .any(|d| (d.vendor_id, d.product_id) == (0x46f4, 0x0001))
+    {
+        fail("reason=usb_storage_off_stick_not_enumerated");
+    }
+    if crate::drivers::block::find_device_by_driver("usb-storage").is_some() {
+        fail("reason=usb_storage_off_bound");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} usb_storage=off stick_enumerated=1 block_device=none",
+        SCENARIO
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 #[cfg(feature = "neo-test-usb-enumerate")]
 fn run_usb_enumerate() -> ! {
     use crate::drivers::dma_arena;
@@ -20295,6 +21070,10 @@ fn run_fb_panic_holding_serial() -> ! {
         scale,
         before
     );
+    // #52 review item 4: the same, through a kernel-mode #GP.
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    crate::drivers::console::serial::gp_holding_lock_for_test();
+    #[cfg(not(feature = "neo-test-fb-gp-holding-serial"))]
     crate::drivers::console::serial::panic_holding_lock_for_test();
 }
 
@@ -20348,6 +21127,14 @@ fn fb_panic_holding_serial_verdict() {
         );
         return;
     }
+    // #52 review item 4: the panic came from the #GP's fatal path.
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    if !crate::arch::x86_64::idt::fatal_gp_seen_for_test() {
+        serial_println!("fb_gp_holding_serial: verdict FAIL reason=panic_not_from_gp_fatal_path");
+        return;
+    }
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    serial_println!("fb_gp_holding_serial: fatal_trap=#GP panic_first=yes");
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fb_panic_holding_serial=ok serial_lock_held=yes panic_cells={} lit_after={} serial=raw other_cpu=halted mirror_active=yes",
         SCENARIO,
@@ -27736,6 +28523,535 @@ fn run_lock_route_races() -> ! {
     pass("lock_route_races recv=closed forward=closed queued=closed drop=closed")
 }
 
+/// OT-88 A0k (`ipc-try-send`): `try_send` and `try_grant` complete only with
+/// the peer already parked in its receive, and otherwise change nothing.
+/// - idle: an idle peer is EAGAIN; nothing parks on either side;
+/// - parked: a receiver parked on CPU 1 gets the bytes;
+/// - race: CPU 1 receives 200 times in a row while the BSP retries each send
+///   until it lands; every message arrives exactly once, in order;
+/// - sending: a peer parked in its own send is EAGAIN, and its send is still
+///   there for a receive;
+/// - grant: an idle peer is EAGAIN with nothing installed; a parked
+///   `recv_grant` gets exactly one handle;
+/// - closed: EPIPE.
+#[cfg(feature = "neo-test-ipc-try-send")]
+mod ipc_try_send {
+    use super::*;
+    pub static FIXTURE: spin::Mutex<Option<SmpRendezvousFixture>> = spin::Mutex::new(None);
+    pub static ROUNDS_DONE: AtomicU64 = AtomicU64::new(0);
+    pub static FAILED: AtomicU64 = AtomicU64::new(0);
+    pub static SENT: AtomicU64 = AtomicU64::new(0);
+    pub static GRANT_CHANNEL: spin::Mutex<Option<alloc::sync::Arc<crate::ipc::Channel>>> =
+        spin::Mutex::new(None);
+    pub static GRANT_RECIPIENT: AtomicU64 = AtomicU64::new(0);
+    pub static GRANT_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+    pub const ROUNDS: u64 = 201;
+    pub static GRANTOR_PAYLOAD: spin::Mutex<Option<crate::ipc::GrantPayload>> =
+        spin::Mutex::new(None);
+    pub static GRANTOR_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+
+    /// CPU 1: one `grant` from side B (parks until the BSP takes it).
+    pub extern "C" fn grantor() -> ! {
+        let channel = GRANT_CHANNEL
+            .lock()
+            .clone()
+            .unwrap_or_else(|| fail("reason=grant_channel_missing"));
+        let payload = GRANTOR_PAYLOAD
+            .lock()
+            .unwrap_or_else(|| fail("reason=grantor_payload_missing"));
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            channel.grant(crate::ipc::EndpointSide::B, payload)
+        });
+        GRANTOR_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+
+    pub fn fixture() -> SmpRendezvousFixture {
+        FIXTURE
+            .lock()
+            .clone()
+            .unwrap_or_else(|| fail("reason=try_send_fixture_missing"))
+    }
+
+    /// CPU 1: receive ROUNDS messages; round r carries sequence r.
+    pub extern "C" fn receiver() -> ! {
+        let f = fixture();
+        for seq in 0..ROUNDS {
+            let n = crate::arch::x86_64::without_interrupts(|| {
+                f.channel.recv(
+                    crate::ipc::EndpointSide::B,
+                    f.recv_va,
+                    f.len,
+                    f.receiver_pmap.clone(),
+                )
+            });
+            if n != f.len as i64 {
+                FAILED.store(1, Ordering::Release);
+                break;
+            }
+            verify_rendezvous_payload(&f, seq as u32, 0);
+            ROUNDS_DONE.store(seq + 1, Ordering::Release);
+            // A delivery runs this thread on the sender's CPU at once
+            // (consumer-first), so it re-parks before the sender tries again.
+            // Yield first on two rounds in three, so tries also land while it
+            // is between receives.
+            for _ in 0..(seq % 3) {
+                crate::sched::yield_now();
+            }
+        }
+        crate::sched::exit();
+    }
+
+    /// PR #15 review item 1: the receiver's read-only destination page.
+    pub const RO_VA: u64 = 0x0000_0000_00b0_0000;
+    pub static RO_RESULT: core::sync::atomic::AtomicI64 =
+        core::sync::atomic::AtomicI64::new(i64::MIN);
+
+    /// CPU 1: one `recv` on side B into the receiver's read-only page.
+    pub extern "C" fn ro_receiver() -> ! {
+        let f = fixture();
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            f.channel.recv(
+                crate::ipc::EndpointSide::B,
+                RO_VA,
+                f.len,
+                f.receiver_pmap.clone(),
+            )
+        });
+        RO_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+
+    /// CPU 1: one ordinary send from side B (the receiver page carries it).
+    pub extern "C" fn sender() -> ! {
+        let f = fixture();
+        let n = crate::arch::x86_64::without_interrupts(|| {
+            f.channel.send(
+                crate::ipc::EndpointSide::B,
+                f.recv_va,
+                f.len,
+                f.receiver_pmap.clone(),
+            )
+        });
+        SENT.store(if n == f.len as i64 { 1 } else { 2 }, Ordering::Release);
+        crate::sched::exit();
+    }
+
+    /// CPU 1: one `recv_grant` on side B for the fixture recipient.
+    pub extern "C" fn grant_receiver() -> ! {
+        let channel = GRANT_CHANNEL
+            .lock()
+            .clone()
+            .unwrap_or_else(|| fail("reason=grant_channel_missing"));
+        let pid = crate::sched::process::ProcessId(GRANT_RECIPIENT.load(Ordering::Acquire) as u32);
+        let r = crate::arch::x86_64::without_interrupts(|| {
+            channel.recv_grant(
+                crate::ipc::EndpointSide::B,
+                pid,
+                crate::sched::process::full_channel_rights(),
+            )
+        });
+        GRANT_RESULT.store(r, Ordering::Release);
+        crate::sched::exit();
+    }
+}
+
+#[cfg(feature = "neo-test-ipc-try-send")]
+fn run_ipc_try_send() -> ! {
+    const A: crate::ipc::EndpointSide = crate::ipc::EndpointSide::A;
+    const B: crate::ipc::EndpointSide = crate::ipc::EndpointSide::B;
+    use crate::sched::process::{self, Handle, Process};
+    use ipc_try_send::*;
+    use x86_64::instructions::interrupts::without_interrupts;
+
+    let spin_until = |what: &str, cond: &dyn Fn() -> bool| {
+        for _ in 0..2_000_000u64 {
+            if cond() {
+                return;
+            }
+            crate::sched::yield_now();
+            crate::sched::reap();
+        }
+        serial_println!("TRYSEND timeout waiting for {}", what);
+        fail("reason=try_send_timeout");
+    };
+    spin_until("cpu1", &|| crate::sched::scheduler::cpu_scheduler_ready(1));
+    let f = create_rendezvous_fixture();
+    *FIXTURE.lock() = Some(f.clone());
+    let try_send = || {
+        without_interrupts(|| {
+            f.channel
+                .try_send(A, f.send_va, f.len, f.sender_pmap.clone())
+        })
+    };
+
+    // idle.
+    write_rendezvous_payload(&f, 0, 0);
+    if try_send() != crate::errno::EAGAIN {
+        fail("reason=try_send_idle_not_eagain");
+    }
+    if f.channel.debug_endpoint_is_send_blocked(A) || f.channel.debug_endpoint_is_recv_blocked(B) {
+        fail("reason=try_send_idle_parked");
+    }
+
+    // parked.
+    let t = crate::sched::thread::Thread::new("try-send-recv", receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_receiver");
+    }
+    spin_until("receiver parked", &|| {
+        f.channel.debug_endpoint_is_recv_blocked(B)
+    });
+    if try_send() != f.len as i64 {
+        fail("reason=try_send_parked_not_delivered");
+    }
+    spin_until("round 0", &|| ROUNDS_DONE.load(Ordering::Acquire) >= 1);
+    serial_println!("TRYSEND idle=eagain parked=delivered");
+
+    // race.
+    let mut eagain = 0u64;
+    for seq in 1..ROUNDS {
+        write_rendezvous_payload(&f, seq as u32, 0);
+        loop {
+            let r = try_send();
+            if r == f.len as i64 {
+                break;
+            }
+            if r != crate::errno::EAGAIN {
+                fail_with_hex("reason=try_send_race_error r", r as u64);
+            }
+            eagain += 1;
+            if FAILED.load(Ordering::Acquire) != 0 {
+                fail("reason=try_send_receiver_failed");
+            }
+            core::hint::spin_loop();
+        }
+        // No wait for the receiver here: the next try lands while it is
+        // between receives (EAGAIN) or parked again. The sender page is
+        // copied at each delivery, so rewriting it can't change a message.
+    }
+    spin_until("last round", &|| {
+        ROUNDS_DONE.load(Ordering::Acquire) >= ROUNDS || FAILED.load(Ordering::Acquire) != 0
+    });
+    if FAILED.load(Ordering::Acquire) != 0 || ROUNDS_DONE.load(Ordering::Acquire) != ROUNDS {
+        fail("reason=try_send_race_lost_or_duplicated");
+    }
+    serial_println!(
+        "TRYSEND race rounds={} eagain_retries={}",
+        ROUNDS - 1,
+        eagain
+    );
+    // Non-vacuity: the race met the window between receives.
+    if eagain == 0 {
+        fail("reason=try_send_race_vacuous");
+    }
+
+    // sending: B parks in its own send; A's try is EAGAIN and leaves it.
+    let t = crate::sched::thread::Thread::new("try-send-send", sender);
+    {
+        // The receiver page carries B's payload.
+        let base =
+            crate::mm::phys_to_virt(x86_64::PhysAddr::new(f.receiver_phys)).as_mut_ptr::<u8>();
+        let payload = make_rendezvous_payload(999, 1);
+        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), base, payload.len()) };
+    }
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_sender");
+    }
+    spin_until("sender parked", &|| {
+        f.channel.debug_endpoint_is_send_blocked(B)
+    });
+    if try_send() != crate::errno::EAGAIN {
+        fail("reason=try_send_vs_sender_not_eagain");
+    }
+    if !f.channel.debug_endpoint_is_send_blocked(B) {
+        fail("reason=try_send_disturbed_parked_sender");
+    }
+    let n = without_interrupts(|| f.channel.recv(A, f.send_va, f.len, f.sender_pmap.clone()));
+    if n != f.len as i64 {
+        fail("reason=try_send_parked_sender_lost");
+    }
+    let got = unsafe {
+        let base = crate::mm::phys_to_virt(x86_64::PhysAddr::new(f.sender_phys)).as_ptr::<u8>();
+        core::slice::from_raw_parts(base, f.len).to_vec()
+    };
+    if got != make_rendezvous_payload(999, 1) {
+        fail("reason=try_send_parked_sender_bytes");
+    }
+    spin_until("sender done", &|| SENT.load(Ordering::Acquire) != 0);
+    serial_println!("TRYSEND sending_peer=eagain its_send=kept");
+
+    // grant.
+    let grantor = process::register(Process::new_user(
+        "try-grantor",
+        crate::mm::pmap::Pmap::new().unwrap_or_else(|_| fail("reason=try_grant_pmap")),
+    ));
+    let recipient = process::register(Process::new_user(
+        "try-recipient",
+        crate::mm::pmap::Pmap::new().unwrap_or_else(|_| fail("reason=try_grant_pmap")),
+    ));
+    let source_cap = process::alloc_cap_id();
+    process::install_cap(
+        &grantor,
+        Handle::Channel {
+            channel: crate::ipc::Channel::new(),
+            side: A,
+            cap_id: source_cap,
+            rights: process::full_channel_rights(),
+        },
+        None,
+    )
+    .unwrap_or_else(|_| fail("reason=try_grant_source"));
+    let channel = crate::ipc::Channel::new();
+    *GRANT_CHANNEL.lock() = Some(channel.clone());
+    GRANT_RECIPIENT.store(recipient.pid.0 as u64, Ordering::Release);
+    let payload = crate::ipc::GrantPayload {
+        grantor_pid: grantor.pid,
+        source_cap_id: source_cap,
+        offered: process::full_channel_rights(),
+    };
+    let held = || without_interrupts(|| recipient.handles.lock().live_count());
+    if without_interrupts(|| channel.try_grant(A, payload)) != crate::errno::EAGAIN {
+        fail("reason=try_grant_idle_not_eagain");
+    }
+    if held() != 0 || channel.debug_endpoint_is_grant_blocked(A) {
+        fail("reason=try_grant_idle_changed_something");
+    }
+    let t = crate::sched::thread::Thread::new("try-grant-recv", grant_receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_grant_place");
+    }
+    spin_until("recv_grant parked", &|| {
+        channel.debug_endpoint_is_recv_grant_blocked(B)
+    });
+    if without_interrupts(|| channel.try_grant(A, payload)) != 0 {
+        fail("reason=try_grant_parked_not_installed");
+    }
+    spin_until("grant result", &|| {
+        GRANT_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if GRANT_RESULT.load(Ordering::Acquire) < 0 || held() != 1 {
+        fail("reason=try_grant_not_exactly_one_handle");
+    }
+    serial_println!("TRYSEND grant idle=eagain parked=one_handle");
+
+    // recv grant: idle is EAGAIN with nothing installed; a grantor parked
+    // in its grant on CPU 1 is taken, and exactly one handle arrives.
+    let channel = crate::ipc::Channel::new();
+    *GRANT_CHANNEL.lock() = Some(channel.clone());
+    *GRANTOR_PAYLOAD.lock() = Some(payload);
+    let all = process::full_channel_rights();
+    if without_interrupts(|| channel.try_recv_grant(A, recipient.pid, all)) != crate::errno::EAGAIN
+    {
+        fail("reason=try_recv_grant_idle_not_eagain");
+    }
+    if held() != 1 || channel.debug_endpoint_is_recv_grant_blocked(A) {
+        fail("reason=try_recv_grant_idle_changed_something");
+    }
+    let t = crate::sched::thread::Thread::new("try-grantor", ipc_try_send::grantor);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_recv_grant_place");
+    }
+    spin_until("grantor parked", &|| {
+        channel.debug_endpoint_is_grant_blocked(B)
+    });
+    if without_interrupts(|| channel.try_recv_grant(A, recipient.pid, all)) < 0 {
+        fail("reason=try_recv_grant_parked_not_taken");
+    }
+    spin_until("grantor done", &|| {
+        GRANTOR_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if GRANTOR_RESULT.load(Ordering::Acquire) != 0 || held() != 2 {
+        fail("reason=try_recv_grant_not_exactly_one_handle");
+    }
+    serial_println!("TRYSEND recv_grant idle=eagain parked=one_handle");
+
+    // read-only destination (PR #15 review item 1): a receiver parked on a
+    // MAP_READ-only page gets EFAULT, and the page is not written.
+    let ro_frame = {
+        use x86_64::structures::paging::FrameAllocator;
+        crate::mm::with_frame_alloc(|fa| fa.allocate_frame())
+            .unwrap_or_else(|| fail("reason=try_send_ro_frame"))
+    };
+    let ro_base = crate::mm::phys_to_virt(ro_frame.start_address()).as_mut_ptr::<u8>();
+    unsafe { core::ptr::write_bytes(ro_base, 0x5A, 4096) };
+    f.receiver_pmap
+        .map_user(
+            x86_64::VirtAddr::new(RO_VA),
+            ro_frame,
+            crate::mm::pmap::flags::USER_DATA_RO,
+        )
+        .unwrap_or_else(|_| fail("reason=try_send_ro_map"));
+    write_rendezvous_payload(&f, 7, 0);
+    let t = crate::sched::thread::Thread::new("try-send-ro", ro_receiver);
+    if crate::sched::scheduler::place_thread_on_cpu(t, 1).is_err() {
+        fail("reason=try_send_place_ro");
+    }
+    spin_until("ro receiver parked", &|| {
+        f.channel.debug_endpoint_is_recv_blocked(B)
+    });
+    if try_send() != crate::errno::EFAULT {
+        fail("reason=try_send_ro_dest_not_efault");
+    }
+    spin_until("ro receiver done", &|| {
+        RO_RESULT.load(Ordering::Acquire) != i64::MIN
+    });
+    if RO_RESULT.load(Ordering::Acquire) != crate::errno::EFAULT {
+        fail("reason=try_send_ro_receiver_not_efault");
+    }
+    let untouched = unsafe { core::slice::from_raw_parts(ro_base, f.len) }
+        .iter()
+        .all(|&b| b == 0x5A);
+    if !untouched {
+        fail("reason=try_send_ro_dest_written");
+    }
+    serial_println!("TRYSEND ro_dest=efault untouched=yes");
+
+    // closed.
+    f.channel.close_peer(A, process::ProcessId(u32::MAX));
+    if try_send() != crate::errno::EPIPE {
+        fail("reason=try_send_closed_not_epipe");
+    }
+    pass(
+        "ipc_try_send idle=eagain parked=delivered race=exactly_once sending=eagain grant=one_or_none recv_grant=one_or_none ro_dest=efault closed=epipe",
+    )
+}
+
+/// Jarvis (#61): a key repeat is checked against the activation epoch, then
+/// staged; the focus can move, or Super+L engage the lock, in between (on
+/// another CPU). Each leg runs that other CPU's step on this CPU at the exact
+/// point, through the same `key_repeat::poll` / `deliver` the pumps call.
+/// No repeat checked under one owner may reach another, or the lock screen.
+/// The control (`neo-test-key-repeat-epoch-control`) stages with a fresh
+/// epoch read, the pre-fix shape, and must FAIL
+/// `reason=repeat_crossed_focus_change`.
+#[cfg(feature = "neo-test-key-repeat-epoch")]
+fn run_key_repeat_epoch() -> ! {
+    use crate::arch::x86_64::without_interrupts as off;
+    use crate::atrium::focus::{self, InputFocus, Stage};
+    use crate::atrium::key_repeat;
+    use crate::atrium::key_repeat_logic::{KEY_REPEAT, KeyRepeat};
+    use alloc::sync::Arc;
+
+    const BACKSPACE: u8 = 0x2a;
+    const T0: u64 = 1_000_000_000;
+    const DUE: u64 = T0 + 500_000_000;
+    // A held key, pressed under the current epoch, with a repeat due.
+    let held = || {
+        let mut r = KeyRepeat::new();
+        r.on_key(BACKSPACE, 0, true, T0, focus::activation_epoch());
+        r
+    };
+    let none = |f: &Arc<InputFocus>, why: &str| {
+        if let Some(e) = off(|| f.try_recv()) {
+            serial_println!("KEYREPEAT got code={:#x} flags={:#x}", e.code, e.flags);
+            fail(why);
+        }
+    };
+
+    let a = Arc::new(InputFocus::new());
+    let b = Arc::new(InputFocus::new());
+    let lock = Arc::new(InputFocus::new());
+    if !off(|| a.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    if !off(|| focus::register_lock_route(&lock)) {
+        fail("reason=repeat_epoch_register_failed");
+    }
+    let mut stage = Stage::with_capacity(focus::INPUT_STAGE_CAPACITY);
+
+    // Non-vacuity: nothing moves, the repeat reaches the owner.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    match off(|| a.try_recv()) {
+        Some(e) if e.code == BACKSPACE as u16 && e.flags & KEY_REPEAT != 0 => {}
+        _ => fail("reason=repeat_epoch_repeat_lost"),
+    }
+    serial_println!("KEYREPEAT baseline delivered=owner");
+
+    // Focus moves to B between the check (poll) and the stage.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !off(|| b.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    none(&b, "reason=repeat_crossed_focus_change");
+    none(&a, "reason=repeat_reached_old_owner_after_change");
+    serial_println!("KEYREPEAT focus_change between_check_and_stage delivered=none");
+
+    // Super+L between the check and the stage.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !focus::engage_lock_route() {
+        fail("reason=repeat_epoch_engage_failed");
+    }
+    key_repeat::deliver(&mut stage, event, epoch);
+    focus::flush_staged(&mut stage);
+    none(&lock, "reason=repeat_reached_lock_screen");
+    if !off(|| focus::release_lock_route(&b)) {
+        fail("reason=repeat_epoch_release_failed");
+    }
+    none(&b, "reason=repeat_crossed_lock");
+    serial_println!("KEYREPEAT lock between_check_and_stage delivered=none");
+
+    // Super+L between the stage and the flush.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    key_repeat::deliver(&mut stage, event, epoch);
+    if !focus::engage_lock_route() {
+        fail("reason=repeat_epoch_engage_failed");
+    }
+    focus::flush_staged(&mut stage);
+    none(&lock, "reason=staged_repeat_reached_lock_screen");
+    if !off(|| focus::release_lock_route(&b)) {
+        fail("reason=repeat_epoch_release_failed");
+    }
+    focus::flush_staged(&mut stage);
+    none(&b, "reason=staged_repeat_crossed_lock");
+    serial_println!("KEYREPEAT lock between_stage_and_flush delivered=none");
+
+    // The legacy routed path: the epoch is compared under DELIVERY.
+    let mut r = held();
+    let Some((event, epoch)) = key_repeat::poll(&mut r, DUE) else {
+        fail("reason=repeat_epoch_no_repeat_due");
+    };
+    if !off(|| a.activate()) {
+        fail("reason=repeat_epoch_activate_failed");
+    }
+    if off(|| focus::route_event_at(event, epoch)) {
+        fail("reason=legacy_repeat_routed_after_focus_change");
+    }
+    none(&a, "reason=legacy_repeat_crossed_focus_change");
+    // And its non-vacuity: the current epoch routes.
+    if !off(|| focus::route_event_at(event, focus::activation_epoch())) {
+        fail("reason=legacy_repeat_not_routed");
+    }
+    if off(|| a.try_recv()).is_none() {
+        fail("reason=legacy_repeat_lost");
+    }
+    serial_println!(
+        "KEYREPEAT legacy route_checked_under_delivery stale={}",
+        focus::debug_stage_stale()
+    );
+    pass(
+        "key_repeat_epoch baseline=delivered focus_change=dropped lock_before_stage=dropped lock_before_flush=discarded legacy=dropped",
+    )
+}
+
 #[cfg(feature = "neo-test-di1-forward")]
 fn run_di1_forward() -> ! {
     use crate::atrium::focus::{ForwardError, InputFocus, claim_pointer_route, forward_record};
@@ -28245,23 +29561,52 @@ fn run_ps2_keyboard() -> ! {
     use alloc::vec::Vec;
 
     const TICK_HZ: u64 = 100;
-    // (usage, modifiers, pressed), in order.
-    const EXPECTED: &[(u8, u8, bool)] = &[
-        (0x04, 0x00, true), // a
-        (0x04, 0x00, false),
-        (0x1E, 0x00, true), // 1
-        (0x1E, 0x00, false),
-        (0x05, 0x02, true), // shift-b (left Shift held)
-        (0x05, 0x02, false),
-        (0x52, 0x00, true), // Up (E0 48)
-        (0x52, 0x00, false),
-        (0x06, 0x10, true), // ctrl_r-c (E0 1D, right Ctrl)
-        (0x06, 0x10, false),
-        (0x48, 0x00, true), // Pause (E1 1D 45 E1 9D C5)
-        (0x48, 0x00, false),
-        (0x28, 0x00, true), // Enter
-        (0x28, 0x00, false),
+    // (usage, modifiers, locks, pressed), in order.
+    const EXPECTED: &[(u8, u8, u8, bool)] = &[
+        (0x04, 0x00, 0, true), // a
+        (0x04, 0x00, 0, false),
+        (0x1E, 0x00, 0, true), // 1
+        (0x1E, 0x00, 0, false),
+        (0x05, 0x02, 0, true), // shift-b (left Shift held)
+        (0x05, 0x02, 0, false),
+        (0x52, 0x00, 0, true), // Up (E0 48)
+        (0x52, 0x00, 0, false),
+        (0x06, 0x10, 0, true), // ctrl_r-c (E0 1D, right Ctrl)
+        (0x06, 0x10, 0, false),
+        (0x48, 0x00, 0, true), // Pause (E1 1D 45 E1 9D C5)
+        (0x48, 0x00, 0, false),
+        (0x28, 0x00, 0, true), // Enter
+        (0x28, 0x00, 0, false),
+        (0x33, 0x02, 0, true), // shift-semicolon: `:`
+        (0x33, 0x02, 0, false),
+        (0x34, 0x20, 0, true), // shift_r-apostrophe: `"` (right Shift)
+        (0x34, 0x20, 0, false),
+        (0x39, 0x00, 1, true), // Caps Lock on (the press carries it)
+        (0x39, 0x00, 1, false),
+        (0x04, 0x00, 1, true), // a, under Caps Lock: `A`
+        (0x04, 0x00, 1, false),
+        (0x39, 0x00, 0, true), // Caps Lock off again
+        (0x39, 0x00, 0, false),
+        (0x5F, 0x00, 0, true), // keypad 7 (0x47)
+        (0x5F, 0x00, 0, false),
+        (0x55, 0x00, 0, true), // keypad * (0x37)
+        (0x55, 0x00, 0, false),
+        (0x54, 0x00, 0, true), // keypad / (E0 35)
+        (0x54, 0x00, 0, false),
+        (0x58, 0x00, 0, true), // keypad Enter (E0 1C)
+        (0x58, 0x00, 0, false),
+        (0x53, 0x00, 2, true), // Num Lock off (the press carries it)
+        (0x53, 0x00, 2, false),
+        (0x60, 0x00, 2, true), // keypad 8, Num Lock off: Up
+        (0x60, 0x00, 2, false),
+        (0x53, 0x00, 0, true), // Num Lock on again
+        (0x53, 0x00, 0, false),
     ];
+    // The usages the keypad presses act as (after `effective_usage`), from
+    // keypad 7 on: 7, *, /, Enter, Num Lock, Up (keypad 8), Num Lock.
+    const KEYPAD_ACTS_AS: &[u8] = &[0x5F, 0x55, 0x54, 0x58, 0x53, 0x52, 0x53];
+    // The text the presses after Enter type, through the shared US keymap.
+    const TEXT_AFTER_ENTER: &[u8] = b":\"A7*/";
     let ticks = || crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
 
     serial_println!("PS2KBD ready");
@@ -28319,7 +29664,9 @@ fn run_ps2_keyboard() -> ! {
     }
     let want: Vec<InputEventV1> = EXPECTED
         .iter()
-        .map(|&(usage, modifiers, pressed)| InputEventV1::key(usage, modifiers, pressed))
+        .map(|&(usage, modifiers, locks, pressed)| {
+            InputEventV1::key_locked(usage, modifiers, locks, pressed)
+        })
         .collect();
     if got != want {
         fail_with_hex(
@@ -28327,11 +29674,42 @@ fn run_ps2_keyboard() -> ! {
             got.len() as u64,
         );
     }
+    let enter = got.iter().position(|e| e.code == 0x28).unwrap_or(got.len());
+    let text: Vec<u8> = got[enter..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .filter_map(|e| {
+            crate::drivers::keymap_us_logic::printable(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    serial_println!(
+        "ps2_keyboard text={:?}",
+        core::str::from_utf8(&text).unwrap_or("<non-utf8>")
+    );
+    if text != TEXT_AFTER_ENTER {
+        fail_with_hex("reason=ps2_keyboard_text_mismatch len", text.len() as u64);
+    }
+    let keypad = got.iter().position(|e| e.code == 0x5F).unwrap_or(got.len());
+    let acts_as: Vec<u8> = got[keypad..]
+        .iter()
+        .filter(|e| e.flags & crate::atrium::input_logic::KEY_PRESSED != 0)
+        .map(|e| {
+            crate::drivers::keymap_us_logic::effective_usage(e.code as u8, e.x as u8, e.y as u8)
+        })
+        .collect();
+    if acts_as != KEYPAD_ACTS_AS {
+        fail_with_hex(
+            "reason=ps2_keyboard_keypad_mismatch len",
+            acts_as.len() as u64,
+        );
+    }
     // The hook never polls: every byte came through IRQ1 on the I/O APIC.
     if counters.irqs == 0 || counters.polled != 0 || counters.irq_bytes != counters.bytes {
         fail_with_hex("reason=ps2_keyboard_not_via_irq1 irqs", counters.irqs);
     }
-    pass("ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause");
+    pass(
+        "ps2_keyboard=ok decode=hid_usage_exact irq1=ioapic e0=up,ctrl_r e1=pause text=colon,quote,caps keypad=digits,ops,enter,numlock_nav",
+    );
 }
 
 /// Key auto-repeat: xtask holds Backspace 1.5 s, then Escape 1.5 s, then
@@ -29565,7 +30943,8 @@ fn run_smp_grant_cross_cpu() -> ! {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 #[derive(Clone)]
 struct SmpRendezvousFixture {
@@ -29582,14 +30961,16 @@ struct SmpRendezvousFixture {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 const SMP_RENDEZVOUS_PAYLOAD_LEN: usize = 8;
 
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn make_rendezvous_payload(seq: u32, pair: usize) -> [u8; SMP_RENDEZVOUS_PAYLOAD_LEN] {
     [
@@ -29607,7 +30988,8 @@ fn make_rendezvous_payload(seq: u32, pair: usize) -> [u8; SMP_RENDEZVOUS_PAYLOAD
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn create_rendezvous_fixture() -> SmpRendezvousFixture {
     use x86_64::structures::paging::FrameAllocator;
@@ -29658,7 +31040,8 @@ fn create_rendezvous_fixture() -> SmpRendezvousFixture {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn write_rendezvous_payload(fixture: &SmpRendezvousFixture, seq: u32, pair: usize) {
     let payload = make_rendezvous_payload(seq, pair);
@@ -29674,7 +31057,8 @@ fn write_rendezvous_payload(fixture: &SmpRendezvousFixture, seq: u32, pair: usiz
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn clear_rendezvous_receiver(fixture: &SmpRendezvousFixture) {
     let base =
@@ -29687,7 +31071,8 @@ fn clear_rendezvous_receiver(fixture: &SmpRendezvousFixture) {
 #[cfg(any(
     feature = "neo-test-smp-cross-cpu-migration-reap",
     feature = "neo-test-smp-cross-cpu-rendezvous-stress",
-    feature = "neo-test-smp-c11-migration-reservation"
+    feature = "neo-test-smp-c11-migration-reservation",
+    feature = "neo-test-ipc-try-send"
 ))]
 fn verify_rendezvous_payload(fixture: &SmpRendezvousFixture, seq: u32, pair: usize) {
     let expected = make_rendezvous_payload(seq, pair);
@@ -30409,6 +31794,8 @@ fn run_phase3_pci_virtio_blk_probe_smoke() -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-virtio-blk-raw-rw-smoke",
     feature = "neo-test-phase3-virtio-blk-abandoned-io-no-leak",
     feature = "neo-test-phase3-virtio-blk-flush-negotiated-gate",
@@ -32649,6 +34036,8 @@ const NEOFS_2C_DIRECT_BLOCK_BYTES: usize = 4096;
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32682,6 +34071,8 @@ fn mount_neofs_rw_or_fail() -> crate::fs::neofs::MountReport {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32706,6 +34097,8 @@ fn neofs_2c_rw_rights() -> crate::fs::FileRights {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32735,6 +34128,8 @@ fn neofs_2c_fail_vfs(reason: &str, err: crate::fs::VfsError) -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32764,6 +34159,8 @@ fn neofs_2c_fail_count(reason: &str, got: usize, expected: usize) -> ! {
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32789,6 +34186,8 @@ fn neofs_2c_create_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFile> 
 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32840,6 +34239,8 @@ fn neofs_2c_open_read_or_fail(path: &str) -> alloc::sync::Arc<crate::fs::OpenFil
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
     feature = "neo-test-ot90-stuck-disk",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
@@ -32865,6 +34266,8 @@ fn neofs_2c_write_all_or_fail(file: &crate::fs::OpenFile, input: &[u8]) {
 
 #[cfg(any(
     feature = "neo-test-ot90-s5-durability",
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held",
     feature = "neo-test-phase3-neofs-create-small-file",
     feature = "neo-test-phase3-neofs-reboot-persistence-small-file",
     feature = "neo-test-phase3-neofs-fsync-noop-write-through",
@@ -33208,6 +34611,135 @@ fn run_neofs_cache_evict() -> ! {
         report.generation
     );
     debug_exit(EXIT_SUCCESS);
+}
+
+/// L7.1: the kernel half of the boot-time numbers. The entry stamp was taken
+/// before anything else ran; QEMU's firmware has no FPDT, so the firmware
+/// part reports `no-fpdt` (the parse itself is host-tested on a hand-laid
+/// table); the desktop stamp follows the entry stamp; the record the
+/// syscall writes decodes to the snapshot; and `SYS_BOOT_TIMES` refuses a
+/// wrong length or a kernel address.
+#[cfg(feature = "neo-test-boot-time")]
+fn run_boot_time() -> ! {
+    use crate::boot_time_logic::{BOOT_TIMES_V1_LEN, FpdtError, decode, encode};
+    let rsdp = crate::rsdp_phys();
+    let firmware = crate::boot_time::read_firmware(rsdp);
+    if firmware != Err(FpdtError::NoFpdt) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_firmware_not_no_fpdt got={:?}",
+            SCENARIO,
+            firmware
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    crate::boot_time::stamp_desktop(rsdp);
+    let times = crate::boot_time::snapshot();
+    if times.tsc_kernel_entry == 0 {
+        fail("reason=boot_time_no_entry_stamp");
+    }
+    if times.tsc_desktop_start <= times.tsc_kernel_entry {
+        fail("reason=boot_time_desktop_not_after_entry");
+    }
+    if times.tsc_hz == 0 {
+        fail("reason=boot_time_no_tsc_rate");
+    }
+    if decode(&encode(&times)) != Some(times) {
+        fail("reason=boot_time_record_roundtrip");
+    }
+    let mut kernel_buf = [0u8; BOOT_TIMES_V1_LEN];
+    let wrong_len = crate::arch::x86_64::syscall::debug_sys_boot_times_for_test(
+        kernel_buf.as_mut_ptr() as u64,
+        BOOT_TIMES_V1_LEN - 1,
+    );
+    let kernel_addr = crate::arch::x86_64::syscall::debug_sys_boot_times_for_test(
+        kernel_buf.as_mut_ptr() as u64,
+        BOOT_TIMES_V1_LEN,
+    );
+    if wrong_len != crate::errno::EINVAL || kernel_addr >= 0 || kernel_buf != [0; BOOT_TIMES_V1_LEN]
+    {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_syscall_checks wrong_len={} kernel_addr={}",
+            SCENARIO,
+            wrong_len,
+            kernel_addr
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    let copyout = boot_time_copyout_legs(&encode(&times));
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} boot_time=ok firmware=no-fpdt tsc_hz={} entry_tsc={} desktop_tsc={} syscall_wrong_len={} syscall_kernel_addr={} copyout={}",
+        SCENARIO,
+        times.tsc_hz,
+        times.tsc_kernel_entry,
+        times.tsc_desktop_start,
+        wrong_len,
+        kernel_addr,
+        copyout
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// Review #16 item 2: `SYS_BOOT_TIMES` writes through `Pmap::write_user_bytes`
+/// (page-table walk under the pmap lock, HHDM write), so a bad user buffer is
+/// an error with nothing written, never a ring-0 fault. A scratch address
+/// space holds four pages: p0 and p1 writable, p2 unmapped, p3 read-only.
+/// Legs: a record straddling p0/p1 lands intact; one straddling p1/p2 (40
+/// bytes before the hole) is refused and leaves p1 untouched; p2 alone and
+/// p3 alone are refused; a range ending past the user half is refused.
+#[cfg(feature = "neo-test-boot-time")]
+fn boot_time_copyout_legs(record: &[u8]) -> &'static str {
+    use crate::mm::pmap::{Pmap, flags};
+    use x86_64::VirtAddr;
+    let pmap = Pmap::new().unwrap_or_else(|_| fail("reason=boot_time_pmap_new"));
+    let base = pmap
+        .allocate_user_region(4 * 4096, flags::USER_DATA_RW)
+        .unwrap_or_else(|_| fail("reason=boot_time_region"));
+    let (p1, p2, p3) = (base + 4096, base + 2 * 4096, base + 3 * 4096);
+    if pmap.unmap_user_range(VirtAddr::new(p2), 4096).is_err()
+        || pmap
+            .protect_user(VirtAddr::new(p3), 4096, flags::USER_DATA_RO)
+            .is_err()
+    {
+        fail("reason=boot_time_region_setup");
+    }
+    let read = |va: u64, out: &mut [u8]| {
+        for (i, b) in out.iter_mut().enumerate() {
+            let pa = pmap
+                .translate(VirtAddr::new(va + i as u64))
+                .unwrap_or_else(|| fail("reason=boot_time_readback_unmapped"));
+            // SAFETY: a present frame of the scratch Pmap, read via the HHDM.
+            *b = unsafe { *crate::mm::phys_to_virt(pa).as_ptr::<u8>() };
+        }
+    };
+    let n = record.len() as u64;
+    let straddle_ok = pmap.write_user_bytes(p1 - 40, record).is_ok();
+    let mut back = [0u8; 80];
+    read(p1 - 40, &mut back[..record.len()]);
+    let landed = back[..record.len()] == *record;
+    let hole = pmap.write_user_bytes(p2 - 40, record).is_err();
+    let mut tail = [0u8; 40];
+    read(p2 - 40, &mut tail);
+    let untouched = tail == [0u8; 40];
+    let unmapped = pmap.write_user_bytes(p2, record).is_err();
+    let read_only = pmap.write_user_bytes(p3, record).is_err();
+    let past_half = pmap
+        .write_user_bytes(0x0000_8000_0000_0000 - n / 2, record)
+        .is_err();
+    if !(straddle_ok && landed && hole && untouched && unmapped && read_only && past_half) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=boot_time_copyout straddle_ok={} landed={} hole={} untouched={} unmapped={} read_only={} past_half={}",
+            SCENARIO,
+            straddle_ok,
+            landed,
+            hole,
+            untouched,
+            unmapped,
+            read_only,
+            past_half
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    "straddle+hole+unmapped+ro+past-half"
 }
 
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]
@@ -37035,6 +38567,287 @@ fn run_phase3_fat32_type_import_is_regular() -> ! {
     debug_exit(EXIT_SUCCESS);
 }
 
+/// L3a (G7): device1 is an MBR disk whose partition 1 (type `0x0C`, LBA
+/// 2048) holds the FAT32 fixture volume. With `mbr-partitions`: the whole
+/// device does not mount (sector 0 is a table, not a boot sector), the empty
+/// slot `p2` is ENOENT, a malformed `p5` is EINVAL, and `device1:p1` mounts
+/// and reads back byte-exact, subdirectory and LFN included. Without it (the
+/// kill-switch, `-off`): `device1:p1` is EINVAL, as before L3a.
+#[cfg(any(
+    feature = "neo-test-phase3-fat32-mbr-mount-read",
+    feature = "neo-test-phase3-fat32-mbr-off"
+))]
+fn run_phase3_fat32_mbr() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    if crate::drivers::block::get_device(1).is_none() {
+        fail("reason=fat32_mbr_device1_missing");
+    }
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let mount = |source: &str| {
+        let req = mount4b_build_request_v1(3, source, "fat32");
+        crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0)
+    };
+
+    #[cfg(feature = "neo-test-phase3-fat32-mbr-off")]
+    {
+        let rc = mount("device1:p1");
+        if rc != crate::errno::EINVAL {
+            fail_with_hex("reason=fat32_mbr_off_p1_not_einval rc", rc as u64);
+        }
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} mbr_partitions=off source=device1:p1 errno={}",
+            SCENARIO,
+            rc
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
+
+    #[cfg(feature = "neo-test-phase3-fat32-mbr-mount-read")]
+    {
+        let whole = mount("device1");
+        if whole == 0 {
+            fail("reason=fat32_mbr_whole_device_mounted");
+        }
+        let p2 = mount("device1:p2");
+        if p2 != crate::errno::ENOENT {
+            fail_with_hex("reason=fat32_mbr_p2_not_enoent rc", p2 as u64);
+        }
+        let p5 = mount("device1:p5");
+        if p5 != crate::errno::EINVAL {
+            fail_with_hex("reason=fat32_mbr_p5_not_einval rc", p5 as u64);
+        }
+        let rc = mount("device1:p1");
+        if rc != 0 {
+            fail_with_hex("reason=fat32_mbr_p1_mount_rc", rc as u64);
+        }
+        fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+        fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+        fat32_expect_file_bytes("/fat32/long filename with spaces.txt", b"LFN test\n");
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} mbr_partitions=on source=device1:p1 first_lba=2048 whole_rc={} p2_errno={} p5_errno={} hello=match nested=match lfn=match",
+            SCENARIO,
+            whole,
+            p2,
+            p5
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
+}
+
+/// L3a-2: the fixture reads back through whichever FAT driver the build has.
+/// `fat16_read`: device1 is a FAT16 volume (the native driver refuses
+/// FAT16), so this passes only on rust-fatfs. `native_control` (the
+/// kill-switch): no `fat-fs`, the FAT32 fixture through the native driver.
+#[cfg(any(
+    feature = "neo-test-phase3-fat32-fat16-read",
+    feature = "neo-test-phase3-fat32-native-control"
+))]
+fn run_phase3_fat32_fixture_read() -> ! {
+    fat32_mount_or_fail(0);
+    let entries = fat32_collect_dirents("/fat32");
+    fat32_expect_dirent(&entries, "hello.txt", 2);
+    fat32_expect_dirent(&entries, "subdir", 1);
+    fat32_expect_dirent(&entries, "long filename with spaces.txt", 2);
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    fat32_expect_file_bytes("/fat32/LONG FILENAME WITH SPACES.TXT", b"LFN test\n");
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} driver={} entries={} hello=match nested=match lfn=match",
+        SCENARIO,
+        if cfg!(feature = "fat-fs") {
+            "fatfs"
+        } else {
+            "native"
+        },
+        entries.len()
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// Device1's first sectors hashed by the no-write scenario: the boot sector,
+/// FSInfo, the backup boot sector, both FATs and the root directory of the
+/// fixture volume (every sector an unmount could rewrite).
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+const FAT_NO_WRITE_SECTORS: u64 = 4096;
+
+/// FNV-1a over device1's first [`FAT_NO_WRITE_SECTORS`] sectors.
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+fn fat_no_write_hash() -> u64 {
+    const CHUNK_SECTORS: u64 = 128;
+    let device = crate::drivers::block::get_device(1)
+        .unwrap_or_else(|| fail("reason=fat_no_write_device1_missing"));
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut lba = 0;
+    while lba < FAT_NO_WRITE_SECTORS {
+        let dma = crate::drivers::block::DmaBuffer::alloc_zeroed((CHUNK_SECTORS * 512) as usize)
+            .unwrap_or_else(|_| fail("reason=fat_no_write_dma"));
+        if device.read_block(lba, core::slice::from_ref(&dma)).is_err() {
+            fail_with_hex("reason=fat_no_write_read lba", lba);
+        }
+        // SAFETY: the synchronous read completed; the buffer is ours alone.
+        for &b in unsafe { dma.as_slice() } {
+            hash = (hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        lba += CHUNK_SECTORS;
+    }
+    hash
+}
+
+/// L3a-2, traps T4/T5: device1 is the FAT32 fixture with the volume's dirty
+/// flag set (as a stick pulled without unmounting has). Mount, list, read,
+/// try a write (refused by rights), unmount; the first 2 MiB hash the same
+/// before and after, and rust-fatfs attempted no write at all.
+/// Chad's #18 review: xtask's fixture has `loop.bin` (three clusters) with
+/// its chain patched to `A -> B -> A`, and `loopdir`, whose first cluster is
+/// full and points at itself. Reading the file to its end must fail (not
+/// return the same clusters again), and listing the directory must fail (not
+/// walk forever: a directory has no size to stop at). The rest of the volume
+/// still reads.
+#[cfg(feature = "neo-test-phase3-fat32-loop-chain")]
+fn run_phase3_fat32_loop_chain() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let req = mount4b_build_request_v1(3, "device1", "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_loop_mount_rc", rc as u64);
+    }
+    // The file: read until an error; the whole of it (3 clusters' worth) or
+    // more coming back means the loop was followed.
+    let file = fat32_open_or_fail("/fat32/loop.bin", crate::fs::FileRights::READ);
+    let mut buf = [0u8; 512];
+    let mut total = 0usize;
+    let file_err = loop {
+        match file.read(&mut buf) {
+            Ok(0) => break None,
+            Ok(n) => total += n,
+            Err(e) => break Some(e),
+        }
+        if total > 1 << 20 {
+            break None;
+        }
+    };
+    drop(file);
+    // The directory: list until an error (bounded, so a missed loop fails
+    // here rather than hanging inside the library, which the fix prevents).
+    let dir = fat32_open_or_fail("/fat32/loopdir", fat32_dir_rights());
+    let mut cursor = 0u64;
+    let mut listed = 0usize;
+    let dir_err = loop {
+        match dir.readdir_one(cursor, crate::fs::FileRights::READDIR) {
+            Ok(Some(entry)) => {
+                cursor = entry.next_cursor;
+                listed += 1;
+                if listed > 4096 {
+                    break None;
+                }
+            }
+            Ok(None) => break None,
+            Err(e) => break Some(e),
+        }
+    };
+    drop(dir);
+    // The rest of the volume still reads.
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    if file_err.is_none() || dir_err.is_none() {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=fat_loop_followed file_bytes={} file_err={:?} dir_listed={} dir_err={:?}",
+            SCENARIO,
+            total,
+            file_err,
+            listed,
+            dir_err
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} file_err={:?} file_bytes_before={} dir_err={:?} dir_listed_before={} hello=match",
+        SCENARIO,
+        file_err,
+        total,
+        dir_err,
+        listed
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+#[cfg(feature = "neo-test-phase3-fat32-readonly-no-write")]
+fn run_phase3_fat32_readonly_no_write() -> ! {
+    let (_probe, _device0) = require_phase3_virtio_blk_ready();
+    let before = fat_no_write_hash();
+    let root = mount4b_open_dir_or_fail("/", fat32_root_mount_rights());
+    let dir_fd = mount4b_install_fd(root, crate::fs::FileRights::MOUNT);
+    let req = mount4b_build_request_v1(3, "device1", "fat32");
+    let rc = crate::arch::x86_64::syscall::debug_sys_mount_for_test(dir_fd, &req, 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_no_write_mount_rc", rc as u64);
+    }
+    // T4: the fixture's BPB status byte is dirty and FAT[1] is clean; the
+    // mount reads the two apart (bit 0 BPB, bit 1 FAT[1]).
+    let dirty = crate::fs::fat::LAST_DIRTY.load(core::sync::atomic::Ordering::Relaxed);
+    if dirty != 0b01 {
+        fail_with_hex("reason=fat_no_write_dirty_pair", u64::from(dirty));
+    }
+    // The directory is read through a handle dropped before the unmount
+    // (`fat32_collect_dirents` installs an fd it never closes, which keeps
+    // the mount busy: umount would be EBUSY).
+    let entries = {
+        let dir = fat32_open_or_fail("/fat32", fat32_dir_rights());
+        let mut names = alloc::vec::Vec::new();
+        let mut cursor = 0u64;
+        while let Some(entry) = dir
+            .readdir_one(cursor, crate::fs::FileRights::READDIR)
+            .unwrap_or_else(|err| neofs_2c_fail_vfs("fat_no_write_readdir", err))
+        {
+            cursor = entry.next_cursor;
+            names.push(entry.name);
+            if names.len() > 64 {
+                fail("reason=fat_no_write_readdir_runaway");
+            }
+        }
+        names
+    };
+    fat32_expect_file_bytes("/fat32/hello.txt", b"Hello from FAT32!\n");
+    fat32_expect_file_bytes("/fat32/subdir/nested.txt", b"nested file\n");
+    match crate::fs::open_root_temporary(
+        "/fat32/hello.txt",
+        crate::fs::OPEN_ROOT_TEMPORARY,
+        crate::fs::FileRights::WRITE,
+    ) {
+        Err(crate::fs::VfsError::InsufficientRights) => {}
+        Err(err) => neofs_2c_fail_vfs("fat_no_write_write_open_wrong_error", err),
+        Ok(_) => fail("reason=fat_no_write_write_open_allowed"),
+    }
+    let rc = crate::arch::x86_64::syscall::debug_sys_umount_for_test(dir_fd, "fat32", 0);
+    if rc != 0 {
+        fail_with_hex("reason=fat_no_write_umount_rc", rc as u64);
+    }
+    let after = fat_no_write_hash();
+    let attempts = crate::fs::fat::WRITE_ATTEMPTS.load(core::sync::atomic::Ordering::Relaxed);
+    if attempts != 0 {
+        fail_with_hex("reason=fat_no_write_write_attempted count", attempts);
+    }
+    if before != after {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=fat_no_write_bytes_changed before={:#018x} after={:#018x}",
+            SCENARIO,
+            before,
+            after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} dirty_volume=1 dirty_bpb=1 dirty_fat1=0 entries={} umount=0 write_attempts=0 sectors={} hash={:#018x} unchanged=true",
+        SCENARIO,
+        entries.len(),
+        FAT_NO_WRITE_SECTORS,
+        after
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 // === BUILD-4D ext4 read-only foreign filesystem scenarios ==============
 
 #[cfg(feature = "neo-test-phase3-ext4")]
@@ -38224,6 +40037,32 @@ fn run_phase3_nvme_neofs_mount_and_readwrite() -> ! {
     drop(file);
     nvme_expect_file_bytes(PATH, CONTENT);
     crate::scenario::phase(crate::scenario::ScenarioPhase::Cleanup);
+    // OT-90 P3b-2, with `power-quiesce` (NEO_TEST_EXTRA_FEATURES): K6's NVMe
+    // step on the controller this scenario just wrote through: CC.SHN,
+    // CSTS.SHST complete, CC.EN cleared.
+    #[cfg(feature = "power-quiesce")]
+    {
+        let step = crate::drivers::block::get_device(source_index).and_then(|d| d.shutdown_step());
+        let Some(crate::drivers::block::ShutdownStep::Nvme { mmio }) = step else {
+            fail("reason=nvme_shutdown_step_missing");
+        };
+        let timer = crate::acpi::power::stop_timer();
+        match crate::drivers::block::nvme::shutdown_notify(mmio, &|us, done| {
+            crate::acpi::power::spin_us(timer.as_ref(), us, done)
+        }) {
+            Ok(()) => {
+                serial_println!("NEO_TEST/1 event=INFO name={} nvme_shutdown=ok", SCENARIO);
+            }
+            Err(why) => {
+                serial_println!(
+                    "NEO_TEST/1 event=FAIL name={} reason=nvme_shutdown_{}",
+                    SCENARIO,
+                    why
+                );
+                debug_exit(EXIT_FAILURE);
+            }
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fs=neofs source=device{} mount=rw initial_read=ok create_write_fsync_readback=ok bytes={}",
         SCENARIO,
@@ -38725,9 +40564,28 @@ fn run_phase4_dhcpv4_ipv4_udp() -> ! {
 
 #[cfg(any(
     feature = "neo-test-phase4-https-fetch",
+    feature = "neo-test-net-dial-public-only",
+    feature = "neo-test-fetch-broker",
     feature = "neo-test-net-dial-cap-kill-switch"
 ))]
 fn phase4_dns_phase4_test_response(rr_type: u16, rdata: &[u8]) -> alloc::vec::Vec<u8> {
+    phase4_dns_response(
+        &[
+            6, b'p', b'h', b'a', b's', b'e', b'4', 4, b't', b'e', b's', b't', 0,
+        ],
+        rr_type,
+        rdata,
+    )
+}
+
+/// A one-answer DNS response for `qname` (wire-format labels).
+#[cfg(any(
+    feature = "neo-test-phase4-https-fetch",
+    feature = "neo-test-net-dial-public-only",
+    feature = "neo-test-fetch-broker",
+    feature = "neo-test-net-dial-cap-kill-switch"
+))]
+fn phase4_dns_response(qname: &[u8], rr_type: u16, rdata: &[u8]) -> alloc::vec::Vec<u8> {
     let mut packet = alloc::vec::Vec::new();
     packet.extend_from_slice(&0x4835u16.to_be_bytes());
     packet.extend_from_slice(&0x8180u16.to_be_bytes());
@@ -38735,9 +40593,7 @@ fn phase4_dns_phase4_test_response(rr_type: u16, rdata: &[u8]) -> alloc::vec::Ve
     packet.extend_from_slice(&1u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
     packet.extend_from_slice(&0u16.to_be_bytes());
-    packet.extend_from_slice(&[
-        6, b'p', b'h', b'a', b's', b'e', b'4', 4, b't', b'e', b's', b't', 0,
-    ]);
+    packet.extend_from_slice(qname);
     packet.extend_from_slice(&rr_type.to_be_bytes());
     packet.extend_from_slice(&crate::net::dns::CLASS_IN.to_be_bytes());
     packet.extend_from_slice(&[0xc0, 0x0c]);
@@ -39589,6 +41445,185 @@ fn run_ot90_straggler_forced() -> ! {
         crate::sched::yield_now();
         crate::sched::reap();
         core::hint::black_box(&channel);
+    }
+}
+
+/// OT-90 P3b `ot90_stop_cpus` / `ot90_stop_holdout`: power-off with K4 and
+/// K5. The APs are idle (or running the harness's own threads) when the
+/// shutdown starts; K4 must park every one of them before S5, by the STOP
+/// IPI, or (`-holdout`, where the highest AP ignores it once) the NMI. xtask
+/// judges it by QMP and the K4/K5 lines.
+#[cfg(any(
+    feature = "neo-test-ot90-stop-cpus",
+    feature = "neo-test-ot90-stop-holdout",
+    feature = "neo-test-ot90-stop-wedged"
+))]
+fn run_ot90_stop_cpus() -> ! {
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// `ot90_stop_shootdown`: shootdowns the sender completed.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_SENT: AtomicU64 = AtomicU64::new(0);
+/// Set by K4 (`acpi::shutdown::stop_world`) just before it closes
+/// shootdowns: the sender starts then, so the storm overlaps K4 and nothing
+/// earlier (a long storm on TCG starves the other vCPUs' acknowledgements).
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+pub static OT90_STORM_GO: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// The sender: once K4 says go, a full-flush shootdown to every other ready
+/// CPU (the shutdown CPU among them), interrupts off around each (the
+/// review's IF=0 sender), one after another with a yield between.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+extern "C" fn ot90_storm_sender() -> ! {
+    while !OT90_STORM_GO.load(Ordering::Acquire) {
+        crate::sched::yield_now();
+    }
+    loop {
+        crate::arch::x86_64::disable_interrupts();
+        crate::mm::tlb_shootdown::shootdown(None, crate::mm::tlb_shootdown::other_cpus_mask());
+        OT90_STORM_SENT.fetch_add(1, Ordering::Release);
+        crate::arch::x86_64::enable_interrupts();
+        crate::sched::yield_now();
+    }
+}
+
+/// Review #6 item 1 (CP-64): power-off while the highest AP sends
+/// shootdowns at every other CPU, the shutdown CPU among them. K4 starts the
+/// sender, waits until it has completed some, then closes shootdowns: it must
+/// take the sender lock (waiting out the one in flight and acknowledging it)
+/// before it stops answering, and the AP must park by the STOP IPI. A
+/// shootdown timeout panics the run.
+#[cfg(feature = "neo-test-ot90-stop-shootdown")]
+fn run_ot90_stop_shootdown() -> ! {
+    use crate::arch::x86_64::per_cpu::MAX_CPUS;
+    let me = crate::arch::x86_64::per_cpu::current_cpu_id();
+    let Some(ap) = (0..MAX_CPUS as u32)
+        .rev()
+        .find(|&cpu| cpu != me && crate::sched::scheduler::cpu_scheduler_ready(cpu))
+    else {
+        fail("reason=no_ap");
+    };
+    let t = crate::sched::thread::Thread::new("ot90-storm", ot90_storm_sender);
+    if crate::sched::scheduler::place_thread_on_cpu(t, ap).is_err() {
+        fail("reason=storm_place_failed");
+    }
+    frame("INFO", &alloc::format!("stage=storm_ready ap={ap}"));
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// OT-90 P4 `ot90_cap`: `SYS_POWER`'s refusals, the minted cap's rights,
+/// then a power-off through the syscall's path (and `EBUSY` for a second
+/// call while it runs). The harness runs in a kernel thread with no handle
+/// table, so it passes the rights the syscall would read from the caller's.
+/// xtask judges it by QMP and the result line.
+#[cfg(feature = "neo-test-ot90-cap")]
+fn run_ot90_cap() -> ! {
+    use crate::acpi::power_abi::{ACTION_POWER_OFF, ACTION_RESTART};
+    use crate::arch::x86_64::syscall::debug_sys_power_for_test as sys_power;
+    use crate::errno::{EBUSY, EINVAL, EPERM};
+    use crate::sched::process::{Handle, meta_rights};
+    // Janus's #8 review, item 1a: the cap comes from neo-init's actual root
+    // table (`root_inherited_caps`), not a separately minted one, so a build
+    // whose only root authority is `power-cap` (this scenario's) must install
+    // exactly one PowerControl there.
+    let root = crate::root_inherited_caps();
+    let mut power = root.iter().filter_map(|c| match c.handle {
+        Handle::PowerControl { rights, .. } => Some(rights),
+        _ => None,
+    });
+    let Some(rights) = power.next() else {
+        fail("reason=root_table_has_no_power_cap");
+    };
+    if power.next().is_some() {
+        fail("reason=root_table_has_two_power_caps");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} root_caps={} power_caps=1",
+        SCENARIO,
+        root.len()
+    );
+    if !rights.has_meta(meta_rights::USE)
+        || rights.has_meta(meta_rights::DERIVE)
+        || rights.has_meta(meta_rights::GRANT)
+    {
+        fail("reason=cap_meta_rights");
+    }
+    let held = rights.semantic;
+    let checks = [
+        ("no_cap_off", sys_power(ACTION_POWER_OFF, 0, 0), EPERM),
+        ("no_cap_restart", sys_power(ACTION_RESTART, 0, 0), EPERM),
+        ("bad_action", sys_power(3, 0, held), EINVAL),
+        ("bad_flags", sys_power(ACTION_POWER_OFF, 1, held), EINVAL),
+    ];
+    for (name, got, want) in checks {
+        if got != want {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=refusal_{} got={} want={}",
+                SCENARIO,
+                name,
+                got,
+                want
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    }
+    frame("INFO", "stage=power_off_requested");
+    let started = sys_power(ACTION_POWER_OFF, 0, held);
+    let second = sys_power(ACTION_POWER_OFF, 0, held);
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} cap=no_derive_no_grant refusals=ok started={} second={}",
+        SCENARIO,
+        started,
+        second
+    );
+    if started != 0 || second != EBUSY {
+        fail("reason=power_off_not_started_once");
+    }
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
+    }
+}
+
+/// `ot90_quiesce_heap_held`: whether K6 should report `dev`'s Bus Master
+/// Enable as still set. The first bus master K6 clears does, once, so the
+/// IOMMU-kept path runs (Janus's #7 review, item 1).
+#[cfg(feature = "neo-test-ot90-quiesce-heap-held")]
+pub fn ot90_bme_stuck(_dev: crate::drivers::pci::Device) -> bool {
+    static FIRST: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+    FIRST.swap(false, Ordering::AcqRel)
+}
+
+/// OT-90 P3b-2 `ot90_quiesce`: power-off with K6. NeoFS is mounted
+/// writable on disk 0 and a file is written, so the write guard has armed
+/// that disk; K6 must stop its controller, clear every bus master and then
+/// S5. xtask judges it by QMP and the K6 lines.
+#[cfg(any(
+    feature = "neo-test-ot90-quiesce",
+    feature = "neo-test-ot90-quiesce-heap-held"
+))]
+fn run_ot90_quiesce() -> ! {
+    let _ = mount_neofs_rw_or_fail();
+    let file = neofs_2c_create_or_fail("/neofs/ot90-quiesce.txt");
+    neofs_2c_write_all_or_fail(&file, b"K6 stops this disk after K2 drained it.\n");
+    drop(file);
+    frame("INFO", "stage=power_off_requested");
+    crate::acpi::shutdown::start(crate::acpi::shutdown::Kind::PowerOff, None);
+    loop {
+        crate::sched::yield_now();
+        crate::sched::reap();
     }
 }
 
@@ -41466,6 +43501,11 @@ fn run_exception_entry_flags() -> ! {
     // Error-code vectors continue with `mov rdi, rsp; and rsp, -16; call`, so
     // their body runs on a SysV-aligned stack (CP-46).
     const REALIGN: [u8; 8] = [0x48, 0x89, 0xe7, 0x48, 0x83, 0xe4, 0xf0, 0xe8];
+    // The page fault's shim (`idt::page_fault_shim`) is longer: 102 bytes
+    // (two registered user-access instructions to compare), with its Rust
+    // path at 0x57. If it grows past this window the check fails closed (no
+    // match).
+    const PF_SCAN: usize = 112;
     // #DF, #TS, #NP, #SS, #GP, #PF, #AC, and #CP, #VC, #SX should they ever
     // be installed (not-present gates are skipped below).
     const ERROR_CODE_VECTORS: u32 = (1 << 8)
@@ -41639,15 +43679,32 @@ fn run_exception_entry_flags() -> ! {
             unmasked |= 1 << vector;
         }
         if ERROR_CODE_VECTORS & (1 << vector) != 0 {
-            // SAFETY: as above; the shim is longer than MASK + REALIGN.
-            let tail = unsafe {
-                core::slice::from_raw_parts(
-                    (handler as usize + MASK.len()) as *const u8,
-                    REALIGN.len(),
-                )
-            };
-            if tail != REALIGN {
-                unaligned |= 1 << vector;
+            let page_fault_shim = crate::arch::x86_64::idt::page_fault_shim as *const () as u64;
+            if vector == 14 && handler == page_fault_shim {
+                // CP-99: the page fault's shim checks for a user-copy fault
+                // between the mask and the realignment, so its Rust path
+                // (`pop rax`, then the realignment and the call) comes later.
+                // It must appear exactly once in the shim.
+                // SAFETY: as above; PF_SCAN bytes from the shim are kernel text.
+                let body = unsafe { core::slice::from_raw_parts(handler as *const u8, PF_SCAN) };
+                let hits = body[MASK.len()..]
+                    .windows(1 + REALIGN.len())
+                    .filter(|w| w[0] == 0x58 && w[1..] == REALIGN)
+                    .count();
+                if hits != 1 {
+                    unaligned |= 1 << vector;
+                }
+            } else {
+                // SAFETY: as above; the shim is longer than MASK + REALIGN.
+                let tail = unsafe {
+                    core::slice::from_raw_parts(
+                        (handler as usize + MASK.len()) as *const u8,
+                        REALIGN.len(),
+                    )
+                };
+                if tail != REALIGN {
+                    unaligned |= 1 << vector;
+                }
             }
         }
         // Installing a shim resets the gate options, so the IST slots that
