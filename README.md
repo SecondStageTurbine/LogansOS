@@ -6,23 +6,49 @@
 
 > Intelligence as a kernel primitive.
 
-AI-native operating system in Rust. Clean-slate, monolithic kernel, capability-secured, single-node, x86_64. The AI substrate is silicon-proven:
-- **Phase 6** brought a kernel-managed `accel` driver class up on a real Intel UHD 630 GPU.
-- **Phase 7** closed kernel governance of accelerator memory: it measures, arbitrates, owns and isolates, the last enforced by the GPU's own page tables.
-- **Phase 7.5** brought up USB, USB-Ethernet, VT-d/IOMMU and WiFi crypto.
-
-**Phase 8 is active.** It builds **Arthur**, the on-device assistant, and the desktop he lives in. Arthur runs a real quantized LLM (Qwen2.5-0.5B-Instruct) through the kernel's own inference syscalls, with no cloud and no telemetry. He answers on the **Atrium** desktop, on a real laptop (an ASUS Zenbook S14), in about a second for a short question. The installer, login and shutdown are the next tier of work. Each lands behind a kill switch and goes through a cross-model-family review.
+AI-native operating system in Rust. Clean-slate, monolithic kernel, capability-secured, single-node, x86_64. Its
+on-device assistant, **Arthur**, runs a real quantized LLM (Qwen2.5-0.5B-Instruct) through the kernel's own inference
+syscalls, with no cloud and no telemetry, on the **Atrium** desktop.
 
 > "AI-native operating system" in LogansOS's sense means AI-aware, not AI-driven: the kernel knows tensors, models, and inference contexts exist as distinct first-class objects (so it can arbitrate, isolate, account, and dedupe them); the kernel does not run AI to make scheduling decisions.
 
 This is not a Linux derivative. It is not a Unix clone. It borrows ideas where ideas are good, but it owes no compatibility debt to POSIX, to the Linux syscall ABI, to ELF dynamic linking conventions, or to the assumption that a CPU is the privileged compute substrate.
 
-The project was originally named "AltimitNeo" through Phase 2 BUILD-3 sub-commit 2; a 2026-05-10 trademark-driven rename adopted "NeoPlutarch" to remove derivative-name exposure to Bandai Namco's `.hack` franchise IP; a 2026-06-05 rebrand then renamed the project to "LogansOS" (after the PL's son Logan). The bible preamble preserves the design-inspiration acknowledgment ("descended in spirit from Altimit OS") as referential speech. See `docs/bible.md` and `docs/research/ALTIMIT-real-world-implementation.md` for the deeper context.
+## Try LogansOS in a VM
 
+**The quickest way: the preview for Windows.** Download the zip from the
+[`preview` release](https://github.com/SecondStageTurbine/LogansOS/releases/tag/preview), install QEMU once, and
+double-click `Start LogansOS.bat`. Each preview is boot-checked before it's published. The longer guide is
+[docs/HOWTO-try-logansos-in-a-vm.md](docs/HOWTO-try-logansos-in-a-vm.md).
+
+**From source**, it boots the way an installed computer does: from its own disk, under UEFI, with no CD or USB. What
+it writes (Arthur's memory, the intro you've already seen) is still there after a reboot. Build the two VM disks (the
+product image and a data disk; the `.vocab` file must sit next to the `.neom`):
+
+    docker compose run --rm neo cargo xtask vm-image --with-model <path/to/qwen2.5-0.5b.neom>
+
+Boot them, then connect a VNC viewer to `localhost:5901`:
+
+    docker compose run --rm -e NEO_SMP=4 -p 127.0.0.1:5901:5901 neo cargo xtask vm-run --vnc
+
+Notes:
+- The disks are `target/vm/boot.raw` and `target/vm/data.raw`.
+- Running `vm-image` again replaces the boot disk and keeps the data disk. Add `--fresh-data` to start over.
+- Without `--with-model`, `vm-image` takes the same options as `cargo xtask iso`. For example,
+  `vm-image --features desktop` builds the desktop with no model.
+- The firmware is the OVMF that the dev container's QEMU ships with, so no extra install is needed. To use another
+  QEMU's, point `NEO_OVMF_DIR` at a folder holding `edk2-x86_64-code.fd` and `edk2-i386-vars.fd`.
 
 ## Status
 
-**As of 2026-10-29.** Phase 8 is the active push. Releases are tiered (`Plans/DECISION-2026-10-27-release-tiers-mvp.md`):
+**As of 2026-11-08.** The work runs in phases (the ledger is `docs/bible.md` Article 13): **0–4** the classic kernel
+(boot, memory, scheduling, SMP, capabilities, the NeoFS filesystem, networking); **5–7** the AI subsystem; **7.5**
+connectivity; **8** Arthur and the userland, which is active now. Where the AI substrate stands:
+- **Phase 6** brought a kernel-managed `accel` driver class up on a real Intel UHD 630 GPU.
+- **Phase 7** closed kernel governance of accelerator memory: it measures, arbitrates, owns and isolates, the last enforced by the GPU's own page tables.
+- **Phase 7.5** brought up USB, USB-Ethernet, VT-d/IOMMU and WiFi crypto.
+
+Releases are tiered (`Plans/DECISION-2026-10-27-release-tiers-mvp.md`):
 
 | Tier | What it means | State |
 |---|---|---|
@@ -30,81 +56,60 @@ The project was originally named "AltimitNeo" through Phase 2 BUILD-3 sub-commit
 | **MVP (0.5)** | Something a person could use daily: install to disk, log in, a terminal, files, settings, a document editor, Arthur, wired networking, clean shutdown | In progress (see below) |
 | **1.0** | Browse the internet, WiFi, sleep/wake, updates, media | Browser-gated, because an OS that can't browse isn't shippable |
 
+**No single machine does everything yet.** This is the most important operational fact here:
+- **The ASUS Zenbook S14** (the bare-metal target since 2026-10-21) has the desktop and Arthur, but no network lease and no NeoFS volume.
+- **The Dell OptiPlex 7080** has the network lease and NeoFS persistence, and is the 0.1 showcase target.
+- The RTL8125 driver's first run on real hardware (the MSI board) is pending.
+
 **What works today, and where:**
-- **On the Zenbook S14 (the bare-metal target since 2026-10-21):**
+- **On the Zenbook S14:**
   - it boots to the Atrium desktop;
   - the keyboard (i8042 and USB), touchpad (I2C-HID, found through the firmware's ACPI tables) and USB input work;
-  - Arthur answers. "What's 2+2?" went from ~57 s to ~1.2 s of compute across the A6→A9 images, through HWP, a binary vocabulary and parallel attention.
+  - Arthur answers. "What's 2+2?" went from ~57 s to ~1.2 s of compute across the A6→A9 images, through HWP, a
+    prebuilt binary vocabulary and parallel attention. (The binary vocabulary is the same full vocabulary, encoded so
+    it needs no parsing at boot. It's lossless, and a host test proves it token-for-token identical to the text one.)
   - A block **write guard** makes it impossible for LogansOS to write the laptop's internal Windows disk (#83, #85, #88).
 - **On the OptiPlex 7080:**
   - a real DHCP lease over USB-Ethernet on a product boot;
   - NeoFS persistence across a power cycle;
   - the Gen9.5 GPU running AI ops.
-- **In VMs only:**
-  - the installer (OT-87). It's behind the off-by-default `installer` feature, so it ships in no image yet. It installs to a blank disk, and that disk then boots on its own with Arthur's model loading from it. GPT and FAT32 ESP writer, a power-cut-safe W0–W6 state machine, a one-shot install claim past the write guard. Its UI (R4.4) is being built.
+- **In the VM preview:** login with a password and a lock screen, the clock in your time zone (`timezone` in Home),
+  key repeat, Arthur answering "what time is it" from the clock, and Shut down and Restart arriving now (OT-90).
+- **In VMs only:** the installer (OT-87), behind the off-by-default `installer` feature. It installs to a blank disk
+  that then boots on its own with Arthur's model loading from it (GPT and a FAT32 ESP, a power-cut-safe W0–W6 state
+  machine, a one-shot install claim past the write guard).
 
-**What's designed and next:**
-- **Login and sessions (OT-66):** user accounts, an Argon2id password file, lock screen and recovery code. Design merged (#157), with J.c.'s decisions recorded.
-- **Clean shutdown and restart (OT-90):** design merged (#153).
-- **The first app icons:** approved and in their build PR (#185).
-- **The browser ladder (OT-61):**
-  - **done:** threads, per-thread data, `exit_group` on every CPU, real entropy and capability-sealed `std::fs`;
-  - **next:** memory quotas, then a first Servo-engine smoke test.
+**What's next:**
+- **A first-boot setup menu**, Ubuntu-style ("Try or Install"): its design is merged (#64) and step 1 is in review.
+- **The browser ladder (OT-61):** the C/C++ runtime, the rendering layer (SWGL) and POSIX threads are on `main`; Servo's
+  page layout, without script, is running in tests; next is drawing a first static page to the screen, then script.
+- **Terminal, file manager and settings apps** (surveyed; the terminal's pipes are landing).
 - **Not started:** printing (post-1.0) and a document editor (MVP; a design comes first).
 
-The phase ledger is `docs/bible.md` Article 13. The release ledger is `Plans/LEDGER-2026-07-29-logansos-release-ledger.md`. Open obligations are in `docs/OPEN-THREADS.md` and `docs/complexity-governance.md`.
+The release ledger is `Plans/LEDGER-2026-07-29-logansos-release-ledger.md`. Open obligations are in
+`docs/OPEN-THREADS.md` and `docs/complexity-governance.md`. Feedback from testing the preview is tracked in
+`Plans/FEEDBACK-2026-11-02-preview.md`.
 
 ### Recent activity
 
-- **2026-10-27/28: the review apparatus earns its keep, again.** Some 20 changes merged in a day under "merge on green, review after". The post-merge reviews came back mostly FAIL, and nearly every finding was real. None of them was catchable by a green test run: two CPUs interleaving at the wrong instant, a deliberately malformed input, a power cut at the worst moment.
-  - **The serious finds:**
-    - a capability-graph lock that could panic the kernel (a last `Arc` drop running a TLB shootdown under the lock) or hang it (a park under a ticket lock);
-    - a pre-existing **NeoFS crash-consistency bug**, where every superblock copy was rewritten in the same flush as the roots it points to;
-    - a cross-CPU exit path that could spin a CPU forever;
-    - a desktop that closed on one bad client request.
-  - **Twice a different model family broke a pass the first reviewer had given** (Muse passed, Janus broke it). That's the cross-family rule doing its job.
-  - Every finding went fix-forward under a deadline, and none needed a revert.
-  - **The NeoFS fix (#180, in its merge gate now)** was checked against a write-back-cache model across 56,470 power-cut cases. On the old code, about 2,000 of them leave an unmountable disk.
-- **2026-10-26/28: the installer, rung by rung (OT-87).**
-  - R1, VM images (#152);
-  - R2, Arthur's model from the installed disk (#154);
-  - R3, GPT partitions and the write guard (#160);
-  - R4.1, the one-shot install claim (#163);
-  - R4.2, the install bundle with vendored `fatfs` (#165);
-  - NFS-W1, kernel large-file writes (#167);
-  - R4.3, the writer and the W0–W6 state machine (#170).
-
-  Muse's security review of the writes: PASS on all seven items.
-- **2026-10-21/25: the Zenbook S14 becomes the bare-metal target.**
-  - x2APIC and the LAPIC timer;
-  - xHCI USB input and the i8042 keyboard;
-  - an I2C-HID touchpad located through the firmware's ACPI tables;
-  - an RTL8125 2.5GbE driver;
-  - a boot-time model preload that fixed the first-question freeze.
-- **2026-10-18/21: the Atrium desktop.**
-  - a live desktop session;
-  - frosted glass;
-  - the Home intent field ("Ask Arthur anything");
-  - the Spine launcher;
-  - the Lens inspector window;
-  - motion;
-  - a first-boot intro card;
-  - a clock;
-  - Inter as Arthur's typeface.
-
-  It's capability-native: no client can name, see or touch another's window.
-- **2026-10-16/20: ring-3 hardening, and Arthur's real model.**
-  - A series of syscall and interrupt entry/exit fixes (CP-38 to CP-50).
-  - A ring-3 fault now kills the process, not the machine (OT-83).
-  - Arthur's Qwen2.5-0.5B ships as a hash-pinned boot module and generates text in the product build (#70, #71, #74).
-- **2026-08-10/11: two caveats closed.**
-  - The `product` build is now a blocking CI job (OT-78).
-  - The 485 MB model file was verified byte-for-byte against its content hash offline (OT-73).
+- **2026-11-02/08: J.c.'s preview feedback, fixed and shipped in two previews.** The clock in your time zone, key
+  repeat, "Incorrect password. Try again.", Shift punctuation and the keypad, Arthur telling the time
+  (`Plans/FEEDBACK-2026-11-02-preview.md`).
+- **2026-11-01/03: a tiered CI gate for the free tier.** A quick tier on every PR, the full tier on each landing batch (OT-58, `docs/THINK-2026-11-01-ot58-tiered-gate.md`).
+- **2026-10-27/28: the reviews earn their keep.** About 20 changes merged under "merge on green, review after"; the
+  post-merge reviews found real defects no green run could, including a NeoFS crash-consistency bug checked against
+  56,470 power-cut cases (#180), and twice a second model family broke a pass the first had given (Muse passed,
+  Janus broke it). See `docs/concurrency-pitfalls.md` CP-87 to CP-92.
+- **2026-10-26/28: the installer, rung by rung** (OT-87, R1 to R4.3; Muse's security review of the writes: PASS).
+- **2026-10-21/25: the Zenbook S14 becomes the bare-metal target** (x2APIC, xHCI and i8042 input, an I2C-HID touchpad, RTL8125, a boot-time model preload).
+- **2026-10-18/21: the Atrium desktop**, capability-native: no client can name, see or touch another's window.
+- **2026-10-16/20: ring-3 hardening** (CP-38 to CP-50) **and Arthur's real model** as a hash-pinned boot module (#70, #71, #74).
 
 <details>
-<summary>Earlier activity (2026-08-07 and before)</summary>
+<summary>Earlier activity (2026-08-11 and before)</summary>
 
 
+- 2026-08-10/11: **two caveats closed.** The `product` build is now a blocking CI job (OT-78), and the 485 MB model file was verified byte-for-byte against its content hash offline (OT-73).
 - 2026-08-07: **A scheduler bug that was nearly deleted, a diagnosis that closed the lane without writing code, and an uncomfortable pattern.** During a routine disk cleanup — reclaiming build trees after the 0.1 merges — a folder queued for deletion turned out to hold uncommitted work that existed nowhere else: a fix for a **permanent reservation leak** in the SMP scheduler, where a thread migrating between CPUs increments the destination's live-thread count and can fail to decrement the source's, drifting upward until the kernel refuses to admit new threads forever. Its author had written the failure mode down precisely — *"a silent hang, not a crash"* — and the code was one `rm -rf` from gone. It survived because the cleanup rule is mechanical rather than judgemental: **anything not already pushed gets pushed before its folder dies**, no matter how confidently it looks like a stale duplicate. Twice during that pass it looked exactly like one, and twice that was wrong.
   The diagnosis then went to a new kind of seat — one that answers a single hard question deeply rather than iterating — and it closed the lane **without any code being written**: the leak is *structurally unreachable*, because a thread's CPU id is only ever stamped to CPUs that have a scheduler installed, and schedulers are never torn down. It went further and refuted the framing itself: the test we suspected **never calls the leaking function at all** — its wakes route through a different path with no cross-CPU accounting. Two of the project maintainer's own hypotheses died in the process, one to a five-minute check on a build flag. A theoretical bug, correctly identified as theoretical, cost nothing to close.
   **The uncomfortable part is what the investigation kept finding.** Twice in one week, a question we were actively working on had already been answered in the repository — once in a runbook that recorded the exact failure mode and explicitly warned that the remedy we were reaching for wouldn't work, and once in a source comment that described the failure better than our fresh measurements did, including a controlled experiment nobody remembered running. The knowledge was banked correctly and simply didn't resurface when the same question came round again. That is now tracked as a problem in its own right, because a project that writes good notes and doesn't read them is paying twice for the same lesson.
@@ -206,7 +211,7 @@ These run in userspace:
 
 **What's still missing:**
 - an installer you can reach from the desktop (the engine exists, VM-only, and its UI is in progress);
-- login and sessions (designed, not built);
+- a first-boot setup menu (designed; step 1 in review);
 - terminal, file manager and settings apps (surveyed);
 - a document editor;
 - printing.
@@ -256,27 +261,6 @@ From the dev shell:
     cargo neo-tty       # build + run, serial console only
     cargo neo-vnc       # build + run with VNC :5901
     cargo xtask help    # see all xtask commands
-
-## Try LogansOS in a VM
-
-This boots LogansOS the way an installed computer does: from its own disk, under UEFI, with no CD or USB. What it
-writes (Arthur's memory, the intro you've already seen) is still there after a reboot.
-
-Build the two VM disks (the product image and a data disk). The `.vocab` file must sit next to the `.neom`:
-
-    docker compose run --rm neo cargo xtask vm-image --with-model <path/to/qwen2.5-0.5b.neom>
-
-Boot them, then connect a VNC viewer to `localhost:5901`:
-
-    docker compose run --rm -e NEO_SMP=4 -p 127.0.0.1:5901:5901 neo cargo xtask vm-run --vnc
-
-Notes:
-- The disks are `target/vm/boot.raw` and `target/vm/data.raw`.
-- Running `vm-image` again replaces the boot disk and keeps the data disk. Add `--fresh-data` to start over.
-- Without `--with-model`, `vm-image` takes the same options as `cargo xtask iso`. For example,
-  `vm-image --features desktop` builds the desktop with no model.
-- The firmware is the OVMF that the dev container's QEMU ships with, so no extra install is needed. To use another
-  QEMU's, point `NEO_OVMF_DIR` at a folder holding `edk2-x86_64-code.fd` and `edk2-i386-vars.fd`.
 
 ## Roadmap
 
@@ -335,17 +319,16 @@ Local-first by structure. No telemetry, ever (Bible Article 23.2).
 Phases 5, 6 and 7 are complete and silicon-proven as described above. The active caveats are deliberately kept in the open, in `docs/OPEN-THREADS.md`:
 
 - **0.1 is assembled, not demonstrated.** All five rungs are merged, but no single boot has shown them together yet.
-- **No one machine does everything yet:**
-  - The Zenbook has the desktop and Arthur, but no network lease and no NeoFS volume.
-  - The OptiPlex has both of those, and is the showcase target.
-  - The RTL8125 driver's first run on real hardware (the MSI board) is pending.
+- **No one machine does everything yet** (see Status above).
 - **Two hardware proofs are outstanding and aren't claimed:**
   - the WiFi radio's bare-metal LINK-UP (now a 1.0 item);
   - GPU execution-unit byte-equality on the Gen9 test machine, which isn't available.
 - **The installer is VM-only**, behind an off-by-default feature, until its UI and the post-merge review fixes land.
 - **One test scenario race is still open** (OT-74, the `threads_futex` half). Its other half was root-caused and fixed.
 
-Pre-rename project artifacts in `Plans/` retain their original "AltimitNeo" naming as historical record per Bible Article 25.1.
+## Name
+
+LogansOS is named after the PL's son, Logan. It was earlier "AltimitNeo", then "NeoPlutarch"; older `Plans/` artifacts keep those names as historical record. The full story is in `docs/bible.md` Article 25.1.
 
 ## Troubleshooting
 

@@ -6475,6 +6475,14 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
+    TestScenario {
+        name: "ot90_cap",
+        feature: "neo-test-ot90-cap",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
     // then S5.
     TestScenario {
@@ -11706,6 +11714,7 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_shootdown"
         | "ot90_stop_wedged"
         | "ot90_quiesce"
+        | "ot90_cap"
         | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
@@ -11812,6 +11821,25 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             ));
         }
+    }
+    // OT-90 P4: the refusals held, the cap carries no DERIVE or GRANT, and
+    // one SYS_POWER started the shutdown (a second was EBUSY).
+    if scenario.name == "ot90_cap" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                // Janus's #8 review, item 1a: neo-init's actual root table
+                // holds the cap in a build whose only root authority is
+                // `power-cap`.
+                "root_caps=1 power_caps=1",
+                "stage=power_off_requested",
+                "[ power ] shutdown: started kind=PowerOff",
+                "cap=no_derive_no_grant refusals=ok started=0 second=-16",
+                "[ power ] K4 targets=",
+                "power: S5 PM1a=",
+            ],
+        )?;
     }
     // OT-90 P3b-2: K6 stopped disk 0 (armed by this boot's write), cleared
     // the bus masters, then S5.
@@ -14315,6 +14343,8 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // OT-61 C2.4: std's RandomState (any std HashMap in the closure)
             // seeds from the kernel CSPRNG, as std_entropy.
             | "stylo_smoke"
+            // OT-61 C3c-1: neo-crt's arc4random_buf reads the kernel CSPRNG.
+            | "cxx_runtime_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -18792,6 +18822,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] ok(19) arc4random_buf and page-aligned posix_memalign (C3c-1 prerequisites)",
             "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
             "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
             "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
