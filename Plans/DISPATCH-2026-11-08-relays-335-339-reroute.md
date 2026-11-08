@@ -105,3 +105,30 @@ Design: C3a THINK §10 (`docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md`). 41 of 
 - [ ] The smoke checks would fail on the old code for each new piece. Pass/fail plus line.
 - [ ] Off by default; other `neo-crt` users build unchanged. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-08-pr88-review-dexter.md` on `dexter/pr88-review`.
+
+## Section 352: Dexter, #80 (the browser app's I/O surface). Head `80eb3087`, stacked on #79. Rerouted from Codex relay 329 (its #80 part).
+Run the **#80** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#80 only: `git diff refs/pr/79...refs/pr/80`.
+RETURN: `Plans/RETURN-2026-11-08-pr80-review-dexter.md` on `dexter/pr80-review`.
+
+## Section 353: Dexter, #89 (THINK: the C3c-1 product build, SpiderMonkey with cc only). Head `103d9122`. Docs only.
+- [ ] The product build runs `cc` only, over the frozen sources and `generated/`: no Python, configure, make, bindgen
+  or network. Pass/fail plus the THINK line.
+- [ ] The drift check covers the bindgen output and the patched files, as well as configure's output. Pass/fail.
+- [ ] Every crate in the Rust closure is named with its licence, and each licence is allowed. `dtoa.c` is pending
+  J.c.'s licence decision; note it, don't fail on it. Pass/fail per crate.
+- [ ] Each step names its gate. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr89-design-dexter.md` on `dexter/pr89-design`.
+
+## Section 354: Dexter, #87 (vendor SpiderMonkey 153.6.0, the network-off generator, the frozen outputs). Head `fd1ec760`.
+About 10,000 vendored files: check the records and our own pieces, not upstream's contents. Our pieces are
+`.github/workflows/ot61-mozjs-generate.yml`, the generator script, the patches and the vendor cut-list.
+- [ ] The vendor tree matches `servo/mozjs` @ `138c9470` except for the recorded cut-list and patches: give the hash
+  or diff you checked. The GPL-only files are cut (`third_party/python/yamllint`, `js/src/util/make_unicode.py`,
+  `js/src/devtools/rootAnalysis/run_complete`). Pass/fail.
+- [ ] The generator job runs with the network off, and fails when its output differs from the committed frozen files.
+  Pass/fail plus the workflow line.
+- [ ] The workflow takes no secrets, writes nothing to `main`, and runs on a pinned toolchain. Pass/fail plus line.
+- [ ] Licence records cover every linked part; `dtoa.c` is flagged as pending J.c. Pass/fail.
+- [ ] Nothing in the default product image changes. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr87-review-dexter.md` on `dexter/pr87-review`.

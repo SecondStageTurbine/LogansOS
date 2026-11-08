@@ -169,3 +169,6 @@ RELAY 348 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-
 RELAY 349 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 349 (#10 SpiderMonkey THINK design read; RETURN `Plans/RETURN-2026-11-08-pr10-design-dexter.md`)
 RELAY 350 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 350 (#79 = Section 329's #79 part, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr79-review-dexter.md`)
 RELAY 351 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 351 (#88 neo-crt for SpiderMonkey; RETURN `Plans/RETURN-2026-11-08-pr88-review-dexter.md`)
+RELAY 352 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 352 (#80 = Section 329's #80 part, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr80-review-dexter.md`)
+RELAY 353 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 353 (#89 C3c-1 product-build THINK; RETURN `Plans/RETURN-2026-11-08-pr89-design-dexter.md`)
+RELAY 354 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 354 (#87 SpiderMonkey vendor + generator; RETURN `Plans/RETURN-2026-11-08-pr87-review-dexter.md`)
