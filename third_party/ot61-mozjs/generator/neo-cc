@@ -29,9 +29,12 @@ for a in "$@"; do
   case "$a" in -c|-E|-S|-M|-MM) link= ;; esac
 done
 
+# The target ABI (static, no PIC, no red zone, small code model) goes after
+# the caller's flags, so configure's -fPIC can't override it. Stack protector
+# flags are the caller's: neo-crt provides __stack_chk_guard/__stack_chk_fail.
 set -- --target=x86_64-unknown-none-elf -D__neoplutarch__ \
-  -mno-red-zone -mcmodel=small -fno-pic -fno-pie -fno-stack-protector \
-  -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -nostdinc "$@"
+  -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -nostdinc "$@" \
+  -mno-red-zone -mcmodel=small -fno-pic -fno-pie
 here=$(dirname "$0")
 inc="-isystem $repo/third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6/include \
   -isystem $repo/third_party/ot61-mozjs/vendor/mozjs-138c9470/mozjs-sys/mozjs/modules/zlib/src \
