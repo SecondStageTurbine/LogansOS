@@ -25806,6 +25806,30 @@ mod tests {
         );
     }
 
+    /// A rejected batch says why: the plan step writes `batch-plan.sh`'s
+    /// stdout to a file and the failed exit stops it before that file is
+    /// printed, so every `::error::` line must go to stderr, which reaches
+    /// the log.
+    #[test]
+    fn batch_plan_errors_reach_the_log() {
+        let script = fs::read_to_string(workspace_root().join("scripts/batch-plan.sh"))
+            .expect("read batch-plan.sh");
+        let errors: Vec<&str> = script
+            .lines()
+            .filter(|l| l.contains("\"::error::") || l.contains("\"::warning::"))
+            .collect();
+        assert!(!errors.is_empty(), "batch-plan.sh has no ::error:: lines");
+        for line in errors {
+            assert!(line.trim_end().ends_with(">&2"), "not on stderr: {line}");
+        }
+        let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+            .expect("read CI workflow");
+        assert!(
+            workflow.contains("scripts/batch-plan.sh > \"$RUNNER_TEMP/batch-plan.out\"\n"),
+            "the plan step's redirection changed; recheck where batch-plan.sh's errors go"
+        );
+    }
+
     #[test]
     fn manual_qemu_gate_stages_host_and_keeps_cold_cache_headroom() {
         let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))

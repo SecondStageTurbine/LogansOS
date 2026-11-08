@@ -23,7 +23,9 @@
 #   REPO       owner/name
 #
 # Output (stdout, `key=value`, for $GITHUB_OUTPUT): base=, members= (PR:SHA
-# pairs), tree=. Human-readable detail goes to stderr.
+# pairs), tree=. Human-readable detail goes to stderr, and so does every
+# `::error::` line: CI writes stdout to a file and stops on the failed exit
+# before printing it, so an error on stdout would vanish from the log.
 
 set -euo pipefail
 
@@ -36,7 +38,7 @@ git fetch --quiet --no-tags origin "$base"
 base="$(git rev-parse "${base}^{commit}")"
 # The base is `main`, now or earlier: never a feature branch or a typo.
 if ! git merge-base --is-ancestor "$base" origin/main; then
-  echo "::error::base ${base} is not on main"
+  echo "::error::base ${base} is not on main" >&2
   exit 1
 fi
 
@@ -60,7 +62,7 @@ for pr in "${prs[@]}"; do
   fi
   [[ "$tier" == quick ]] || tier=full-alone
   if [[ "$tier" != quick && ${#prs[@]} -gt 1 ]]; then
-    echo "::error::PR #${pr} is ${tier} by gate-plan: it can only be gated alone (a batch of one)"
+    echo "::error::PR #${pr} is ${tier} by gate-plan: it can only be gated alone (a batch of one)" >&2
     exit 1
   fi
 
@@ -83,7 +85,7 @@ for pr in "${prs[@]}"; do
     fi
   done
   if [[ -z "$green_run" ]]; then
-    echo "::error::PR #${pr} (${tier}) is not green on its head ${sha}: no successful CI run with ${what}"
+    echo "::error::PR #${pr} (${tier}) is not green on its head ${sha}: no successful CI run with ${what}" >&2
     exit 1
   fi
   echo "batch-plan: PR #${pr} @ ${sha}: ${tier}, green in run ${green_run}" >&2
