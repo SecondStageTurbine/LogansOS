@@ -36,8 +36,11 @@ env:
   # and the SHA-256 of the repository's LICENSE file at that revision.
   MODEL_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
   MODEL_REV: 9217f5db79a29953eb74d5343926648285ec7e67
-  MODEL_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
-  MODEL_SHA256: 74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
+  # Q8_0 since 2026-11-08 (J.c.; docs/THINK-2026-11-08-arthur-quantization-choice.md).
+  # Same revision and LICENSE as the Q4_K_M it replaced; the oid was read from
+  # the raw LFS pointer by .github/workflows/model-pin.yml.
+  MODEL_FILE: qwen2.5-0.5b-instruct-q8_0.gguf
+  MODEL_SHA256: ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e
   MODEL_LICENSE_SHA256: 832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e
   # The firmware's licence: QEMU v10.2.3's pc-bios/edk2-licenses.txt (the
   # OVMF the dev container pins comes from that QEMU's pc-bios).

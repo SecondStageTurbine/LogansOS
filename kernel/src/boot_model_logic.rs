@@ -25,13 +25,18 @@ pub struct ModelPin {
     pub blake3: [u8; 32],
 }
 
-/// Qwen2.5-0.5B-Instruct (Q4_K_M), imported to `.neom`: 485,489,152 bytes.
-/// Recorded from the real file's NeoFS `content_hash`, re-verified offline
-/// over all bytes (`docs/OPEN-THREADS.md` OT-73). Upstream reproducibility (the
-/// raw GGUF imported twice, byte-identical) is still pending: B1-1.
+/// Qwen2.5-0.5B-Instruct, **Q8_0** (J.c., 2026-11-08,
+/// `docs/THINK-2026-11-08-arthur-quantization-choice.md`), imported to
+/// `.neom`: 669,799,936 bytes. Source: `Qwen/Qwen2.5-0.5B-Instruct-GGUF` @
+/// `9217f5db79a29953eb74d5343926648285ec7e67`, `qwen2.5-0.5b-instruct-q8_0.gguf`
+/// (675,710,816 bytes, SHA-256 = its LFS oid `ca59ca7f…76844e`), imported by
+/// `neomc import` as `scripts/preview/build-in-container.sh` does. Measured by
+/// `.github/workflows/model-pin.yml`, whose Q4_K_M control reproduced the
+/// previous pin (485,489,152 bytes, `a32e4a1b…`) byte for byte. The module name
+/// is unchanged, so nothing that stages it moves.
 pub const QWEN25_05B: ModelPin = ModelPin {
     module: "/models/model-qwen2.5-0.5b.neom",
-    blake3: hex32(b"a32e4a1ba94a850724c15d840f3ae2c44902d9f1f34d8069bac5fcb37e1ccafe"),
+    blake3: hex32(b"1cfd06dc7fe42710f8fab7d337a681ac5527a46e5b2ba6204e929f210055cd4d"),
 };
 
 /// The models a product kernel will load from a boot module.
@@ -59,7 +64,8 @@ pub const KAT_INVENTORY: ModelPin = ModelPin {
 pub const TEST_PINS: &[ModelPin] = &[QWEN25_05B, FIXTURE_05B, KAT_INVENTORY];
 
 /// B1c: the 0.5B tokenizer vocabulary, imported from the same pinned GGUF:
-/// 7,990,862 bytes. Reproduced byte-for-byte by two independent imports
+/// 7,990,862 bytes. The Q8_0 and Q4_K_M GGUFs give the same bytes (the model
+/// pin's workflow measured both), so the pin did not move with the model. Reproduced byte-for-byte by two independent imports
 /// (`Plans/RETURN-2026-10-20-b1-1-model-import-janus.md`).
 pub const QWEN25_05B_VOCAB: ModelPin = ModelPin {
     module: "/vocab/model-qwen2.5-0.5b.vocab",

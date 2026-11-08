@@ -20,7 +20,7 @@ reason = "image A kernel .text: 1,516,511 B measured by CI 2026-11-08 (PR #3 run
 [iso]
 # The model-less image A ISO: the product kernel plus the shipped desktop
 # userland, licences and the Limine boot payload. The pinned Qwen2.5-0.5B model
-# (485,489,152 B) and vocab (7,990,862 B) are staged from out-of-git files whose
+# (Q8_0, 669,799,936 B) and vocab (7,990,862 B) are staged from out-of-git files whose
 # sizes the kernel pins at boot, so they cannot drift and are not in this
 # budget. Grows when the kernel, userland or staged licences grow.
 ceiling_bytes = 155756544

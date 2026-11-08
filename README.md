@@ -7,7 +7,7 @@
 > Intelligence as a kernel primitive.
 
 AI-native operating system in Rust. Clean-slate, monolithic kernel, capability-secured, single-node, x86_64. Its
-on-device assistant, **Arthur**, runs a real quantized LLM (Qwen2.5-0.5B-Instruct) through the kernel's own inference
+on-device assistant, **Arthur**, runs a real quantized LLM (Qwen2.5-0.5B-Instruct, Q8_0) through the kernel's own inference
 syscalls, with no cloud and no telemetry, on the **Atrium** desktop.
 
 > "AI-native operating system" in LogansOS's sense means AI-aware, not AI-driven: the kernel knows tensors, models, and inference contexts exist as distinct first-class objects (so it can arbitrate, isolate, account, and dedupe them); the kernel does not run AI to make scheduling decisions.

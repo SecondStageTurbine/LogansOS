@@ -223,9 +223,10 @@ impl Iterator for Blocks {
 /// **guaranteed** to hold as one naturally aligned block, whatever the span's
 /// alignment: order `k` iff `pages >= 2^(k+1) - 1` (the worst start sits one
 /// page past an aligned boundary). Capped at `max_order`; `None` for no pages.
-/// The 0.5B module's 463 MiB span guarantees order 15, not the 16 its largest
-/// tensor needs, which is why the model's tensors come from the primary zone
-/// (the model is built before its module is reclaimed).
+/// The Q8_0 0.5B module's 639 MiB span (163,525 whole pages) guarantees order
+/// 16; the Q4_K_M module's 463 MiB guaranteed only 15. The model's tensors
+/// still come from the primary zone, because the model is built before its
+/// module is reclaimed.
 #[allow(dead_code)] // only the reclaim scenario and the host KATs call it
 pub const fn guaranteed_order(pages: u64, max_order: usize) -> Option<usize> {
     if pages == 0 {
