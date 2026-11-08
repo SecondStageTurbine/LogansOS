@@ -194,6 +194,45 @@ jobs:
           c++filt < "$RUNNER_TEMP/link-gap.txt" | head -300
           exit "$rc"
 
+      # The frozen-output candidates for our target: the compile database
+      # (mozbuild's CompileDB backend: every object's command line) and the
+      # generated files those commands read. This step only measures them.
+      - name: compile database for x86_64-unknown-neoplutarch (network off)
+        if: always()
+        continue-on-error: true
+        run: |
+          set +e -u
+          obj="$RUNNER_TEMP/obj-neo"
+          [ -f "$obj/config.status" ] || { echo "no configured tree"; exit 1; }
+          sudo unshare -n -- sudo -u "$(id -un)" env \
+            PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang \
+            "$obj/config.status" --backend CompileDB 2>&1 | tail -5
+          db="$obj/compile_commands.json"
+          ls -la "$db"
+          python3 - "$db" "$MOZJS_SRC" "$obj" "$GITHUB_WORKSPACE" <<'PY'
+          import json, sys, collections
+          db, src, obj, repo = sys.argv[1:]
+          cmds = json.load(open(db))
+          print("entries:", len(cmds))
+          dirs = collections.Counter(c["directory"].replace(obj, "@OBJ@") for c in cmds)
+          for d, n in sorted(dirs.items()): print(f"  {n:4d} {d}")
+          c = cmds[0]
+          print("sample file:", c["file"])
+          print("sample command:", c["command"].replace(src, "@SRC@").replace(obj, "@OBJ@").replace(repo, "@REPO@")[:3000])
+          PY
+          echo "== system_wrappers: $(ls "$obj/dist/system_wrappers" | wc -l) files, $(du -sh "$obj/dist/system_wrappers" | cut -f1)"
+          echo "== a wrapper (stdio.h):"; cat "$obj/dist/system_wrappers/stdio.h"
+          echo "== dist/include: $(find "$obj/dist/include" -type l | wc -l) links, $(find "$obj/dist/include" -type f ! -type l | wc -l) files"
+          find "$obj/dist/include" -type f | head -20
+          echo "== generated headers' sizes"
+          for f in js/src/js-confdefs.h js/src/js-config.h js/src/selfhosted.out.h js/src/selfhosted.js js/public/PrefsGenerated.h; do
+            ls -la "$obj/$f"
+          done
+          f=$(find "$obj" -name 'Unified_cpp_js_src*.cpp' | head -1); echo "== $f"; head -8 "$f"
+          echo "== everything non-object in obj-neo, by size"
+          find "$obj" -type f ! -name '*.o' ! -name '*.pp' ! -path '*/system_wrappers/*' -printf '%s %P\n' | sort -rn | head -40
+
       - name: What came out (unified files, defines, source lists)
         if: always()
         run: |
