@@ -65,30 +65,41 @@ compiled only under `neo-test-arthur-real-brain-boot`. B1c moved it into the pro
 
 These are the terms in the load-time peak. The census lines give each one on a real run.
 
+**Updated for Q8_0 (2026-11-08, `Plans/DISPATCH-2026-11-08-arthur-q8.md`).** Arthur's model is now the Q8_0 import.
+Its module and its tensors are bigger than the Q4_K_M figures this section was written with. Both were measured by
+`.github/workflows/model-pin.yml` (run 42525785126), whose Q4_K_M control reproduced the old figures exactly
+(485,489,152 B; `buddy_bytes=761,761,792`). The table gives the Q8_0 figure first and the Q4_K_M one in brackets.
+
 | Term | Size | Census field |
 |---|---|---|
 | Kernel heap, mapped up front | 305 MiB (was 768 MiB with the NeoFS staging buffer) | `heap_capacity` |
 | Kernel thread stacks | 32 KiB each, as on `main` (B1c keeps them; 256 KiB only in the real-brain test builds) | `frames_in_use` |
 | The inference stack (`real-lm`, B1c) | 256 KiB once, plus two unmapped guard pages; every real-LM forward runs on it | `CENSUS … inference_stack_size=`, `inference_stack_high_water=` |
 | Primary-zone alignment trim (`MAX_ORDER` 16 under `real-lm`) | Up to 256 MiB − 4 KiB of the largest usable region (64 MiB − 4 KiB at order 14): 192 MiB more in the worst placement, 0 when that region starts 256 MiB-aligned | `[ kernel ] mm: primary zone … trim_pages=` |
-| The model module, until reclaimed | 485,489,152 B (463 MiB) | `BOOTMOD module … bytes=` |
-| Tensor copies of the weights | Each tensor is one power-of-two buddy block, so the copies take more than the 463 MiB of weights: `output.weight` alone is 256 MiB, `token_embd.weight` 128 MiB, and the other 289 tensors (≈ 236 MiB of bytes) at most double. `neomc inspect` on the pinned 0.5B measured **`buddy_bytes=761,761,792` (726.5 MiB)** (Janus, B1c; earlier versions said ≈ 463 MiB) | `frames_in_use` delta, `model_before_take` → `model_built` |
+| The model module, until reclaimed | 669,799,936 B (639 MiB) [Q4_K_M: 485,489,152 B, 463 MiB] | `BOOTMOD module … bytes=` |
+| Tensor copies of the weights | Each tensor is one power-of-two buddy block, so the copies take more than the 463 MiB of weights: `output.weight` alone is 256 MiB, `token_embd.weight` 128 MiB, and the other 289 tensors (≈ 236 MiB of bytes) at most double. `neomc inspect` on the pinned Q8_0 measured **`buddy_bytes=1,197,969,408` (1,142.5 MiB)**: `token_embd.weight` now needs a 256 MiB block too. [Q4_K_M: 761,761,792 B (726.5 MiB), Janus, B1c] | `frames_in_use` delta, `model_before_take` → `model_built` |
 | Vocab module (resident, never reclaimed) | 7,990,862 B (7.6 MiB) for the real vocab. The hermetic fixture's is 5,435,213 B; B1b's doc wrongly gave the fixture's size here | `BOOTMOD module … /vocab/…`, `BOOTMODULE digest … bytes=` |
 | User ELFs and Arthur's heap | Arthur's 16 MiB vocab read buffer, its parsed vocab, plus the ELFs | `frames_in_use` at `arthur_boot_module_start` |
 
-- **Load-time peak:** 305 + 463 (the module) + 726.5 (the tensors, buddy-rounded, measured) + 7.6 MiB
-  (the vocab) is about 1.47 GiB, plus kernel and user memory. The 2 GiB floor leaves about 545 MiB for
+- **Load-time peak (Q8_0):** 305 + 639 (the module) + 1,142.5 (the tensors, buddy-rounded, measured) + 7.6 MiB
+  (the vocab) is about 2.05 GiB, plus kernel and user memory. So a 2 GiB machine no longer loads Arthur's model.
+  With the worst-case order-16 trim (192 MiB) and the kernel, Arthur and the desktop, plan on a 3 GiB floor. Every
+  machine we run on has far more: the Zenbook S14 has 32 GB, the M710q 16 GB, and the preview VM gives the guest
+  4096 MiB. The OptiPlex census is still the measured figure.
+- **Load-time peak (Q4_K_M, before 2026-11-08):** 305 + 463 (the module) + 726.5 (the tensors, buddy-rounded,
+  measured) + 7.6 MiB (the vocab) is about 1.47 GiB, plus kernel and user memory. The 2 GiB floor leaves about 545 MiB for
   the base, less a worst-case order-16 trim (192 MiB). The OptiPlex census is the measured figure. Before B1 the same machine needed 768 + 463 MiB for the heap and the tensors, plus the module
   that B1 adds. That stacking is Chad's C1, and the right-sized heap removes it.
-- **After the reclaim:** 463 MiB returns to the allocator as the admitted zone (`admitted_pages`). The
-  steady state is the heap plus the tensors.
+- **After the reclaim:** the module's 639 MiB (463 MiB under Q4_K_M) returns to the allocator as the admitted
+  zone (`admitted_pages`). The steady state is the heap plus the tensors: about 1.42 GiB under Q8_0.
 - **The measured figure** is `max(frames_in_use × 4096 + unreclaimed module bytes)` over the census
   lines of the OptiPlex run. The QEMU fixture run cannot stand in for it: its model is 4,144 bytes. The
   hermetic run measured a heap high-water of 1,857,799 bytes against the 305 MiB tier. That is with the
   fixture, so it is not a 0.5B measurement.
-- **Expected floor:** a 2 GiB machine when the largest usable region is 256 MiB-aligned; 2 GiB + 192 MiB
-  in the worst placement (the order-16 trim, B1c NOTE section 4). The OptiPlex logs its real `trim_pages`.
-- **Falsifier:** the OptiPlex census shows a peak above 1.75 GiB. Then the floor moves, and B2's tier
+- **Expected floor (Q8_0):** about 2.5 GiB when the largest usable region is 256 MiB-aligned; 2.7 GiB in the
+  worst placement (the order-16 trim, B1c NOTE section 4). It was 2 GiB / 2 GiB + 192 MiB under Q4_K_M. The
+  OptiPlex logs its real `trim_pages`.
+- **Falsifier:** the OptiPlex census shows a peak above 2.35 GiB under Q8_0 (1.75 GiB under Q4_K_M). Then the floor moves, and B2's tier
   rule must account for it.
 
 ## Failure-mode bank (each discriminator is captured before it is needed)
