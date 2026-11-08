@@ -156,7 +156,7 @@ jobs:
         if: always()
         continue-on-error: true
         run: |
-          set -uo pipefail
+          set +e -u
           obj="$RUNNER_TEMP/obj-neo"
           [ -f "$obj/config.status" ] || { echo "no configured tree"; exit 1; }
           gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
