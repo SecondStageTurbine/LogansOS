@@ -3519,6 +3519,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     #[cfg(feature = "neo-test-pipe-stdio")]
     {
         let exit_code = _ipc_smoke();
+        // The late-control must fail for the right reason: a spawn whose
+        // window was never seen open proves nothing, so it fails by name.
+        #[cfg(feature = "neo-test-pipe-stdio-late-control")]
+        if crate::arch::x86_64::syscall::late_control::misses() > 0 {
+            fail("pipe_stdio_late_window_not_hit");
+        }
         if exit_code == 0 {
             pass(
                 "pipe_stdio=ran legs=round,eof,kill,stale,refusals,info,shell_child,term,unselected",

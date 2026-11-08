@@ -19158,6 +19158,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "PIPE_STDIO kill parked=true kill=0 reaped=true out_eof=true in_epipe=true",
                 "PIPE_STDIO stale exit=0",
                 "PIPE_STDIO refusals cases=16 not_einval=0",
+                "PIPE_STDIO probe_unselected info=ffffffffffff0000",
                 "PIPE_STDIO info probe=true self=true len7=-22 out1=-14 allnone=true",
                 "PIPE_STDIO shell_child line=true relay=true",
                 "PIPE_STDIO term map=true stale=-9",
