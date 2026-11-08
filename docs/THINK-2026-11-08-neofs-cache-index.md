@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # THINK: an index for the NeoFS block cache (the follow-up to #69)
 
-**Date:** 2026-11-08. **Seat:** E. **Status:** proposal for the PM. Updated the same day: option B is prototyped on `claude/neofs-cache-index`
-(`06993824`, no PR yet); see §9 for what the prototype changed and measured.
+**Date:** 2026-11-08. **Seat:** E. **Status:** option B approved in shape; built as PR #82 (`claude/neofs-cache-index`, `cc04384f` with main merged in).
+§9 has what the build changed and measured. The first prototype, `06993824`, and the debug-check commit,
+`b1b49a31`, are earlier heads of the same branch.
 **Builds on:** #69 (`kernel/src/fs/neofs/cache_logic.rs`, landed `97874d3b`), OT-92 (`neofs-cache-evict`),
 `kernel/src/fs/neofs/commit_logic.rs` (the write-back order).
 
@@ -57,7 +58,7 @@ Two more linear walks sit next to it:
 | # | Design | Lookup | Insert | Remove (eviction, `forget_range`) | Keeps `Vec` order (the drain's tie-break) | Size of change |
 |---|---|---|---|---|---|---|
 | A | Turn `neofs-cache-evict` on for the scenarios that mirror the product (the installer ones) | linear, bounded by 256 + dirty | as today | as today | yes | a feature line per scenario; changes what those scenarios test |
-| B | **Side index:** a map of block number to slot next to the `Vec` (a sorted `Vec<(block, slot)>`, see §9); `Vec::remove` stays, and the index's slots above the removed one are shifted down | O(log n) | O(log n) | O(n), as `Vec::remove` already is | **yes**, the `Vec` is untouched | small: `cache_logic` gains the index ops, `cache.rs` calls them at the four places that change `blocks` |
+| B | **Side index:** a map of block number to slot next to the `Vec` (a sorted `Vec<(block, slot)>`, see §9); `Vec::remove` stays, and the index's slots above the removed one are shifted down | O(log n) | O(log n) to find the place, plus moving the index's tail: O(n) worst case, near-append for the installer's and the verify's nearly ascending blocks (a descending fill would be quadratic, the price of §9's heap behaviour) | O(n), as `Vec::remove` already is | **yes**, the `Vec` is untouched | small: `cache_logic` gains the index ops, `cache.rs` calls them at the four places that change `blocks` |
 | C | Key the cache by block: `BTreeMap<u64, CachedBlock>` plus an insertion sequence number for the drain's tie-break | O(log n) | O(log n) | O(log n) | only if every scan sorts by the sequence number | large: every `idx` user in `cache.rs` changes, and the drain must sort |
 | D | Slot arena with stable slot ids and a hash map (`hashbrown`) | O(1) | O(1) | O(1), but free slots break `Vec` order | needs a separate order list | large, and a new vendored crate |
 
@@ -183,7 +184,7 @@ serial timestamps):
 
 **Scenarios, all PASS locally:**
 - `phase3_neofs_cache_index_crosscheck` (40.7 s), `_crosscheck_noevict` (11.1 s) and `phase3_neofs_cache_index_off`
-  (37.2 s, the kill-switch leg);
+  (37.2 s; at that head, scan lookups with the index still kept up to date, see below);
 - the OT-92 pair, `phase3_neofs_cache_evict` (35.5 s) and `_off` (10.8 s), with the index on by default.
 
 **Falsified:**
@@ -194,11 +195,23 @@ serial timestamps):
 **Host KATs:** 10 pass (`tools/neofs-cache-logic-tests`), among them a 64-seed model check against the scan, with
 and without repeated blocks.
 
-**The small cache costs no more with the index (Dexter #73, item 4).**
-- `phase3_neofs_cache_index_off` runs `phase3_neofs_cache_evict`'s legs with every lookup by scan, on a cache of at
-  most 256 clean blocks.
-- Run back to back: 40.0 s with the scan, 36.1 s with the index; an earlier pair was 37.2 and 35.5 s.
-- A binary search over a few hundred entries costs no more than the scan. No size threshold is needed.
+**The small cache costs no more with the index (Dexter #73 item 4; re-measured for Dexter's re-check, item 5).**
+- **At `b1b49a31` the off leg wasn't the previous layer.** `neo-test-neofs-cache-index-off` only switched the lookup to
+  the scan, while `neofs-cache-index` (a default feature) still kept the index up to date. So its 40.0 s against
+  36.1 s with the index measured the lookup alone. Dexter's relay 326 caught it.
+- **Since `cc04384f`,** the off feature compiles every part of the index out: its lookup, its upkeep at the four
+  sites, and its checks. `phase3_neofs_cache_index_off` is therefore the previous layer, on the same image as
+  `phase3_neofs_cache_evict`: the same legs, a cache of at most 256 clean blocks, the same source tree, and only
+  that feature different.
+- **Interleaved, on the same machine:**
+
+  | Run | Off (previous layer) | Index on |
+  |---|---|---|
+  | 1 | 40.4 s | 37.9 s |
+  | 2 | 38.4 s | 38.3 s |
+
+- On a small cache the index, upkeep included, costs no more than the scan, and the difference is within run-to-run
+  noise. No size threshold is needed.
 
 **The incremental debug checks (§4) cost about 5 s** of `install_fresh_4k` boot 1 (91.9-92.3 s against 86.5-87.2 s).
 They don't change the shape: the verify stays flat per file.
@@ -209,7 +222,7 @@ They don't change the shape: the verify stays flat per file.
 |---|---|
 | `phase3_neofs_cache_index_crosscheck` | 46.6 s |
 | `phase3_neofs_cache_index_crosscheck_noevict` | 12.0 s |
-| `phase3_neofs_cache_index_off` | 40.0 s |
+| `phase3_neofs_cache_index_off` | 40.0 s (scan lookup, index still kept; at `cc04384f` the true off leg is 40.4, 38.4 s) |
 | `phase3_neofs_cache_evict` | 36.1 s |
 | `phase3_neofs_cache_evict_off` | 11.3 s |
 
