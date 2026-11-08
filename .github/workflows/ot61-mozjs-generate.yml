@@ -245,22 +245,28 @@ jobs:
           rm -rf "$frozen"
           python3 -I "$gen/freeze.py" "$obj" "$MOZJS_SRC/mozjs-sys/mozjs" "$GITHUB_WORKSPACE" "$frozen"
           committed="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generated"
-          if [ -d "$committed" ]; then
-            if diff -r "$committed" "$frozen" > "$RUNNER_TEMP/drift.txt"; then
-              echo "drift check: the committed outputs match a fresh run"
-            else
-              echo "DRIFT: the committed outputs differ from a fresh run:"
-              head -300 "$RUNNER_TEMP/drift.txt"
-              exit 1
-            fi
-          else
-            echo "no committed copy yet; the frozen set follows"
+          emit() {
             tar -C "$frozen" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
               -cf - . | gzip -n -9 > "$RUNNER_TEMP/frozen.tgz"
             sha256sum "$RUNNER_TEMP/frozen.tgz"
             echo "FROZEN-B64-BEGIN"
             base64 -w 120 "$RUNNER_TEMP/frozen.tgz"
             echo "FROZEN-B64-END"
+          }
+          if [ -d "$committed" ]; then
+            if diff -r "$committed" "$frozen" > "$RUNNER_TEMP/drift.txt"; then
+              echo "drift check: the committed outputs match a fresh run"
+            else
+              echo "DRIFT: the committed outputs differ from a fresh run:"
+              head -300 "$RUNNER_TEMP/drift.txt"
+              # The fresh set, so an intended change can be committed from
+              # here; the job still fails.
+              emit
+              exit 1
+            fi
+          else
+            echo "no committed copy yet; the frozen set follows"
+            emit
           fi
 
       # normalizer_glue.h: upstream's build.rs writes it with cbindgen; ours is
