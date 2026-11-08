@@ -67,6 +67,7 @@ checked against.
 | Directory | Files | Licence (file read) | Compatible? | Links in C3c-1? |
 |---|---|---|---|---|
 | `js/src` (engine), `js/public` | — | MPL-2.0 (Mozilla headers; top-level `LICENSE` points to `toolkit/content/license.html`) | yes | yes |
+| `js/src/dtoa.c` | 1 | David M. Gay's dtoa / Lucent permissive notice (the file's header), **not** MPL-2.0 | **yes**: J.c. added this notice to CLAUDE.md's list on 2026-11-08 (`da68b78f`) | yes: `#include`d by `util/DoubleToString.cpp:70`. Had the answer been no, the fallback was `mfbt/double-conversion` (BSD-3-Clause, already linked) in its place. |
 | `mfbt` | 230 | MPL-2.0 | yes | yes |
 | `mfbt/double-conversion` | 27 | BSD-3-Clause, V8 authors (`mfbt/double-conversion/LICENSE`) | yes | yes |
 | `js/src/irregexp` | 76 | BSD-3-Clause, V8 authors (`js/src/irregexp/LICENSE.v8`) | yes | yes (RegExp) |
@@ -77,17 +78,20 @@ checked against.
 | `third_party/fmt` | — | MIT (`third_party/fmt/LICENSE`) | yes | yes: `mozglue/moz.build:32` builds it, and `mfbt/Casting.h`, `mfbt/BitSet.h`, `mozglue/misc/Debug.h` include it |
 | `third_party/function2` | — | BSL-1.0 (`third_party/function2/LICENSE.txt`) | **check**: Boost is permissive, but not on CLAUDE.md's list | expected **no**: header-only, reached only through `mfbt/MoveOnlyFunction.h`, which nothing in `js/src` includes |
 | `js/src/zydis` | 101 | MIT (`Zydis/LICENSE`, `Zycore/LICENSE`) | yes | **no**: only with `JS_JITSPEW` (`js/src/moz.build:351`) |
-| `third_party/gemmology`, `third_party/xsimd` | — | MIT; BSD-3-Clause | yes | **no**: wasm intgemm only (`ENABLE_WASM_MOZ_INTGEMM`) |
+| `third_party/gemmology`, `third_party/xsimd` | — | MIT; BSD-3-Clause | yes | **no**, by flag: `ENABLE_WASM_MOZ_INTGEMM` is on by default on x86_64, and the generator passes `--disable-wasm-moz-intgemm` (#87). Neither directory is vendored, so a build that wanted them would fail, not link them quietly. |
 | `modules/zlib/src` | 2 (`zlib.h`, `zconf.h`) | zlib licence (`zlib.h` header) | yes | headers only; the zlib code itself comes from outside (`libz-sys`, already vendored for L0, or `libz-rs`) |
 | `nsprpub` | 536 | MPL-2.0 (`nsprpub/LICENSE`) | yes | **no**: standalone JS doesn't build NSPR unless `--enable-nspr-build` (`build/moz.configure/nspr.configure`) |
 | `intl` (ICU and friends) | 1,883 | ICU/Unicode | yes | **no**: intl off |
 | `python`, `third_party/python`, `build`, `testing` | — | MPL-2.0 and the Python packages' own | n/a | **no**: generator-time only, never in the product build |
+| GPL/LGPL files: `third_party/python/yamllint` (GPL-3.0), `third_party/python/pylru` (GPL-2.0+), `python/mozbuild/mozbuild/action/tooltool.py` (GPL-2.0), `js/src/util/make_unicode.py` and `js/src/devtools/rootAnalysis/run_complete` (GPL-3.0), setuptools' `_vendor/autocommand` (LGPL-3.0), ICU's `config.sub`/`config.guess`/`aclocal.m4` | — | GPL / LGPL | **no** (never copied) | **not vendored** (#87's cut list). None is on the generator's path. |
+| `build/autoconf/config.sub`, `config.guess` | 2 | GPL-3.0 **with the autoconf exception** | **flagged for the PM** | **no**: configure runs them on the CI runners to canonicalise the host triple; never compiled or linked. Fallback if the exception isn't enough: mozbuild canonicalises both triples in Python and the scripts go. |
 
 **One to watch:** `function2` is under the **Boost Software License 1.0** (OSI-approved, permissive, no copyleft).
 BSL-1.0 is not on CLAUDE.md's vendoring list (MIT, Apache-2.0, BSD, zlib, ISC, MPL-2.0, Unicode-3.0,
 Unlicense/CC0). Nothing in `js/src` includes `MoveOnlyFunction.h`, so it should stay out of the C3c-1 build and is
 not vendored. If the generator's list ever includes it, that build stops and the question goes to J.c.: add BSL-1.0
-to the list, or give `MoveOnlyFunction` a target-cfg replacement. Everything that links is MPL-2.0, BSD or MIT.
+to the list, or give `MoveOnlyFunction` a target-cfg replacement. Everything that links is MPL-2.0, BSD, MIT,
+Unicode-3.0 or the dtoa notice.
 
 ## 3. The design: SpiderMonkey's WASI port, re-targeted, in two steps
 
@@ -148,21 +152,40 @@ Each trap names the discriminator that catches it on the C3c-1 gate.
 
 | # | Trap | Where | Guard | Discriminator |
 |---|---|---|---|---|
-| T1 | `PRMJ_Now()` does `MOZ_ALWAYS_TRUE(clock_gettime(CLOCK_REALTIME, …) == 0)`. `neo-crt` returns `EINVAL` for `CLOCK_REALTIME` (C3a known gap 3), so the first `Date` call **crashes the engine**. | `js/src/vm/Time.cpp:30` | The kernel already answers `CLOCK_REALTIME` on `browser-runtime` kernels (`sys_clock_gettime_impl`, `kernel/src/arch/x86_64/syscall.rs`): monotonic plus the `rtc-epoch` base, or plus 0 (boot-relative) without it. Only std's overlay refuses it (`SystemTime` is std's `unsupported`). Route std's `SystemTime::now()` to that syscall (already in the A4 manifest, so no new syscall), then `neo-crt`'s `CLOCK_REALTIME` reads `SystemTime`. **Decision for the PM (§6).** | The smoke calls `Date.now()` and checks that the value is non-negative and non-decreasing. |
+| T1 | `PRMJ_Now()` does `MOZ_ALWAYS_TRUE(clock_gettime(CLOCK_REALTIME, …) == 0)`. `neo-crt` returned `EINVAL` for `CLOCK_REALTIME` (C3a known gap 3), so the first `Date` call would **crash the engine**. | `js/src/vm/Time.cpp:30` | **Option (i)** (§6.1, #86): `neo-crt`'s `CLOCK_REALTIME` answers with the process-relative count, read as seconds since 1970. `Date` works and advances, and every date reads as early 1970, never as a wrong "real" date. std is untouched. | The smoke reads `Date.now()` twice. Both values must be at least 0 and below 86,400,000 (one day after the epoch), and the second must be at least the first. A real date (about 1.79e12 ms in 2026) fails the bound, so the check tells "counts from 1970" apart from a real clock. It also stops passing, as it should, the day real dates arrive. |
 | T2 | `mozilla::RandomUint64` on Linux makes a **raw `syscall(SYS_getrandom, …)`**, a syscall site of its own that the A4 backstop must reject. The WASI/BSD branch uses `arc4random_buf`. | `mfbt/RandomNum.cpp:30,95,102` | Build with the `arc4random_buf` branch; `neo-crt` provides `arc4random_buf` over std's entropy (`SYS_GETRANDOM` via the sanctioned trampoline). | A4 backstop: the ELF has only std's syscall sites. Smoke: `Math.random()` gives different values across two boots. |
 | T3 | GC memory alignment. `posix_memalign(SystemPageSize(), len)` must hand back page-aligned chunks; a `malloc` that only promises 16 bytes will trip `MOZ_ASSERT`s or misplace chunk headers. | `js/src/gc/Memory.cpp:245` | `neo-crt`'s `posix_memalign` honours large alignments (KAT on the host and in the smoke). | Smoke allocates past one GC chunk and forces a GC; a debug build runs with `--enable-debug`'s assertions on once. |
-| T4 | **Stack limit.** Linux asks `pthread_getattr_np`, which C3a doesn't have. WASI uses the frame address at startup plus a recursion counter, which relies on `--stack-first` linking. Neither fits us. A wrong limit means runaway recursion **overruns the stack** instead of throwing `InternalError: too much recursion`. | `js/src/util/NativeStack.cpp` | A small `__neoplutarch__` branch: the stack base and size from std's thread record (C1 already tracks stack bounds and guard pages). | The smoke runs unbounded recursion and expects a catchable `InternalError`, not a guard-page fault. |
+| T4 | **Stack limit.** Linux asks `pthread_getattr_np`, which `neo-crt` doesn't have, and WASI uses the frame address at startup plus a recursion counter. A wrong limit means runaway recursion **overruns the stack** instead of throwing `InternalError: too much recursion`. | `js/src/util/NativeStack.cpp`, `js/public/friend/StackLimits.h`, `js/public/RootingAPI.h` | Patch 0003 (#87) takes WASI's cluster: no native-stack limit, with depth bounded by `wasiRecursionDepth` checks. The bound must fit our thread's stack, which the smoke measures. The `RootingContext` field it adds is in the bindings too (trap B1, #89). | The smoke runs unbounded recursion and expects a catchable `InternalError`, not a guard-page fault. It also reports the depth reached. |
 | T5 | **Signal handlers.** SpiderMonkey installs SIGSEGV handlers for wasm bounds checks and JIT traps. With JIT and wasm off they shouldn't be needed, but any leftover `sigaction` is a POSIX surface we don't have. | `js/src/wasm/WasmSignalHandlers.cpp` and friends | Configure wasm off (or its signal handling off); `neo-crt` provides no `sigaction`, so a leftover reference **fails the link**, not the run. | Link failure names the symbol. |
-| T6 | **`configure` doesn't know `x86_64-unknown-neoplutarch`.** It parses the triple to set `OS_ARCH`/`OS_TARGET`, which picks the platform sources. | `build/moz.configure/init.configure` | A small patch adding our OS that selects the WASI-style source choices (threads, memory) and POSIX for the rest. Kept as a single patch file with its upstream base recorded. | The generator job's output diff (option c). |
+| T6 | **`configure` doesn't know `x86_64-unknown-neoplutarch`.** It parses the triple to set `OS_ARCH`/`OS_TARGET`, which picks the platform sources. | `build/moz.configure/init.configure` | Patch 0002 (#87) adds our OS. Patch 0003 takes WASI's branch only where POSIX's needs what neo-crt lacks (memory, the stack limit, signals, `getpid`, `tzset`), and POSIX elsewhere, threads included. Both are patch files applied to a copy, with the upstream base recorded. | The generator job's output diff (option c). |
 | T7 | **Pre-built archive download.** `mozjs-sys`'s `build.rs` tries `archive::download_archive` from GitHub releases before building from source. That's a network fetch and an unaudited binary. | `mozjs-sys/build.rs:78-95` | Option (c) doesn't run this `build.rs`. If (a) is ever used, `MOZJS_FROM_SOURCE=1` and the job runs with the network off. | Generator job runs under `unshare -n` (no network); any fetch fails the job. |
 | T8 | **The Python environment.** `mach`/`configure` may try to make a virtualenv and `pip install`. | `python/mozbuild` | Use only `third_party/python` (vendored); network off. | Same `unshare -n` run. |
 | T9 | **Unified sources.** SpiderMonkey compiles `Unified_cpp_*.cpp` files that `#include` several `.cpp` files each. A frozen list must keep the same grouping, or a file-local name can collide or change meaning. | `moz.build` `UNIFIED_SOURCES` | The generator emits the unified files themselves, not the raw list. | Byte-diff of the generated unified files. |
-| T10 | **`bindgen` output depends on the host's libclang.** | `mozjs-sys/build.rs` (bindgen) | Generate the bindings in the generator job with the pinned clang 19, commit them, and diff-check like the rest. | Generator diff. |
+| T10 | **`bindgen` output depends on the host's libclang.** | `mozjs-sys/build.rs` (bindgen) | The generator runs upstream's own `build_bindings` with libclang from the runner's `clang`, the same install whose headers it compiles with, commits the output, and diff-checks it like the rest (#87). | Generator diff. |
 | T11 | **Exceptions and RTTI.** SpiderMonkey builds with `-fno-exceptions -fno-rtti`, which matches `neo-crt`'s libc++. | `build/moz.configure/flags.configure:101`, `toolchain.configure:3581` | Keep it so; a build that needs RTTI fails the link (no `typeinfo` symbols). | Link failure. |
 | T12 | **Static constructors and `atexit`.** `neo-crt` runs `.init_array` but never runs `atexit` handlers (C3a known gap 2). SpiderMonkey needs `JS_ShutDown()` called explicitly. | `mozjs` `JSEngine` | The smoke calls shutdown explicitly. | Smoke ends with the engine shut down and exit code 0. |
 
-The concurrency pitfall bank applies to **C3c-2**, not C3c-1: C3c-1 is one thread by construction (no-op threading
-backend). C3c-2's dispatch carries the CP table.
+**Single-threaded, enforced.** WASI's no-op threading backend is *not* used: with it, `JS_NewContext` fails on
+x86_64 (`Runtime.cpp`, `InternalThreadPool.cpp`). Our target keeps the POSIX backend (real `pthread_create` through
+neo-crt) and turns helper threads off at their one entry point:
+- patch 0003 sets `gCanUseExtraThreads = false` for `__neoplutarch__` (`vm/Runtime.cpp:63`);
+- `JSRuntime::init` initialises the helper thread pool only `if (CanUseExtraThreads())` (`vm/Runtime.cpp:176`), so
+  `InternalThreadPool::Initialize` never runs;
+- everything that would use a helper thread (off-thread parse and compile, parallel and background GC, wasm tiering)
+  asks `CanUseExtraThreads()` or the empty pool and runs on the calling thread.
+
+**CP table (C3c-1), for the threads that remain:**
+
+| Class | C3c-1 | Guard / discriminator |
+|---|---|---|
+| Helper-thread pool | Not started | Smoke: neo-crt's `pthread_create` count is 0 after runtime creation, eval and a forced GC |
+| Locks and condvars (`Mutex`, `ConditionVariable`, `LightLock`) | Compiled real (POSIX on neo-crt, C3b), taken by one thread only | Uncontended. C3b's items 20–29 cover the primitives |
+| Atomics (`mozilla::Atomic`, `<atomic>`) | Real, one thread | — |
+| `MOZ_THREAD_LOCAL` | pthread keys (patch 0002 reports no `__thread`) | C3b items 23 and 29 (keys per thread, destructors) |
+| JS on more than one thread | Not allowed: one runtime, one thread | The smoke creates exactly one context |
+
+C3c-2 (helper threads) turns `gCanUseExtraThreads` back on behind its own CP table and a cross-family AAG lens on the
+helper-thread seams.
 
 ## 5. Kill-switch
 
@@ -197,3 +220,13 @@ bit-for-bit unchanged. JIT stays a cargo feature that **no** build enables; A1 s
 3. `neo-crt` additions: `arc4random_buf` and the page-aligned `posix_memalign` check (landed as #65), and the T1
    clock (#86).
 4. `spidermonkey_smoke` and its gate (§3.2).
+
+**The gate for each step:**
+
+| Step | PR | Gate |
+|---|---|---|
+| Vendor tree, generator, frozen outputs | #87 | The generator workflow green, with the drift check, the cbindgen check and the bindgen step; push CI; PM review. Docs and tooling only, so no QEMU gate |
+| neo-crt for SpiderMonkey | #88 | Close-gate; quick tier with `cxx_runtime_smoke` (items 30 and 31) and `swgl_smoke`; the full four shards before merge |
+| The `cc`-only product build | after #89 | Host build of the smoke (`xtask ot61-closure-build --mozjs`); push CI; the generator's drift check unchanged |
+| C3c-1 smoke on target | after #89 | Quick tier with `mozjs_smoke` (T1, T3, T4, B1 and the thread count above); the full four shards before merge |
+| C3c-2 (helper threads) | later | Its own THINK and CP table, a cross-family AAG lens, and the full four shards |
