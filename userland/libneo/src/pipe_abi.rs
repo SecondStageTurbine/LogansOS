@@ -67,3 +67,8 @@ pub const fn decode_stdio_info(r: [u8; 8]) -> StdioInfo {
         term: slot(r[4], r[5]),
     }
 }
+
+/// A pipe end's semantic right bits (the kernel's `process::pipe_rights`):
+/// a read end carries `PIPE_RIGHT_READ`, a write end `PIPE_RIGHT_WRITE`.
+pub const PIPE_RIGHT_READ: u8 = 1 << 0;
+pub const PIPE_RIGHT_WRITE: u8 = 1 << 1;

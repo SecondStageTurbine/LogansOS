@@ -288,6 +288,8 @@ mem-quota-test = []
 kill-ready-in-kernel-test = []
 # OT-61 C2.2b: the obj_quota scenario driver (an obj-quota kernel).
 obj-quota-test = []
+# L1a.1 step 2b: the pipe_stdio scenario's terminal side (src/pipe_stdio_test.rs).
+pipe-stdio-test = []
 # The user_copy_bounds scenario: oversized user copies are refused.
 user-copy-bounds-test = []
 # The socket_teardown scenario: exit, kill and revoke free a socket's port.

@@ -1048,6 +1048,8 @@ const SCENARIO: &str = "ipc_park_kill";
 const SCENARIO: &str = "pipe_core";
 #[cfg(feature = "neo-test-pipe-park-kill")]
 const SCENARIO: &str = "pipe_park_kill";
+#[cfg(feature = "neo-test-pipe-stdio")]
+const SCENARIO: &str = "pipe_stdio";
 #[cfg(feature = "neo-test-kill-at-exit")]
 const SCENARIO: &str = "kill_at_exit";
 #[cfg(all(
@@ -1683,6 +1685,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-ipc-park-kill",
     feature = "neo-test-pipe-core",
     feature = "neo-test-pipe-park-kill",
+    feature = "neo-test-pipe-stdio",
     feature = "neo-test-kill-at-exit",
     feature = "neo-test-block-write-guard",
     feature = "neo-test-install-claim",
@@ -3503,6 +3506,28 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
             exit_code,
             frames_before,
             frames_after
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+
+    // L1a.1 step 2b (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §4):
+    // neo-init plays the terminal, spawning neo-shell and the neo-worker
+    // probe on pipes with SYS_SPAWN_STDIO, and reports each leg on serial;
+    // xtask checks the lines, and that nothing of the pipe legs reached
+    // serial before the unselected leg's marker. Its exit code is the first
+    // failing leg (0: all passed).
+    #[cfg(feature = "neo-test-pipe-stdio")]
+    {
+        let exit_code = _ipc_smoke();
+        if exit_code == 0 {
+            pass(
+                "pipe_stdio=ran legs=round,eof,kill,stale,refusals,info,shell_child,term,unselected",
+            );
+        }
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=pipe_stdio code={}",
+            SCENARIO,
+            exit_code
         );
         debug_exit(EXIT_FAILURE);
     }
