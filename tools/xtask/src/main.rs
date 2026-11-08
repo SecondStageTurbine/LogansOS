@@ -7059,7 +7059,12 @@ const FXSAVE_KERNEL_SCENARIOS: &[&str] = &["servo_closure_smoke"];
 
 /// The kernel's default features less `inference-preemptible` (see
 /// `kernel/Cargo.toml`'s `default`).
-const FXSAVE_KERNEL_DEFAULTS: &[&str] = &["kernel-diagnostic", "accel-sim", "user-copy-fixup"];
+const FXSAVE_KERNEL_DEFAULTS: &[&str] = &[
+    "kernel-diagnostic",
+    "accel-sim",
+    "user-copy-fixup",
+    "neofs-cache-index",
+];
 
 fn build_test_kernel(scenario: TestScenario, mode: ScenarioBundleMode) -> Result<(), String> {
     let mut features = vec!["neo-test", scenario.feature];
