@@ -227,6 +227,30 @@ jobs:
             echo "FROZEN-B64-END"
           fi
 
+      # normalizer_glue.h: upstream's build.rs writes it with cbindgen; ours is
+      # written by hand (generator/include/). cbindgen 0.29.4 (the crate's own
+      # build-dependency) is installed from crates.io with the network on,
+      # then run over the crate's lib.rs with the network off, and the two
+      # headers must agree once comments and blank lines are set aside.
+      - name: normalizer_glue.h against cbindgen
+        run: |
+          set -euo pipefail
+          cargo install cbindgen --version 0.29.4 --locked --root "$RUNNER_TEMP/cbindgen" -q
+          crate="$MOZJS_SRC/mozjs-extracted-crates/normalizer_glue"
+          out="$RUNNER_TEMP/normalizer_glue.h"
+          sudo unshare -n -- sudo -u "$(id -un)" env PATH="$PATH" HOME="$HOME" \
+            "$RUNNER_TEMP/cbindgen/bin/cbindgen" --config "$crate/cbindgen.toml" \
+              --output "$out" "$crate/src/lib.rs"
+          strip() {
+            python3 -I -c 'import re,sys; t=open(sys.argv[1]).read(); t=re.sub(r"/\*.*?\*/", "", t, flags=re.S); t=re.sub(r"//[^\n]*", "", t); print("\n".join(l.rstrip() for l in t.splitlines() if l.strip()))' "$1"
+          }
+          if diff <(strip "$out") <(strip third_party/ot61-mozjs/generator/include/normalizer_glue.h); then
+            echo "normalizer_glue.h matches cbindgen's"
+          else
+            echo "normalizer_glue.h differs from cbindgen's; cbindgen wrote:"; cat "$out"
+            exit 1
+          fi
+
       - name: What came out (unified files, defines, source lists)
         if: always()
         run: |
