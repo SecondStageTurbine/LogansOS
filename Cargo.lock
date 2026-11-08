@@ -1184,6 +1184,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-crt-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "neo-edit-core"
 version = "0.0.1"
 dependencies = [

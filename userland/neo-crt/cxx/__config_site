@@ -13,10 +13,13 @@
 #define _LIBCPP_ABI_NAMESPACE __1
 // The C library is neo-crt's musl top half.
 #define _LIBCPP_HAS_MUSL_LIBC
-// No C++ threading layer yet: std::thread/mutex/condition_variable are
-// absent. SpiderMonkey threads through its own pthread port (C3), which will
-// sit on the C1 primitives std already uses.
-#define _LIBCPP_HAS_NO_THREADS
+// Threads through neo-crt's pthreads (src/pthread.rs), which sit on the
+// same std threads and futex-backed locks every Rust crate uses.
+#define _LIBCPP_HAS_THREAD_API_PTHREAD
+// Timed condition_variable waits use pthread_cond_clockwait on
+// CLOCK_MONOTONIC (libc++ sets this only for glibc and Android). Without it
+// they'd convert to CLOCK_REALTIME, which the bundle doesn't have.
+#define _LIBCPP_HAS_COND_CLOCKWAIT
 // No ambient filesystem, no random_device (entropy is a capability), no
 // locales beyond "C", no time-zone database, no std modules.
 #define _LIBCPP_HAS_NO_FILESYSTEM
