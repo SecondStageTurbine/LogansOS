@@ -24149,14 +24149,22 @@ fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
 ///   y = 36 + (1044 - 442) / 2 = 337, inside `clamp_origin`'s bounds;
 /// - the client is PAD in and the title down: (674 + 8, 337 + 34) = (682, 371).
 const BROWSER_CLIENT: (usize, usize, usize, usize) = (682, 371, 640, 400);
+/// The pointer's arrow, which the WM draws over every client: 12 x 18
+/// (neo-init `pointer::ARROW`), its top-left at the screen centre where the
+/// session starts it (no pointer motion in this scenario). Its pixels are
+/// skipped, as `check_lens_capture` skips its sprite. (The run that put the
+/// rect right found exactly these 114 pixels, client x 278..=289,
+/// y 169..=186, the only ones that differ.)
+const BROWSER_SCENE_SPRITE: (usize, usize, usize, usize) = (960, 540, 12, 18);
 
 /// OT-61 L5: the screendump taken with the browser in front shows, in its
 /// client rect, exactly the hand-derived frame of the oracle page: white,
 /// except `#b`'s 2 px black border ring on its border box x 8..122,
 /// y 90..144 (client coordinates; CSS 2.1 §10.3.3, as worked in
-/// `neo-static-page/src/oracle.rs`). Then the rect's FNV-1a over its RGB
-/// bytes, row by row, must equal the hash the browser logged over its own
-/// buffer: the compositor's copy is the browser's frame.
+/// `neo-static-page/src/oracle.rs`), every pixel but the pointer's arrow.
+/// And the hash the browser logged over its own buffer (FNV-1a over the RGB
+/// bytes, row by row) must equal the same hash of that hand-derived frame,
+/// computed here: the buffer the WM presented is the frame, byte for byte.
 fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), String> {
     let (capture, raster) = load_capture(
         scenario,
@@ -24172,19 +24180,25 @@ fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), Str
             0xFF_FFFF
         }
     };
+    let (sx, sy, sw, sh) = BROWSER_SCENE_SPRITE;
+    let in_sprite = |x: usize, y: usize| x >= sx && x < sx + sw && y >= sy && y < sy + sh;
     let mut wrong = 0usize;
     let mut first = None;
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for y in 0..ch {
         for x in 0..cw {
-            let got = rgb(&raster, cx + x, cy + y);
-            if got != expected(x, y) {
-                wrong += 1;
-                first.get_or_insert((x, y, got));
-            }
-            for b in [(got >> 16) as u8, (got >> 8) as u8, got as u8] {
+            let want = expected(x, y);
+            for b in [(want >> 16) as u8, (want >> 8) as u8, want as u8] {
                 hash ^= u64::from(b);
                 hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            if in_sprite(cx + x, cy + y) {
+                continue;
+            }
+            let got = rgb(&raster, cx + x, cy + y);
+            if got != want {
+                wrong += 1;
+                first.get_or_insert((x, y, got));
             }
         }
     }
@@ -24197,7 +24211,7 @@ fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), Str
         for yy in 0..ch {
             for xx in 0..cw {
                 let got = rgb(&raster, cx + xx, cy + yy);
-                if got != expected(xx, yy) {
+                if !in_sprite(cx + xx, cy + yy) && got != expected(xx, yy) {
                     (x0, y0) = (x0.min(xx), y0.min(yy));
                     (x1, y1) = (x1.max(xx), y1.max(yy));
                     match colours.iter_mut().find(|c| c.0 == got) {
@@ -24246,7 +24260,7 @@ fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), Str
         })?;
     if logged != format!("{hash:016x}") {
         return Err(format!(
-            "`{}` the screen's client rect hashes {hash:016x}, the browser's buffer {logged}; capture={}",
+            "`{}` the hand-derived frame hashes {hash:016x}, the browser's buffer {logged}; capture={}",
             scenario.name,
             capture.display()
         ));
