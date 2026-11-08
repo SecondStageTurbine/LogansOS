@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Zlib
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "zlib-rs"
+version = "0.6.8"
+edition = "2021"
+license = "Zlib"
+repository = "https://github.com/trifectatechfoundation/zlib-rs"
+description = "LogansOS empty stand-in for zlib-rs 0.6.8 (never compiled for LogansOS)"
+
+[lib]
+name = "zlib_rs"
+path = "src/lib.rs"
+
+[features]
+"ZLIB_DEBUG" = []
+"__internal-api" = []
+"__internal-fuzz" = []
+"__internal-fuzz-disable-checksum" = []
+"__internal-test" = []
+"avx512" = ["vpclmulqdq"]
+"c-allocator" = []
+"default" = ["std", "c-allocator"]
+"lsx" = []
+"rust-allocator" = []
+"std" = ["rust-allocator"]
+"vpclmulqdq" = []
+"arbitrary" = []
+"quickcheck" = []

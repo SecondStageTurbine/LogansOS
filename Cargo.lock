@@ -1199,6 +1199,10 @@ name = "neo-extract-log"
 version = "0.0.1"
 
 [[package]]
+name = "neo-font-store"
+version = "0.1.0"
+
+[[package]]
 name = "neo-image-decode"
 version = "0.0.1"
 dependencies = [

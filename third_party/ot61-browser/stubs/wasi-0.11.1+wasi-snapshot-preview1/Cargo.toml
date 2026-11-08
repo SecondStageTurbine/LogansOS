@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "wasi"
+version = "0.11.1+wasi-snapshot-preview1"
+edition = "2018"
+license = "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
+repository = "https://github.com/bytecodealliance/wasi"
+description = "LogansOS empty stand-in for wasi 0.11.1+wasi-snapshot-preview1 (never compiled for LogansOS)"
+
+[lib]
+name = "wasi"
+path = "src/lib.rs"
+
+[features]
+"default" = ["std"]
+"rustc-dep-of-std" = []
+"std" = []
+"core" = []
+"rustc-std-workspace-alloc" = []

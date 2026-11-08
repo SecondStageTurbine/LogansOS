@@ -20,6 +20,18 @@ import tomllib
 PATCHED_CRATE_SHA256 = {
     "parking_lot_core-0.9.12": "2621685985a2ebf1c516881c026032ac7deafcda1a2c9b7850dc81e3dfcb64c1",
     "stylo-0.22.0": "7a255e46af2478628c48daab3774090caabd7812b1dd3ca98801c2b9c53491ed",
+    # OT-61 L0 (#55): sha256sum of the downloaded .crate, equal to the
+    # registry index's "cksum" for the release (checked for servo-layout and
+    # libc).
+    "libc-0.2.191": "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a",
+    "servo-allocator-0.7.0": "380a2edcbdd9d91d59149f96433a7f1b2d3b128cd0c4055474bca1b76cb22fc1",
+    "servo-base-0.7.0": "c1bbfbafceeefb49538b928ea7a31c798d15c058ef90d9e2af233f54a4d15fa6",
+    "servo-embedder-traits-0.7.0": "5f14bbb2593cb2ee9d076b53672703064f30593d6bdb4fab34cd5c0dc6d6da5c",
+    "servo-fonts-0.7.0": "871ff64ee0d5269a3caeae5c0e758d8e0579987e0187edf86ae0307103359051",
+    "servo-fonts-traits-0.7.0": "d15da891032b58554795f50b914877cc166eb54665b469cc2df4579307e98d6a",
+    "servo-layout-0.7.0": "675bf3cb0127b58dde2d072f783c2c57d92c271abd037bc76c781a778af285f4",
+    "servo-paint-api-0.7.0": "fe5e606d34334b4baccb14d912172e997a3d7dd1c0d19cb2bbd2bb38e5a6c369",
+    "servo-url-0.7.0": "0b34391568393f40ab8a3b3b7cf41d1fff397ece39e7b0c651a3b513852bb6f5",
 }
 
 here = os.path.dirname(os.path.abspath(__file__))

@@ -1,0 +1,2 @@
+# rustfmt is too aggressive
+disable_all_formatting = true

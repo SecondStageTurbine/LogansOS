@@ -21,6 +21,7 @@ members = [
     "userland/fault-probe",
     "userland/neo-std-pal",
     "userland/neo-image-decode",
+    "userland/neo-font-store",
     "userland/std-pal-smoke",
     "tools/neofs-mkfs",
     "tools/neo-extract-log",

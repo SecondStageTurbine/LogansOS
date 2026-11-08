@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: Unlicense OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "jiff"
+version = "0.2.39"
+edition = "2021"
+license = "Unlicense OR MIT"
+repository = "https://github.com/BurntSushi/jiff"
+description = "LogansOS empty stand-in for jiff 0.2.39 (never compiled for LogansOS)"
+
+[lib]
+name = "jiff"
+path = "src/lib.rs"
+
+[features]
+"alloc" = []
+"arbitrary" = ["std"]
+"default" = ["std", "tz-system", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated", "perf-inline"]
+"defmt" = []
+"js" = []
+"logging" = []
+"perf-inline" = []
+"serde" = []
+"static" = ["static-tz"]
+"static-tz" = []
+"std" = ["alloc"]
+"tz-fat" = []
+"tz-system" = ["std"]
+"tzdb-bundle-always" = ["alloc"]
+"tzdb-bundle-platform" = ["alloc"]
+"tzdb-concatenated" = ["std"]
+"tzdb-zoneinfo" = ["std"]

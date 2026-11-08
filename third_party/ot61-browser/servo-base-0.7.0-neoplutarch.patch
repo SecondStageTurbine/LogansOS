@@ -1,0 +1,28 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-base-0.7.0/cross_process_instant.rs patched/servo-base-0.7.0/cross_process_instant.rs
+--- vendor/servo-base-0.7.0/cross_process_instant.rs
++++ patched/servo-base-0.7.0/cross_process_instant.rs
+@@ -87,6 +88,24 @@
+     }
+ }
+ 
++// LogansOS: std's monotonic clock (`Instant`, on SYS_CLOCK_GETTIME), counted
++// from a base taken once per process. Values compare within one process, which
++// is all a single content process's layout needs; comparing across processes
++// would need the raw kernel clock value, which std does not expose.
++#[cfg(target_os = "neoplutarch")]
++mod platform {
++    use std::sync::OnceLock;
++    use std::time::Instant;
++
++    static BASE: OnceLock<Instant> = OnceLock::new();
++
++    pub(super) fn now() -> u64 {
++        let base = *BASE.get_or_init(Instant::now);
++        // `+ 1`: a zero value never comes out, as on the other platforms.
++        Instant::now().duration_since(base).as_nanos() as u64 + 1
++    }
++}
++
+ #[cfg(any(target_os = "macos", target_os = "ios"))]
+ mod platform {
+     use std::sync::LazyLock;

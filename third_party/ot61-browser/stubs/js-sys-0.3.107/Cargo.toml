@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "js-sys"
+version = "0.3.107"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys"
+description = "LogansOS empty stand-in for js-sys 0.3.107 (never compiled for LogansOS)"
+
+[lib]
+name = "js_sys"
+path = "src/lib.rs"
+
+[features]
+"default" = ["std", "unsafe-eval"]
+"futures-core-03-stream" = []
+"std" = []
+"temporal" = []
+"unsafe-eval" = []

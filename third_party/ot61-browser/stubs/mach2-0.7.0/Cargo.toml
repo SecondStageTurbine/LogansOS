@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: BSD-2-Clause OR MIT OR Apache-2.0
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "mach2"
+version = "0.7.0"
+edition = "2024"
+license = "BSD-2-Clause OR MIT OR Apache-2.0"
+repository = "https://github.com/JohnTitor/mach2"
+description = "LogansOS empty stand-in for mach2 0.7.0 (never compiled for LogansOS)"
+
+[lib]
+name = "mach2"
+path = "src/lib.rs"
+
+[features]
+"default" = []
+"unstable" = []

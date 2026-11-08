@@ -1,0 +1,172 @@
+// SPDX-License-Identifier: MPL-2.0
+//! OT-61 L0 + L1 — `layout-smoke` (`docs/THINK-2026-11-01-ot61-first-page-layout.md`
+//! §5; J.c.'s option A, `Plans/DECISION-2026-11-02-ot61-first-page-option-a.md`).
+//!
+//! L0: this binary links patched `servo-layout` over `neo-layout-dom`, with no
+//! `servo-script` and no SpiderMonkey, so building it for the target is the
+//! rung's gate. It names layout's entry point and parses a document into the
+//! host DOM to show both are present.
+//!
+//! L1: servo-fonts' `neoplutarch` backend reads the bundled Roboto Slab, and
+//! every value it reports at 16 px must equal one derived by hand from the
+//! font's own tables. Those tables were read by `oracle/font_tables.py`, an
+//! independent parser of the raw file (no font library), not by skrifa, the
+//! code under test:
+//!
+//! ```text
+//! upem=2048 ascender=2146 descender=-555 lineGap=0 advanceWidthMax=2543
+//! underlinePosition=-150 underlineThickness=100
+//! xAvgCharWidth=1240 yStrikeoutSize=100 yStrikeoutPosition=649 sxHeight=1082
+//! ```
+//!
+//! At 16 px a font unit is 16 / 2048 = 1/128 px, and an `Au` is 1/60 px,
+//! rounded half away from zero (`Au::from_f64_px`). Each expected `Au` below
+//! shows its arithmetic.
+//!
+//! Exit 0 on a pass; a failed check prints `FAIL(n)` and exits `n`.
+
+#![no_main]
+
+use app_units::Au;
+use fonts::PlatformFontMethods;
+use fonts::platform::font::PlatformFont;
+use fonts_traits::LocalFontIdentifier;
+use style::Atom;
+
+// The heap is servo-allocator's global allocator, std's `System`, which this
+// target's std overlay implements on SYS_MAP_REGION.
+const TAG: &str = "[ layout-smoke ]";
+
+const ROBOTO_SLAB: &str = "neo-font:/robotoslab/RobotoSlab-wght.ttf";
+
+/// "Hello, LogansOS 0": each character's glyph id (cmap format 4) and advance
+/// (hmtx), in font units, from `oracle/font_tables.py`.
+const GLYPHS: &[(char, u32, u32)] = &[
+    ('H', 63, 1578),
+    ('e', 227, 1059),
+    ('l', 275, 653),
+    ('o', 290, 1124),
+    (',', 977, 404),
+    (' ', 958, 509),
+    ('L', 83, 1210),
+    ('g', 247, 1157),
+    ('a', 190, 1132),
+    ('n', 283, 1343),
+    ('s', 322, 1022),
+    ('O', 97, 1351),
+    ('S', 129, 1206),
+    ('0', 906, 1168),
+];
+
+fn check(code: i32, what: &str, ok: bool) {
+    if ok {
+        println!("{TAG} ok({code}) {what}");
+    } else {
+        println!("{TAG} FAIL({code}) {what}");
+        std::process::exit(code);
+    }
+}
+
+fn au(v: Au) -> i32 {
+    v.0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn _start() -> ! {
+    println!("{TAG} start: servo-layout 0.7.0 over neo-layout-dom, no servo-script");
+
+    // L0: layout's entry point and the host DOM are linked in.
+    let _factory = layout::LayoutFactoryImpl();
+    let url = style::stylesheets::UrlExtraData::from(
+        url::Url::parse("about:blank").expect("about:blank"),
+    );
+    let doc = neo_layout_dom::Document::parse("<p id=a>Hello</p>", &url);
+    check(
+        1,
+        "neo-layout-dom parsed a page (document, html, head, body, p, text)",
+        doc.len() == 6 && doc.element_by_id("a").is_some(),
+    );
+
+    // L1: the bundled font through servo-fonts' neoplutarch backend.
+    let id = LocalFontIdentifier {
+        path: Atom::from(ROBOTO_SLAB),
+        face_index: 0,
+        named_instance_index: 0,
+    };
+    let font = PlatformFont::new_from_local_font_identifier(id, Some(Au::from_px(16)), false);
+    check(2, "Roboto Slab opens from the bundled store", font.is_ok());
+    let font = font.expect("checked");
+
+    for (i, &(ch, glyph, advance)) in GLYPHS.iter().enumerate() {
+        let code = 10 + i as i32;
+        let got_glyph = font.glyph_index(ch);
+        let got_advance = got_glyph.and_then(|g| font.glyph_h_advance(g));
+        // advance / 128 is exact in binary for these values.
+        let want_advance = advance as f64 / 128.0;
+        println!("{TAG} {ch:?}: glyph {got_glyph:?} advance {got_advance:?} px");
+        check(
+            code,
+            &format!("{ch:?} is glyph {glyph}, advance {advance}/128 = {want_advance} px"),
+            got_glyph == Some(glyph) && got_advance == Some(want_advance),
+        );
+    }
+    check(
+        30,
+        "U+6C34 (not in the font) has no glyph",
+        font.glyph_index('\u{6C34}').is_none(),
+    );
+
+    let m = font.metrics();
+    println!("{TAG} metrics: {m:?}");
+    // Each expected value: font units / 128 = px, then px * 60 rounded = Au.
+    let expect: &[(i32, &str, Au, i32)] = &[
+        // 2048/128 = 16 px; 16 * 60 = 960.
+        (31, "em size", m.em_size, 960),
+        // 2146/128 = 16.765625 px; * 60 = 1005.9375 -> 1006.
+        (32, "ascent", m.ascent, 1006),
+        // 555/128 = 4.3359375 px; * 60 = 260.15625 -> 260.
+        (33, "descent", m.descent, 260),
+        // (2146 + 555 + 0)/128 = 21.1015625 px; * 60 = 1266.09375 -> 1266.
+        (34, "line gap (FreeType's face height)", m.line_gap, 1266),
+        // 21.1015625 - (16.765625 + 4.3359375) = 0.
+        (35, "leading", m.leading, 0),
+        // 1082/128 = 8.453125 px; * 60 = 507.1875 -> 507.
+        (36, "x-height (OS/2 sxHeight)", m.x_height, 507),
+        // 2543/128 = 19.8671875 px; * 60 = 1192.03125 -> 1192.
+        (37, "max advance", m.max_advance, 1192),
+        // 1240/128 = 9.6875 px; * 60 = 581.25 -> 581.
+        (
+            38,
+            "average advance (OS/2 xAvgCharWidth)",
+            m.average_advance,
+            581,
+        ),
+        // 100/128 = 0.78125 px; * 60 = 46.875 -> 47.
+        (39, "underline size", m.underline_size, 47),
+        // -150/128 + 0.5 = -0.671875 px; * 60 = -40.3125 -> -40.
+        (40, "underline offset", m.underline_offset, -40),
+        // 100/128 = 0.78125 px -> 47.
+        (41, "strikeout size", m.strikeout_size, 47),
+        // 649/128 = 5.0703125 px; * 60 = 304.21875 -> 304.
+        (42, "strikeout offset", m.strikeout_offset, 304),
+        // ' ' 509/128 = 3.9765625 px; * 60 = 238.59375 -> 239.
+        (43, "space advance", m.space_advance, 239),
+    ];
+    for &(code, what, got, want) in expect {
+        check(code, &format!("{what} = {want} Au"), au(got) == want);
+    }
+    // '0' 1168/128 = 9.125 px; * 60 = 547.5 -> 548 (half away from zero).
+    check(
+        44,
+        "zero advance = 548 Au",
+        m.zero_horizontal_advance.map(au) == Some(548),
+    );
+    check(
+        45,
+        "no U+6C34 advance (the glyph isn't there)",
+        m.ic_horizontal_advance.is_none(),
+    );
+
+    println!("{TAG} PASS");
+    std::process::exit(0)
+}

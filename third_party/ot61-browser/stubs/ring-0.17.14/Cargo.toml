@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0 AND ISC
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "ring"
+version = "0.17.14"
+edition = "2021"
+license = "Apache-2.0 AND ISC"
+repository = "https://github.com/briansmith/ring"
+description = "LogansOS empty stand-in for ring 0.17.14 (never compiled for LogansOS)"
+
+[lib]
+name = "ring"
+path = "src/lib.rs"
+
+[features]
+"alloc" = []
+"default" = ["alloc", "dev_urandom_fallback"]
+"dev_urandom_fallback" = []
+"less-safe-getrandom-custom-or-rdrand" = []
+"less-safe-getrandom-espidf" = []
+"slow_tests" = []
+"std" = ["alloc"]
+"test_logging" = []
+"unstable-testing-arm-no-hw" = []
+"unstable-testing-arm-no-neon" = []
+"wasm32_unknown_unknown_js" = []
