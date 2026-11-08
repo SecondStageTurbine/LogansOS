@@ -17,6 +17,7 @@
 #![no_main]
 #![cfg_attr(
     any(
+        feature = "pipe-stdio-test",
         feature = "cap-mint-and-use",
         feature = "cap-derive-subset",
         feature = "cap-grant-basic",
@@ -120,6 +121,8 @@ mod lens;
 mod probe_app;
 #[cfg(feature = "record-guard-probe")]
 mod record_guard;
+#[cfg(feature = "pipe-stdio-test")]
+mod stdio_probe;
 const BLOCK: Handle = Handle(1);
 
 #[cfg(feature = "atrium-surface-protocol")]
@@ -445,6 +448,11 @@ pub extern "C" fn _start() -> ! {
         sys_exit(probe_app::run());
     }
 
+    #[cfg(feature = "pipe-stdio-test")]
+    {
+        sys_exit(stdio_probe::run());
+    }
+
     #[cfg(feature = "atrium-surface-protocol")]
     {
         sys_exit(atrium_surface_protocol_worker());
@@ -649,7 +657,8 @@ pub extern "C" fn _start() -> ! {
         feature = "desktop-lens",
         feature = "installer-probe",
         feature = "record-guard-probe",
-        feature = "probe-app"
+        feature = "probe-app",
+        feature = "pipe-stdio-test"
     )))]
     {
         default_worker_main();
