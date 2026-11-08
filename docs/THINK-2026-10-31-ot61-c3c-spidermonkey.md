@@ -83,7 +83,7 @@ checked against.
 | `nsprpub` | 536 | MPL-2.0 (`nsprpub/LICENSE`) | yes | **no**: standalone JS doesn't build NSPR unless `--enable-nspr-build` (`build/moz.configure/nspr.configure`) |
 | `intl` (ICU and friends) | 1,883 | ICU/Unicode | yes | **no**: intl off |
 | `python`, `third_party/python`, `build`, `testing` | — | MPL-2.0 and the Python packages' own | n/a | **no**: generator-time only, never in the product build |
-| GPL/LGPL files: `third_party/python/yamllint` (GPL-3.0), `third_party/python/pylru` (GPL-2.0+), `python/mozbuild/mozbuild/action/tooltool.py` (GPL-2.0), `js/src/util/make_unicode.py` and `js/src/devtools/rootAnalysis/run_complete` (GPL-3.0), setuptools' `_vendor/autocommand` (LGPL-3.0), ICU's `config.sub`/`config.guess`/`aclocal.m4` | — | GPL / LGPL | **no** (never copied) | **not vendored** (#87's cut list). None is on the generator's path. |
+| GPL/LGPL files: `third_party/python/yamllint` (GPL-3.0), `third_party/python/pylru` (GPL-2.0+), `python/mozbuild/mozbuild/action/tooltool.py` (GPL-2.0), `js/src/util/make_unicode.py` and `js/src/devtools/rootAnalysis/run_complete` (GPL-3.0), setuptools' `_vendor/autocommand` (LGPL-3.0), ICU's `config.sub`/`config.guess`/`aclocal.m4`, and the PGO pages `build/pgo/js-input/3d-thingy.html` and `sunspider/date-format-xparb.html` (LGPL-2.1) | — | GPL / LGPL | **no** (never copied) | **not vendored** (#87's cut list). None is on the generator's path. |
 | `build/autoconf/config.sub`, `config.guess` | 2 | GPL-3.0 **with the autoconf exception** | **flagged for the PM** | **no**: configure runs them on the CI runners to canonicalise the host triple; never compiled or linked. Fallback if the exception isn't enough: mozbuild canonicalises both triples in Python and the scripts go. |
 
 **One to watch:** `function2` is under the **Boost Software License 1.0** (OSI-approved, permissive, no copyleft).
@@ -108,29 +108,32 @@ and the engine sources carry `__wasi__` branches for exactly the platform surfac
 | Surface | Linux port | WASI port | Ours |
 |---|---|---|---|
 | GC chunk memory (`js/src/gc/Memory.cpp`) | `mmap`/`munmap`, alignment tricks, `madvise` | `posix_memalign` + `memset`, `free`; page protections are no-ops | **WASI.** GC memory comes from `neo-crt`'s `malloc`, so it lands under the C2.2 per-process memory quota (**A2 holds by construction**), and no page is ever made executable (**A1 untouched**). |
-| Threads (`js/src/threading/`) | `posix/PosixThread.cpp`, `posix/CpuCount.cpp` | `noop/NoopThread.cpp`, `noop/CpuCount.cpp` (no helper threads) | **WASI first** (C3c-1), **POSIX later** (C3c-2, on C3b) |
-| Native stack base (`js/src/util/NativeStack.cpp`) | `pthread_getattr_np` | the frame address at startup, plus a recursion counter (`wasiRecursionDepth`) | **Neither as-is** (trap T4) |
+| Threads (`js/src/threading/`) | `posix/PosixThread.cpp`, `posix/CpuCount.cpp` | `noop/NoopThread.cpp`, `noop/CpuCount.cpp` (no helper threads) | **POSIX**, on C3b's pthreads, in both steps. WASI's no-op backend makes `JS_NewContext` fail on x86_64. C3c-1 runs **without helper threads**: patch 0003 sets `gCanUseExtraThreads = false`, so the pool never starts (§4, "Single-threaded, enforced"). C3c-2 turns them on. |
+| Native stack base (`js/src/util/NativeStack.cpp`) | `pthread_getattr_np` | the frame address at startup, plus a recursion counter (`wasiRecursionDepth`) | **WASI's cluster** (patch 0003): neo-crt has no `pthread_getattr_np`. The recursion bound must fit our thread's stack (trap T4) |
 | Interpreter | C++ interpreter, Baseline/Ion JITs | the portable baseline interpreter (PBL), no native code | **PBL.** It generates no machine code, so it fits W^X. |
 
-The C3a THINK's hard rule (single-threaded C++ until C3b) is exactly what the no-op threading backend gives. So the
-first step can run with today's `neo-crt`.
+C3b has since landed, so neo-crt has pthreads, and C3c-1 builds with the POSIX threading backend. The one-thread
+rule now comes from helper threads being off (`gCanUseExtraThreads = false`, patch 0003), not from a no-op backend.
+C3c-1 needs the neo-crt in #88: libc++ with localization, the POSIX calls SpiderMonkey links, and the stack-protector
+canary.
 
 ### 3.2 The two steps
 
 - **C3c-1 — one realm, one thread, interpreter only.** `mozjs` with the WASI-shaped configuration on
-  `x86_64-unknown-neoplutarch`: no JIT, no shared memory, no intl, no-op threads, GC memory through `malloc`.
+  `x86_64-unknown-neoplutarch`: no JIT, no shared memory, no intl, POSIX threads with no helper threads
+(`gCanUseExtraThreads = false`), GC memory through `posix_memalign`.
   **Gate (`spidermonkey_smoke`, QEMU, `NEO_SMP=4`):** one realm evaluates a fixed script and its result is compared
   byte for byte with a host run of the same `mozjs` version (the oracle); a forced compacting GC moves a known
   object (its address changes, its value doesn't); an allocation loop past the C2.2 quota ends that process only
   (the kernel and a sibling smoke stay up); `Date.now()` returns a value, not a crash (trap T1). A4: no
   syscall site and no `%fs` read that isn't std's.
-- **C3c-2 — helper threads.** Switch `js/src/threading` to the POSIX backend on C3b's pthread subset; libc++
-  rebuilt with threads (C3b). **Gate:** ADR-078's "helper threads join": off-thread parse or GC helper tasks run and
+- **C3c-2 — helper threads.** Turn `gCanUseExtraThreads` back on, so the helper pool starts on the POSIX backend
+  C3c-1 already uses (C3b's pthreads, libc++ with threads). **Gate:** ADR-078's "helper threads join": off-thread parse or GC helper tasks run and
   join, and the content process exits cleanly with them running. This step is SMP-touching userland. Its dispatch
   consults `docs/concurrency-pitfalls.md`, and its AAG needs a cross-family lens.
 
-Splitting it this way changes the dependency order from C3a → C3b → C3c to **C3a → C3c-1**, with **C3b → C3c-2**
-running in parallel. The engine port and the pthread layer stop waiting on each other.
+The order is now **C3a → C3b → #88 → C3c-1 → C3c-2**. C3b landed first, so the split no longer works around a
+missing pthread layer. What it separates now is turning helper threads on, which needs its own CP table and AAG.
 
 ### 3.3 How the engine is built
 
