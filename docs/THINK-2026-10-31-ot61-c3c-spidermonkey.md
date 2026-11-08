@@ -72,7 +72,8 @@ checked against.
 | `js/src/irregexp` | 76 | BSD-3-Clause, V8 authors (`js/src/irregexp/LICENSE.v8`) | yes | yes (RegExp) |
 | `modules/fdlibm` | 77 | BSD-2-Clause style, The FreeBSD Project (`modules/fdlibm/src/LICENSE`) | yes | yes (`Math`) |
 | `mozglue/misc` | 90 | MPL-2.0 | yes | yes (timestamps, stack walking helpers) |
-| `memory` (mozjemalloc) | 56 | MPL-2.0 | yes | **no**: `js_standalone` without `--enable-jemalloc` (`js/moz.configure:1436`); GC memory goes through `neo-crt`'s `malloc`/`posix_memalign` (trap T3) |
+| `memory/mozjemalloc` | — | MPL-2.0 | yes | **no**: `js_standalone` without `--enable-jemalloc` (`js/moz.configure:1436`); GC memory goes through `neo-crt`'s `malloc`/`posix_memalign` (trap T3) |
+| `memory/build`, `memory/mozalloc` | — | MPL-2.0 | yes | **yes**: the generator probe (configure, run 42508546125) emits unified files for both; they are the allocator wrappers over the system `malloc`, not jemalloc. The licence finding is unchanged. |
 | `third_party/fmt` | — | MIT (`third_party/fmt/LICENSE`) | yes | yes: `mozglue/moz.build:32` builds it, and `mfbt/Casting.h`, `mfbt/BitSet.h`, `mozglue/misc/Debug.h` include it |
 | `third_party/function2` | — | BSL-1.0 (`third_party/function2/LICENSE.txt`) | **check**: Boost is permissive, but not on CLAUDE.md's list | expected **no**: header-only, reached only through `mfbt/MoveOnlyFunction.h`, which nothing in `js/src` includes |
 | `js/src/zydis` | 101 | MIT (`Zydis/LICENSE`, `Zycore/LICENSE`) | yes | **no**: only with `JS_JITSPEW` (`js/src/moz.build:351`) |
