@@ -1209,7 +1209,7 @@ const SCENARIO: &str = "phase3_neofs_cache_evict";
 ))]
 const SCENARIO: &str = "phase3_neofs_cache_evict_off";
 // neofs-cache-index: the same legs, with the index checked against the scan,
-// or (`-off`) with every lookup by scan.
+// or (`-off`) with the index compiled out (the previous layer).
 #[cfg(feature = "neo-test-neofs-cache-index-crosscheck")]
 const SCENARIO: &str = "phase3_neofs_cache_index_crosscheck";
 #[cfg(feature = "neo-test-neofs-cache-index-crosscheck-noevict")]
