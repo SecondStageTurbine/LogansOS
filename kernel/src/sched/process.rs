@@ -224,6 +224,11 @@ pub mod system_store_rights {
 pub mod mount_authority_rights {
     pub const MOUNT: u8 = 1 << 0;
 }
+/// OT-90 P4: semantic rights for the `PowerControl` cap (`acpi::power_abi`).
+#[cfg(feature = "power-cap")]
+pub mod power_control_rights {
+    pub use crate::acpi::power_abi::{RIGHT_POWER_OFF, RIGHT_RESTART};
+}
 
 /// L1a.1 step 2a: semantic rights of a pipe handle. A read end carries
 /// `READ`, a write end `WRITE`; a handle may only do what its end allows.
@@ -396,6 +401,16 @@ pub const fn system_store_cap_rights() -> CapRights {
 #[cfg(feature = "mount-authority")]
 pub const fn mount_authority_cap_rights() -> CapRights {
     CapRights::new(meta_rights::USE, mount_authority_rights::MOUNT)
+}
+/// OT-90 P4: the `PowerControl` cap's rights: `USE` and the power-off and
+/// restart bits. No `DERIVE`, no `GRANT`: it stays in the session root, so
+/// holding it is exact. `SLEEP` is reserved and not minted.
+#[cfg(feature = "power-cap")]
+pub const fn power_control_cap_rights() -> CapRights {
+    CapRights::new(
+        meta_rights::USE,
+        power_control_rights::RIGHT_POWER_OFF | power_control_rights::RIGHT_RESTART,
+    )
 }
 
 #[cfg(not(feature = "net-dial-public-only"))]
@@ -1037,6 +1052,11 @@ pub enum Handle {
     /// syscall, never inherited or granted.
     #[cfg(feature = "mount-authority")]
     MountAuthority { cap_id: CapId, rights: CapRights },
+    /// OT-90 P4: the authority to power the machine off or restart it
+    /// (`SYS_POWER`). No object. Minted only by `root_power_control_cap()`
+    /// into neo-init at spawn; no create syscall, never inherited or granted.
+    #[cfg(feature = "power-cap")]
+    PowerControl { cap_id: CapId, rights: CapRights },
     /// L1a.1 step 2a: one end of a byte pipe. Endpoints are counted per
     /// table entry (`retain_pipe` / `release_pipe`), so a granted copy keeps
     /// its end open after the original closes. Semantic rights:
@@ -1105,6 +1125,8 @@ impl Handle {
             Handle::SystemStore { cap_id, .. } => *cap_id,
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { cap_id, .. } => *cap_id,
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { cap_id, .. } => *cap_id,
             #[cfg(feature = "pipe")]
             Handle::Pipe { cap_id, .. } => *cap_id,
             #[cfg(feature = "atrium-compositor-g1")]
@@ -1134,6 +1156,8 @@ impl Handle {
             Handle::SystemStore { rights, .. } => *rights,
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { rights, .. } => *rights,
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { rights, .. } => *rights,
             #[cfg(feature = "pipe")]
             Handle::Pipe { rights, .. } => *rights,
             #[cfg(feature = "atrium-compositor-g1")]
@@ -1183,6 +1207,8 @@ impl Handle {
             Handle::SystemStore { .. } => hi::KIND_SYSTEM_STORE,
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => hi::KIND_MOUNT_AUTHORITY,
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => hi::KIND_POWER_CONTROL,
             #[cfg(feature = "pipe")]
             Handle::Pipe { .. } => hi::KIND_PIPE,
             #[cfg(feature = "atrium-compositor-g1")]
@@ -1293,6 +1319,8 @@ impl Handle {
             Handle::SystemStore { .. } => Handle::SystemStore { cap_id, rights },
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Handle::MountAuthority { cap_id, rights },
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => Handle::PowerControl { cap_id, rights },
             #[cfg(feature = "pipe")]
             Handle::Pipe { pipe, end, .. } => Handle::Pipe {
                 pipe,
@@ -1448,6 +1476,15 @@ pub fn root_mount_authority_cap() -> Handle {
     Handle::MountAuthority {
         cap_id: alloc_cap_id(),
         rights: mount_authority_cap_rights(),
+    }
+}
+/// OT-90 P4: mint the `PowerControl` cap. Kernel-only, no syscall twin;
+/// installed into neo-init at spawn. Without it `SYS_POWER` is `EPERM`.
+#[cfg(feature = "power-cap")]
+pub fn root_power_control_cap() -> Handle {
+    Handle::PowerControl {
+        cap_id: alloc_cap_id(),
+        rights: power_control_cap_rights(),
     }
 }
 
@@ -2375,6 +2412,22 @@ impl HandleTable {
 
     /// OT-66 L1: does this table hold the system-store authority (`USE` and
     /// `STORE`)?
+    /// OT-90 P4: the semantic rights of the `PowerControl` caps held, OR'd
+    /// (0 without one). A cap without `USE` counts for nothing.
+    #[cfg(feature = "power-cap")]
+    pub fn power_control_rights(&self) -> u8 {
+        self.entries
+            .iter()
+            .flatten()
+            .filter_map(|handle| match handle {
+                Handle::PowerControl { rights, .. } if rights.has_meta(meta_rights::USE) => {
+                    Some(rights.semantic)
+                }
+                _ => None,
+            })
+            .fold(0, |acc, r| acc | r)
+    }
+
     #[cfg(feature = "system-store")]
     pub fn holds_system_store(&self) -> bool {
         self.entries.iter().flatten().any(|handle| {

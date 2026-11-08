@@ -111,6 +111,13 @@ pub const SYS_INSPECT: u64 = 20;
 pub const SYS_SYSSTAT: u64 = 21;
 pub const SYS_OBSERVE: u64 = 22;
 pub const SYS_FTRUNCATE: u64 = 23;
+/// OT-90 P4: `SYS_POWER(action, flags)` (`acpi::power_abi`). A literal, as
+/// every `SYS_*` here is, for `docs/SDK-ABI.md`'s check; `power_abi` (which
+/// libneo shares) must agree.
+#[cfg(feature = "power-cap")]
+pub const SYS_POWER: u64 = 25;
+#[cfg(feature = "power-cap")]
+const _: () = assert!(SYS_POWER == crate::acpi::power_abi::SYS_POWER);
 /// OT-67 W1: a file's whole content replaced in one commit.
 #[cfg(feature = "neofs-file-replace")]
 pub const SYS_FILE_REPLACE: u64 = 24;
@@ -1184,6 +1191,8 @@ extern "C" fn syscall_dispatch(
         SYS_SYSSTAT => sys_sysstat_impl(a0 as *mut SysStatV1, a1 as usize),
         SYS_OBSERVE => sys_observe_impl(a0 as *mut KernelObservabilityV1, a1 as usize),
         SYS_FTRUNCATE => sys_ftruncate_impl(a0 as u32, a1),
+        #[cfg(feature = "power-cap")]
+        SYS_POWER => sys_power_impl(a0, a1),
         #[cfg(feature = "neofs-file-replace")]
         SYS_FILE_REPLACE => sys_file_replace_impl(a0 as u32, a1 as *const u8, a2 as usize),
         SYS_TENSOR_CREATE => sys_tensor_create_impl(a0 as *const u8, a1 as usize),
@@ -1995,6 +2004,9 @@ fn sys_spawn_impl(
                     // Dexter #187 item 3a: nor does the mount authority.
                     #[cfg(feature = "mount-authority")]
                     Some(Handle::MountAuthority { .. }) => return Err(EPERM),
+                    // OT-90 P4: nor does the power cap.
+                    #[cfg(feature = "power-cap")]
+                    Some(Handle::PowerControl { .. }) => return Err(EPERM),
                     #[cfg(not(feature = "cap-rooted-open"))]
                     Some(h @ Handle::File { rights, .. }) if is_spawn_inheritable_dir(rights) => {
                         // File capabilities intentionally still report no generic
@@ -6290,6 +6302,8 @@ fn ipc_lookup(
             Handle::SystemStore { .. } => Err(EBADF),
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Err(EBADF),
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => Err(EBADF),
             #[cfg(feature = "pipe")]
             Handle::Pipe { .. } => Err(EBADF),
             #[cfg(feature = "atrium-compositor-g1")]
@@ -6341,6 +6355,8 @@ fn channel_lookup(
             Handle::SystemStore { .. } => Err(EBADF),
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Err(EBADF),
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => Err(EBADF),
             #[cfg(feature = "pipe")]
             Handle::Pipe { .. } => Err(EBADF),
             #[cfg(feature = "atrium-compositor-g1")]
@@ -6408,6 +6424,8 @@ fn process_handle_lookup_pinned(
             Handle::SystemStore { .. } => Err(EBADF),
             #[cfg(feature = "mount-authority")]
             Handle::MountAuthority { .. } => Err(EBADF),
+            #[cfg(feature = "power-cap")]
+            Handle::PowerControl { .. } => Err(EBADF),
             #[cfg(feature = "pipe")]
             Handle::Pipe { .. } => Err(EBADF),
             #[cfg(feature = "atrium-compositor-g1")]
@@ -8515,6 +8533,47 @@ fn sys_sysstat_impl(_out: *mut SysStatV1, _out_len: usize) -> i64 {
     ENOSYS
 }
 
+/// OT-90 P4: SYS_POWER(action, flags) → 0 | errno. The caller must hold a
+/// `PowerControl` cap with the action's right (neo-init alone has one). On
+/// 0 the clean shutdown has started in its own kernel thread, sparing the
+/// caller in K1; the machine powers off or restarts soon after.
+#[cfg(feature = "power-cap")]
+fn sys_power_impl(action: u64, flags: u64) -> i64 {
+    let pid = crate::sched::current_pid();
+    let rights = process::get(pid)
+        .map(|p| {
+            crate::arch::x86_64::without_interrupts(|| p.handles.lock().power_control_rights())
+        })
+        .unwrap_or(0);
+    sys_power_decided(action, flags, rights, Some(pid))
+}
+
+/// The decision and the start, for the syscall and the harness alike.
+#[cfg(feature = "power-cap")]
+fn sys_power_decided(action: u64, flags: u64, rights: u8, keep: Option<process::ProcessId>) -> i64 {
+    use crate::acpi::power_abi::{Refusal, Request, decide};
+    use crate::acpi::shutdown::{self, Kind};
+    let kind = match decide(action, flags, rights, shutdown::running()) {
+        Ok(Request::PowerOff) => Kind::PowerOff,
+        Ok(Request::Restart) => Kind::Restart,
+        Err(Refusal::NotPermitted) => return EPERM,
+        Err(Refusal::Invalid) => return EINVAL,
+        Err(Refusal::Busy) => return EBUSY,
+    };
+    if shutdown::start(kind, keep) {
+        0
+    } else {
+        EBUSY
+    }
+}
+
+/// OT-90 P4 harness entry: the syscall's decision with given rights (the
+/// harness runs in a kernel thread, with no handle table).
+#[cfg(all(feature = "power-cap", feature = "neo-test"))]
+pub fn debug_sys_power_for_test(action: u64, flags: u64, rights: u8) -> i64 {
+    sys_power_decided(action, flags, rights, None)
+}
+
 #[cfg(feature = "kernel-observability")]
 fn sys_observe_impl(out: *mut KernelObservabilityV1, out_len: usize) -> i64 {
     let stats_len = core::mem::size_of::<KernelObservabilityV1>();
@@ -8600,6 +8659,12 @@ fn sys_grant_impl(channel_h: u32, src_h: u32, rights_subset: u16) -> i64 {
     // Dexter #187 item 3a: nor the mount authority.
     #[cfg(feature = "mount-authority")]
     if matches!(source, Handle::MountAuthority { .. }) {
+        channel.fail_recv_grant(side);
+        return EPERM;
+    }
+    // OT-90 P4: nor the power cap.
+    #[cfg(feature = "power-cap")]
+    if matches!(source, Handle::PowerControl { .. }) {
         channel.fail_recv_grant(side);
         return EPERM;
     }

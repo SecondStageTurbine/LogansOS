@@ -26,5 +26,12 @@ extern crate std;
 #[path = "../../../kernel/src/acpi/power_logic.rs"]
 pub mod power_logic;
 
+/// OT-90 P4: the `SYS_POWER` ABI (`power_abi_tests`).
+#[path = "../../../kernel/src/acpi/power_abi.rs"]
+pub mod power_abi;
+
+#[cfg(test)]
+mod power_abi_tests;
+
 #[cfg(test)]
 mod tests;

@@ -1,0 +1,73 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# Paused 2026-11-03 ~22:20 UTC (J.c.: usage at 95%, resumes Saturday)
+
+Every scheduled check-in (the PM's and all seats') was disabled; nothing on this account wakes on its own. GitHub
+Actions runs already dispatched finish by themselves and cost no Claude usage. The M910q relay runner (Codex and
+DeepSeek reviewers) uses its own quotas and may still return queued reviews; they wait on their `codex/*` branches.
+
+## On main today (in order)
+#2, #59, #62, #61, #60, #69, #64 (docs), #15, #7, #68, #66 (`870b769a`). Previews: `cb71ab69` (F4/F9/F10) and
+`08a3f30f` (F8); J.c. was told about both.
+
+## In flight when paused
+- **Batch "67"** (Seat D, pthreads; head `905f7a9a`, base `870b769a`, expected tree `15d2ca3a`) was running. On
+  resume: if its run is green and main hasn't moved by code, land it with `scripts/batch-assemble.sh 870b769a
+  905f7a9a` (check `tree=`); otherwise re-dispatch `CI` on main, tier full, batch "67".
+
+## Landing queue after #67 (each a batch of one; review done, needs a green PR run at its head)
+1. #57 (`6af77861`, Chad PASS carries; Seat E)
+2. #65 (`30a3f3e8`, Janus PASS; Seat D)
+3. #8 (`8e81cb4d`, Janus 309+311 PASS; retarget to main first; Seat C) → #14 (`73453e31`, review-complete)
+
+## Reviews queued and not yet returned (relay runner)
+- 312: Jarvis re-checks #58 (`aa5150e6`, Seat F's drag fix `7c1d8c40`).
+- 313: Chad re-checks #56 item 5 (`71bc2dca`, Seat B's squashed pipe branch).
+- 314: Janus reviews #70 (setup menu S1, `4f3885a7`, Seat I).
+
+## Seats' next work (from their last check-ins)
+- B: #56 re-check → L1a.1 step 2b. C: #8 → #14. D: browser restack of #25-#28 as `-v2` branches, #55 onto main, L4
+  layout run, the #67 destructor-iteration follow-up. E: #57, then the NeoFS cache index follow-up. F: #58. I: #70
+  review, S2 (#71, settings store).
+
+## Resume steps
+1. Re-enable or recreate the PM loop (it must reschedule itself first) and each seat's check-in.
+2. Each loop: find fixes by comparing each PR's head with its reviewed head (`git log --no-merges <reviewed>..pr<N>
+   ^origin/main`), not only by RETURN branches. Three re-checks were missed for hours on 11-03 for lack of this.
+
+## Added 2026-11-07 (J.c.): File Viewer into the file-viewer prior-art survey
+On resume, add `flyfish-dev/file-viewer` (https://github.com/flyfish-dev/file-viewer; checked 2026-11-07 at
+`7e5e131c`, v3.3.3, last commit 2026-10-31) to the prior-art survey of our file-viewer / "open a file" work, **with the
+licence of each piece checked** (raw `LICENSE`/`package.json` via git, never a summarizing fetch). What's known so far:
+- A browser JS/TS library: about 275 extensions, 47 preview pipelines (Office, PDF/OFD, CAD, archives, email, media,
+  DICOM). It needs JS + DOM + WASM + Workers, so it can't run in LogansOS until the browser runs script (post-C3c).
+  Use it now as a design reference (per-format parsers, lazy loading); our own build stays Rust.
+- Its own code: Apache-2.0 (87 packages; 2 MIT). Compatible.
+- **AGPL-3.0-only: `@flyfish-dev/cad-viewer` and `dwf-viewer` (the DWG/DWF/DWFX runtime). Never copy.**
+- To verify per dependency (one row each: licence, commit/version, alive?): `occt-import-js` (OpenCascade, believed
+  LGPL — check), `pdfjs-dist`, `three`, `mermaid`, `libarchive.js`, `web-ifc`, `@thatopen/*`, `@cornerstonejs/*`,
+  `sql.js`, `xmllint-wasm`, `epubjs`, `rtf.js`, `postal-mime`, `@kenjiuno/msgreader`, `heic2any`, `utif`,
+  `@webtoon/psd`/`ag-psd`, `maplibre-gl`, `proj4`, `@myriaddreamin/typst*`, `hyparquet`, `bpmn-js`, `styled-exceljs`,
+  `cfb`, the AOSP PacketVideo MPEG-4 decoder (stated Apache-2.0), and the two files in `patches/`.
+- Route the survey to a seat as part of the file-viewer THINK; it goes in the THINK and the PR body (survey rule).
+
+## Added 2026-11-07 (J.c.): learn from Raven (Windows programs on Linux)
+`mirkobrombin/raven` (https://github.com/mirkobrombin/raven; checked 2026-11-07 at `74e3e3e5`, committed that day, one
+main author). It runs Windows programs natively on x86_64 Linux: the program's code runs on the CPU in a supervised,
+ptrace-controlled sandbox, and every system call is answered by Raven acting as the NT kernel and its services
+(processes, files, registry, windows, input); graphics go to Wayland/Vulkan via DXVK and vkd3d-proton. It installs
+real installers (NSIS, Inno, MSI, VC++ 2005-2022, .NET 4.8/3.5) and benchmarks ahead of Wine 11 on its tests.
+
+**Licences (for any borrowing):** host runtime (`raven`, `raven-bootstrap`) **GPL-3.0-or-later: read for principle
+only, never copy.** Its own PE guest adapters are MIT (exact list in its `LICENSES.json`); DXVK zlib; code-page and
+Unicode data Unicode-3.0; libpng PNG-2; Skia BSD; SQLite public domain; fonts OFL/Bitstream — all usable with
+notices. **vkd3d-proton is LGPL-2.1: don't copy.** Re-check each file's own notice before taking anything.
+
+**What to take into a THINK on resume (route to a seat; no build yet):**
+1. **An "NT personality" for LogansOS, the long-range Windows-compat idea.** Raven has to fake the kernel from outside
+   with ptrace; we own the kernel, so a PE loader plus an NT syscall personality could be served by our own dispatcher
+   (capability-checked, no ptrace). Study Raven's split of what the "kernel" answers vs. what guest DLLs do.
+2. **Its app-matrix acceptance test:** each real app is installed fresh and scored 25% per stage (install, start,
+   main window, an automated workflow). Adopt the same shape for our own apps and scenario oracles.
+3. **A machine-readable licence manifest** (`LICENSES.json`: per component licence, provenance, pinned version,
+   review date), checked in CI — stronger than our prose `VENDORED.md` files. Consider it for `third_party/`.
+4. **Snapshot before every installer, one-command restore** — the same idea as our L2.1 "always undo"; compare designs.

@@ -2310,6 +2310,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 4 (SWGL S1): upstream SWGL clears an asymmetric pattern
+        // into a caller-owned padded-stride buffer, byte-compared on-target.
+        name: "swgl_smoke",
+        feature: "neo-test-swgl-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
         // musl's portable C over a std bottom half) in a real-std process.
         name: "cxx_runtime_smoke",
@@ -6495,6 +6504,14 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
+    TestScenario {
+        name: "ot90_cap",
+        feature: "neo-test-ot90-cap",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
     // then S5.
     TestScenario {
@@ -6555,6 +6572,7 @@ fn main() -> ExitCode {
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
+        "ot61-swgl-build" => cmd_ot61_swgl_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
         "gate-plan" => cmd_gate_plan(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
@@ -6747,6 +6765,9 @@ fn print_help() {
     );
     println!(
         "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
+    );
+    println!(
+        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
     );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
@@ -7181,6 +7202,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        "swgl_smoke" => &[SWGL_BIN],
         _ => &[],
     }
 }
@@ -8239,6 +8261,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
             build_cxx_runtime_smoke()?;
         }
+        if std_real_staged_bins().contains(&SWGL_BIN) {
+            build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+        }
     }
     Ok(())
 }
@@ -8259,6 +8284,9 @@ const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
 const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
 /// Its hardening twin, in the same crate (`src/trap.rs`).
 const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
+/// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
+const SWGL_BIN: &str = "swgl-smoke";
+const SWGL_DIR: &str = "userland/swgl-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -8268,12 +8296,16 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
+        SWGL_BIN => Some(SWGL_DIR),
         _ => None,
     }
 }
 
 fn is_standalone_std_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR || subdir == CXX_RUNTIME_DIR
+    subdir == SERVO_CLOSURE_DIR
+        || subdir == STYLO_SMOKE_DIR
+        || subdir == CXX_RUNTIME_DIR
+        || subdir == SWGL_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -8286,6 +8318,76 @@ fn build_cxx_runtime_smoke() -> Result<(), String> {
         &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         CXX_RUNTIME_DIR,
     )
+}
+
+/// SWGL's build script compiles `gl.cc` and its translated shaders with the
+/// `cc` crate's defaults for the target, which knows nothing of ours. These
+/// are `cc`'s per-target variables: no default flags, clang, our target
+/// flags and neo-crt's headers (libc++ first, then musl, then clang's own),
+/// and no host C++ library to link (`CXXSTDLIB` empty; libc++ comes from
+/// neo-crt). The same flags neo-crt uses for its own objects.
+fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
+    let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let out = Command::new(&clang)
+        .arg("-print-resource-dir")
+        .output()
+        .map_err(|e| format!("{clang} -print-resource-dir: {e} (SWGL needs clang >= 18)"))?;
+    if !out.status.success() {
+        return Err(format!("{clang} -print-resource-dir failed"));
+    }
+    let builtin = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("include");
+    let root = workspace_root();
+    let crt = root.join("third_party/ot61-crt/vendor");
+    let flags = [
+        "--target=x86_64-unknown-none-elf".to_string(),
+        "-mno-red-zone".into(),
+        "-mcmodel=small".into(),
+        "-fno-pic".into(),
+        "-fno-pie".into(),
+        "-fno-stack-protector".into(),
+        "-O2".into(),
+        "-ffunction-sections".into(),
+        "-fdata-sections".into(),
+        "-nostdinc".into(),
+        "-nostdinc++".into(),
+        "-D_XOPEN_SOURCE=700".into(),
+        format!("-I{}", root.join("userland/neo-crt/cxx").display()),
+        format!("-I{}", crt.join("libcxx/include").display()),
+        format!("-I{}", crt.join("musl-generated").display()),
+        format!("-I{}", crt.join("musl/arch/x86_64").display()),
+        format!("-I{}", crt.join("musl/arch/generic").display()),
+        format!("-I{}", crt.join("musl/include").display()),
+        format!("-isystem{}", builtin.display()),
+    ]
+    .join(" ");
+    let t = "x86_64_unknown_neoplutarch";
+    cmd.env("CRATE_CC_NO_DEFAULTS", "1")
+        .env(format!("CC_{t}"), &clang)
+        .env(format!("CXX_{t}"), &clang)
+        .env(format!("CXXFLAGS_{t}"), &flags)
+        .env(format!("CXXSTDLIB_{t}"), "");
+    Ok(())
+}
+
+/// `cargo xtask ot61-swgl-build`: apply the std overlay and build the SWGL S1
+/// smoke, with its A4 checks, without a QEMU run (the CI job that runs SWGL's
+/// build script and shader translator first, per J.c.'s C2.3b ruling).
+fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-swgl-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+    let elf = std_real_bin_path(SWGL_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
 }
 
 /// Build one standalone std smoke (the overlay must already be applied) and
@@ -8858,6 +8960,9 @@ fn build_member_at_opt_level(
     if subdir == "userland/std-real-smoke" || is_standalone_std_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
+    }
+    if subdir == SWGL_DIR {
+        swgl_cc_env(&mut cmd)?;
     }
     if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
@@ -11639,6 +11744,7 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_shootdown"
         | "ot90_stop_wedged"
         | "ot90_quiesce"
+        | "ot90_cap"
         | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
@@ -11745,6 +11851,25 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             ));
         }
+    }
+    // OT-90 P4: the refusals held, the cap carries no DERIVE or GRANT, and
+    // one SYS_POWER started the shutdown (a second was EBUSY).
+    if scenario.name == "ot90_cap" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                // Janus's #8 review, item 1a: neo-init's actual root table
+                // holds the cap in a build whose only root authority is
+                // `power-cap`.
+                "root_caps=1 power_caps=1",
+                "stage=power_off_requested",
+                "[ power ] shutdown: started kind=PowerOff",
+                "cap=no_derive_no_grant refusals=ok started=0 second=-16",
+                "[ power ] K4 targets=",
+                "power: S5 PM1a=",
+            ],
+        )?;
     }
     // OT-90 P3b-2: K6 stopped disk 0 (armed by this boot's write), cleared
     // the bus masters, then S5.
@@ -18699,6 +18824,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    if scenario.name == "swgl_smoke" {
+        for needle in [
+            "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
+            "[ swgl-smoke ] ok(3) every byte == the hand-laid pattern (BGRA, no flip, padding and canaries untouched)",
+            "[ swgl-smoke ] ok(4) the 7x5 buffer passes fb::attach's checks",
+            "[ swgl-smoke ] ok(5) fb::attach refuses each bad framebuffer before SWGL sees it",
+            "[ swgl-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SWGL must raster the hand-laid pattern into the caller's buffer",
+            )?;
+        }
+    }
     if scenario.name == "cxx_runtime_smoke" {
         // The smoke's own lines: the musl printf path reached the console, and
         // every check passed (the kernel's PASS line covers the exit code).
@@ -18709,6 +18850,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(16) stdout's lock holds a second thread's fputs until it's let go",
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
+            "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
+            "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
+            "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
