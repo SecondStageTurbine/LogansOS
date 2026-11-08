@@ -182,7 +182,7 @@ fn leg_round_and_eof() -> bool {
 fn leg_kill() -> bool {
     // Leg 3: killed while parked on fd 0; both of its endpoints go.
     let Ok(c) = spawn_on_pipes("shell", None) else {
-        return false;
+        return bail(b"leg_kill:1");
     };
     let mut acc = Vec::new();
     let parked = read_until(c.out_rd, b"neo> ", &mut acc);
@@ -228,7 +228,7 @@ fn leg_stale() -> bool {
     // Leg 5: the probe's three stale-stdout cases; its exit code says which
     // failed (0: none).
     let Some(c) = probe(b's', None) else {
-        return false;
+        return bail(b"leg_stale:1");
     };
     let code = finish(c);
     say(b"PIPE_STDIO stale exit=");
@@ -241,29 +241,42 @@ fn leg_stale() -> bool {
 const MAP_WRITE: u8 = 1 << 0;
 const MAP_READ: u8 = 1 << 1;
 
+/// A `bytes`-byte XRGB buffer. A buffer may be no wider than the framebuffer
+/// (`validate_desc`'s `ExceedsOutput`), so rows are at most 1024 pixels:
+/// 4096 bytes is 1024 x 1, 4092 is 1023 x 1, 8192 is 1024 x 2.
 fn buffer(bytes: u32) -> Option<Handle> {
-    let width = bytes / 4;
+    let pixels = bytes / 4;
+    let width = pixels.min(1024);
+    let height = pixels / width;
     let desc = libneo::encode_buffer_desc(
         width,
-        1,
-        bytes,
+        height,
+        width * 4,
         libneo::FORMAT_XRGB8888_LE,
         u64::from(bytes),
     );
     libneo::sys_buffer_create(&desc).ok()
 }
 
+/// A leg's setup step failed: name it on serial, so the run says which.
+fn bail(step: &[u8]) -> bool {
+    say(b"PIPE_STDIO fail step=");
+    say(step);
+    say(b"\n");
+    false
+}
+
 fn leg_refusals() -> bool {
     // Leg 6: every refusal is EINVAL, and no child is made (no process handle
     // is installed: the next spawn's handle takes the same slot).
     let Some((in_rd, in_wr, out_rd, out_wr)) = pipes() else {
-        return false;
+        return bail(b"leg_refusals:1");
     };
     let Ok((chan, chan_peer)) = sys_chan_create() else {
-        return false;
+        return bail(b"leg_refusals:2");
     };
     let (Some(t4096), Some(t4092), Some(t8192)) = (buffer(4096), buffer(4092), buffer(8192)) else {
-        return false;
+        return bail(b"leg_refusals:3");
     };
     let ro = libneo::sys_derive(
         t4096,
@@ -273,7 +286,7 @@ fn leg_refusals() -> bool {
         ),
     );
     let Ok(t_ro) = ro else {
-        return false;
+        return bail(b"leg_refusals:4");
     };
     let w = |a: Option<u8>, b: Option<u8>, c: Option<u8>| libneo::stdio_word(a, b, c);
     let cases: [(&[Handle], u64); 16] = [
@@ -331,10 +344,10 @@ fn leg_info() -> bool {
     // Leg 7: the probe's kernel bytes against the hand-laid oracle row; the
     // terminal's own (no selection); the errors; an all-none spawn.
     let Some(t) = buffer(4096) else {
-        return false;
+        return bail(b"leg_info:1");
     };
     let Some(c) = probe(b'i', Some(t)) else {
-        return false;
+        return bail(b"leg_info:2");
     };
     close(t);
     let mut acc = Vec::new();
@@ -385,7 +398,7 @@ fn leg_shell_child() -> bool {
     // Leg 8: the shell names its pipes for its child; the child's line
     // arrives in the terminal's stdout pipe.
     let Ok(c) = spawn_on_pipes("shell", None) else {
-        return false;
+        return bail(b"leg_shell_child:1");
     };
     let mut acc = Vec::new();
     let prompt = read_until(c.out_rd, b"neo> ", &mut acc);
@@ -406,10 +419,10 @@ fn leg_term() -> bool {
     // Leg 9: the term page maps and shows what the terminal wrote; a buffer
     // that only sits in its old slot is refused.
     let Some(t) = buffer(4096) else {
-        return false;
+        return bail(b"leg_term:1");
     };
     let Ok(p) = libneo::sys_buffer_map(t, 0) else {
-        return false;
+        return bail(b"leg_term:2");
     };
     // The terminal THINK's §3.2 header: magic `NTP1`, version 1, 80 x 25.
     // SAFETY: `p` is our writable mapping of the 4 KiB buffer.
@@ -420,14 +433,14 @@ fn leg_term() -> bool {
         core::ptr::write_volatile(p.add(14) as *mut u16, 25);
     }
     let Some(c) = probe(b't', Some(t)) else {
-        return false;
+        return bail(b"leg_term:3");
     };
     let mut acc = Vec::new();
     let mapped = read_until(c.out_rd, b"term", &mut acc);
     let shown = mapped && acc.len() >= 12 && acc[..8] == [0x4e, 0x54, 0x50, 0x31, 80, 0, 25, 0];
     let map_code = finish(c);
     let Some(c) = probe(b'T', Some(t)) else {
-        return false;
+        return bail(b"leg_term:4");
     };
     close(t);
     let mut acc = Vec::new();
@@ -462,10 +475,10 @@ fn leg_unselected() -> bool {
     // exits with 2.
     say(b"PIPE_STDIO unselected begin\n");
     let Ok((local, child)) = sys_chan_create() else {
-        return false;
+        return bail(b"leg_unselected:1");
     };
     let Ok((_, process)) = sys_spawn("shell", &[child]) else {
-        return false;
+        return bail(b"leg_unselected:2");
     };
     let code = sys_wait(process, 0).unwrap_or(-1);
     close(local);
