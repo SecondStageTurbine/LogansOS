@@ -6012,7 +6012,7 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     // through both the index and the scan (they must agree) and the index
     // checked against a rebuild after every change; with eviction, and
     // without it (`forget_range`'s `retain`). `_off` is the kill-switch leg:
-    // the same legs with every lookup by scan.
+    // the same legs with the index compiled out (the previous layer).
     TestScenario {
         name: "phase3_neofs_cache_index_crosscheck",
         feature: "neo-test-neofs-cache-index-crosscheck",

@@ -1694,7 +1694,8 @@ neo-test-phase3-neofs-cache-evict = ["neo-test", "neofs-cache-evict", "neofs-lar
 # index and the scan (they must agree) and the index checked against a rebuild
 # after every change. `-noevict`: the same on `phase3_neofs_cache_evict_off`'s
 # legs (no eviction; `forget_range`'s `retain` and rebuild). `-off`: the
-# kill-switch leg, `phase3_neofs_cache_evict`'s legs with every lookup by scan.
+# kill-switch leg, `phase3_neofs_cache_evict`'s legs with the index compiled out
+# entirely (no upkeep, no checks: the previous layer), on the same image.
 neo-test-neofs-cache-index-crosscheck = ["neo-test-phase3-neofs-cache-evict", "neofs-cache-index-crosscheck"]
 neo-test-neofs-cache-index-crosscheck-noevict = ["neo-test-phase3-neofs-cache-evict-off", "neofs-cache-index-crosscheck"]
 # Both crosscheck legs: the cache asserts the index against the scan.

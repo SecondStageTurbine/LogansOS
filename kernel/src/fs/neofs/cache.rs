@@ -143,7 +143,10 @@ struct CacheInner {
     /// `blocks` by block number (`cache_logic::BlockIndex`), changed in the
     /// same critical section as `blocks` (`push_block`, `evict_locked`,
     /// `forget_range`).
-    #[cfg(feature = "neofs-cache-index")]
+    #[cfg(all(
+        feature = "neofs-cache-index",
+        not(feature = "neo-test-neofs-cache-index-off")
+    ))]
     index: super::cache_logic::BlockIndex,
 }
 
@@ -218,7 +221,10 @@ impl NeoFsBlockCache {
                 evictions: 0,
                 #[cfg(feature = "neofs-cache-evict")]
                 recent_evicted: [0; RECENT_EVICTED],
-                #[cfg(feature = "neofs-cache-index")]
+                #[cfg(all(
+                    feature = "neofs-cache-index",
+                    not(feature = "neo-test-neofs-cache-index-off")
+                ))]
                 index: super::cache_logic::BlockIndex::new(),
             }),
         }
@@ -408,7 +414,10 @@ impl NeoFsBlockCache {
             inner
                 .blocks
                 .retain(|cached| cached.block < first || cached.block >= end);
-            #[cfg(feature = "neofs-cache-index")]
+            #[cfg(all(
+                feature = "neofs-cache-index",
+                not(feature = "neo-test-neofs-cache-index-off")
+            ))]
             {
                 let inner = &mut *inner;
                 inner.index.rebuild(&inner.blocks);
@@ -424,7 +433,10 @@ impl NeoFsBlockCache {
                 let block = inner.blocks[idx].block;
                 if block >= first && block < end {
                     inner.blocks.remove(idx);
-                    #[cfg(feature = "neofs-cache-index")]
+                    #[cfg(all(
+                        feature = "neofs-cache-index",
+                        not(feature = "neo-test-neofs-cache-index-off")
+                    ))]
                     {
                         let inner = &mut *inner;
                         inner.index.removed(&inner.blocks, idx, block);
@@ -778,9 +790,11 @@ impl super::cache_logic::BlockKey for CachedBlock {
 }
 
 /// The hot path of a large read-back: see `cache_logic`. With
-/// `neofs-cache-index`, the index; without it, or with the kill-switch leg
-/// (`neo-test-neofs-cache-index-off`), the scan. The crosscheck scenario runs
-/// both on every lookup and on the index after every change.
+/// `neofs-cache-index`, the index. Without it, or with the kill-switch leg
+/// (`neo-test-neofs-cache-index-off`, which compiles every part of the index
+/// out, its upkeep and checks too: the previous layer), the scan. The
+/// crosscheck scenarios run both on every lookup, and compare the index with a
+/// rebuild after every change.
 fn find_cached_block(inner: &CacheInner, block: u64) -> Option<usize> {
     #[cfg(all(
         feature = "neofs-cache-index",
@@ -812,7 +826,10 @@ fn find_cached_block(inner: &CacheInner, block: u64) -> Option<usize> {
 /// block's slot. The crosscheck scenarios also compare the whole index with a
 /// rebuild (O(n log n), so not per change elsewhere: it would make the write
 /// path quadratic again in the debug build `install_fresh_4k` times).
-#[cfg(feature = "neofs-cache-index")]
+#[cfg(all(
+    feature = "neofs-cache-index",
+    not(feature = "neo-test-neofs-cache-index-off")
+))]
 #[inline(always)]
 fn check_index(inner: &CacheInner, pushed: Option<(u64, usize)>) {
     debug_assert_eq!(
@@ -857,7 +874,10 @@ fn push_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
         role: CachedBlockRole::Data,
         last_use,
     });
-    #[cfg(feature = "neofs-cache-index")]
+    #[cfg(all(
+        feature = "neofs-cache-index",
+        not(feature = "neo-test-neofs-cache-index-off")
+    ))]
     {
         let indexed = inner.index.pushed(&inner.blocks);
         // One entry per block: every push follows a miss under this lock.
@@ -912,7 +932,10 @@ fn evict_locked(inner: &mut CacheInner) {
         // `remove`, not `swap_remove`: the drain takes the first dirty block
         // of the lowest role, so keep the others in insertion order.
         let block = inner.blocks.remove(victim).block;
-        #[cfg(feature = "neofs-cache-index")]
+        #[cfg(all(
+            feature = "neofs-cache-index",
+            not(feature = "neo-test-neofs-cache-index-off")
+        ))]
         {
             inner.index.removed(&inner.blocks, victim, block);
             check_index(inner, None);
