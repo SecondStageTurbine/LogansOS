@@ -83,12 +83,34 @@ jobs:
           echo "MOZJS_OBJ=$obj" >> "$GITHUB_ENV"
           exit "$rc"
 
+      # `js-confdefs.h` and the other generated headers come from the build's
+      # `export` tier, not from configure. Still network off, still no compile
+      # of engine code: `export` only writes headers and source lists.
+      - name: make export (network off)
+        run: |
+          set -uo pipefail
+          obj="$RUNNER_TEMP/obj"
+          touch "$RUNNER_TEMP/before-export"
+          sudo unshare -n -- sudo -u "$(id -un)" env \
+            PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
+            make -C "$obj" -j"$(nproc)" export \
+              2>&1 | tee "$RUNNER_TEMP/export.log"
+          rc=${PIPESTATUS[0]}
+          echo "export exit: $rc"
+          echo "== files the export wrote"
+          find "$obj" -type f -newer "$RUNNER_TEMP/before-export" \
+            ! -name '*.pp' ! -name '*.track' ! -name '*.stub' | sed "s|^$obj/||" | sort \
+            | tee "$RUNNER_TEMP/export-files.txt"
+          echo "== count: $(wc -l < "$RUNNER_TEMP/export-files.txt")"
+          exit "$rc"
+
       - name: What came out (unified files, defines, source lists)
         if: always()
         run: |
           set +e
           obj="$RUNNER_TEMP/obj"
           echo "== configure.log (last 60 lines)"; tail -60 "$RUNNER_TEMP/configure.log"
+          echo "== export.log (last 80 lines)"; tail -80 "$RUNNER_TEMP/export.log"
           echo "== js-confdefs.h"; find "$obj" -name js-confdefs.h -exec cat {} \; | head -200
           echo "== Unified_*.cpp files"; find "$obj" -name 'Unified_*.cpp' | sort | head -400
           n=$(find "$obj" -name 'Unified_*.cpp' | wc -l); echo "== unified file count: $n"
@@ -106,6 +128,8 @@ jobs:
           name: ot61-mozjs-generated
           path: |
             ${{ runner.temp }}/configure.log
+            ${{ runner.temp }}/export.log
+            ${{ runner.temp }}/export-files.txt
             ${{ runner.temp }}/obj/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/**/Unified_*.cpp
             ${{ runner.temp }}/obj/**/backend.mk
