@@ -152,7 +152,7 @@ index a2ad060..0df5ad4 100644
    void decWasiRecursionDepth();
    bool checkWasiRecursionLimit();
 diff --git a/mozjs-sys/mozjs/js/src/gc/Memory.cpp b/mozjs-sys/mozjs/js/src/gc/Memory.cpp
-index 76dad23..3149cbf 100644
+index 76dad23..37ac314 100644
 --- a/mozjs-sys/mozjs/js/src/gc/Memory.cpp
 +++ b/mozjs-sys/mozjs/js/src/gc/Memory.cpp
 @@ -35,7 +35,7 @@
@@ -173,7 +173,7 @@ index 76dad23..3149cbf 100644
  enum class PageAccess : int {
    None = 0,
    Read = 0,
-@@ -198,7 +198,7 @@ template <bool AlwaysGetNew = true>
+@@ -198,13 +198,13 @@ template <bool AlwaysGetNew = true>
  static bool TryToAlignChunk(void** aRegion, void** aRetainedRegion,
                              size_t length, size_t alignment);
  
@@ -182,6 +182,13 @@ index 76dad23..3149cbf 100644
  static void* MapAlignedPagesSlow(size_t length, size_t alignment);
  #endif  // wasi
  static void* MapAlignedPagesLastDitch(size_t length, size_t alignment,
+                                       StallAndRetry stallAndRetry);
+ 
+-#ifdef JS_64BIT
++#if defined(JS_64BIT) && !defined(__neoplutarch__)
+ static void* MapAlignedPagesRandom(size_t length, size_t alignment);
+ #endif
+ 
 @@ -242,7 +242,7 @@ static inline void* MapInternal(void* desired, size_t length) {
    } else {
      region = VirtualAlloc(desired, length, flags, DWORD(PageAccess::ReadWrite));
@@ -209,6 +216,15 @@ index 76dad23..3149cbf 100644
    void* region = nullptr;
    if (int err = posix_memalign(&region, alignment, length)) {
      MOZ_ASSERT(err == ENOMEM);
+@@ -659,7 +659,7 @@ void* MapAlignedPages(size_t length, size_t alignment,
+ #endif  // !__wasi__
+ }
+ 
+-#ifdef JS_64BIT
++#if defined(JS_64BIT) && !defined(__neoplutarch__)
+ 
+ /*
+  * This allocator takes advantage of the large address range on some 64-bit
 @@ -761,7 +761,7 @@ static void* MapAlignedPagesRandom(size_t length, size_t alignment) {
  
  #endif  // defined(JS_64BIT)
