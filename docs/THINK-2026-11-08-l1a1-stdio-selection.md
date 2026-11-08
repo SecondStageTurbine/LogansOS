@@ -251,8 +251,8 @@ I-14 does not apply: there is no ISR path and no governance lock.
 ## 4. Gate and review
 
 **Scenario `pipe_stdio`:**
-- `neo-test-pipe-stdio = ["neo-test", "pipe", "atrium-compositor-g1", "neo-test-atrium-runtime"]` (the buffer syscalls
-  need the Atrium runtime switch), with `user_feature: Some("pipe-stdio-test")`.
+- `neo-test-pipe-stdio = ["neo-test", "pipe", "atrium-compositor-g1", "neo-test-atrium-runtime", "close-object-handles"]`
+  (the buffer syscalls need the Atrium runtime switch, and closing a buffer needs `close-object-handles`), with `user_feature: Some("pipe-stdio-test")`.
 - **The terminal side is real ring-3 code:** `neo-init`'s `pipe-stdio-test` arm makes the real syscalls and blocks
   like a terminal would. It needs no kernel stand-in and no 5-argument test dispatch (Dexter 322 item 6).
 - Each wait is a `PIPE_NONBLOCK` poll bounded by the TSC (2^35 cycles, seconds on QEMU's TCG clock): this kernel has
@@ -282,7 +282,8 @@ The legs:
    the stdout pipe reads EOF once the bytes still buffered are delivered.
 3. **Kill while parked:**
    - spawn the shell again the same way, and read its prompt, so it is parked on fd 0;
-   - `SYS_KILL` it, and `SYS_WAIT` reaps it;
+   - `SYS_KILL` it, and `SYS_WAIT` finds it gone (`Ok`, or `ESRCH` once the kill has finished: a killed process keeps
+     no exit code);
    - the stdout read end then reads EOF, and a write to stdin is `EPIPE`, so both of its endpoints were released.
 4. **No selection:**
    - print the leg-4 marker;
@@ -397,6 +398,8 @@ The code follows revisions 1-2 except where this table says, each a detail the b
 | §4 probe | a new module `neo-stdio-probe` | `neo-worker`'s `pipe-stdio-test` role, spawned as `worker` | the scenario-role pattern; a new module needs new image staging |
 | §4 waits | `SYS_WAIT_ANY` with a 5 s deadline | TSC-bounded `PIPE_NONBLOCK` polls | the scenario kernel has no clock syscall to form an absolute deadline |
 | §4 feature | `neo-test`, `pipe`, `atrium-compositor-g1` | plus `neo-test-atrium-runtime` | the buffer syscalls are `ENOSYS` without the runtime switch |
+| §4 feature | (none) | plus `close-object-handles` | leg 9's `T` closes the term page's buffer with `SYS_CLOSE`, which refuses a buffer without it |
+| §4 leg 3 | `SYS_WAIT` reaps the killed shell | `SYS_WAIT` is `Ok` or `ESRCH` | a killed process keeps no exit code, so a wait after the kill finished is `ESRCH` (first boot, run 42475546797) |
 | §4 leg 6 | a 4095-byte term page | 4092 bytes | a buffer's size is `stride × height` in 4-byte pixels |
 | §4 leg 7 | all-none gives the no-selection row | the probe prints the row on the console; xtask pins it | with no selection its fd 1 is the console |
 | §4 order | legs 1-9 in number order | leg 4 last | its marker splits the log for the quiet-prefix check |
