@@ -9,10 +9,10 @@
 # Run as `neo-cc` for C and `neo-c++` (a symlink) for C++. NEO_REPO is the
 # repository root; NEO_CLANG the clang to use (default clang).
 #
-# Linking: configure links small test programs. There is no neo-crt archive
-# here, so a link resolves nothing and ignores undefined symbols. That makes
-# any symbol check pass; the generator lists configure's link-based answers so
-# they're checked against neo-crt by hand (and, next, against its symbols).
+# Linking: configure links small test programs. They link against a stub
+# that defines exactly the symbols in neo-crt-symbols.txt (what neo-crt
+# defines), and an undefined symbol fails the link, so a function check
+# passes only for a function neo-crt has.
 set -eu
 repo=${NEO_REPO:?NEO_REPO must name the repository root}
 clang=${NEO_CLANG:-clang}
@@ -45,9 +45,16 @@ if [ -n "$link" ]; then
   # which finds ld.lld on PATH; put clang's own lld first.
   lld=$("$clang" -print-prog-name=ld.lld)
   case "$lld" in /*) PATH=$(dirname "$lld"):$PATH; export PATH ;; esac
+  syms=$(dirname "$0")/neo-crt-symbols.txt
+  stub=${TMPDIR:-/tmp}/neo-crt-stub-$(cksum <"$syms" | cut -d' ' -f1).o
+  if [ ! -f "$stub" ]; then
+    tmp=$stub.$$
+    grep -v '^#' "$syms" | awk 'NF { printf ".globl %s\n%s:\n", $1, $1 }' \
+      | "$clang" --target=x86_64-unknown-none-elf -x assembler -c - -o "$tmp"
+    mv "$tmp" "$stub"
+  fi
   # shellcheck disable=SC2086
-  exec $exe $inc "$@" -nostdlib -static -fuse-ld=lld \
-    -Wl,--unresolved-symbols=ignore-all -Wl,-e,0
+  exec $exe $inc "$@" -nostdlib -static -fuse-ld=lld "$stub" -Wl,-e,0
 fi
 # shellcheck disable=SC2086
 exec $exe $inc "$@"

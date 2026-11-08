@@ -32,8 +32,9 @@ one thread, interpreter only, and build option (c).
     kernel's preprocessor check is `__neoplutarch__`. Like WASI, it is accepted only for `--enable-project=js`.
 - `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
   neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
-  `__neoplutarch__` predefined. Its link step resolves nothing, so configure's link-based checks are listed and
-  checked against neo-crt separately.
+  `__neoplutarch__` predefined. configure's test programs link against a stub that defines exactly the symbols in
+  `generator/neo-crt-symbols.txt`: neo-crt's, plus Rust's `compiler_builtins`. So a function check passes only
+  for a function a LogansOS binary really has.
 - Nothing builds from this tree yet. The CI generator job (option (c), next) runs `configure` here with the network
   off, on the CI runners only (J.c., 2026-10-29), and commits its frozen outputs. The product build then runs `cc`
   over those outputs. No other build reads this tree, and the default kernel, image and userland are unchanged.

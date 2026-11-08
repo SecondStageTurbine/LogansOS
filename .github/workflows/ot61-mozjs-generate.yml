@@ -146,7 +146,7 @@ jobs:
           echo "== js-confdefs.h (neoplutarch)"; cat "$obj/js/src/js-confdefs.h"
           echo "== unified file count: $(find "$obj" -name 'Unified_*.cpp' | wc -l)"
           echo "== host vs neoplutarch js-confdefs.h"
-          diff "$RUNNER_TEMP/obj/js/src/js-confdefs.h" "$obj/js/src/js-confdefs.h"
+          diff "$RUNNER_TEMP/obj/js/src/js-confdefs.h" "$obj/js/src/js-confdefs.h" || true
           exit "$rc"
 
       - name: What came out (unified files, defines, source lists)
