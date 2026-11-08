@@ -172,3 +172,7 @@ RELAY 351 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-
 RELAY 352 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 352 (#80 = Section 329's #80 part, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr80-review-dexter.md`)
 RELAY 353 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 353 (#89 C3c-1 product-build THINK; RETURN `Plans/RETURN-2026-11-08-pr89-design-dexter.md`)
 RELAY 354 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 354 (#87 SpiderMonkey vendor + generator; RETURN `Plans/RETURN-2026-11-08-pr87-review-dexter.md`)
+RELAY 355 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 355 (#10 re-check at `65da764c`; RETURN `Plans/RETURN-2026-11-08-pr10-recheck-dexter.md`)
+RELAY 356 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 356 (#88 re-check at `849d2325`; RETURN `Plans/RETURN-2026-11-08-pr88-recheck-dexter.md`)
+RELAY 357 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 357 (#90 Arthur to Q8_0; RETURN `Plans/RETURN-2026-11-08-pr90-review-chad.md`)
+RELAY 358 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 358 (#84 fix: the .neom run's corpus window; RETURN `Plans/RETURN-2026-11-08-quant-drift-fix-dexter.md`)
