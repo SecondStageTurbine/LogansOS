@@ -41,6 +41,10 @@ else
   exe="$clang"
 fi
 if [ -n "$link" ]; then
+  # clang hands an x86_64-unknown-none-elf link to the host's gcc driver,
+  # which finds ld.lld on PATH; put clang's own lld first.
+  lld=$("$clang" -print-prog-name=ld.lld)
+  case "$lld" in /*) PATH=$(dirname "$lld"):$PATH; export PATH ;; esac
   # shellcheck disable=SC2086
   exec $exe $inc "$@" -nostdlib -static -fuse-ld=lld \
     -Wl,--unresolved-symbols=ignore-all -Wl,-e,0
