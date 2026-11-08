@@ -41,9 +41,15 @@ Each is framed as one user turn with Arthur's chat template (system:
 
 The perplexity corpus is the **first 8,192 tokens** of WikiText-2 (raw) `test`,
 pinned by source revision and hashes. The text is downloaded, never committed
-(CC-BY-SA). NLL is summed over positions 4,096..8,190 predicting the next
-token (4,095 targets) — the same last-half window `llama-perplexity` evaluates
-at `-c 8192`.
+(CC-BY-SA).
+
+**PPL window.** NLL is summed on the last **2,048-token window** of that slice
+(tokens 6,144..8,191, BLAKE3 `1782216d…`), evaluating positions 1,024..2,046
+with 1,024 tokens of context. The 8,192-token slice is still the pinned parent
+(the KAT records both), but the full 8,192-token sequential pass is ~0.5 s/token
+in the scalar harness (≈70 min) and did not finish in this relay; the window is
+the honest measurement that did. All three models consume the same window, so
+the ΔPPL comparison is exact.
 
 ## Bars
 

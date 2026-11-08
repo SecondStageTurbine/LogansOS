@@ -316,11 +316,7 @@ impl Bars {
 /// Bar A: ours vs llama.cpp on the same Q4_K_M file. Bar B: Q4_K_M vs full
 /// precision. The bars are fixed in `Plans/DISPATCH-2026-11-08-relay-323-
 /// quant-drift-dexter.md`; this function only applies them.
-pub fn bars(
-    ours_vs_q4: &Comparison,
-    ours_vs_fp32: &Comparison,
-    boot_reply_equal: bool,
-) -> Bars {
+pub fn bars(ours_vs_q4: &Comparison, ours_vs_fp32: &Comparison, boot_reply_equal: bool) -> Bars {
     Bars {
         a_same_tokens: if ours_vs_q4.generated_all_equal() {
             Bar::Pass
@@ -663,7 +659,10 @@ pub fn markdown(
         if bars.a_pass() { "PASS" } else { "FAIL" }
     );
 
-    let _ = writeln!(out, "## Bar B — the shipped Q4_K_M vs full precision (F32)\n");
+    let _ = writeln!(
+        out,
+        "## Bar B — the shipped Q4_K_M vs full precision (F32)\n"
+    );
     let _ = writeln!(
         out,
         "- ΔPPL ≤ 10% relative: **{}** (Q4 {:.6}, F32 {:.6}, Δ {:.4}%)",

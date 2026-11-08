@@ -179,17 +179,29 @@ fn cmd_run(options: &BTreeMap<String, String>) -> Result<(), String> {
     }
 
     let corpus_path = required(options, "corpus")?;
+    let corpus_tokens = options
+        .get("corpus-tokens")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|_| "--corpus-tokens must be an integer".to_string())?
+        .unwrap_or(CORPUS_TOKENS);
+    let eval_start = options
+        .get("eval-start")
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .map_err(|_| "--eval-start must be an integer".to_string())?
+        .unwrap_or(CORPUS_EVAL_START);
     let corpus = read_u32_file(corpus_path)?;
-    if corpus.len() < CORPUS_TOKENS {
+    if corpus.len() < corpus_tokens {
         return Err(format!(
-            "corpus has {} tokens, need {CORPUS_TOKENS}",
+            "corpus has {} tokens, need {corpus_tokens}",
             corpus.len()
         ));
     }
-    let corpus = &corpus[..CORPUS_TOKENS];
-    let (nll_sum, nll_count) = model.nll_sum(corpus, CORPUS_EVAL_START);
-    run.corpus_tokens = CORPUS_TOKENS;
-    run.corpus_eval_start = CORPUS_EVAL_START;
+    let corpus = &corpus[..corpus_tokens];
+    let (nll_sum, nll_count) = model.nll_sum(corpus, eval_start);
+    run.corpus_tokens = corpus_tokens;
+    run.corpus_eval_start = eval_start;
     run.corpus_nll_sum = nll_sum;
     run.corpus_nll_count = nll_count;
     run.corpus_slice_blake3 = options.get("corpus-blake3").cloned().unwrap_or_default();
@@ -241,8 +253,8 @@ fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {
             .cloned()
             .unwrap_or_default(),
         corpus_text_sha256: meta.get("corpus_text_sha256").cloned().unwrap_or_default(),
-        corpus_tokens: CORPUS_TOKENS,
-        corpus_eval_start: CORPUS_EVAL_START,
+        corpus_tokens: ours.corpus_tokens,
+        corpus_eval_start: ours.corpus_eval_start,
         corpus_slice_blake3: ours.corpus_slice_blake3.clone(),
     };
 
