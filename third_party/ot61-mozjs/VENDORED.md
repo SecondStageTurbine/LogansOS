@@ -63,7 +63,7 @@ does the same. The crate is also what links those functions in, so the product b
 | | |
 |---|---|
 | Upstream | `https://github.com/hsivonen/encoding_c_mem`, crates.io `encoding_c_mem` 0.2.6 |
-| Fetched | `https://static.crates.io/crates/encoding_c_mem/encoding_c_mem-0.2.6.crate`, sha256 `3a80a16821fe8c7cab96e0c67b57cd7090e021e9615e6ce6ab0cf866c44ed1f0`, unpacked unmodified |
+| Fetched | `https://static.crates.io/crates/encoding_c_mem/encoding_c_mem-0.2.6.crate`, sha256 `3a80a16821fe8c7cab96e0c67b57cd7090e021e9615e6ce6ab0cf866c44ed1f0`, unpacked unmodified. A `.cargo-checksum.json` in cargo-vendor's format (each file's sha256, plus the `.crate`'s) is added, so `xtask vendor-verify` checks the copy. |
 | Licence | Apache-2.0 OR MIT (`LICENSE-APACHE`, `LICENSE-MIT`, `COPYRIGHT`) |
 | Freshness | 0.2.6 (2020-05-13) is the latest release. It's a small, finished binding by `encoding_rs`'s author, and Firefox still links it. Seat D maintains our copy. |
 
@@ -123,7 +123,7 @@ the job log and checked against that hash. The first copy was run 42518384967; t
 | `.gitattributes` (the repository's own) | Git metadata. It sets `text=auto eol=lf`, but upstream stores four files with CRLF in its own index. Our `vendor/.gitattributes` (`* -text`) keeps every blob byte-identical to upstream's |
 | `android-build`, `Cross.toml`, `shell.nix`, `publish_crates_io.py`, `PULL_REQUEST_TEMPLATE.md` | Upstream's release and CI tooling |
 | GPL- and LGPL-licensed files (Dexter's #10 design read, then a sweep of the whole copy): `third_party/python/yamllint` (GPL-3.0), `third_party/python/pylru` (GPL-2.0+), `python/mozbuild/mozbuild/action/tooltool.py` (GPL-2.0), `js/src/util/make_unicode.py` and `js/src/devtools/rootAnalysis/run_complete` (GPL-3.0), `third_party/python/setuptools/setuptools/_vendor/autocommand` (LGPL-3.0), and ICU's unused autoconf files `intl/icu/source/config.sub`, `config.guess`, `aclocal.m4` (GPL with the autoconf exception) | CLAUDE.md: GPL/LGPL code is never copied. None is on the generator's path: mach's site files list `yamllint` and `pylru` as `.pth` entries, which Python skips when the directory is absent, and `tooltool` and `autocommand` serve commands we never run |
-| 10 binaries: setuptools' Windows launchers (`*.exe`), `config/external/icu/data/icudt78l.dat` (ICU data; intl is off), `config/tests/test.manifest.jar`, and `python/mozperftest/mozperftest/tests/fetched_artifact.zip` | Executables or data we don't run or link |
+| 11 binaries: setuptools' Windows launchers (`*.exe`), `config/external/icu/data/icudt78l.dat` (ICU data; intl is off), `config/tests/test.manifest.jar`, and `python/mozperftest/mozperftest/tests/fetched_artifact.zip` | Executables or data we don't run or link |
 
 **Kept, and flagged for the PM:** `build/autoconf/config.sub` and `config.guess` are GPL-3.0 **with the autoconf
 exception**, which permits them in a configure system under any licence. configure runs them on the CI runners to
@@ -143,7 +143,8 @@ All licences were read from the files in the clone. The THINK's §2.2 is the ful
 
 | Directory | Licence |
 |---|---|
-| `js/src`, `js/public`, `mfbt`, `mozglue/misc` | MPL-2.0 |
+| `js/src`, `js/public`, `mfbt`, `mozglue/misc` | MPL-2.0, except `js/src/dtoa.c` (next row) |
+| `js/src/dtoa.c` | David M. Gay's dtoa / Lucent permissive notice (the file's header). On CLAUDE.md's list since J.c.'s ruling of 2026-11-08. Compiled through `js/src/util/DoubleToString.cpp:70` |
 | `mfbt/double-conversion`, `js/src/irregexp` | BSD-3-Clause, the V8 authors (`LICENSE`, `LICENSE.v8`) |
 | `modules/fdlibm` | BSD-2-Clause style, The FreeBSD Project (`modules/fdlibm/src/LICENSE`) |
 | `third_party/fmt` | MIT (`third_party/fmt/LICENSE`) |
