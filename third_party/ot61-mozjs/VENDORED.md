@@ -64,6 +64,19 @@ does the same. The crate is also what links those functions in, so the product b
 | Licence | Apache-2.0 OR MIT (`LICENSE-APACHE`, `LICENSE-MIT`, `COPYRIGHT`) |
 | Freshness | 0.2.6 (2020-05-13) is the latest release. It's a small, finished binding by `encoding_rs`'s author, and Firefox still links it. Seat D maintains our copy. |
 
+## `mozjs-extracted-crates/` is vendored too
+
+The first version of this copy left `mozjs-extracted-crates/` out as release tooling. That was wrong:
+`mozjs_normalizer_glue` is a required dependency of `mozjs-sys` (`String.prototype.normalize`), and the ICU4X crates
+it uses live there. It is now copied unmodified: 204 files, each checked against upstream's index.
+- **Licences:** MPL-2.0 (the `*_glue` crates and `unicode_bidi_ffi`), Unicode-3.0 (`icu_*`), Apache-2.0 OR MIT
+  (`utf8_iter`, `utf16_iter`).
+- **Built for C3c-1:** only `normalizer_glue` and what it uses (`icu_normalizer` and its data, `icu_collections`,
+  `utf16_iter`). The rest are intl-only.
+
+`normalizer_glue.h`, which upstream's `build.rs` writes with cbindgen, is in `generator/include/`. It's written by
+hand from the crate's `lib.rs` and `cbindgen.toml` until the generator produces it and checks the two match.
+
 ## libc++ with localization
 
 SpiderMonkey's headers and irregexp use `<ostream>`/`<sstream>`/`<iomanip>`, so it needs neo-crt's libc++ with
@@ -79,7 +92,7 @@ generator's compile probe points `neo-cc` (`NEO_CXX_CONFIG`) at a copy of `__con
 | `mozjs-sys/mozjs/third_party/gemmology/`, `third_party/xsimd/` | wasm intgemm only (`ENABLE_WASM_MOZ_INTGEMM`); wasm is off |
 | `mozjs-sys/mozjs/nsprpub/` | Standalone JS doesn't build NSPR unless `--enable-nspr-build` |
 | `.gitattributes` (the repository's own) | Git metadata. It sets `text=auto eol=lf`, but upstream stores four files with CRLF in its own index. Our `vendor/.gitattributes` (`* -text`) keeps every blob byte-identical to upstream's |
-| `mozjs-extracted-crates/`, `android-build`, `Cross.toml`, `shell.nix`, `publish_crates_io.py`, `PULL_REQUEST_TEMPLATE.md` | Upstream's release and CI tooling |
+| `android-build`, `Cross.toml`, `shell.nix`, `publish_crates_io.py`, `PULL_REQUEST_TEMPLATE.md` | Upstream's release and CI tooling |
 | 10 binaries: setuptools' Windows launchers (`*.exe`), `config/external/icu/data/icudt78l.dat` (ICU data; intl is off), `config/tests/test.manifest.jar`, and `python/mozperftest/mozperftest/tests/fetched_artifact.zip` | Executables or data we don't run or link |
 
 **Kept, and flagged:** three pure-Python wheels (`pip`, `setuptools`, `wheel`, all `py3-none-any`) under
