@@ -1692,11 +1692,19 @@ fn record7(settings: &settings_core::Settings, generation: u64) -> Vec<u8> {
         b.push(0);
         b.extend_from_slice(&settings.get(key).to_le_bytes());
     }
+    // Only the keys this build's `KEYS` lacks (Dexter #71 note 4): a build
+    // that unifies `setup-keys` into xtask already wrote 6 and 7 above.
+    let mut count = settings_core::KEYS.len();
     for id in [6u16, 7] {
+        if settings_core::KEYS.iter().any(|k| k.id() == id) {
+            continue;
+        }
         b.extend_from_slice(&id.to_le_bytes());
         b.extend_from_slice(&[2, 0]);
         b.extend_from_slice(&0u32.to_le_bytes());
+        count += 1;
     }
+    assert_eq!(count, 7, "record7: a seven-key record");
     let sum = blake3::hash(&b);
     b.extend_from_slice(&sum.as_bytes()[..settings_core::CHECKSUM_LEN]);
     b
@@ -1800,6 +1808,15 @@ fn setup_store(
             "a boot that only reads the store must write nothing",
         ),
         ("SETTINGS migrated", "the record exists"),
+        // Dexter #71 note 2: no write attempt at all, failed or resynced.
+        (
+            "SETTINGS write=",
+            "a boot that only reads the store attempts no write",
+        ),
+        (
+            "SETTINGS resync",
+            "a boot that only reads the store attempts no write",
+        ),
     ] {
         absent(scenario, &second, needle, why)?;
     }
