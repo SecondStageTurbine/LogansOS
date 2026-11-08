@@ -146,3 +146,7 @@ RELAY 325 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-325-328.
 RELAY 326 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-325-328.md | Section 326 (#73 re-check at `89127f21`; RETURN `Plans/RETURN-2026-11-08-pr73-recheck-dexter.md`)
 RELAY 327 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-325-328.md | Section 327 (#74 re-check at `8ccd6751`; RETURN `Plans/RETURN-2026-11-08-pr74-recheck-dexter.md`)
 RELAY 328 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-325-328.md | Section 328 (#71 first review at `50ca36e2`; RETURN `Plans/RETURN-2026-11-08-pr71-review-chad.md`)
+RELAY 329 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 329 (browser rungs #77–#80 bundle; RETURN `Plans/RETURN-2026-11-08-pr77-80-review-janus.md`)
+RELAY 330 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 330 (#81 Servo layout L0–L4; RETURN `Plans/RETURN-2026-11-08-pr81-review-jarvis.md`)
+RELAY 331 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 331 (#82 NeoFS cache index; RETURN `Plans/RETURN-2026-11-08-pr82-review-chad.md`)
+RELAY 332 | jarvis | GPT-5.6-Luna | medium | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 332 (#83 batch-plan stderr; RETURN `Plans/RETURN-2026-11-08-pr83-review-jarvis.md`)
