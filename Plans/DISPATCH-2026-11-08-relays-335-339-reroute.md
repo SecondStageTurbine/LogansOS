@@ -87,3 +87,21 @@ The PM decided §6.1 option (i) and §3.3 option (c) (comment on #10, 2026-11-08
   (single-threaded must be enforced, not assumed). Pass/fail plus line.
 - [ ] The next steps name a gate for each rung. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-08-pr10-design-dexter.md` on `dexter/pr10-design`.
+
+## Section 350: Dexter, #79 (the client grants a separate capability). Head `67525f8d`, stacked on #78. Rerouted from Codex relay 329 (its #79 part).
+Run the **#79** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#79 only: `git diff refs/pr/78...refs/pr/79`.
+RETURN: `Plans/RETURN-2026-11-08-pr79-review-dexter.md` on `dexter/pr79-review`.
+
+## Section 351: Dexter, #88 (neo-crt for SpiderMonkey: libc++ localization, the POSIX gap, stack protector). Head `1d77e6cb`.
+Design: C3a THINK §10 (`docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md`). 41 of its 54 files are under `third_party/ot61-crt`.
+- [ ] Every newly vendored file under `third_party/ot61-crt` has its licence recorded, and each licence is on
+  CLAUDE.md's allowed list. libc++'s `Apache-2.0 WITH LLVM-exception` is fine. Pass/fail per source.
+- [ ] Each of the 47 POSIX symbols the link probe listed is either implemented in `neo-crt` or a documented stub that
+  fails safely (an error return, never silent success). Name any stub that returns success without doing the work.
+- [ ] The stack protector: `__stack_chk_guard` is seeded from the kernel's RNG before any protected function runs,
+  and `__stack_chk_fail` stops the process. Pass/fail plus line.
+- [ ] Localization stays in the "C" locale: no locale files are read, and nothing fetches. Pass/fail plus line.
+- [ ] The smoke checks would fail on the old code for each new piece. Pass/fail plus line.
+- [ ] Off by default; other `neo-crt` users build unchanged. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr88-review-dexter.md` on `dexter/pr88-review`.

@@ -167,3 +167,5 @@ RELAY 346 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-
 RELAY 347 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 347 (#86 CLOCK_REALTIME from 1970; RETURN `Plans/RETURN-2026-11-08-pr86-review-dexter.md`)
 RELAY 348 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 348 (#78 = Section 329's #78 part, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr78-review-dexter.md`)
 RELAY 349 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 349 (#10 SpiderMonkey THINK design read; RETURN `Plans/RETURN-2026-11-08-pr10-design-dexter.md`)
+RELAY 350 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 350 (#79 = Section 329's #79 part, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr79-review-dexter.md`)
+RELAY 351 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 351 (#88 neo-crt for SpiderMonkey; RETURN `Plans/RETURN-2026-11-08-pr88-review-dexter.md`)
