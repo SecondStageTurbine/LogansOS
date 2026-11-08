@@ -1227,8 +1227,14 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
 ];
 
 /// OT-90 P5: type `shut down` at Home, Enter; Enter on the confirm card.
+///
+/// Jarvis's #14 review, item 1: the first card gets `a`, which must go back
+/// to Home without powering off; only the second card gets Enter.
 const OT90_POWER_MENU_STEPS: &[SerialScriptStep] = &[
     step(DESKTOP_INTRO_SHOWN_PROMPT, b"shut down"),
+    step(b"DESKTOP home keystroke ascii=110\n", b"\r"),
+    step(b"DESKTOP power confirm shown action=shut-down", b"a"),
+    step(b"DESKTOP power back to=home", b"shut down"),
     step(b"DESKTOP home keystroke ascii=110\n", b"\r"),
     step(b"DESKTOP power confirm shown action=shut-down", b"\r"),
 ];
@@ -11860,6 +11866,11 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
             scenario.name,
             &serial,
             &[
+                // A key other than Enter on the first card goes back to
+                // Home (Jarvis's #14 review, item 1); the second card's
+                // Enter powers off.
+                "DESKTOP power confirm shown action=shut-down",
+                "DESKTOP power back to=home",
                 "DESKTOP power confirm shown action=shut-down",
                 "DESKTOP power stage=power_off_requested",
                 "[ power ] shutdown: started kind=PowerOff keep=",
@@ -11869,6 +11880,16 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 "power: S5 PM1a=",
             ],
         )?;
+        // Nothing powered off before the card went back on `a`.
+        let back = serial.find("DESKTOP power back to=home");
+        let first_request = serial.find("DESKTOP power stage=power_off_requested");
+        if back.zip(first_request).is_none_or(|(b, r)| r < b) {
+            return Err(format!(
+                "`{}`: a power-off was requested before the card went back on a non-Enter key; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
         if serial.contains("shutdown: started kind=PowerOff keep=0 ") {
             return Err(format!(
                 "`{}`: the shutdown spared no process (neo-init's pid expected); serial={}",
