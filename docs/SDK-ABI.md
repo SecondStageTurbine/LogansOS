@@ -190,7 +190,7 @@ Notes:
 - `SYS_SPAWN` inherits only handles carrying `GRANT` (and a spawned own-directory cap); a `File` handle
   without it, or a `SystemStore`/`Installer` authority, is `EPERM`. `EAGAIN` = scheduler full or object
   quota; `ENOMEM` = a `SYS_SPAWN_BUDGETED` budget too small for the image.
-- `SYS_WRITE` fd 1 is permanently stdout (serial console, plus the framebuffer console when built).
+- `SYS_WRITE` fd 1 is permanently stdout (serial console, plus the framebuffer console when built), unless a stdout pipe was chosen at spawn (`SYS_SPAWN_STDIO`).
   fd 0 is read-only stdin and is `EBADF` to `SYS_WRITE`/`SYS_CLOSE`.
 - `SYS_READ` fd 0 is stdin when `serial-stdin` or `usb-hid` is compiled (image A has `usb-hid`).
 - `SYS_OPEN` root form: `rights` is the `FileRights` bit set — `READ=1<<0`, `WRITE=1<<1`,
@@ -353,7 +353,7 @@ Notes:
 - `SYS_WAIT_ANY` items are 8 bytes each (`u32 handle, u32 kind`); `deadline_ns` is absolute monotonic,
   and `n == 0` with `u64::MAX` (wait forever on nothing) is `EINVAL`.
 
-### Pipes (0x1BA–0x1BC)
+### Pipes (0x1BA–0x1BF)
 
 A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wiring.md`). Compiled under
 `pipe` (which needs `wait-multiplex`); without it the numbers return `ENOSYS`.
@@ -363,7 +363,9 @@ A byte pipe with per-handle endpoint counts (`docs/THINK-2026-11-02-l1a1-pipe-wi
 | 442 | 0x1BA | `SYS_PIPE_CREATE` | `capacity: u64` (512..=65536) | `read_end \| write_end << 32` | `EINVAL` (capacity), `ENOMEM` | `pipe` | **no** | `sys_pipe_create` |
 | 443 | 0x1BB | `SYS_PIPE_READ` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes read, 0 at EOF | `EAGAIN` (nonblocking, empty, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a read end), `ESRCH` (process retiring) | `pipe` | **no** | `sys_pipe_read` |
 | 444 | 0x1BC | `SYS_PIPE_WRITE` | `h: u32, buf: ptr, len, flags` (bit 0 `PIPE_NONBLOCK`) | bytes written (all of them when blocking; ≤ 512 bytes atomic) | `EPIPE` (no reader), `EAGAIN` (nonblocking, no room, or this side's waiter list full), `EFAULT`, `EBADF` (also: a sibling closed this end's last handle meanwhile), `EPERM` (not a write end), `ESRCH` | `pipe` | **no** | `sys_pipe_write` |
-
+| 445 | 0x1BD | `SYS_SPAWN_STDIO` | `name: ptr, len, handles: ptr, n, stdio: u64` (byte 0 stdin, byte 1 stdout, byte 2 term page: each an index into `handles` or `0xFF`; bits 24–63 zero) | as `SYS_SPAWN`: `pid \| process_handle << 32` | in this order: `SYS_SPAWN`'s pre-checks (`EINVAL`, `EFAULT`); the stdio word (`EINVAL`: a high bit, an index ≥ `n`, two roles on one index, a term index without `atrium-compositor-g1`); the name and each handle as `SYS_SPAWN` (`EINVAL`, `EBADF`, `EPERM`); each role's kind and rights (`EINVAL`); the spawn's own (`EAGAIN`, `ENOENT`, `ENOMEM`) | `pipe` | **no** | `sys_spawn_stdio`, `sys_spawn_stdio_word` |
+| 446 | 0x1BE | `SYS_STDIO_INFO` | `out: ptr, len` (8) | 0; writes stdin, stdout and term-page slots (LE `u16`, `0xFFFF` none or gone), then flags (bit 0: selected at spawn) | `EINVAL` (`len != 8`, checked first), `EFAULT` | `pipe` | yes | `sys_stdio_info`, `sys_stdio_info_raw` |
+| 447 | 0x1BF | `SYS_STDIO_TERM_MAP` | `role: u32` (as `SYS_BUFFER_MAP`) | the mapping's address | `EBADF` (no term page selected, or its handle has gone or been replaced), `SYS_BUFFER_MAP`'s errors, `ENOSYS` (no `atrium-compositor-g1`) | `pipe` | **no** | `sys_stdio_term_map` |
 Notes:
 - `SYS_PIPE_CREATE`'s return packs the read end's handle in bits 0–31 and the write end's in bits 32–63:
   handles `(0x11223344, 0x55667788)` return `0x5566778811223344`, little-endian bytes
@@ -380,6 +382,20 @@ Notes:
 - A read checks each chunk's destination before taking its bytes. If a sibling thread unmaps the buffer between
   that check and the copy, the read returns the bytes that reached the buffer (`EFAULT` only if none did), and
   the rest of that chunk (at most 512 bytes) is lost, as with stdin (`docs/concurrency-pitfalls.md` CP-99).
+- **Stdio chosen at spawn** (`docs/THINK-2026-11-08-l1a1-stdio-selection.md`). `SYS_SPAWN_STDIO` names the child's
+  stdin (a pipe read end with `READ`), stdout (a pipe write end with `WRITE`) and term page (a 4096-byte buffer
+  with `MAP_READ` and `MAP_WRITE`); each handle needs `USE`, and `GRANT` to be inherited at all. The word
+  `0x00FF_FFFF` (all none) gives the same child as `SYS_SPAWN`. Nothing is inherited implicitly: a child spawned
+  with `SYS_SPAWN` has no selection, whatever its parent has.
+- With a stdout selected, `SYS_WRITE` fd 1 is a blocking pipe write on it (atomic up to 512 bytes, `EPIPE` when
+  the reader is gone; `len == 0` is 0); with a stdin selected, `SYS_READ` fd 0 is a blocking pipe read on it,
+  ahead of the keyboard. Once the selected handle is closed, revoked or replaced, fd 0/1 are `EBADF` for good:
+  never the console. A non-blocking or timed read uses `SYS_PIPE_READ` or `SYS_WAIT_ANY` on the slot
+  `SYS_STDIO_INFO` reports.
+- `SYS_STDIO_INFO`'s byte oracle (`tools/pipe-logic-tests` `stdio_info_oracle`, against the kernel's encoder
+  and libneo's decoder): stdin in 0, stdout in 1, term page in 2, selected is `00 00 01 00 02 00 01 00`; the
+  same without a term page `00 00 01 00 ff ff 01 00`; selected with stdout since closed
+  `00 00 ff ff 02 00 01 00`; no selection `ff ff ff ff ff ff 00 00`.
 
 ### Installer (0x1C0–0x1C1)
 
@@ -504,7 +520,7 @@ Nested structs (no independent version, inherit the parent's versioning):
 | 0x100–0x17F | AI: tensors, models, inference (Bible Article 6.1) | **Formally reserved**; 0x100–0x123 populated |
 | 0x180–0x190 | Network: sockets, TCP, DNS, TLS, CSPRNG | Populated |
 | 0x1A0–0x1B9 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
-| 0x1BA–0x1BF | Pipes; 0x1BA–0x1BC populated under `pipe` | 0x1BD–0x1BF empty |
+| 0x1BA–0x1BF | Pipes; all populated under `pipe` (0x1BD–0x1BF: stdio chosen at spawn) | none |
 | 0x1C0–0x1C1 | Installer | Populated under `installer` |
 | 0xF00–0xF0A | Test-only probes | **Never ships** |
 | 0x4E, 0x1AC | Test-only probes in production ranges | **Never ships** |
