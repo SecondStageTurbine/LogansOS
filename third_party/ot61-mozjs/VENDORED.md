@@ -27,6 +27,13 @@ one thread, interpreter only, and build option (c).
     `third_party/function2` is under the Boost Software License 1.0, which is not on CLAUDE.md's vendoring list,
     so it isn't vendored. mozbuild checks that every exported file exists, so the export has to go too. Nothing
     in `js/src`, `mfbt` or `mozglue` includes `MoveOnlyFunction.h` (THINK §2.2).
+  - `0002-configure-neoplutarch-target.patch` teaches configure our triple, `x86_64-unknown-neoplutarch` (THINK
+    trap T6). `config.sub` passes it through, `split_triplet` maps it to kernel and OS `NeoPlutarch`, and the
+    kernel's preprocessor check is `__neoplutarch__`. Like WASI, it is accepted only for `--enable-project=js`.
+- `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
+  neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
+  `__neoplutarch__` predefined. Its link step resolves nothing, so configure's link-based checks are listed and
+  checked against neo-crt separately.
 - Nothing builds from this tree yet. The CI generator job (option (c), next) runs `configure` here with the network
   off, on the CI runners only (J.c., 2026-10-29), and commits its frozen outputs. The product build then runs `cc`
   over those outputs. No other build reads this tree, and the default kernel, image and userland are unchanged.

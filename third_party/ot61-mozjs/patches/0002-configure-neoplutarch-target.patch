@@ -1,0 +1,54 @@
+diff --git a/mozjs-sys/mozjs/build/moz.configure/init.configure b/mozjs-sys/mozjs/build/moz.configure/init.configure
+index 63049b6..1e960b6 100644
+--- a/mozjs-sys/mozjs/build/moz.configure/init.configure
++++ b/mozjs-sys/mozjs/build/moz.configure/init.configure
+@@ -529,6 +529,11 @@ def split_triplet(triplet, allow_wasi=False):
+         canonical_os = canonical_kernel = "SunOS"
+     elif os.startswith("wasi") and allow_wasi:
+         canonical_os = canonical_kernel = "WASI"
++    elif os == "neoplutarch" and allow_wasi:
++        # LogansOS (OT-61 C3c-1, trap T6). Standalone JS only, like WASI. The
++        # compiler is clang for x86_64-unknown-none-elf over neo-crt's headers,
++        # and it predefines __neoplutarch__ (the generator's CC wrapper).
++        canonical_os = canonical_kernel = "NeoPlutarch"
+     else:
+         raise ValueError("Unknown OS: %s" % os)
+ 
+@@ -647,6 +652,9 @@ def config_sub(shell, triplet):
+         "-windows-gnu": "-mingw32",
+         "-ios-sim": "-ios",
+     }
++    # config.sub doesn't know LogansOS; split_triplet does (patch 0002).
++    if triplet.endswith("-neoplutarch"):
++        return triplet
+     for check_suffix, replacement in munging.items():
+         if triplet.endswith(check_suffix):
+             suffix = check_suffix
+diff --git a/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py b/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py
+index 4e60004..97bf62e 100644
+--- a/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py
++++ b/mozjs-sys/mozjs/python/mozbuild/mozbuild/configure/constants.py
+@@ -43,6 +43,7 @@ class OS(EnumString):
+         "SunOS",
+         "WINNT",
+         "WASI",
++        "NeoPlutarch",
+     )
+ 
+ 
+@@ -58,6 +59,7 @@ class Kernel(EnumString):
+         "SunOS",
+         "WINNT",
+         "WASI",
++        "NeoPlutarch",
+     )
+ 
+ 
+@@ -147,6 +149,7 @@ kernel_preprocessor_checks = {
+     "SunOS": "__sun__",
+     "WINNT": "_WIN32 || __CYGWIN__",
+     "WASI": "__wasi__",
++    "NeoPlutarch": "__neoplutarch__",
+ }
+ 
+ assert sorted(kernel_preprocessor_checks.keys()) == sorted(Kernel.POSSIBLE_VALUES)

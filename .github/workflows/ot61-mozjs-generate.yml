@@ -53,6 +53,7 @@ jobs:
           python3 --version
           (command -v clang && clang --version | head -1) || echo "no clang on PATH"
           (command -v unshare && unshare --version) || echo "no unshare"
+          (command -v ld.lld && ld.lld --version) || echo "no ld.lld"
 
       # Trap T7/T8: no download, no pip. `unshare -n` gives configure a network
       # namespace with no interfaces; any fetch fails the step.
@@ -104,6 +105,50 @@ jobs:
           echo "== count: $(wc -l < "$RUNNER_TEMP/export-files.txt")"
           exit "$rc"
 
+      # Trap T6: our own target. Patch 0002 teaches configure the triple; the
+      # compiler is generator/neo-cc (neo-crt's compile line over its headers).
+      - name: configure + export for x86_64-unknown-neoplutarch (network off)
+        if: always()
+        run: |
+          set -uo pipefail
+          obj="$RUNNER_TEMP/obj-neo"
+          rm -rf "$obj" && mkdir -p "$obj"
+          cd "$obj"
+          gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
+          run() {
+            sudo unshare -n -- sudo -u "$(id -un)" env \
+              PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
+              NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang \
+              CC="$gen/neo-cc" CXX="$gen/neo-c++" HOST_CC=clang HOST_CXX=clang++ \
+              "$@"
+          }
+          run python3 "$MOZJS_SRC/mozjs-sys/mozjs/configure.py" \
+              --target=x86_64-unknown-neoplutarch \
+              --enable-project=js \
+              --disable-jit \
+              --without-intl-api \
+              --disable-jemalloc \
+              --disable-js-shell \
+              --disable-export-js \
+              --disable-shared-memory \
+              --disable-wasm-moz-intgemm \
+              --disable-shared-js \
+              --disable-tests \
+              --disable-debug \
+              --enable-optimize \
+              2>&1 | tee "$RUNNER_TEMP/configure-neo.log"
+          rc=${PIPESTATUS[0]}
+          echo "configure (neoplutarch) exit: $rc"
+          [ "$rc" = 0 ] || { tail -40 "$RUNNER_TEMP/configure-neo.log"; exit "$rc"; }
+          run make -C "$obj" -j"$(nproc)" export 2>&1 | tee "$RUNNER_TEMP/export-neo.log"
+          rc=${PIPESTATUS[0]}
+          echo "export (neoplutarch) exit: $rc"
+          echo "== js-confdefs.h (neoplutarch)"; cat "$obj/js/src/js-confdefs.h"
+          echo "== unified file count: $(find "$obj" -name 'Unified_*.cpp' | wc -l)"
+          echo "== host vs neoplutarch js-confdefs.h"
+          diff "$RUNNER_TEMP/obj/js/src/js-confdefs.h" "$obj/js/src/js-confdefs.h"
+          exit "$rc"
+
       - name: What came out (unified files, defines, source lists)
         if: always()
         run: |
@@ -130,6 +175,9 @@ jobs:
             ${{ runner.temp }}/configure.log
             ${{ runner.temp }}/export.log
             ${{ runner.temp }}/export-files.txt
+            ${{ runner.temp }}/configure-neo.log
+            ${{ runner.temp }}/export-neo.log
+            ${{ runner.temp }}/obj-neo/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/**/Unified_*.cpp
             ${{ runner.temp }}/obj/**/backend.mk
