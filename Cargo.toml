@@ -15,6 +15,7 @@ members = [
     "userland/vault-core",
     "userland/login-core",
     "userland/fetch-proto",
+    "userland/nmc1-client",
     "userland/settings-core",
     "userland/i18n-core",
     "userland/setup-core",
