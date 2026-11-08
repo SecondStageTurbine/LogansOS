@@ -315,7 +315,11 @@ classes the WM is nearest to, and why each is N-A or guarded:
 - **CP-57, a server-initiated rendezvous send:** the WM never sends first to an app. Each client's configure (a move
   that resizes, a snap) goes through that client's own seqlock mailbox, as Arthur's does today. That alone doesn't
   cover replies: a reply to an app that doesn't receive it parks the sender just the same (Chad #144 item 4). So every
-  WM send and grant to a client is a try (item 7). A1a's legs: an app that never receives its reply, and one that
+  WM send and grant to a client is a try (item 7). *As built in A1a (PR #15, Chad's re-checks):* every reply, the
+  probe app's handshake and handoff, and Arthur's permission lend and resume are tries against a deadline, with the
+  other clients' turns and the WM's own input served between retries. Three waits remain, by design: Arthur's own
+  handshake (`G`, `M`, the launch handoff) still blocks, before any other client exists; the launch proof is bounded
+  (3 s) with the pointer served; and Home and the permission prompt wait on the user, not on a client. A1a's legs: an app that never receives its reply, and one that
   never finishes its handshake; the WM serves another client and the chords throughout.
 - **CP-14, a lost wake between check and park:** applies once the loop parks (A3p). A client's request that arrives
   between the WM's last try-receive and its park must still wake it. `SYS_WAIT_ANY` checks every item's readiness

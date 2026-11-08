@@ -106,7 +106,29 @@ pub struct BlockDeviceIdentity {
     pub pci_bdf: Option<(u8, u8, u8)>,
 }
 
+/// OT-90 P3b-2 (K6): how a disk's controller is stopped before power-off,
+/// with registers only (it runs after K4, when no lock may be taken). The
+/// address is the controller's, so several namespaces or partitions on one
+/// controller name the same step.
+#[cfg(feature = "power-quiesce")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShutdownStep {
+    /// NVMe: a normal shutdown notification (CC.SHN), then CC.EN = 0.
+    Nvme { mmio: u64 },
+    /// virtio-blk: device status 0 (a reset).
+    VirtioBlk { common: u64 },
+    /// AHCI: stop the port's command and FIS engines.
+    AhciPort { port_base: u64 },
+}
+
 pub trait BlockDevice: Send + Sync {
+    /// OT-90 P3b-2: the step that stops this disk's controller at K6. Read
+    /// before K4 (it may take the driver's lock). `None`: nothing to stop.
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<ShutdownStep> {
+        None
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity;
     fn geometry(&self) -> BlockGeometry;
 
@@ -401,6 +423,16 @@ impl GuardedDevice {
         !self.arming().claims.is_empty()
     }
 
+    /// Whether this disk is armed, without judging it: a judgement not yet
+    /// made (or one stuck on a disk that stopped answering) reads as not
+    /// armed. The shutdown's K6 plan reads this; it never waits.
+    #[cfg(feature = "power-quiesce")]
+    fn armed_now(&self) -> bool {
+        self.arming
+            .get()
+            .is_some_and(|arming| !arming.claims.is_empty())
+    }
+
     /// Whether a write of `buffers` at `lba` lies in one armed extent. The
     /// first refused write is logged.
     fn write_allowed(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> bool {
@@ -494,6 +526,11 @@ impl GuardedDevice {
 }
 
 impl BlockDevice for GuardedDevice {
+    #[cfg(feature = "power-quiesce")]
+    fn shutdown_step(&self) -> Option<ShutdownStep> {
+        self.inner.shutdown_step()
+    }
+
     fn identity(&self) -> &BlockDeviceIdentity {
         self.inner.identity()
     }
@@ -616,6 +653,17 @@ pub fn writes_allowed(index: usize) -> Option<bool> {
     let device = registry.guards.get(index)?.clone();
     drop(registry);
     Some(device.writes_allowed())
+}
+
+/// OT-90 K6: whether device `index` is armed, never judging it (see
+/// `GuardedDevice::armed_now`). A disk never written was never judged, so K6
+/// leaves it alone; nor does a judgement stuck on a dead disk hold K6.
+#[cfg(feature = "power-quiesce")]
+pub fn armed_now(index: usize) -> Option<bool> {
+    let registry = REGISTRY.lock();
+    let device = registry.guards.get(index)?.clone();
+    drop(registry);
+    Some(device.armed_now())
 }
 
 struct Registry {

@@ -1299,6 +1299,8 @@ jobs:
           # OT-87 R4.4b: the intro Home with the installer (the Install chip).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)
+          # F8: Arthur with and without the clock answers (`arthur-clock`, the kill-switch).
+          (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home,arthur-clock -- -D warnings)
           # DI-1a's pointer WM: the polled, deadline-bounded LaunchCap proof
           # (Janus DS-1b) is compiled only here.
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-pointer -- -D warnings)

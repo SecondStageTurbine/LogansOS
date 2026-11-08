@@ -415,6 +415,11 @@ power-clean = ["power-control"]
 # After K4 the kernel prints to the UART only. Off: P3a's sequence, the
 # other CPUs live at K7, as before.
 power-stop-cpus = ["power-clean"]
+# OT-90 P3b-2 (K6): after K5, stop each disk the write guard armed (NVMe:
+# a shutdown notification; virtio-blk: a reset; AHCI: the port's engines),
+# clear every PCI function's Bus Master Enable, then turn the IOMMU off.
+# Registers only, planned before K4. Off: K4 and K5 only, as before.
+power-quiesce = ["power-stop-cpus"]
 # Aggregate-only kernel status syscall for neo-shell `status`. OFF by default;
 # when disabled SYS_SYSSTAT returns ENOSYS and exposes no observability surface.
 kernel-sysstat = []
@@ -480,6 +485,9 @@ neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"
 # a real-std process: libc checks against independent oracles, per-thread
 # errno, malloc from several threads.
 neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+# OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
+# caller-owned buffer, byte-compared with a hand-laid pattern.
+neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is
@@ -531,6 +539,15 @@ neo-test-wallclock-rtc-fallback = ["neo-test-wallclock-rtc", "rtc-epoch-force-in
 # input focus/route, SAK, deadline) so an idle desktop parks instead of
 # spinning. Off: the syscall does not exist (ENOSYS) and nothing else changes.
 wait-multiplex = []
+# OT-88 A0k: SYS_TRY_SEND and SYS_TRY_GRANT, a send and a grant that complete
+# only with the peer already parked in its receive (else EAGAIN), never
+# parking, so a WM can't be parked by a client that doesn't receive. Off: the
+# syscalls do not exist (ENOSYS) and nothing else changes.
+ipc-try-send = []
+# PR #15 review item 2: SYS_CLOSE also closes buffer, input-focus and process
+# handles (the WM's release of an ended client). Off: only files and channels
+# close, EBADF for the rest, exactly as before.
+close-object-handles = []
 # OT-22 test-only control: the channel send/grant/close paths do not fire
 # waiters, so an IPC-only wait can only end at its deadline. The
 # wait_any_core IPC leg must FAIL with it.
@@ -956,6 +973,10 @@ neo-test-di1-forward = ["neo-test", "atrium-pointer-forward", "neo-test-atrium-r
 # schedules, each forced on one CPU by an armed point (`focus::race`) that
 # runs Super+L (or a route read) between a route check and its effect.
 neo-test-lock-route-races = ["neo-test", "sak-lock-route", "neo-test-atrium-runtime"]
+# OT-88 A0k: SYS_TRY_SEND / SYS_TRY_GRANT complete only with a parked peer,
+# else EAGAIN with nothing changed; a 200-round race against a receiver on
+# CPU 1 delivers every message exactly once.
+neo-test-ipc-try-send = ["neo-test", "ipc-try-send"]
 # Jarvis (#61): a key repeat checked under one activation epoch is never
 # delivered under another (focus change, or Super+L, between the check and the
 # stage, or between the stage and the flush).
@@ -1126,6 +1147,30 @@ neo-test-desktop-wheel-boot = ["neo-test-desktop-pointer", "atrium-pointer-wheel
 # DI-1a: the DS-1 session with the B-ref pointer (WM-forwarded clicks, the
 # SAK escape, click-to-focus) over a real usb-mouse.
 neo-test-desktop-pointer-boot = ["neo-test-desktop-pointer"]
+# OT-88 A1a: the DS-1 session with the probe app as a second WM client, and
+# with it faulting; kernel-identical to desktop_pointer_boot (the WM's polling
+# loop needs SYS_TRY_RECV and the SAK), only the userland build differs.
+neo-test-desktop-apps-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-fault-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# The WM-liveness legs (app-model THINK §2.3 items 7, 8): a probe app that
+# never receives its reply, one that never finishes its handshake, and one
+# that exits between a request and the reply. A0k's tries keep
+# the WM (and Super+Tab) live through each.
+neo-test-desktop-apps-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-stall-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-drop-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 review: a client dead mid-handoff, slot reuse with a stale handle,
+# a flooding Arthur, and a held button across a front change and a death.
+neo-test-desktop-apps-handoff-death-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-reuse-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-grab-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 re-check item 3: Arthur hangs on a reply with the probe app live; he
+# alone is ended.
+neo-test-desktop-apps-arthur-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# PR #15 re-check 2: Arthur's untaken Yield reply is settled with the WM's
+# input still served.
+neo-test-desktop-apps-arthur-yield-hang-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # DS-1c: the DS-1 session whose Arthur blooms the read-only Lens (a second
 # client); kernel-identical to desktop_home_boot / desktop_pointer_boot, only
 # the userland build (`desktop-lens`) and the host-side capture checks differ.
@@ -2130,8 +2175,10 @@ neo-test-ot90-s5-durability = ["neo-test", "power-clean"]
 neo-test-ot90-straggler-forced = ["neo-test", "power-clean"]
 # Chad #199 item 2: a dirty NeoFS block on a disk that stops completing
 # requests; the shutdown's deadline must still reach S5. The control removes
-# the deadline (the run must then hang).
-neo-test-ot90-stuck-disk = ["neo-test", "power-clean"]
+# the deadline (the run must then hang). With `power-quiesce`, K4-K6 run
+# after the abandoned K2; the disk's guard judgement is stuck too, and K6's
+# plan must not wait on it.
+neo-test-ot90-stuck-disk = ["neo-test", "power-quiesce"]
 neo-test-ot90-stuck-disk-no-deadline = ["neo-test-ot90-stuck-disk"]
 # #267 (Chad 3b): an armed block log sink whose disk stops answering right
 # after K3; power-off and restart must still be reached (the sink is closed
@@ -2153,6 +2200,14 @@ neo-test-ot90-stop-shootdown = ["neo-test", "power-stop-cpus"]
 # frozen. K4 must end on its poll count, report the holdout, skip K5 and
 # still reach S5.
 neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
+# OT-90 P3b-2: power-off with K6 on a NeoFS disk written this boot.
+neo-test-ot90-quiesce = ["neo-test", "power-quiesce"]
+# Janus's #7 review, items 1 and 3: the same power-off, but the highest AP
+# ignores STOP and, in its NMI handler, takes the heap allocator's lock and
+# parks holding it; one bus master's Bus Master Enable reads back set. K6 must
+# keep the IOMMU on, and nothing after K4 may free heap memory (a drop there
+# spins on that lock): S5 must still come.
+neo-test-ot90-quiesce-heap-held = ["neo-test", "power-quiesce"]
 # The kill-switch scenario: built WITHOUT power-control; it proves the power
 # path is absent and the boot passes through debug-exit as today.
 neo-test-ot90-kill-switch-off = ["neo-test"]

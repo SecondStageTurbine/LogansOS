@@ -12,7 +12,7 @@ Every item J.c. reports from trying LogansOS goes here, with its owner and state
 | F5 | Shift+; types `;`, not `:` | Shifted punctuation missing from the keymap | Seat I | **Fixed** (#53, `b03abfba`) |
 | F6 | The numeric keypad does nothing | Keypad scancodes/usages and Num Lock unhandled | Seat I | **Fixed** (#63, `cab95981`) |
 | F7 | Dragging windows is laggy | Mostly compatibility mode (TCG, software CPU) with a software compositor; also full-frame redraws during a drag | Seat F (after #15) | Queued |
-| F8 | Arthur answers "what time is it" with a model disclaimer | The model has no clock; Arthur should answer time/date questions from the system clock (with the user's zone, F4) | Seat I (with F4) | PR #68 (Seat I): being built; next preview after this one |
+| F8 | Arthur answers "what time is it" with a model disclaimer | The model has no clock; Arthur should answer time/date questions from the system clock (with the user's zone, F4) | Seat I (with F4) | **Fixed, on main:** #68 (`08a3f30f`); in the preview of 2026-11-03 2:23 PM Eastern |
 | F9 | A wrong password at login is refused silently; J.c. wants "Incorrect password. Try again." | The login screen gives no failure feedback | Seat I | **Fixed, on main:** #62 (`d8217c05`); in the preview of 2026-11-03 6:36 AM Eastern |
 | F10 | Holding Backspace (or any key) doesn't repeat | The i8042 driver drops typematic repeats on purpose (FINDINGS trap 9) expecting software auto-repeat, which was never built | Seat I | **Fixed, on main:** #61 (`504d582f`); in the preview of 2026-11-03 6:36 AM Eastern |
 
@@ -24,7 +24,7 @@ after the tiered-gate stack lands.
 **J.c. (2026-11-02 midday):** he'll test F4/F8 (time zone), F10 (key repeat) and F9 (password message) together:
 the PM tells him once all three are on `main` **and** in a published preview. No interim updates on these.
 
-| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64), then Seat I builds | Design in review (Jarvis, relay 284); J.c. answered: hide single-option pages, every Try boot, Install via restart for now |
+| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64), then Seat I builds | **Design approved and merged** (#64, `dfa85c06`; Jarvis re-check relay 305 all PASS). Seat I builds it (rungs S1-S7b) after F8 (#68) |
 
 
 **Landing order (2026-11-03 03:45 UTC).** gate-plan puts #59, #62, #61 and #60 each in `full-alone` (they touch

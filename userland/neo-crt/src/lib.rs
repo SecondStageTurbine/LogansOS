@@ -15,6 +15,7 @@
 //!   `abort`, process exit;
 //! - `getenv` (the bundle has no environment), `__lock`/`__unlock` for the few
 //!   musl internals that take a lock, and the `atexit` family;
+//! - POSIX threads ([`pthread`], on std's threads and futex-backed locks);
 //! - the Itanium C++ ABI pieces libc++ expects from a C++ ABI library:
 //!   function-local static guards (`__cxa_guard_*`) and the pure/deleted
 //!   virtual traps. (No exceptions and no RTTI: libc++abi is not needed.)
@@ -23,6 +24,9 @@
 //! nothing else runs the static constructors.
 
 #![allow(clippy::missing_safety_doc)]
+
+pub mod pthread;
+mod seqcond;
 
 use core::ffi::{c_char, c_int, c_long, c_void};
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};
@@ -55,7 +59,7 @@ pub extern "C" fn ___errno_location() -> *mut c_int {
     __errno_location()
 }
 
-fn set_errno(v: c_int) {
+pub(crate) fn set_errno(v: c_int) {
     ERRNO.with(|e| e.set(v));
 }
 
@@ -215,8 +219,16 @@ pub unsafe extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, siz
 
 #[repr(C)]
 pub struct Timespec {
-    tv_sec: i64,
-    tv_nsec: c_long,
+    pub(crate) tv_sec: i64,
+    pub(crate) tv_nsec: c_long,
+}
+
+/// Zero on neo-crt's monotonic clock: the first read of it in this process.
+/// `clock_gettime(CLOCK_MONOTONIC)` and every monotonic deadline
+/// (`pthread_cond_timedwait`, `pthread_cond_clockwait`) count from here.
+pub(crate) fn monotonic_epoch() -> Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
 }
 
 const CLOCK_MONOTONIC: c_int = 1;
@@ -227,12 +239,11 @@ const CLOCK_MONOTONIC: c_int = 1;
 /// for the same reason).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn clock_gettime(clock: c_int, ts: *mut Timespec) -> c_int {
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
     if clock != CLOCK_MONOTONIC || ts.is_null() {
         set_errno(EINVAL);
         return -1;
     }
-    let d = EPOCH.get_or_init(Instant::now).elapsed();
+    let d = monotonic_epoch().elapsed();
     unsafe {
         ts.write(Timespec {
             tv_sec: d.as_secs() as i64,
