@@ -8878,6 +8878,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // has no desktop role.
         | Some("desktop-session")
         | Some("desktop-session-boot-test")
+        // OT-61 L5: the browser is its own module; neo-worker plays no role.
+        | Some("desktop-browser-boot-test")
         | Some("desktop-glass")
         | Some("reduce-transparency")
         | Some("desktop-glass-boot-test")
