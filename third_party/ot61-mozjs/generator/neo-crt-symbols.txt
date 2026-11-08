@@ -5,10 +5,11 @@
 # generator/neo-cc links configure's test programs against these alone, so a
 # link-based check passes only for a function we really have; the compile
 # probe lists what SpiderMonkey's objects need beyond them. Taken with llvm-nm
-# (defined, extern) from neo-crt at claude/ot61-c3a-localization 5a946bdf
-# (main 537aa9bb plus libc++ localization) and its compiler_builtins, Rust
+# (defined, extern) from neo-crt at claude/ot61-c3a-localization 1d77e6cb
+# (main 537aa9bb plus localization and the POSIX gap) and its compiler_builtins, Rust
 # symbols left out. Regenerate when neo-crt changes.
 _Exit
+_IO_ferror_unlocked
 _IO_getc
 _IO_putc
 _ZNKSt10bad_typeid4whatEv
@@ -2336,6 +2337,7 @@ __gehf2
 __gesf2
 __get_locale
 __getf2
+__gmtime_r
 __gnu_f2h_ieee
 __gnu_h2f_ieee
 __gtdf2
@@ -2462,6 +2464,7 @@ __rem_pio2_large
 __rem_pio2f
 __rem_pio2l
 __rsqrt_tab
+__secs_to_tm
 __seed48
 __shgetc
 __shlim
@@ -2472,6 +2475,8 @@ __signgam
 __sin
 __sindf
 __sinl
+__stack_chk_fail
+__stack_chk_guard
 __stderr_FILE
 __stderr_used
 __stdin_FILE
@@ -2544,6 +2549,7 @@ __unordhf2
 __unordsf2
 __unordtf2
 __uselocale
+__utc
 __wake
 __wcscoll_l
 __wcsxfrm_l
@@ -2598,6 +2604,7 @@ ceilf128
 ceilf16
 ceill
 clock_gettime
+close
 copysign
 copysignf
 copysignf128
@@ -2641,6 +2648,8 @@ fabsf
 fabsf128
 fabsf16
 fabsl
+fclose
+fcntl
 fcvt
 fdim
 fdimf
@@ -2651,6 +2660,8 @@ feclearexcept
 fegetenv
 fegetround
 feraiseexcept
+ferror
+ferror_unlocked
 fesetenv
 fesetround
 fetestexcept
@@ -2658,6 +2669,8 @@ fflush
 fflush_unlocked
 fgetwc
 fgetwc_unlocked
+fileno
+fileno_unlocked
 finite
 finitef
 floor
@@ -2700,25 +2713,32 @@ fmodf
 fmodf128
 fmodf16
 fmodl
+fopen
 fprintf
 fputc
 fputs
 fputs_unlocked
 fputwc
 fputwc_unlocked
+fread
+fread_unlocked
 free
 freelocale
 frexp
 frexpf
 frexpl
+fstat
 fwide
 fwrite
 fwrite_unlocked
 gcvt
 getc
 getenv
+getpid
 getwc
 getwc_unlocked
+gmtime
+gmtime_r
 hypot
 hypotf
 hypotl
@@ -2807,6 +2827,8 @@ llround
 llroundf
 llroundl
 localeconv
+localtime
+localtime_r
 log
 log10
 log10f
@@ -2846,11 +2868,13 @@ memccpy
 memchr
 memcmp
 memcpy
+memfd_create
 memmem
 memmove
 mempcpy
 memrchr
 memset
+mktime
 modf
 modff
 modfl
@@ -2872,6 +2896,7 @@ nexttowardl
 nl_langinfo
 nl_langinfo_l
 nrand48
+perror
 posix_memalign
 pow
 pow10
@@ -2921,6 +2946,7 @@ pthread_rwlock_trywrlock
 pthread_rwlock_unlock
 pthread_rwlock_wrlock
 pthread_self
+pthread_setname_np
 pthread_setspecific
 putc
 putchar
@@ -2935,6 +2961,7 @@ realloc
 remainder
 remainderf
 remainderl
+remove
 remquo
 remquof
 remquol
@@ -2965,6 +2992,7 @@ sched_yield
 seed48
 setlocale
 setstate
+setvbuf
 signgam
 significand
 significandf
@@ -3054,6 +3082,8 @@ tanl
 tgamma
 tgammaf
 tgammal
+time
+timegm
 toascii
 tolower
 tolower_l
