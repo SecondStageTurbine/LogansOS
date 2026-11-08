@@ -169,26 +169,30 @@ The whole rung is opt-in, like C3a: `mozjs` and its smoke are standalone crates 
 only by the `spidermonkey_smoke` scenario and the CI generator/build jobs. The default kernel and userland builds are
 bit-for-bit unchanged. JIT stays a cargo feature that **no** build enables; A1 stays reserved.
 
-## 6. Decisions
+## 6. Decisions (PM, 2026-11-08, on #10)
 
-1. **The wall clock (T1).** The kernel side is done: `SYS_CLOCK_GETTIME(CLOCK_REALTIME)` already returns
-   boot-relative time without `rtc-epoch` and the RTC's local wall time with it (OT-85). std's overlay keeps
-   `SystemTime::now()` unsupported on purpose (`time_neoplutarch.rs`: a process can't tell which of the two it got).
-   Two ways to stop `PRMJ_Now` aborting:
-   - **(i) contained, recommended (#21):** `neo-crt`'s `CLOCK_REALTIME` returns its process-relative count, read
-     from 1970. Time advances, and every date reads as 1970, never a wrong "real" one. std is untouched.
-   - **(ii) std:** let `SystemTime::now()` read the kernel's realtime, documented as boot-relative unless the
-     kernel has `rtc-epoch`. This changes C1.3's stated std behaviour.
-
-   Either way, real dates wait until the bundle can trust `rtc-epoch`. **PM's call** (J.c.'s if the PM wants it).
-2. **The build option (§3.3).** Recommendation (c). PM's call.
-3. **Order against rung 4.** C3c-1 needs only C3a, the same as rung 4 (SWGL, private #262). Both can run once #2
-   merges. They don't touch each other's files.
+1. **The wall clock (T1): option (i), contained.** `neo-crt`'s `CLOCK_REALTIME` returns its process-relative
+   count, read from 1970. Time advances, and every date reads as 1970, never a wrong "real" one. std is untouched,
+   so C1.3's stated std behaviour (`SystemTime::now()` unsupported) stands. The kernel side needs nothing:
+   `SYS_CLOCK_GETTIME(CLOCK_REALTIME)` already answers on `browser-runtime` kernels (OT-85). Real dates come later,
+   in one place, when the bundle can trust `rtc-epoch`. **#86** carries it (it replaces #21).
+   *Not taken:* (ii), letting std's `SystemTime::now()` read the kernel's realtime, which would change C1.3.
+2. **The build (§3.3): option (c), generate then freeze.**
+   - A CI generator job runs `configure` for our configuration with the **network off**, and commits the frozen
+     source list (the unified files themselves, T9), `js-confdefs.h` and the `bindgen` output (T10, pinned clang).
+   - The product build runs `cc` only and fetches nothing (the vendoring rule).
+   - The generator job **fails if its output differs from what's committed**, so the frozen files can't drift
+     silently.
+   - The generator, like every third-party build script, runs on the CI runners, never on a seat's machine
+     (J.c., 2026-10-29).
+3. **Order: C3c-1 goes ahead now, beside rung 4.** C3c-1 needs only C3a (landed); it touches none of rung 4's
+   files.
 
 ## 7. Next steps
 
-1. The PM reads this THINK (PR).
-2. Vendor `mozjs` at a pinned commit under `third_party/ot61-mozjs/` with the §2.1 licence table. Write the generator
-   job (option c) and commit its first outputs.
-3. `neo-crt` additions: `arc4random_buf` and the page-aligned `posix_memalign` check (#11), and the T1 clock (#21).
+1. ~~The PM reads this THINK~~: decided (§6).
+2. Vendor `mozjs` at the §2.2 pin (`servo/mozjs` @ `138c9470`) under `third_party/ot61-mozjs/`, with §2.2's
+   licence table. Write the generator job (option (c)) and commit its first outputs from the CI run.
+3. `neo-crt` additions: `arc4random_buf` and the page-aligned `posix_memalign` check (landed as #65), and the T1
+   clock (#86).
 4. `spidermonkey_smoke` and its gate (§3.2).
