@@ -194,6 +194,42 @@ jobs:
           c++filt < "$RUNNER_TEMP/link-gap.txt" | head -300
           exit "$rc"
 
+      # Bindgen (THINK #89 §1): upstream mozjs-sys's own `build` and
+      # `build_bindings`, run by generator/bindings against obj-neo. The tool
+      # is built with the network on (crates.io); it runs with it off.
+      # libclang parses with neo-cc's target flags (trap B1: the bindings
+      # must see __neoplutarch__, or JS::RootingContext's layout is wrong).
+      - name: bindgen for jsapi and jsglue (network off)
+        run: |
+          set -euo pipefail
+          obj="$RUNNER_TEMP/obj-neo"
+          gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
+          cfg="$RUNNER_TEMP/cxx-config"
+          export NEO_MOZJS_SYS="$MOZJS_SRC/mozjs-sys"
+          cargo build -q --release --manifest-path "$gen/bindings/Cargo.toml" \
+            --target-dir "$RUNNER_TEMP/bindgen-target"
+          tool="$RUNNER_TEMP/bindgen-target/release/neo-mozjs-bindgen"
+          libclang=$(ls -d /usr/lib/llvm-*/lib 2>/dev/null | sort -V | tail -1)
+          extra=$(NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang NEO_CXX_CONFIG="$cfg" \
+            "$gen/neo-c++" --neo-print-flags | tr '\n' ' ')
+          cd "$MOZJS_SRC/mozjs-sys"
+          sudo unshare -n -- sudo -u "$(id -un)" env \
+            PATH="$PATH" HOME="$HOME" NEO_OBJ="$obj" LIBCLANG_PATH="$libclang" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang NEO_CXX_CONFIG="$cfg" \
+            TARGET=x86_64-unknown-neoplutarch HOST=x86_64-unknown-linux-gnu \
+            OPT_LEVEL=2 DEBUG=false PROFILE=release OUT_DIR="$obj" \
+            CARGO_CFG_TARGET_OS=neoplutarch CARGO_CFG_TARGET_ARCH=x86_64 \
+            CARGO_CFG_TARGET_VENDOR=unknown CARGO_CFG_TARGET_ENV= \
+            CARGO_CFG_TARGET_POINTER_WIDTH=64 CARGO_CFG_TARGET_ENDIAN=little \
+            CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2 \
+            CXX_x86_64_unknown_neoplutarch="$gen/neo-c++" \
+            AR_x86_64_unknown_neoplutarch="$(ls /usr/lib/llvm-*/bin/llvm-ar | sort -V | tail -1)" \
+            CRATE_CC_NO_DEFAULTS=1 \
+            BINDGEN_EXTRA_CLANG_ARGS="$extra" \
+            "$tool" 2>&1 | tail -40
+          ls -la "$obj"/jsapi.rs "$obj"/gluebindings.rs "$obj"/libjsapi.a "$obj"/libjsglue.a
+          grep -c 'wasiRecursionDepth' "$obj/jsapi.rs" || { echo "trap B1: the bindings lack wasiRecursionDepth"; exit 1; }
+
       # The frozen outputs (option (c)): generator/freeze.py writes the
       # compile database and every generated file the compiles read, with
       # absolute paths as @SRC@/@OBJ@/@REPO@. With a committed copy

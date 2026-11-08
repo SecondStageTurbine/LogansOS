@@ -14,6 +14,7 @@ directory. OUT receives:
 - `dist_include.txt`: `dist/include`'s links, one `name -> target` a line.
 - `system_wrappers.txt`: the names in `dist/system_wrappers`. Every wrapper is
   the same four lines (checked here), so only the names are kept.
+- `bindings/`: bindgen's `jsapi.rs` and `gluebindings.rs` for our target.
 
 Absolute paths become `@SRC@`, `@OBJ@` and `@REPO@`, so the output doesn't
 depend on where the runner put things. The product build substitutes its own
@@ -187,6 +188,17 @@ def main():
             with open(dest, "w", encoding="utf-8") as fh:
                 fh.write(text)
             n_gen += 1
+
+    # Bindgen's output (the generator's bindgen step): upstream's
+    # jsapi.rs and gluebindings.rs for our target.
+    os.makedirs(os.path.join(out, "bindings"), exist_ok=True)
+    for name in ("jsapi.rs", "gluebindings.rs"):
+        path = os.path.join(obj, name)
+        if not os.path.exists(path):
+            sys.exit(f"{name} is missing: run the bindgen step before freezing")
+        text = tokenise_text(open(path, encoding="utf-8").read())
+        with open(os.path.join(out, "bindings", name), "w", encoding="utf-8") as fh:
+            fh.write(text)
 
     # dist/include: links only.
     links = []
