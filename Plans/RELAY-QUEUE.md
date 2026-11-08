@@ -150,3 +150,5 @@ RELAY 329 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-08-relays-329-33
 RELAY 330 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 330 (#81 Servo layout L0–L4; RETURN `Plans/RETURN-2026-11-08-pr81-review-jarvis.md`)
 RELAY 331 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 331 (#82 NeoFS cache index; RETURN `Plans/RETURN-2026-11-08-pr82-review-chad.md`)
 RELAY 332 | jarvis | GPT-5.6-Luna | medium | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 332 (#83 batch-plan stderr; RETURN `Plans/RETURN-2026-11-08-pr83-review-jarvis.md`)
+RELAY 333 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-333-334-quant-drift.md | Section 333 (quant drift: Q8_0 control C, per-position logits, divergence gaps; RETURN `Plans/RETURN-2026-11-08-quant-drift-control-dexter.md`)
+RELAY 334 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-333-334-quant-drift.md | Section 334 (quant-drift harness review, after 333; RETURN `Plans/RETURN-2026-11-08-quant-drift-review-jarvis.md`)
