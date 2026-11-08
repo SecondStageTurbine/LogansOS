@@ -140,7 +140,10 @@ def main():
         f
         for dp, _, fs in os.walk(obj)
         for f in fs
-        if f.endswith(".o") and not f.startswith(("host_", "conftest"))
+        if f.endswith(".o")
+        and not f.startswith(("host_", "conftest"))
+        # The bindgen step's own compiles (cc-rs names them <hash>-jsapi.o).
+        and not f.endswith(("jsapi.o", "jsglue.o"))
     ]
     print(f"freeze: {len(unified)} unified files; {len(objects)} objects built")
     if len(entries) != len(objects):
@@ -160,7 +163,9 @@ def main():
             if rel.startswith(SKIP_PREFIXES) or not name.endswith(GENERATED_SUFFIXES):
                 continue
             path = os.path.join(dirpath, name)
-            if os.path.islink(path) or name.startswith("conftest"):
+            # conftest*: configure's probes; flag_check*: cc-rs's (the
+            # bindgen step's jsapi/jsglue compile).
+            if os.path.islink(path) or name.startswith(("conftest", "flag_check")):
                 continue
             text = open(path, encoding="utf-8").read()
 
