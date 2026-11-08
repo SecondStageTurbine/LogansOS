@@ -3592,12 +3592,28 @@ mod apps {
     }
 
     /// OT-61 L5: the browser (`/modules/neo-browser`), spawned like the probe
-    /// app with its session channel as its only handle.
+    /// app with its session channel, plus thread authority: real std and
+    /// WebRender start threads, and `SYS_THREAD_CREATE` needs a
+    /// `BrowserRuntime` handle. It gets a copy of the session root's, derived
+    /// to `USE | THREAD_SPAWN` (no DERIVE or GRANT), so it can't pass the
+    /// authority on; our copy of the derived handle is closed after the spawn.
     #[cfg(feature = "atrium-apps-browser")]
     fn spawn_browser(session_client: Handle) -> Result<libneo::ProcessHandle, i32> {
-        libneo::sys_spawn_client("browser", &[session_client])
-            .map(|(_pid, process)| process)
-            .map_err(|_| 61)
+        use libneo::handle_info::HandleKind;
+        let root = (0..256u32)
+            .find(|&idx| {
+                libneo::sys_handle_info(idx).is_ok_and(|i| i.kind == HandleKind::BrowserRuntime)
+            })
+            .ok_or(62)?;
+        const THREAD_SPAWN: u8 = 1 << 0;
+        let runtime = libneo::sys_derive(
+            Handle(root),
+            libneo::CapRights::new(libneo::meta_rights::USE, THREAD_SPAWN),
+        )
+        .map_err(|_| 63)?;
+        let spawned = libneo::sys_spawn_client("browser", &[session_client, runtime]);
+        let _ = libneo::sys_close(libneo::FileHandle(runtime.0));
+        spawned.map(|(_pid, process)| process).map_err(|_| 61)
     }
 
     /// A module's surface namespace, buffer provenance and spawn.
