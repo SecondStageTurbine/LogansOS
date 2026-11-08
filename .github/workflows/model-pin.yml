@@ -89,5 +89,8 @@ jobs:
               b3=$(python3 -c 'import blake3,sys; h=blake3.blake3(); f=open(sys.argv[1],"rb"); [h.update(c) for c in iter(lambda: f.read(1<<20), b"")]; print(h.hexdigest())' "$p")
               echo "PIN $stem.$x bytes=$(stat -c %s "$p") blake3=$b3"
             done
-            target/release/neomc inspect "$d/$stem.neom" | head -40 || true
+            # The tensors' footprint once each is one buddy block (the RAM
+            # floor's tensor term, docs/B1-boot-module-model.md).
+            target/release/neomc inspect "$d/$stem.neom" > "$d/$stem.inspect"
+            echo "PIN $stem.neom $(grep -m1 '^tensors=' "$d/$stem.inspect")"
           done
