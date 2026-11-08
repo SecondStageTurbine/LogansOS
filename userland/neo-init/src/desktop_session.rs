@@ -1232,6 +1232,12 @@ pub fn run() -> i32 {
     // kernel has a wall-clock epoch.
     #[cfg(feature = "desktop-clock")]
     clock::start(&mut scene);
+    // F11 S1: the setup menu, after the clock is read and before sign-in
+    // (setup-menu THINK §2.1).
+    #[cfg(feature = "setup-menu")]
+    if let Err(code) = setup::run(&mut scene, &home_focus) {
+        return code;
+    }
     // OT-66 L1: sign-in comes first (it shows Home with its own card).
     #[cfg(feature = "login")]
     if let Err(code) = login::gate(&mut scene, &home_focus) {
@@ -5334,6 +5340,10 @@ mod motion {
 /// OT-66 L1: sign-in, before Home.
 #[cfg(feature = "login")]
 mod login;
+
+/// F11 S1: the first-boot setup menu, before sign-in.
+#[cfg(feature = "setup-menu")]
+mod setup;
 
 /// OT-66 L2: lock and unlock, in a signed-in session.
 #[cfg(feature = "login")]
