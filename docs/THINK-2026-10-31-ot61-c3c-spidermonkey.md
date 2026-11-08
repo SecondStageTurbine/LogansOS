@@ -73,8 +73,8 @@ checked against.
 | `modules/fdlibm` | 77 | BSD-2-Clause style, The FreeBSD Project (`modules/fdlibm/src/LICENSE`) | yes | yes (`Math`) |
 | `mozglue/misc` | 90 | MPL-2.0 | yes | yes (timestamps, stack walking helpers) |
 | `memory` (mozjemalloc) | 56 | MPL-2.0 | yes | **no**: `js_standalone` without `--enable-jemalloc` (`js/moz.configure:1436`); GC memory goes through `neo-crt`'s `malloc`/`posix_memalign` (trap T3) |
-| `third_party/fmt` | — | MIT (`third_party/fmt/LICENSE`) | yes | likely (`mfbt/DbgMacro.h` and `mozglue/moz.build` reference it) |
-| `third_party/function2` | — | BSL-1.0 (`third_party/function2/LICENSE.txt`) | **check**: Boost is permissive, but not on CLAUDE.md's list | likely (`mfbt/MoveOnlyFunction.h`) |
+| `third_party/fmt` | — | MIT (`third_party/fmt/LICENSE`) | yes | yes: `mozglue/moz.build:32` builds it, and `mfbt/Casting.h`, `mfbt/BitSet.h`, `mozglue/misc/Debug.h` include it |
+| `third_party/function2` | — | BSL-1.0 (`third_party/function2/LICENSE.txt`) | **check**: Boost is permissive, but not on CLAUDE.md's list | expected **no**: header-only, reached only through `mfbt/MoveOnlyFunction.h`, which nothing in `js/src` includes |
 | `js/src/zydis` | 101 | MIT (`Zydis/LICENSE`, `Zycore/LICENSE`) | yes | **no**: only with `JS_JITSPEW` (`js/src/moz.build:351`) |
 | `third_party/gemmology`, `third_party/xsimd` | — | MIT; BSD-3-Clause | yes | **no**: wasm intgemm only (`ENABLE_WASM_MOZ_INTGEMM`) |
 | `modules/zlib/src` | 2 (`zlib.h`, `zconf.h`) | zlib licence (`zlib.h` header) | yes | headers only; the zlib code itself comes from outside (`libz-sys`, already vendored for L0, or `libz-rs`) |
@@ -82,11 +82,11 @@ checked against.
 | `intl` (ICU and friends) | 1,883 | ICU/Unicode | yes | **no**: intl off |
 | `python`, `third_party/python`, `build`, `testing` | — | MPL-2.0 and the Python packages' own | n/a | **no**: generator-time only, never in the product build |
 
-**The one to decide:** `function2` is under the **Boost Software License 1.0**. BSL-1.0 is OSI-approved and
-permissive: no copyleft, notice kept in source copies only. It is not on CLAUDE.md's vendoring list (MIT,
-Apache-2.0, BSD, zlib, ISC, MPL-2.0, Unicode-3.0, Unlicense/CC0). If `mfbt/MoveOnlyFunction.h` is in the C3c-1
-source list (the generator will say), either J.c. adds BSL-1.0 to the list, or `MoveOnlyFunction` is given a small
-target-cfg replacement. Everything else that links is MPL-2.0, BSD or MIT.
+**One to watch:** `function2` is under the **Boost Software License 1.0** (OSI-approved, permissive, no copyleft).
+BSL-1.0 is not on CLAUDE.md's vendoring list (MIT, Apache-2.0, BSD, zlib, ISC, MPL-2.0, Unicode-3.0,
+Unlicense/CC0). Nothing in `js/src` includes `MoveOnlyFunction.h`, so it should stay out of the C3c-1 build and is
+not vendored. If the generator's list ever includes it, that build stops and the question goes to J.c.: add BSL-1.0
+to the list, or give `MoveOnlyFunction` a target-cfg replacement. Everything that links is MPL-2.0, BSD or MIT.
 
 ## 3. The design: SpiderMonkey's WASI port, re-targeted, in two steps
 
