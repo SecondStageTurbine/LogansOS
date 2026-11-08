@@ -1,0 +1,93 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Arthur's model pin, measured (Plans/DISPATCH-2026-11-08-arthur-q8.md, step 1).
+# Downloads the upstream GGUFs at the pinned revision, checks each against its
+# LFS oid (read from the raw pointer file and the repository tree), imports
+# each with neomc exactly as scripts/preview/build-in-container.sh does, and
+# prints the sizes and BLAKE3 digests that kernel/src/boot_model_logic.rs and
+# xtask pin. The Q4_K_M import is the control: it must reproduce today's pins
+# (485,489,152 bytes, a32e4a1b...), or the procedure itself is wrong.
+#
+# Network-on (Hugging Face), so it is never a gate job: it runs when this file
+# changes and by hand, and nothing waits on it.
+name: Model pin
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/model-pin.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_RETRY: "10"
+  MODEL_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  MODEL_REV: 9217f5db79a29953eb74d5343926648285ec7e67
+  # The two files measured: the control (today's pin) and the new one.
+  CONTROL_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
+  CONTROL_SHA256: 74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
+  NEW_FILE: qwen2.5-0.5b-instruct-q8_0.gguf
+
+jobs:
+  measure:
+    name: Import and measure the 0.5B GGUFs
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The LFS oids at the pinned revision
+        run: |
+          set -euo pipefail
+          d=target/model-pin; mkdir -p "$d"
+          base="https://huggingface.co/${MODEL_REPO}"
+          curl -fsSL --retry 5 -o "$d/tree.json" "https://huggingface.co/api/models/${MODEL_REPO}/tree/${MODEL_REV}"
+          for f in "$CONTROL_FILE" "$NEW_FILE"; do
+            echo "== raw LFS pointer: $f"
+            curl -fsSL --retry 5 "$base/raw/${MODEL_REV}/$f" | tee "$d/$f.pointer"
+          done
+          python3 - "$d" <<'EOF'
+          import json, os, sys
+          d = sys.argv[1]
+          tree = {e["path"]: e for e in json.load(open(f"{d}/tree.json"))}
+          for name in (os.environ["CONTROL_FILE"], os.environ["NEW_FILE"]):
+              lfs = tree[name]["lfs"]
+              ptr = dict(l.split(" ", 1) for l in open(f"{d}/{name}.pointer").read().splitlines() if " " in l)
+              assert ptr["oid"] == "sha256:" + lfs["oid"], (name, ptr["oid"], lfs["oid"])
+              assert int(ptr["size"]) == lfs["size"], (name, ptr["size"], lfs["size"])
+              print(f"PIN {name} lfs_oid={lfs['oid']} size={lfs['size']}")
+              open(f"{d}/{name}.sha256", "w").write(f"{lfs['oid']}  {d}/{name}\n")
+          assert tree[os.environ["CONTROL_FILE"]]["lfs"]["oid"] == os.environ["CONTROL_SHA256"], "the control's oid moved"
+          EOF
+
+      - name: Download both and check their SHA-256
+        run: |
+          set -euo pipefail
+          d=target/model-pin
+          base="https://huggingface.co/${MODEL_REPO}"
+          for f in "$CONTROL_FILE" "$NEW_FILE"; do
+            curl -fSL --retry 5 -o "$d/$f" "$base/resolve/${MODEL_REV}/$f"
+            sha256sum -c "$d/$f.sha256"
+          done
+          ls -l "$d"
+
+      - name: Import with neomc and measure
+        run: |
+          set -euo pipefail
+          d=target/model-pin
+          pip install --quiet blake3
+          cargo build -p neomc --release
+          for f in "$CONTROL_FILE" "$NEW_FILE"; do
+            stem="${f%.gguf}"
+            target/release/neomc import "$d/$f" -o "$d/$stem.neom" --vocab-output "$d/$stem.vocab"
+            cargo xtask vocab-bin "$d/$stem.vocab" "$d/$stem.vocb"
+            for x in neom vocab vocb; do
+              p="$d/$stem.$x"
+              b3=$(python3 -c 'import blake3,sys; h=blake3.blake3(); f=open(sys.argv[1],"rb"); [h.update(c) for c in iter(lambda: f.read(1<<20), b"")]; print(h.hexdigest())' "$p")
+              echo "PIN $stem.$x bytes=$(stat -c %s "$p") blake3=$b3"
+            done
+            target/release/neomc inspect "$d/$stem.neom" | head -40 || true
+          done
