@@ -548,10 +548,10 @@ index b46c57f..53c6944 100644
  
  #  define RESERVE_FAILED 0
 diff --git a/mozjs-sys/mozjs/mfbt/RandomNum.cpp b/mozjs-sys/mozjs/mfbt/RandomNum.cpp
-index 42ce50f..391dc05 100644
+index 42ce50f..cfc8922 100644
 --- a/mozjs-sys/mozjs/mfbt/RandomNum.cpp
 +++ b/mozjs-sys/mozjs/mfbt/RandomNum.cpp
-@@ -27,7 +27,7 @@ extern "C" BOOLEAN NTAPI RtlGenRandom(PVOID RandomBuffer,
+@@ -27,10 +27,16 @@ extern "C" BOOLEAN NTAPI RtlGenRandom(PVOID RandomBuffer,
  
  #if defined(ANDROID) || defined(XP_DARWIN) || defined(__DragonFly__) ||    \
      defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
@@ -560,6 +560,15 @@ index 42ce50f..391dc05 100644
  #  define USE_ARC4RANDOM
  #endif
  
++#if defined(__neoplutarch__)
++// LogansOS: neo-crt defines arc4random_buf, but musl's <stdlib.h> doesn't
++// declare it.
++extern "C" void arc4random_buf(void* aBuffer, size_t aLength);
++#endif
++
+ #if defined(__linux__)
+ #  include <linux/random.h>  // For GRND_NONBLOCK.
+ #  include <sys/syscall.h>   // For SYS_getrandom.
 diff --git a/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h b/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
 index 596c0ca..80d5b85 100644
 --- a/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
