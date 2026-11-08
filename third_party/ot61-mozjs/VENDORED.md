@@ -98,12 +98,15 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
 - **`obj/`:** the generated headers and unified sources, 96 files. Among them are `js-confdefs.h`, `js-config.h`,
   `selfhosted.out.h` and the `jit/*Generated.h` tables.
 - **`dist_include.txt`:** the 396 links of `dist/include`, as `name -> source`.
+- **`bindings/`:** bindgen's `jsapi.rs` and `gluebindings.rs` for our target. The generator's bindgen step makes them
+  by running upstream `mozjs-sys`'s own `build_bindings`, with libclang from the runner's `clang` and `neo-cc`'s target
+  flags. The step fails if `jsapi.rs` lacks `wasiRecursionDepth` (trap B1).
 - **`system_wrappers.txt`:** the 1,061 names in `dist/system_wrappers`. Each wrapper is the same four lines
   (`#pragma GCC system_header`, `visibility push(default)`, `#include_next`, `visibility pop`).
 
-Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The first copy is from run 42518384967 at
-`6b70a914`: a gzip'd tar with sha256 `e29faac123278a3b69bd3d748a20226a741fd3bbc0204f5e430ae6cd56f63975`, taken from
-the job log and checked against that hash.
+Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The current copy is from run 42526473839 at
+`25a237bd`: a gzip'd tar with sha256 `f7c67711e5c7e80072af593da32b3ce97d7b62d76068526db0057335c8f90dd8`, taken from
+the job log and checked against that hash. The first copy was run 42518384967; the rest of the set is unchanged since.
 
 ## Left out of the copy
 
