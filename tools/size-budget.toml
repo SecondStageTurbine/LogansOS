@@ -23,5 +23,5 @@ reason = "image A kernel .text: 1,483,919 B measured 2026-10-31 + 32 KiB for cod
 # (485,489,152 B) and vocab (7,990,862 B) are staged from out-of-git files whose
 # sizes the kernel pins at boot, so they cannot drift and are not in this
 # budget. Grows when the kernel, userland or staged licences grow.
-ceiling_bytes = 154572800
-reason = "image A ISO (model-less): 153,524,224 B measured 2026-10-31 + 1 MiB for ISO metadata/alignment."
+ceiling_bytes = 156463104
+reason = "image A ISO (model-less): 155,414,528 B measured 2026-11-08 on main 0ecb5b11 + 1 MiB for ISO metadata/alignment. Raised from 154,572,800 (153,524,224 B on 2026-10-31): +1,890,304 B (+1.2%) from main's merges since 76a1f03f (37 userland commits, not attributed one by one; among them the time-zone table, the WM client table, Arthur's clock answers, the shared keymap and the boot-time summary)."
