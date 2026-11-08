@@ -73,9 +73,9 @@ mod tests {
             }
         }
 
-        fn push(&mut self, block: u64) {
+        fn push(&mut self, block: u64) -> bool {
             self.entries.push(Entry(block));
-            self.index.pushed(&self.entries);
+            self.index.pushed(&self.entries)
         }
 
         fn remove(&mut self, slot: usize) {
@@ -162,6 +162,31 @@ mod tests {
         m.remove(0);
         assert_eq!(m.index.find(5), Some(0));
         assert!(m.index.matches(&m.entries));
+    }
+
+    /// The cache's invariant: one entry per block. A second push of a block
+    /// is reported (the kernel asserts on it), and the index keeps the first.
+    #[test]
+    fn a_double_insert_is_reported_and_the_first_slot_kept() {
+        let mut m = Model::new();
+        assert!(m.push(5));
+        assert!(m.push(9));
+        assert!(!m.push(5));
+        assert_eq!(m.index.find(5), Some(0));
+        assert_eq!(m.index.len(), 2);
+        assert_ne!(m.index.len(), m.entries.len());
+    }
+
+    #[test]
+    fn one_entry_per_block_keeps_the_lengths_equal() {
+        let mut m = Model::new();
+        for b in [3, 1, 4, 15, 9, 2, 6] {
+            assert!(m.push(b));
+            assert_eq!(m.index.len(), m.entries.len());
+        }
+        m.remove(2);
+        m.retain_outside(9, 16);
+        assert_eq!(m.index.len(), m.entries.len());
     }
 
     #[test]

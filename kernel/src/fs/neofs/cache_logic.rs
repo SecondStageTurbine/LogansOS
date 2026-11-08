@@ -72,15 +72,28 @@ impl BlockIndex {
         self.position(block).ok().map(|at| self.slots[at].1)
     }
 
-    /// After `entries.push(..)`: index the new last entry, unless an earlier
-    /// entry already holds its block (that one stays first).
-    pub(super) fn pushed<T: BlockKey>(&mut self, entries: &[T]) {
-        if let Some(last) = entries.len().checked_sub(1) {
-            let block = entries[last].block_key();
-            if let Err(at) = self.position(block) {
+    /// After `entries.push(..)`: index the new last entry. False if an
+    /// earlier entry already holds its block, which then stays first. The
+    /// cache holds one entry per block (every push follows a miss under the
+    /// same lock), so for the cache a false is a bug: it asserts this.
+    pub(super) fn pushed<T: BlockKey>(&mut self, entries: &[T]) -> bool {
+        let Some(last) = entries.len().checked_sub(1) else {
+            return false;
+        };
+        let block = entries[last].block_key();
+        match self.position(block) {
+            Ok(_) => false,
+            Err(at) => {
                 self.slots.insert(at, (block, last));
+                true
             }
         }
+    }
+
+    /// How many blocks are indexed: `entries.len()` while the cache holds one
+    /// entry per block.
+    pub(super) fn len(&self) -> usize {
+        self.slots.len()
     }
 
     /// After `entries.remove(slot)` of an entry for `block`: every later slot

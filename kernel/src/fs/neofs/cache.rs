@@ -412,7 +412,7 @@ impl NeoFsBlockCache {
             {
                 let inner = &mut *inner;
                 inner.index.rebuild(&inner.blocks);
-                check_index(inner);
+                check_index(inner, None);
             }
         }
         // On: each one counts as an eviction, so a miss that read it before
@@ -428,7 +428,7 @@ impl NeoFsBlockCache {
                     {
                         let inner = &mut *inner;
                         inner.index.removed(&inner.blocks, idx, block);
-                        check_index(inner);
+                        check_index(inner, None);
                     }
                     record_eviction(&mut inner, block);
                 } else {
@@ -806,23 +806,39 @@ fn find_cached_block(inner: &CacheInner, block: u64) -> Option<usize> {
     }
 }
 
-/// After a change to `blocks`, in the crosscheck scenario: the index is what
-/// a rebuild would make of it. Elsewhere nothing (a rebuild per change would
-/// cost more than the scan it replaces).
+/// After a change to the index (a push, a removal, a rebuild; never a hit,
+/// which changes nothing in it). Debug-assertion kernels check only what the
+/// change touched, in O(log n): one entry per cached block, and a pushed
+/// block's slot. The crosscheck scenarios also compare the whole index with a
+/// rebuild (O(n log n), so not per change elsewhere: it would make the write
+/// path quadratic again in the debug build `install_fresh_4k` times).
 #[cfg(feature = "neofs-cache-index")]
 #[inline(always)]
-fn check_index(inner: &CacheInner) {
+fn check_index(inner: &CacheInner, pushed: Option<(u64, usize)>) {
+    debug_assert_eq!(
+        inner.index.len(),
+        inner.blocks.len(),
+        "neofs cache index: not one entry per cached block"
+    );
+    if let Some((block, slot)) = pushed {
+        debug_assert_eq!(
+            inner.index.find(block),
+            Some(slot),
+            "neofs cache index: pushed block {} not at its slot",
+            block
+        );
+    }
     #[cfg(feature = "neofs-cache-index-crosscheck")]
     assert!(
         inner.index.matches(&inner.blocks),
         "neofs cache index out of step with the cache ({} blocks)",
         inner.blocks.len()
     );
-    let _ = inner;
+    let _ = (inner, pushed);
 }
 
 fn find_or_insert_full_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
-    if let Some(idx) = find_cached_block(&inner, block) {
+    if let Some(idx) = find_cached_block(inner, block) {
         return idx;
     }
 
@@ -843,8 +859,11 @@ fn push_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
     });
     #[cfg(feature = "neofs-cache-index")]
     {
-        inner.index.pushed(&inner.blocks);
-        check_index(inner);
+        let indexed = inner.index.pushed(&inner.blocks);
+        // One entry per block: every push follows a miss under this lock.
+        debug_assert!(indexed, "neofs cache: block {} pushed twice", block);
+        let _ = indexed;
+        check_index(inner, Some((block, inner.blocks.len() - 1)));
     }
     inner.blocks.len() - 1
 }
@@ -896,7 +915,7 @@ fn evict_locked(inner: &mut CacheInner) {
         #[cfg(feature = "neofs-cache-index")]
         {
             inner.index.removed(&inner.blocks, victim, block);
-            check_index(inner);
+            check_index(inner, None);
         }
         record_eviction(inner, block);
     }
