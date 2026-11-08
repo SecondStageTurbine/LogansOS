@@ -21,7 +21,7 @@ bench = false
 # OT-61 L5: the browser as a desktop-session client (one window, the oracle
 # page). Same closure and lock as layout-smoke.
 [[bin]]
-name = "neo-browser"
+name = "browser"
 path = "src/browser.rs"
 test = false
 bench = false

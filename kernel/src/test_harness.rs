@@ -581,6 +581,9 @@ const SCENARIO: &str = "desktop_drag_cross_control_boot";
 /// OT-88 A1a: the pointer session with the probe app as a second client.
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const SCENARIO: &str = "desktop_apps_boot";
+/// OT-61 L5: the first page in a LogansOS window.
+#[cfg(feature = "neo-test-desktop-browser-boot")]
+const SCENARIO: &str = "desktop_browser_boot";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]
 const SCENARIO: &str = "desktop_apps_fault_boot";
 #[cfg(feature = "neo-test-desktop-apps-hang-boot")]
@@ -660,6 +663,8 @@ const DESKTOP_PASS: &str = "desktop_drag_cross_boot=ok view=home drag=probe_app 
 #[cfg(feature = "neo-test-desktop-drag-cross-control-boot")]
 const DESKTOP_PASS: &str =
     "desktop_drag_cross_control_boot=ok view=home drag=probe_app damage=union";
+#[cfg(feature = "neo-test-desktop-browser-boot")]
+const DESKTOP_PASS: &str = "desktop_browser_boot=ok view=home clients=arthur,browser page=oracle_640x400 screen=hand_derived_frame";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]

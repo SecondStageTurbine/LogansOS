@@ -247,6 +247,13 @@ const INSTALL_ATRIUM_BAD_PIN_MID_REL: &str = "target/neo-test/install_atrium_bad
 const INSTALL_ATRIUM_BAD_PIN_CAPTURE_REL: &str = "target/neo-test/install_atrium_bad_pin.ppm";
 const DESKTOP_CLOCK_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_clock_boot.ppm";
 const DESKTOP_APPS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_boot.ppm";
+/// OT-61 L5: the end view (Home, after Arthur's second line) and the capture
+/// with the browser in front, which the pixel check reads.
+const DESKTOP_BROWSER_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_browser_boot.ppm";
+const DESKTOP_BROWSER_BOOT_MID_REL: &str = "target/neo-test/desktop_browser_boot_front.ppm";
+/// The browser's first turn: the WM has shown its surface and handed it the
+/// keyboard (it answers `K` only after `show` presented its frame).
+const DESKTOP_BROWSER_FRONT_PROMPT: &[u8] = b"[ neo-browser ] turn: discarded";
 const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_fault_boot.ppm";
 const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
 const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
@@ -665,6 +672,19 @@ const DESKTOP_APPS_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"PROBEAPP key code=5 count=2", &[HMP_SUPER_TAB]),
     step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
 ];
+/// OT-61 L5: Arthur's line `open browser` launches the browser; once it is in
+/// front (its first turn) the screen is captured; Super+Tab gives the front
+/// back to Arthur, whose second line ends the session.
+const DESKTOP_BROWSER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open browser\n",
+    ),
+    step(DESKTOP_BROWSER_FRONT_PROMPT, &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
+];
 /// OT-88 A1a, per-client faults: the probe app exits 7 after its first key.
 /// The WM ends that client alone and gives the front back to Arthur, whose
 /// next line is exactly `again`.
@@ -946,7 +966,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 48] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 49] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1080,6 +1100,17 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 48] = [
             "desktop_drag_cross_control_boot",
             DESKTOP_DRAG_CROSS_BOOT_HID_STEPS,
             DESKTOP_DRAG_CROSS_CONTROL_BOOT_CAPTURE_REL,
+            b"again\n",
+        )
+    },
+    // OT-61 L5: the first page in a LogansOS window.
+    DesktopScenario {
+        mid: Some((DESKTOP_BROWSER_FRONT_PROMPT, DESKTOP_BROWSER_BOOT_MID_REL)),
+        long_timeout: true,
+        ..desktop(
+            "desktop_browser_boot",
+            DESKTOP_BROWSER_BOOT_HID_STEPS,
+            DESKTOP_BROWSER_BOOT_CAPTURE_REL,
             b"again\n",
         )
     },
@@ -4036,6 +4067,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_drag_cross_control_boot",
         feature: "neo-test-desktop-drag-cross-control-boot",
         user_feature: Some("desktop-drag-cross-control-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 L5: the first page in a LogansOS window. Arthur opens the
+        // browser (a real-std WM client); its 640x400 surface, on screen,
+        // is every pixel of the hand-derived frame.
+        name: "desktop_browser_boot",
+        feature: "neo-test-desktop-browser-boot",
+        user_feature: Some("desktop-browser-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8321,6 +8362,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
         "swgl_grant_smoke" => &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
         "browser_io_smoke" => &[BROWSER_IO_BIN, BROWSER_IO_PEER_BIN],
+        "desktop_browser_boot" => &[BROWSER_BIN],
         _ => &[],
     }
 }
@@ -8737,6 +8779,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-grab-boot-test") => {
             vec!["atrium-apps", "desktop-home-boot-test"]
         }
+        // OT-61 L5: the same, with the browser's slot.
+        Some("desktop-browser-boot-test") => {
+            vec!["atrium-apps-browser", "desktop-home-boot-test"]
+        }
         // M2: neo-init drives the encrypted scenario, so it needs the marker
         // feature that selects the falsifiable driver (arthur_memory_encrypted_tests).
         // Previously this was empty, so the M2 scenario ran the default no-op driver
@@ -9053,6 +9099,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-probe",
+        ],
+        // OT-61 L5: Home's Arthur, who opens the browser on its line.
+        Some("desktop-browser-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-browser",
         ],
         Some("desktop-apps-flood-boot-test") => vec![
             "desktop-session-boot-test",
@@ -9450,6 +9502,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&LAYOUT_SMOKE_BIN) {
             build_standalone_std_smoke(LAYOUT_SMOKE_BIN, &[LAYOUT_SMOKE_BIN], LAYOUT_SMOKE_DIR)?;
         }
+        if std_real_staged_bins().contains(&BROWSER_BIN) {
+            build_standalone_std_smoke(LAYOUT_SMOKE_BIN, &[BROWSER_BIN], LAYOUT_SMOKE_DIR)?;
+        }
         if std_real_staged_bins().contains(&WEBRENDER_BIN) {
             build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
         }
@@ -9495,7 +9550,7 @@ const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
 /// OT-61 L5: the browser as a desktop-session client, staged as
 /// `/modules/neo-browser` (module `"browser"`, libneo's `MODULE_BROWSER`).
-const BROWSER_BIN: &str = "neo-browser";
+const BROWSER_BIN: &str = "browser";
 /// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
 /// the same crate (`src/atrium.rs`).
 const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
@@ -21309,6 +21364,36 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "PR #15 item 4: a held button reaches only the client in front",
         )?;
     }
+    if scenario.name == "desktop_browser_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP launchcap minted client=arthur",
+                "DESKTOP arthur line=open browser",
+                "DESKTOP apps client connected client=2 value=1",
+                "DESKTOP apps front client=2 via=launch",
+                "DESKTOP apps front client=0",
+                "DESKTOP arthur line=again\n",
+            ],
+            "OT-61 L5: the browser connects as client 2 and takes the front, then Arthur has his",
+        )?;
+        // The browser's own lines (another process, so not ordered against the
+        // WM's): its frame in its buffer, then each handshake step.
+        for needle in [
+            "[ neo-browser ] ok(83) the page rendered into the Atrium buffer",
+            "[ neo-browser ] ok(84) every pixel of the 640x400 buffer == the hand-derived frame, top row first",
+            "[ neo-browser ] ok(96) the WM took the first frame",
+            "[ neo-browser ] ready",
+            "DESKTOP arthur browser opened",
+            "DESKTOP apps client ended client=2 value=0",
+        ] {
+            require_serial_contains(scenario, observed, needle, "OT-61 L5: the browser")?;
+        }
+        let serial = read_serial(observed)?;
+        check_browser_capture(scenario, &serial)?;
+        require_framebuffer_capture(scenario, DESKTOP_BROWSER_BOOT_CAPTURE_REL)?;
+    }
     if scenario.name == "desktop_apps_boot" || scenario.name == "desktop_apps_fault_boot" {
         let fault = scenario.name == "desktop_apps_fault_boot";
         let ended = if fault {
@@ -24035,6 +24120,84 @@ fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
             differ.join("; ")
         ))
     }
+}
+
+/// OT-61 L5: the browser's client rect on the 1920x1080 screen, worked by hand
+/// from `atrium_desktop::layout(1920, 1080, 640, 400)` (Tier::Full):
+/// - the frame is 642 x 430 (640 + 2 borders; 400 + a 28 px title + 2 borders);
+/// - the workfield is right of the 72 px spine and below the 32 px craft bar,
+///   x 72, y 32, 1848 x 1048;
+/// - the frame is centred in it at x = 72 + (1848 - 642) / 2 = 675 and
+///   y = 32 + (1048 - 430) / 2 = 341;
+/// - the client starts one border and the title below: (676, 370).
+const BROWSER_CLIENT: (usize, usize, usize, usize) = (676, 370, 640, 400);
+
+/// OT-61 L5: the screendump taken with the browser in front shows, in its
+/// client rect, exactly the hand-derived frame of the oracle page: white,
+/// except `#b`'s 2 px black border ring on its border box x 8..122,
+/// y 90..144 (client coordinates; CSS 2.1 §10.3.3, as worked in
+/// `neo-static-page/src/oracle.rs`). Then the rect's FNV-1a over its RGB
+/// bytes, row by row, must equal the hash the browser logged over its own
+/// buffer: the compositor's copy is the browser's frame.
+fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), String> {
+    let (capture, raster) = load_capture(
+        scenario,
+        DESKTOP_BROWSER_BOOT_MID_REL,
+        ("browser capture", "browser capture", ", not 1920x1080"),
+    )?;
+    let (cx, cy, cw, ch) = BROWSER_CLIENT;
+    let expected = |x: usize, y: usize| -> u32 {
+        let inside = |x0, y0, x1, y1| x >= x0 && x < x1 && y >= y0 && y < y1;
+        if inside(8, 90, 122, 144) && !inside(10, 92, 120, 142) {
+            0x00_0000
+        } else {
+            0xFF_FFFF
+        }
+    };
+    let mut wrong = 0usize;
+    let mut first = None;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for y in 0..ch {
+        for x in 0..cw {
+            let got = rgb(&raster, cx + x, cy + y);
+            if got != expected(x, y) {
+                wrong += 1;
+                first.get_or_insert((x, y, got));
+            }
+            for b in [(got >> 16) as u8, (got >> 8) as u8, got as u8] {
+                hash ^= u64::from(b);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
+    if let Some((x, y, got)) = first {
+        return Err(format!(
+            "`{}` browser client rect: {wrong} pixels differ from the hand-derived frame; first at client ({x},{y}) = screen ({},{}): 0x{got:06x}, want 0x{:06x}; capture={}",
+            scenario.name,
+            cx + x,
+            cy + y,
+            expected(x, y),
+            capture.display()
+        ));
+    }
+    let logged = serial
+        .lines()
+        .find_map(|l| l.split("[ neo-browser ] frame fnv1a64=").nth(1))
+        .map(|h| h.trim().to_string())
+        .ok_or_else(|| {
+            format!(
+                "`{}` the browser never logged its frame hash",
+                scenario.name
+            )
+        })?;
+    if logged != format!("{hash:016x}") {
+        return Err(format!(
+            "`{}` the screen's client rect hashes {hash:016x}, the browser's buffer {logged}; capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    Ok(())
 }
 
 fn load_capture(
