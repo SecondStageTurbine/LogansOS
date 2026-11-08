@@ -176,3 +176,7 @@ RELAY 355 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-355-358.
 RELAY 356 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 356 (#88 re-check at `849d2325`; RETURN `Plans/RETURN-2026-11-08-pr88-recheck-dexter.md`)
 RELAY 357 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 357 (#90 Arthur to Q8_0; RETURN `Plans/RETURN-2026-11-08-pr90-review-chad.md`)
 RELAY 358 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-355-358.md | Section 358 (#84 fix: the .neom run's corpus window; RETURN `Plans/RETURN-2026-11-08-quant-drift-fix-dexter.md`)
+RELAY 359 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 359 (#85 item 4 re-check at `0757ab02`; RETURN `Plans/RETURN-2026-11-08-pr85-recheck-jarvis.md`)
+RELAY 360 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 360 (#81 re-check at `5f70ce34`; RETURN `Plans/RETURN-2026-11-08-pr81-recheck-jarvis.md`)
+RELAY 361 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 361 (#87 re-check at `4f7c4e75`; RETURN `Plans/RETURN-2026-11-08-pr87-recheck-dexter.md`)
+RELAY 362 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 362 (#89 re-check at `f52503e7`; RETURN `Plans/RETURN-2026-11-08-pr89-recheck-dexter.md`)
