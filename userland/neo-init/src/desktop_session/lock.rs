@@ -104,6 +104,10 @@ pub struct Screen {
     /// Keys are dropped until then (the backoff).
     wait_until: u64,
     note: Option<&'static str>,
+    /// F9: the note once the backoff ends: [`WRONG`] after a wrong try
+    /// here, none for a delay carried from earlier tries (Dexter's
+    /// login-followups re-check, item 3).
+    after_wait: Option<&'static str>,
     /// The lock's own frame is being composed and presented.
     pub(super) painting: bool,
     /// Unlocks so far (the boot test ends after its last one).
@@ -326,7 +330,8 @@ fn show(scene: &mut Scene) -> Result<(), i32> {
     } else {
         now_ns().saturating_add(u64::from(delay) * 1_000_000_000)
     };
-    s.note = (delay != 0).then_some("Too many tries. Wait a moment.");
+    s.note = (delay != 0).then_some(WAIT);
+    s.after_wait = None;
     if delay != 0 {
         Line::new()
             .s(b"LOCK backoff wait_s=")
@@ -352,7 +357,7 @@ fn tick(scene: &mut Scene) -> Result<(), i32> {
     scene.pointer_idle();
     if scene.lock.wait_until != 0 && now_ns() >= scene.lock.wait_until {
         scene.lock.wait_until = 0;
-        scene.lock.note = Some(WRONG);
+        scene.lock.note = scene.lock.after_wait.take();
         paint(scene, card_damage(scene))?;
         log_prompt(b"password");
     }
@@ -386,7 +391,10 @@ fn tick(scene: &mut Scene) -> Result<(), i32> {
     }
 }
 
-const WRONG: &str = "That password isn't right.";
+/// F9 (J.c., 2026-11-02): his words. It says nothing about which part was
+/// wrong: there is only the password here.
+const WRONG: &str = login::WRONG_PASSWORD;
+const WAIT: &str = "Too many tries. Wait a moment.";
 
 /// Check the field's password against the account's record. `Ok(true)`:
 /// unlocked.
@@ -424,10 +432,17 @@ fn attempt(scene: &mut Scene, focus: &HomeFocus) -> Result<bool, i32> {
     if delay == 0 {
         s.note = Some(WRONG);
         paint(scene, card_damage(scene))?;
+        #[cfg(feature = "desktop-session-boot-test")]
+        Line::new()
+            .s(b"LOCK note=\"")
+            .s(WRONG.as_bytes())
+            .s(b"\" row=last\n")
+            .emit();
         log_prompt(b"password");
     } else {
         s.wait_until = now_ns().saturating_add(u64::from(delay) * 1_000_000_000);
-        s.note = Some("Too many tries. Wait a moment.");
+        s.note = Some(WAIT);
+        s.after_wait = Some(WRONG);
         paint(scene, card_damage(scene))?;
         Line::new()
             .s(b"LOCK backoff wait_s=")
@@ -523,8 +538,9 @@ fn card_damage(scene: &Scene) -> Rect {
 /// Paint `damage` of the lock screen into the lock's plane and present it.
 fn paint(scene: &mut Scene, damage: Rect) -> Result<(), i32> {
     let mut rows: Vec<String> = alloc::vec![String::from("Locked"), login::name()];
-    rows.extend(scene.lock.note.map(String::from));
     rows.push(String::from("Enter your password to unlock."));
+    // F9: the note is the last row, the one nearest the field.
+    rows.extend(scene.lock.note.map(String::from));
     let mut plane = scene.lock.plane.take();
     let line = core::mem::take(&mut scene.lock.line);
     let (shown, line) = paint_view(scene, &mut plane, rows, line, true, damage);

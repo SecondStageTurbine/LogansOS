@@ -25,6 +25,7 @@ use std::time::{Duration, Instant};
 #[path = "../../../kernel/src/drivers/block/gpt_logic.rs"]
 #[allow(dead_code)]
 mod gpt_logic;
+mod tzdata;
 /// Zenbook lane: the block write guard's sealed markers (scratch sector, log
 /// sink header), one source of truth with the kernel.
 #[path = "../../../kernel/src/drivers/block/write_guard_logic.rs"]
@@ -215,6 +216,20 @@ const INSTALL_ATRIUM_NO_BUNDLE_CAPTURE_REL: &str = "target/neo-test/install_atri
 const INSTALL_ATRIUM_BAD_PIN_MID_REL: &str = "target/neo-test/install_atrium_bad_pin_mid.ppm";
 const INSTALL_ATRIUM_BAD_PIN_CAPTURE_REL: &str = "target/neo-test/install_atrium_bad_pin.ppm";
 const DESKTOP_CLOCK_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_clock_boot.ppm";
+const DESKTOP_APPS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_boot.ppm";
+const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_fault_boot.ppm";
+const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
+const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
+const DESKTOP_APPS_DROP_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_drop_boot.ppm";
+const DESKTOP_APPS_HANDOFF_DEATH_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_apps_handoff_death_boot.ppm";
+const DESKTOP_APPS_REUSE_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_reuse_boot.ppm";
+const DESKTOP_APPS_FLOOD_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_flood_boot.ppm";
+const DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_grab_boot.ppm";
+const DESKTOP_APPS_ARTHUR_HANG_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_apps_arthur_hang_boot.ppm";
+const DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_apps_arthur_yield_hang_boot.ppm";
 const DESKTOP_CLOCK_BOOT_MID_REL: &str = "target/neo-test/desktop_clock_boot_mid.ppm";
 const V1_CONSOLE_LIVENESS_CAPTURE_REL: &str = "target/neo-test/v1_console_liveness.ppm";
 
@@ -482,6 +497,41 @@ const DESKTOP_HOME_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     CHIP0_AGAIN,
     AGAIN_ENTER,
 ];
+/// F10: `desktop_home_boot`'s script, with a held Backspace first.
+const DESKTOP_HOME_REPEAT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    // F10 (J.c., 2026-11-02): Backspace held 5 s on Home's field empties
+    // all 13 bytes (software auto-repeat: 500 ms, then up to 30/s; under
+    // TCG each repaint takes ~150 ms and a repeat waits for the last to be
+    // read, so ~8/s); one press alone would leave 12. Then the intent is
+    // typed again.
+    step(
+        b"DESKTOP home keystroke ascii=112\n",
+        &[
+            HMP_HOLD_BACKSPACE_5S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+            HMP_PAUSE_1S,
+        ],
+    ),
+    step(
+        b"DESKTOP home keystroke backspace len=0\n",
+        b"hello desktop",
+    ),
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP view switch=window residue_pixels=0", b"x\x08"),
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"\x1bzz\x08\x08",
+    ),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
 
 /// DI-1a: DS-1's script with the pointer exercised while Arthur holds the
 /// keyboard after its first answer: Super+Escape (the SAK) moves the keyboard
@@ -519,6 +569,177 @@ const DESKTOP_POINTER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     CHIP1_TAB,
     CHIP0_AGAIN,
     AGAIN_ENTER,
+];
+/// OT-88 A1a: the probe app as a second client. After Arthur's first answer
+/// the line `open probe app` launches it through his LaunchCap and the WM
+/// brings it to the front; `ab` are its keys (count=2). Super+Tab gives the
+/// front back to Arthur, whose next line is exactly `again` (no key of the
+/// probe app's reached him); his second answer ends the session, and the
+/// probe app with it.
+const DESKTOP_APPS_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"ab"),
+    step(b"PROBEAPP key code=5 count=2", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
+];
+/// OT-88 A1a, per-client faults: the probe app exits 7 after its first key.
+/// The WM ends that client alone and gives the front back to Arthur, whose
+/// next line is exactly `again`.
+const DESKTOP_APPS_FAULT_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"a"),
+    step(b"DESKTOP apps front client=0 via=client-ended", b"again\n"),
+];
+/// OT-88 A1a, the WM never blocks on a client (app-model THINK §2.3 item 7):
+/// the probe app sends a commit after its first key and never receives the
+/// reply. Super+Tab while that reply is owed still takes the front back to
+/// Arthur; the probe app is ended as hung, and Arthur's next line is `again`.
+const DESKTOP_APPS_HANG_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"a"),
+    step(b"PROBEAPP ignoring reply", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps client hung client=1", b"again\n"),
+];
+/// The probe app never sends its `CREATE`: the launch fails after the
+/// handshake's deadline, Arthur says so, and his next line is `again`.
+const DESKTOP_APPS_STALL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP arthur probe app refused", b"again\n"),
+];
+/// The probe app exits between its commit and the reply: only it ends, and
+/// the front goes back to Arthur.
+const DESKTOP_APPS_DROP_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"a"),
+    step(b"DESKTOP apps front client=0 via=client-ended", b"again\n"),
+];
+/// PR #15 review item 2, a client dead mid-handoff: the probe app exits on
+/// the handoff's `K`, after the route was swapped to it. The route and the
+/// front go back to Arthur, whose next line is exactly `again` (with the
+/// route left on the dead client, his keys would never arrive).
+const DESKTOP_APPS_HANDOFF_DEATH_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(
+        b"DESKTOP apps front client=0 via=handoff-failed",
+        b"again\n",
+    ),
+];
+/// PR #15 review item 2, slot reuse: the probe app exits after its first key
+/// (exit 7), is reaped and released, and Arthur opens it again into the same
+/// slot, a new generation; its key reaches the new instance, which exits too.
+const DESKTOP_APPS_REUSE_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"a"),
+    step(
+        b"DESKTOP apps client ended client=1 value=7",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"b"),
+    step(b"DESKTOP apps client ended client=1 value=7", b"again\n"),
+];
+/// PR #15 review item 3, a flooding client: once the probe app is open,
+/// Arthur commits back to back (`atrium-apps-arthur-flood`). The probe app
+/// still gets its keys and Super+Tab is still served while he floods.
+const DESKTOP_APPS_FLOOD_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", b"ab"),
+    step(b"PROBEAPP key code=5 count=2", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP arthur flood done commits=", b"again\n"),
+];
+/// PR #15 review item 4, a held button across a front change and a death:
+/// a press in Arthur's client held while he opens the probe app (the move
+/// after the switch is consumed), then a press held on the probe app while
+/// its key ends it (the move after its death is consumed). Then `again`.
+const DESKTOP_APPS_GRAB_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP arthur answer composited round=1", &[0x03]),
+    step(
+        b"DESKTOP pointer forward client=arthur phase=down",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps front client=1 via=launch", &[0x05]),
+    step(
+        b"DESKTOP pointer grab consumed reason=front-changed",
+        &[0x04, 0x03],
+    ),
+    step(b"DESKTOP pointer forward client=arthur phase=down", b"a"),
+    step(b"DESKTOP apps front client=0 via=client-ended", &[0x05]),
+    step(
+        b"DESKTOP pointer grab consumed reason=front-changed",
+        b"\x04again\n",
+    ),
+];
+/// PR #15 re-check item 3, Arthur's failure is his alone: once the probe app
+/// is open (and in front), Arthur sends a commit and never receives its reply
+/// (`atrium-apps-arthur-hang`). After the reply deadline the WM ends him
+/// alone; the probe app keeps its turns and gets its key (it exits 7 on it),
+/// and the session goes back to Home.
+const DESKTOP_APPS_ARTHUR_HANG_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(b"DESKTOP apps arthur failed code=24", b"a"),
+];
+/// PR #15 re-check 2: while the WM settles a reply Arthur never takes (his
+/// Yield, `atrium-apps-arthur-yield-hang`), its own input is still served: a
+/// Super+Tab typed then switches the front before the reply's deadline ends
+/// him. Then the probe app is in front again, gets its key and exits 7.
+const DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(
+        b"DESKTOP arthur hanging yield=never-received",
+        &[HMP_SUPER_TAB],
+    ),
+    step(b"DESKTOP apps arthur failed code=24", b"a"),
 ];
 /// DI-1b resize: desktop_pointer_boot's script, then (after the clamped
 /// grab, the cursor at 332,462) to the moved frame's bottom-right corner
@@ -647,7 +868,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 25] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -679,7 +900,7 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 25] = [
         band: Some(true),
         ..desktop(
             "desktop_home_boot",
-            DESKTOP_HOME_BOOT_HID_STEPS,
+            DESKTOP_HOME_REPEAT_HID_STEPS,
             DESKTOP_HOME_BOOT_CAPTURE_REL,
             b"\n",
         )
@@ -744,6 +965,77 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 25] = [
         DESKTOP_POINTER_BOOT_HID_STEPS,
         DESKTOP_HOME_BOOT_CAPTURE_REL,
         b"\n",
+    ),
+    // OT-88 A1a: the probe app as a second client, and its fault.
+    desktop(
+        "desktop_apps_boot",
+        DESKTOP_APPS_BOOT_HID_STEPS,
+        DESKTOP_APPS_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_fault_boot",
+        DESKTOP_APPS_FAULT_BOOT_HID_STEPS,
+        DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_hang_boot",
+        DESKTOP_APPS_HANG_BOOT_HID_STEPS,
+        DESKTOP_APPS_HANG_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_stall_boot",
+        DESKTOP_APPS_STALL_BOOT_HID_STEPS,
+        DESKTOP_APPS_STALL_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_drop_boot",
+        DESKTOP_APPS_DROP_BOOT_HID_STEPS,
+        DESKTOP_APPS_DROP_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    // PR #15 review: death mid-handoff, slot reuse, a flooding Arthur, and a
+    // held button across a front change and a death.
+    desktop(
+        "desktop_apps_handoff_death_boot",
+        DESKTOP_APPS_HANDOFF_DEATH_BOOT_HID_STEPS,
+        DESKTOP_APPS_HANDOFF_DEATH_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_reuse_boot",
+        DESKTOP_APPS_REUSE_BOOT_HID_STEPS,
+        DESKTOP_APPS_REUSE_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_flood_boot",
+        DESKTOP_APPS_FLOOD_BOOT_HID_STEPS,
+        DESKTOP_APPS_FLOOD_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_apps_grab_boot",
+        DESKTOP_APPS_GRAB_BOOT_HID_STEPS,
+        DESKTOP_APPS_GRAB_BOOT_CAPTURE_REL,
+        b"\x04again\n",
+    ),
+    // PR #15 re-check item 3: Arthur hung, ended alone.
+    desktop(
+        "desktop_apps_arthur_hang_boot",
+        DESKTOP_APPS_ARTHUR_HANG_BOOT_HID_STEPS,
+        DESKTOP_APPS_ARTHUR_HANG_BOOT_CAPTURE_REL,
+        b"a",
+    ),
+    // PR #15 re-check 2: input served while his reply is settled.
+    desktop(
+        "desktop_apps_arthur_yield_hang_boot",
+        DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_HID_STEPS,
+        DESKTOP_APPS_ARTHUR_YIELD_HANG_BOOT_CAPTURE_REL,
+        b"a",
     ),
     // DS-1c: captured once the answer (and the Lens) is composited.
     DesktopScenario {
@@ -898,13 +1190,39 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
     step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
     step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
-    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
-    HOME_TYPED_ENTER,
+    // THINK-2026-11-02-time-zones: the zone verb (an alias, so the harness
+    // types no `_`), then the RTC mode, then Esc ends the zone card.
+    step(
+        b"DESKTOP help shown via=click rows=6",
+        b"timezone us/eastern\n",
+    ),
+    // Janus (#60): once confirmed, a zone changes only the display, and an
+    // RTC mode waits for a restart.
+    step(
+        b"DESKTOP zone set name=America/New_York",
+        b"timezone europe/london\n",
+    ),
+    step(b"DESKTOP zone set name=Europe/London", b"rtc utc\n"),
+    step(b"DESKTOP zone rtc=utc", b"\x1b"),
+    // F8: Arthur's two rounds ask the time, then (after a hold and resume)
+    // the date. Each ends in `?`, its only `?`, so Enter waits for all of it.
+    step(b"DESKTOP zone closed via=esc", b"what time is it?"),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     ROUND1_ESC,
     HOLD_TAB,
     CHIP1_TAB,
-    CHIP0_AGAIN,
-    AGAIN_ENTER,
+    step(b"DESKTOP home chip selected=0", b"what's the date?"),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
+    // The PM (#68): a question the phrase table doesn't hold still goes to
+    // the model (here, its no-model line).
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    step(
+        b"DESKTOP home chip selected=0",
+        b"what time is it in tokyo?",
+    ),
+    step(b"DESKTOP home keystroke ascii=63\n", b"\n"),
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
@@ -1987,6 +2305,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // The same with xsave-fpu: AVX advertised and saved, memchr on AVX2.
         name: "servo_closure_smoke_avx",
         feature: "neo-test-servo-closure-smoke-avx",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 4 (SWGL S1): upstream SWGL clears an asymmetric pattern
+        // into a caller-owned padded-stride buffer, byte-compared on-target.
+        name: "swgl_smoke",
+        feature: "neo-test-swgl-smoke",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -3112,6 +3439,107 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-88 A1a: the probe app as a second WM client: launched through
+        // Arthur's LaunchCap, its own keys while in front, Super+Tab back to
+        // Arthur with none of its keys in his line.
+        name: "desktop_apps_boot",
+        feature: "neo-test-desktop-apps-boot",
+        user_feature: Some("desktop-apps-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-88 A1a: the probe app exits 7 after one key; the WM ends that
+        // client alone and gives the front back to Arthur.
+        name: "desktop_apps_fault_boot",
+        feature: "neo-test-desktop-apps-fault-boot",
+        user_feature: Some("desktop-apps-fault-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-88 A1a (THINK §2.3 item 7): the probe app never receives its
+        // reply; the WM stays live (Super+Tab served) and ends it as hung.
+        name: "desktop_apps_hang_boot",
+        feature: "neo-test-desktop-apps-hang-boot",
+        user_feature: Some("desktop-apps-hang-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The probe app never finishes its handshake: the launch fails.
+        name: "desktop_apps_stall_boot",
+        feature: "neo-test-desktop-apps-stall-boot",
+        user_feature: Some("desktop-apps-stall-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The probe app exits between a request and the reply: only it ends
+        // (THINK §2.3 item 8).
+        name: "desktop_apps_drop_boot",
+        feature: "neo-test-desktop-apps-drop-boot",
+        user_feature: Some("desktop-apps-drop-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 2: the probe app dies mid-handoff (after the
+        // route swap, before its discard ack); the route returns to Arthur.
+        name: "desktop_apps_handoff_death_boot",
+        feature: "neo-test-desktop-apps-handoff-death-boot",
+        user_feature: Some("desktop-apps-handoff-death-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 2: an ended client's handles are released (its
+        // stale activator refused) and its slot is reused, a new generation.
+        name: "desktop_apps_reuse_boot",
+        feature: "neo-test-desktop-apps-reuse-boot",
+        user_feature: Some("desktop-apps-reuse-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 3: Arthur floods commits; the probe app's keys
+        // and Super+Tab are still served.
+        name: "desktop_apps_flood_boot",
+        feature: "neo-test-desktop-apps-flood-boot",
+        user_feature: Some("desktop-apps-flood-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 review item 4: a held button's grab is consumed when the
+        // front changes and when its client dies.
+        name: "desktop_apps_grab_boot",
+        feature: "neo-test-desktop-apps-grab-boot",
+        user_feature: Some("desktop-apps-grab-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 re-check item 3: Arthur never receives a reply while the
+        // probe app is open; the WM ends him alone, keeps serving the probe
+        // app, and goes back to Home once it exits.
+        name: "desktop_apps_arthur_hang_boot",
+        feature: "neo-test-desktop-apps-arthur-hang-boot",
+        user_feature: Some("desktop-apps-arthur-hang-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #15 re-check 2: Arthur never receives his Yield's reply; while
+        // the WM settles it, Super+Tab is still served (the pointer and the
+        // lock too); then he alone is ended.
+        name: "desktop_apps_arthur_yield_hang_boot",
+        feature: "neo-test-desktop-apps-arthur-yield-hang-boot",
+        user_feature: Some("desktop-apps-arthur-yield-hang-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // DS-1c: Arthur's `list /` blooms the Lens (a second client, lent `/`
         // read-only); the two-surface capture matches the scene oracle and
         // the Lens's text matches the glyph oracle; the keyboard switches to
@@ -4209,6 +4637,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "lock_route_races",
         feature: "neo-test-lock-route-races",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-88 A0k: the non-parking send and grant (`ipc-try-send`).
+    TestScenario {
+        name: "ipc_try_send",
+        feature: "neo-test-ipc-try-send",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Jarvis (#61): a key repeat is staged under the epoch it was checked
+    // against; a focus change or Super+L in between drops it.
+    TestScenario {
+        name: "key_repeat_epoch",
+        feature: "neo-test-key-repeat-epoch",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -6030,6 +6475,24 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P3b-2: K6 stops the guard-armed disk, clears every bus master,
+    // then S5.
+    TestScenario {
+        name: "ot90_quiesce",
+        feature: "neo-test-ot90-quiesce",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // Janus's #7 review, items 1 and 3: an AP parked by NMI holding the heap
+    // allocator's lock, and a bus master that won't clear; S5 must still come.
+    TestScenario {
+        name: "ot90_quiesce_heap_held",
+        feature: "neo-test-ot90-quiesce-heap-held",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // The kill-switch: built without `power-control`, it passes through
     // debug-exit as every scenario does, and boot logs no power plan.
     TestScenario {
@@ -6066,11 +6529,13 @@ fn main() -> ExitCode {
         "vm-image" => cmd_vm_image(&args[1..]),
         "vm-run" => cmd_vm_run(&args[1..]),
         "neo-test" => cmd_neo_test(&args[1..]),
+        "tzdata" => tzdata::cmd_tzdata(&args[1..], &workspace_root()),
         "product-elf-check" => cmd_product_elf_check(&args[1..]),
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
+        "ot61-swgl-build" => cmd_ot61_swgl_build(&args[1..]),
         "shard-coverage" => cmd_shard_coverage(&args[1..]),
         "gate-plan" => cmd_gate_plan(&args[1..]),
         "log-sink-header" => cmd_log_sink_header(&args[1..]),
@@ -6264,6 +6729,9 @@ fn print_help() {
     println!(
         "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
     );
+    println!(
+        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
+    );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
         "    log-sink-header <out> [--force] write the sealed bare-metal log-sink header to a regular file"
@@ -6381,7 +6849,8 @@ const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
     // Zenbook freeze lane: the lock-free corner status overlay. Image only:
     // the desktop scenarios read back every pixel.
     "freeze-watchdog",
-    // Software key auto-repeat (every keyboard).
+    // Software key auto-repeat (every keyboard); also in `desktop` (F10), so
+    // the desktop scenarios run it too.
     "key-autorepeat",
     // Zenbook touchpad (I2C-HID, rung 1): inert on any machine its quirk
     // entry does not match.
@@ -6696,6 +7165,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        "swgl_smoke" => &[SWGL_BIN],
         _ => &[],
     }
 }
@@ -7042,6 +7512,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             // OT-66 K1b (L1.1): the WM spawns Arthur with his scopes only;
             // with the kernel's `cap-rooted-open`.
             "cap-rooted-open",
+            // THINK-2026-11-02-time-zones: the settings store (OT-88 S1)
+            // keeps the zone and the RTC mode across boots (Home's
+            // `timezone` / `rtc` verbs); with the kernel's `rtc-offset`.
+            "atrium-settings-store",
         ],
         Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
         // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
@@ -7072,6 +7546,20 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-scroll-boot-test") => vec!["desktop-home-boot-test"],
         // A9-C2: Home's WM with the pointer and the wheel.
         Some("desktop-wheel-boot-test") => vec!["desktop-wheel", "desktop-home-boot-test"],
+        // OT-88 A1a: Home's WM with the client table.
+        Some("desktop-apps-boot-test")
+        | Some("desktop-apps-fault-boot-test")
+        | Some("desktop-apps-hang-boot-test")
+        | Some("desktop-apps-stall-boot-test")
+        | Some("desktop-apps-drop-boot-test")
+        | Some("desktop-apps-handoff-death-boot-test")
+        | Some("desktop-apps-reuse-boot-test")
+        | Some("desktop-apps-flood-boot-test")
+        | Some("desktop-apps-arthur-hang-boot-test")
+        | Some("desktop-apps-arthur-yield-hang-boot-test")
+        | Some("desktop-apps-grab-boot-test") => {
+            vec!["atrium-apps", "desktop-home-boot-test"]
+        }
         // M2: neo-init drives the encrypted scenario, so it needs the marker
         // feature that selects the falsifiable driver (arthur_memory_encrypted_tests).
         // Previously this was empty, so the M2 scenario ran the default no-op driver
@@ -7205,6 +7693,19 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-park-boot-test")
         | Some("desktop-spin-boot-test")
         | None => Vec::new(),
+        // OT-88 A1a: the worker is the probe app (with no handles, DS-1b's
+        // probe, as the Lens is).
+        Some("desktop-apps-boot-test") => vec!["probe-app"],
+        Some("desktop-apps-fault-boot-test") => vec!["probe-app-exit-after-key"],
+        Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
+        Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
+        Some("desktop-apps-drop-boot-test") => vec!["probe-app-drop-reply"],
+        Some("desktop-apps-handoff-death-boot-test") => vec!["probe-app-die-on-discard"],
+        Some("desktop-apps-reuse-boot-test")
+        | Some("desktop-apps-grab-boot-test")
+        | Some("desktop-apps-arthur-hang-boot-test")
+        | Some("desktop-apps-arthur-yield-hang-boot-test") => vec!["probe-app-exit-after-key"],
+        Some("desktop-apps-flood-boot-test") => vec!["probe-app"],
         // DS-1c: the worker is the Lens (and, with no handles, DS-1b's probe).
         Some("desktop-lens")
         | Some("desktop-lens-pointer")
@@ -7328,6 +7829,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-busy-emblem",
             // A9-C: PgUp/PgDn and Up/Down scroll the transcript.
             "arthur-scrollback",
+            // F8: the time and the date from the clock, before the model.
+            "arthur-clock",
         ],
         Some("desktop-session-boot-test")
         | Some("desktop-glass-boot-test")
@@ -7341,6 +7844,34 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         }
         Some("desktop-home-cycle-test") => vec!["desktop-home-cycle-test"],
         Some("desktop-arthur-scope-test") => vec!["arthur-scope-probe-test"],
+        // OT-88 A1a: Home's Arthur, who opens the probe app on its line.
+        Some("desktop-apps-boot-test")
+        | Some("desktop-apps-fault-boot-test")
+        | Some("desktop-apps-hang-boot-test")
+        | Some("desktop-apps-stall-boot-test")
+        | Some("desktop-apps-drop-boot-test")
+        | Some("desktop-apps-handoff-death-boot-test")
+        | Some("desktop-apps-reuse-boot-test")
+        | Some("desktop-apps-grab-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-probe",
+        ],
+        Some("desktop-apps-flood-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-arthur-flood",
+        ],
+        Some("desktop-apps-arthur-hang-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-arthur-hang",
+        ],
+        Some("desktop-apps-arthur-yield-hang-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-arthur-yield-hang",
+        ],
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
         | Some("login-kdf-timing-boot-test")
@@ -7478,13 +8009,19 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-resize",
         ],
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
-        Some("desktop-intro-boot-test")
-        | Some("install-atrium-boot-test")
-        | Some("desktop-clock-boot-test") => vec![
+        Some("desktop-intro-boot-test") | Some("install-atrium-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
             "desktop-resize",
+        ],
+        // F8: Arthur's third round (a question the clock leaves alone).
+        Some("desktop-clock-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-clock-boot-test",
         ],
         // OT-22: the parked session parks Arthur too; the control spins both.
         Some("desktop-park") => vec!["desktop-session", "desktop-home", "desktop-park"],
@@ -7687,6 +8224,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
             build_cxx_runtime_smoke()?;
         }
+        if std_real_staged_bins().contains(&SWGL_BIN) {
+            build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+        }
     }
     Ok(())
 }
@@ -7707,6 +8247,9 @@ const CXX_RUNTIME_BIN: &str = "cxx-runtime-smoke";
 const CXX_RUNTIME_DIR: &str = "userland/cxx-runtime-smoke";
 /// Its hardening twin, in the same crate (`src/trap.rs`).
 const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
+/// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
+const SWGL_BIN: &str = "swgl-smoke";
+const SWGL_DIR: &str = "userland/swgl-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -7716,12 +8259,16 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
+        SWGL_BIN => Some(SWGL_DIR),
         _ => None,
     }
 }
 
 fn is_standalone_std_dir(subdir: &str) -> bool {
-    subdir == SERVO_CLOSURE_DIR || subdir == STYLO_SMOKE_DIR || subdir == CXX_RUNTIME_DIR
+    subdir == SERVO_CLOSURE_DIR
+        || subdir == STYLO_SMOKE_DIR
+        || subdir == CXX_RUNTIME_DIR
+        || subdir == SWGL_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -7734,6 +8281,76 @@ fn build_cxx_runtime_smoke() -> Result<(), String> {
         &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         CXX_RUNTIME_DIR,
     )
+}
+
+/// SWGL's build script compiles `gl.cc` and its translated shaders with the
+/// `cc` crate's defaults for the target, which knows nothing of ours. These
+/// are `cc`'s per-target variables: no default flags, clang, our target
+/// flags and neo-crt's headers (libc++ first, then musl, then clang's own),
+/// and no host C++ library to link (`CXXSTDLIB` empty; libc++ comes from
+/// neo-crt). The same flags neo-crt uses for its own objects.
+fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
+    let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let out = Command::new(&clang)
+        .arg("-print-resource-dir")
+        .output()
+        .map_err(|e| format!("{clang} -print-resource-dir: {e} (SWGL needs clang >= 18)"))?;
+    if !out.status.success() {
+        return Err(format!("{clang} -print-resource-dir failed"));
+    }
+    let builtin = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("include");
+    let root = workspace_root();
+    let crt = root.join("third_party/ot61-crt/vendor");
+    let flags = [
+        "--target=x86_64-unknown-none-elf".to_string(),
+        "-mno-red-zone".into(),
+        "-mcmodel=small".into(),
+        "-fno-pic".into(),
+        "-fno-pie".into(),
+        "-fno-stack-protector".into(),
+        "-O2".into(),
+        "-ffunction-sections".into(),
+        "-fdata-sections".into(),
+        "-nostdinc".into(),
+        "-nostdinc++".into(),
+        "-D_XOPEN_SOURCE=700".into(),
+        format!("-I{}", root.join("userland/neo-crt/cxx").display()),
+        format!("-I{}", crt.join("libcxx/include").display()),
+        format!("-I{}", crt.join("musl-generated").display()),
+        format!("-I{}", crt.join("musl/arch/x86_64").display()),
+        format!("-I{}", crt.join("musl/arch/generic").display()),
+        format!("-I{}", crt.join("musl/include").display()),
+        format!("-isystem{}", builtin.display()),
+    ]
+    .join(" ");
+    let t = "x86_64_unknown_neoplutarch";
+    cmd.env("CRATE_CC_NO_DEFAULTS", "1")
+        .env(format!("CC_{t}"), &clang)
+        .env(format!("CXX_{t}"), &clang)
+        .env(format!("CXXFLAGS_{t}"), &flags)
+        .env(format!("CXXSTDLIB_{t}"), "");
+    Ok(())
+}
+
+/// `cargo xtask ot61-swgl-build`: apply the std overlay and build the SWGL S1
+/// smoke, with its A4 checks, without a QEMU run (the CI job that runs SWGL's
+/// build script and shader translator first, per J.c.'s C2.3b ruling).
+fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("usage: cargo xtask ot61-swgl-build".to_string());
+    }
+    apply_neoplutarch_std_overlay()?;
+    verify_applied_overlay()?;
+    build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
+    let elf = std_real_bin_path(SWGL_BIN);
+    let len = fs::metadata(&elf)
+        .map_err(|e| format!("stat {}: {e}", elf.display()))?
+        .len();
+    println!(
+        "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
+        elf.display()
+    );
+    Ok(())
 }
 
 /// Build one standalone std smoke (the overlay must already be applied) and
@@ -8306,6 +8923,9 @@ fn build_member_at_opt_level(
     if subdir == "userland/std-real-smoke" || is_standalone_std_dir(subdir) {
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
+    }
+    if subdir == SWGL_DIR {
+        swgl_cc_env(&mut cmd)?;
     }
     if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
@@ -11084,7 +11704,9 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_cpus"
         | "ot90_stop_holdout"
         | "ot90_stop_shootdown"
-        | "ot90_stop_wedged" => Some(qmp::PowerExpect::PowerOff),
+        | "ot90_stop_wedged"
+        | "ot90_quiesce"
+        | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
         }
@@ -11130,7 +11752,10 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         )
     })?;
     // Chad #199 item 2: K2 never came back from the stuck disk; the deadline
-    // abandoned it (so K3 never ran) and S5 still came.
+    // abandoned it (so K3 never ran) and K4 stopped the CPUs. The drain's
+    // write was the disk's first, so its write-guard judgement is the stuck
+    // read: K6's plan reads the disk as not armed instead of waiting on it,
+    // leaves it alone, and S5 still came.
     if scenario.name == "ot90_stuck_disk" {
         ot90_require_in_order(
             scenario.name,
@@ -11140,6 +11765,8 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 "stage=power_off_requested",
                 "[ power ] shutdown: started kind=PowerOff",
                 "[ power ] shutdown: deadline passed in K2 after ",
+                "[ power ] K4 targets=",
+                "[ power ] K6 disks_stopped=0 disks_left_alone=1 ",
                 "power: S5 PM1a=",
             ],
         )?;
@@ -11185,6 +11812,61 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
                 observed.serial_log.display()
             ));
         }
+    }
+    // OT-90 P3b-2: K6 stopped disk 0 (armed by this boot's write), cleared
+    // the bus masters, then S5.
+    if scenario.name == "ot90_quiesce" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K5 lapic_timer=",
+                "[ power ] K6 disk=0 virtio-reset ok",
+                "[ power ] K6 disks_stopped=1 ",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let cleared = serial
+            .lines()
+            .find_map(|l| l.split("bus_masters_cleared=").nth(1))
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse::<u32>().ok())
+            .unwrap_or(0);
+        if cleared == 0 {
+            return Err(format!(
+                "`{}`: K6 cleared no bus master; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    // Janus's #7 review, items 1 and 3: the highest AP parked by NMI holding
+    // the heap's lock (no holdout, so K5 and K6 ran); K6 stopped the disk,
+    // reported the stuck bus master and kept the IOMMU on; S5 still came, so
+    // nothing after K4 freed heap memory.
+    if scenario.name == "ot90_quiesce_heap_held" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                "[ power ] K4 targets=",
+                "[ power ] K5 lapic_timer=",
+                "[ power ] K6 disk=0 virtio-reset ok",
+                "FAILED bme-still-set",
+                "disks_failed=0 bus_masters_cleared=",
+                "bus_masters_failed=1 iommu=kept",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        let k4 = ot90_k4_report(&serial)
+            .ok_or_else(|| format!("`{}`: no parsable K4 line", scenario.name))?;
+        ot90_check_k4(true, k4).map_err(|e| {
+            format!(
+                "`{}`: {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
     }
     // OT-90 P3b: K4 parked every AP before K5 and S5; K5 left no MSI or
     // MSI-X open (review #6 item 3), and no shootdown timed out (item 1).
@@ -14757,6 +15439,8 @@ const USB_STORAGE_UNPLUG_HMP_STEPS: &[SerialScriptStep] = &[
 /// when the hold time ends).
 const HMP_HOLD_BACKSPACE: u8 = 0x89;
 const HMP_HOLD_ESCAPE: u8 = 0x8A;
+/// F10 (`desktop_home_boot`): Backspace held 5 s.
+const HMP_HOLD_BACKSPACE_5S: u8 = 0xAB;
 
 /// A9-C: the transcript's scroll keys (Up is the i8042 lane's 0x83).
 const HMP_PGUP: u8 = 0x8B;
@@ -14807,6 +15491,8 @@ const HMP_KP_8: u8 = 0xA9;
 const HMP_CAPTURES: u8 = 5;
 /// Where the script's numbered captures go (the scenario sets it per boot).
 static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+/// OT-88 A1a: Super+Tab, the SAK's "next window" (Super first, as for 0x02).
+const HMP_SUPER_TAB: u8 = 0x9D;
 
 /// usb_hotplug: plug (root port 2), type, unplug, re-plug (behind the hub,
 /// port 1.1), type. Each prompt is printed
@@ -14845,6 +15531,7 @@ const HMP_MOUSE_BURST_MOVES: usize = 40;
 fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
     match byte {
         0x02 => Some("sendkey meta_l-esc\n"),
+        HMP_SUPER_TAB => Some("sendkey meta_l-tab\n"),
         0x03 => Some("mouse_button 1\n"),
         0x04 => Some("mouse_button 0\n"),
         0x05 => Some("mouse_move 7 3\n"),
@@ -14910,6 +15597,7 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         HMP_KP_8 => Some("sendkey kp_8\n"),
         HMP_HOLD_BACKSPACE => Some("sendkey backspace 1500\n"),
         HMP_HOLD_ESCAPE => Some("sendkey esc 1500\n"),
+        HMP_HOLD_BACKSPACE_5S => Some("sendkey backspace 5000\n"),
         HMP_PGUP => Some("sendkey pgup\n"),
         HMP_PGDN => Some("sendkey pgdn\n"),
         HMP_WHEEL_A => Some("mouse_move 0 0 1\n"),
@@ -15147,6 +15835,8 @@ fn scenario_uses_storage_disk(scenario: TestScenario) -> bool {
         || scenario.name == "install_claim_identity"
         || scenario.name == "virtio_blk_io_gate_contention"
         || scenario.name == "vtd_fence"
+        || scenario.name == "ot90_quiesce"
+        || scenario.name == "ot90_quiesce_heap_held"
         || scenario.name == "graphics_vtd_domain"
         || scenario.name == "model_load_cascade"
         || scenario.name == "mount_authority"
@@ -15927,8 +16617,9 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         "phase3_neofs_cache_evict" | "phase3_neofs_cache_evict_off" => Some("normal"),
         "phase3_neofs_allocator_reuse_guard" => Some("normal"),
         "phase3_neofs_reboot_persistence_small_file" => Some("normal"),
-        "ot90_s5_durability" => Some("normal"),
-        "ot90_stuck_disk" => Some("normal"),
+        "ot90_s5_durability" | "ot90_quiesce" | "ot90_quiesce_heap_held" | "ot90_stuck_disk" => {
+            Some("normal")
+        }
         "phase3_neofs_fsync_noop_write_through" => Some("normal"),
         "phase3_neofs_cow_write_after_write" => Some("normal"),
         "phase3_neofs_crash_mid_overwrite_recovery" => Some("normal"),
@@ -18077,6 +18768,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    if scenario.name == "swgl_smoke" {
+        for needle in [
+            "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
+            "[ swgl-smoke ] ok(3) every byte == the hand-laid pattern (BGRA, no flip, padding and canaries untouched)",
+            "[ swgl-smoke ] ok(4) the 7x5 buffer passes fb::attach's checks",
+            "[ swgl-smoke ] ok(5) fb::attach refuses each bad framebuffer before SWGL sees it",
+            "[ swgl-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SWGL must raster the hand-laid pattern into the caller's buffer",
+            )?;
+        }
+    }
     if scenario.name == "cxx_runtime_smoke" {
         // The smoke's own lines: the musl printf path reached the console, and
         // every check passed (the kernel's PASS line covers the exit code).
@@ -18088,6 +18795,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(17) 6 threads print 600-byte runs to stdout at once",
             "[ crt-smoke ] ok(18) a failing write returns -1 with its own errno",
             "[ crt-smoke ] ok(19) arc4random_buf and page-aligned posix_memalign (C3c-1 prerequisites)",
+            "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
+            "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
+            "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
@@ -18513,6 +19223,294 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     }
     // A9-C: the transcript scrolled as scripted, each step by the right
     // number of lines.
+    // OT-88 A1a: the probe app was a client of its own. The script's steps
+    // already order the launch, its keys and the front's return; here, Arthur's
+    // line after the switch is exactly `again` (none of the probe app's keys
+    // reached him), and the probe app ended as it should.
+    if scenario.name == "desktop_apps_hang_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                // Super+Tab while the WM owes the probe app a reply.
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP apps client hung client=1",
+                "DESKTOP arthur line=again\n",
+            ],
+            "OT-88 A1a: a client that never receives its reply never parks the WM",
+        )?;
+        for needle in [
+            "PROBEAPP ignoring reply",
+            "DESKTOP apps client killed client=1",
+            "DESKTOP apps client ended client=1",
+        ] {
+            require_serial_contains(scenario, observed, needle, "OT-88 A1a: the hung probe app")?;
+        }
+    }
+    if scenario.name == "desktop_apps_stall_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP arthur line=open probe app",
+                "DESKTOP apps client failed client=1",
+                "DESKTOP arthur line=again\n",
+            ],
+            "OT-88 A1a: a client that never finishes its handshake fails its own launch",
+        )?;
+        for needle in [
+            "PROBEAPP stalling handshake",
+            "DESKTOP arthur probe app refused",
+            "DESKTOP apps client ended client=1",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "OT-88 A1a: the stalled probe app",
+            )?;
+        }
+    }
+    if scenario.name == "desktop_apps_drop_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP apps client gone client=1",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP arthur line=again\n",
+            ],
+            "OT-88 A1a: a client gone between its request and the reply ends alone",
+        )?;
+        for needle in [
+            "PROBEAPP exiting before reply",
+            "DESKTOP apps client ended client=1 value=9",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "OT-88 A1a: the dropped probe app",
+            )?;
+        }
+    }
+    // PR #15 review item 2: a client dead mid-handoff leaves no route on it.
+    if scenario.name == "desktop_apps_handoff_death_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps client discard-failed client=1",
+                "DESKTOP apps front client=0 via=handoff-failed",
+                // His keys arrive: the route is his again.
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 2: a failed handoff rolls the route back to Arthur",
+        )?;
+        for needle in [
+            "PROBEAPP dying before discard ack",
+            "DESKTOP apps released client=1 closed=6 failed=0",
+            "DESKTOP apps stale activator client=1 refused=yes",
+            "DESKTOP apps client ended client=1 value=5",
+        ] {
+            require_serial_contains(scenario, observed, needle, "PR #15 item 2: handoff death")?;
+        }
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP apps front client=1",
+            "PR #15 item 2: the dead client never became the front",
+        )?;
+    }
+    // PR #15 review item 2: release, the stale handle, and slot reuse.
+    if scenario.name == "desktop_apps_reuse_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP apps released client=1 closed=6 failed=0",
+                "DESKTOP apps stale activator client=1 refused=yes",
+                "DESKTOP apps client ended client=1 value=7",
+                // The same slot, a new generation.
+                "DESKTOP apps client connected client=1 value=2",
+                "DESKTOP apps front client=1 via=launch",
+                "PROBEAPP key code=5 count=1",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP apps released client=1 closed=6 failed=0",
+                "DESKTOP apps stale activator client=1 refused=yes",
+                "DESKTOP apps client ended client=1 value=7",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 2: an ended client is released and its slot reused",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            // (Narrowly: Arthur logs `refused=no-proof` for an unrelated launch.)
+            "DESKTOP apps stale activator client=1 refused=no\n",
+            "PR #15 item 2: a released activator must be stale",
+        )?;
+    }
+    // PR #15 review item 3: Arthur's flood starves nobody.
+    if scenario.name == "desktop_apps_flood_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps front client=1 via=launch",
+                "PROBEAPP key code=5 count=2",
+                // Served while he still floods.
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP arthur flood done commits=",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 3: a client's stream of requests starves no other client nor the SAK",
+        )?;
+        let serial = read_serial(observed)?;
+        let commits = serial
+            .split("DESKTOP arthur flood done commits=")
+            .nth(1)
+            .and_then(|rest| {
+                rest.split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|n| n.parse::<u64>().ok())
+            })
+            .unwrap_or(0);
+        // Non-vacuity: he did flood.
+        if commits < 20 {
+            return Err(format!(
+                "`{}` Arthur's flood made only {commits} commits (want >= 20)",
+                scenario.name
+            ));
+        }
+    }
+    // PR #15 re-check item 3: Arthur's failure is his alone.
+    if scenario.name == "desktop_apps_arthur_hang_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP arthur hanging reply=never-received",
+                // His owed reply untaken past the deadline: he alone ends.
+                "DESKTOP apps client hung client=0",
+                // Killed, then the WM's line with its wait's result. (The
+                // kernel's "terminated ... via sys_kill" is printed inside
+                // the kill, before it returns to the WM; its later "kill
+                // completed at its last reap" can land after the WM's line.)
+                " via sys_kill",
+                "DESKTOP apps arthur failed code=24 wait=",
+                // The probe app is still served: its key, its exit, its
+                // release.
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps released client=1 closed=6 failed=0",
+                "DESKTOP apps client ended client=1 value=7",
+                "DESKTOP session end client=arthur contained=24",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "PR #15 re-check item 3: a hung Arthur is ended alone; the probe app and the WM live on",
+        )?;
+        require_serial_contains(
+            scenario,
+            observed,
+            " others=1\n",
+            "PR #15 re-check item 3: the probe app was live when Arthur failed",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP apps client unreaped",
+            "PR #15 re-check item 3: the probe app ended by itself, not with Arthur",
+        )?;
+    }
+    // PR #15 re-check 2: the WM's input is served while it settles a reply
+    // Arthur never takes: Super+Tab switches the front before his deadline.
+    if scenario.name == "desktop_apps_arthur_yield_hang_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP arthur hanging yield=never-received",
+                // Taken during the settle (without the WM's input service
+                // there, the chord would wait until after he is ended).
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP apps client hung client=0",
+                " via sys_kill",
+                "DESKTOP apps arthur failed code=24 wait=",
+                "DESKTOP apps front client=1 via=arthur-failed",
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps released client=1 closed=6 failed=0",
+                "DESKTOP apps client ended client=1 value=7",
+                "DESKTOP session end client=arthur contained=24",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "PR #15 re-check 2: the WM's input is served while Arthur's reply is settled",
+        )?;
+    }
+    // PR #15 review item 4: a grab follows the front, not its press.
+    if scenario.name == "desktop_apps_grab_boot" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP pointer forward client=arthur phase=down",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP pointer grab consumed reason=front-changed",
+                "DESKTOP pointer forward client=arthur phase=down",
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps front client=0 via=client-ended",
+                "DESKTOP pointer grab consumed reason=front-changed",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #15 item 4: a held button reaches only the client in front",
+        )?;
+    }
+    if scenario.name == "desktop_apps_boot" || scenario.name == "desktop_apps_fault_boot" {
+        let fault = scenario.name == "desktop_apps_fault_boot";
+        let ended = if fault {
+            "DESKTOP apps client ended client=1 value=7"
+        } else {
+            "DESKTOP apps client ended client=1 value=0"
+        };
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP launchcap minted client=arthur",
+                "DESKTOP arthur line=open probe app",
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "PROBEAPP key code=4 count=1",
+                "DESKTOP apps front client=0",
+                // Exactly `again`: a key of the probe app's would be in it.
+                "DESKTOP arthur line=again\n",
+            ],
+            "OT-88 A1a: the probe app takes the front and its keys, then Arthur has his",
+        )?;
+        // (Logged by the other processes, so not ordered against the WM's.)
+        for needle in [
+            "PROBEAPP ready",
+            "PROBEAPP turn n=1 discarded=",
+            "DESKTOP arthur probe app opened",
+            ended,
+        ] {
+            require_serial_contains(scenario, observed, needle, "OT-88 A1a: the probe app")?;
+        }
+        require_framebuffer_capture(
+            scenario,
+            desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
+        )?;
+    }
     if scenario.name == "desktop_scroll_boot" {
         let serial = read_serial(observed)?;
         check_scroll_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
@@ -18633,6 +19631,30 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         // next turn — never replayed into Arthur after it resumes.
         if scenario.name == "desktop_home_boot" {
             let serial = read_serial(observed)?;
+            // F10: one held Backspace took the field from 13 bytes to 0, one
+            // byte per press or repeat, each logged in order.
+            let backspaces: Vec<&str> = serial
+                .lines()
+                .filter(|l| l.contains("DESKTOP home keystroke backspace len="))
+                // The first 13: the round's later `zz` and Backspaces are
+                // Home's too.
+                .take(13)
+                .collect();
+            let want: Vec<String> = (0..13)
+                .rev()
+                .map(|n| format!("DESKTOP home keystroke backspace len={n}"))
+                .collect();
+            if backspaces.len() != 13
+                || backspaces
+                    .iter()
+                    .zip(&want)
+                    .any(|(l, w)| !l.contains(w.as_str()))
+            {
+                return Err(format!(
+                    "`{}` held Backspace must empty the field one byte per repeat (F10); saw {backspaces:?}",
+                    scenario.name
+                ));
+            }
             let after_yield = serial
                 .split("DESKTOP arthur yield focus=home held=true")
                 .nth(1)
@@ -19051,7 +20073,37 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP intro closed via=key",
                 "DESKTOP help shown via=typed rows=6",
                 "DESKTOP help shown via=click rows=6",
+                // No settings store here: no zone, an RTC read as local time.
+                // `timezone us/eastern` confirms realtime as UTC: the pinned
+                // RTC's 17:48 is EDT (UTC-4), so the kernel moves it +4 h.
+                "rtc: realtime confirmed as utc offset_s=-14400",
+                "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"5:4",
+                "DESKTOP zone set name=America/New_York id=105 restart=0",
+                "DESKTOP zone card shown rows=5",
+                // Janus (#60): `timezone europe/london` after the confirm only
+                // changes the display: 21:4x UTC is 10:4x PM BST. The RTC's
+                // reading isn't re-interpreted (that would give 5:4x PM); the
+                // card says a restart would read it with the new zone.
+                "DESKTOP clock utc=kept zone=Europe/London rtc=local",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"10:4",
+                "DESKTOP zone set name=Europe/London id=288 restart=1",
+                "DESKTOP zone card shown rows=6",
+                // `rtc utc`: saved; the confirmed instant stays until a restart.
+                "DESKTOP clock utc=kept zone=Europe/London rtc=utc",
+                "DESKTOP clock zone date=\"Wednesday, October 21, 2026\" time=\"10:4",
+                "DESKTOP zone rtc=utc restart=1",
+                "DESKTOP zone card shown rows=6",
+                "DESKTOP zone closed via=esc",
                 "DESKTOP home intent submitted target=arthur",
+                // F8: Arthur answers from the clock, in London (zone 288),
+                // before the model (`require_arthur_clock_answers`).
+                "DESKTOP arthur line=what time is it?",
+                "DESKTOP arthur clock question=time basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what's the date?",
+                "DESKTOP arthur clock question=date basis=utc zone=288 realtime_s=",
+                "DESKTOP arthur line=what time is it in tokyo?",
+                "DESKTOP arthur turn path=no-model",
                 "DESKTOP view switch=home residue_pixels=0",
                 "DESKTOP home return client=arthur exit=0 focus=wm-home",
                 "DESKTOP clock readback box=642,285,720,84 ink_pixels=",
@@ -19061,6 +20113,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         require_single_arthur(scenario, observed, false)?;
         require_clock_words(scenario, observed)?;
+        require_arthur_clock_answers(scenario, observed)?;
         require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL)?;
         require_clock_capture(scenario, DESKTOP_CLOCK_BOOT_MID_REL, true)?;
         require_framebuffer_capture(scenario, DESKTOP_CLOCK_BOOT_CAPTURE_REL)?;
@@ -21174,6 +22227,84 @@ fn require_wallclock_probe_oracle(
     Ok(())
 }
 
+/// F8: Arthur's two answers against the host oracle. Realtime is confirmed
+/// UTC by then (the pinned RTC's 17:48 EDT, so 21:48 UTC plus the run), and
+/// the zone is London, on BST (UTC+1) on 21 October 2026: the time is the
+/// oracle's for `realtime_s + 3600` with "BST", the date that instant's.
+fn require_arthur_clock_answers(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let mut seen = 0;
+    for line in serial
+        .lines()
+        .filter(|l| l.contains("DESKTOP arthur clock question="))
+    {
+        let s = numeric(line, "realtime_s").unwrap_or(0);
+        if !(WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900).contains(&s) {
+            return Err(format!(
+                "`{}` Arthur's clock read {s}, not confirmed UTC near the pin: {line:?}",
+                scenario.name
+            ));
+        }
+        let (d, t, _) = civil_oracle(s + 3_600);
+        let want = if line.contains("question=time") {
+            format!("It's {t} BST.")
+        } else {
+            format!("Today is {d}.")
+        };
+        if quoted(line, "reply") != Some(want.as_str()) {
+            return Err(format!(
+                "`{}` Arthur answered {line:?}; the host oracle says {want:?}",
+                scenario.name
+            ));
+        }
+        seen += 1;
+    }
+    if seen != 2 {
+        return Err(format!(
+            "`{}` expected Arthur's time and date answers, saw {seen}",
+            scenario.name
+        ));
+    }
+    // A time question outside the phrase table is the model's (Jarvis,
+    // #68): after its line, Arthur's next turn line is the model path's,
+    // and no clock answer follows. This scenario boots no model, so the
+    // model path is its no-model line (`path=no-model`); the two clock
+    // rounds before it must not have taken it.
+    let tokyo = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .nth(1)
+        .ok_or_else(|| format!("`{}` Arthur never got the Tokyo question", scenario.name))?;
+    if tokyo.contains("DESKTOP arthur clock question=") {
+        return Err(format!(
+            "`{}` the clock answered \"what time is it in tokyo?\"; it is the model's",
+            scenario.name
+        ));
+    }
+    let next = tokyo
+        .lines()
+        .find(|l| l.contains("DESKTOP arthur turn path=") || l.contains("DESKTOP arthur line="));
+    if !next.is_some_and(|l| l.contains("DESKTOP arthur turn path=")) {
+        return Err(format!(
+            "`{}` \"what time is it in tokyo?\" never reached the model path: {next:?}",
+            scenario.name
+        ));
+    }
+    let before = serial
+        .split("DESKTOP arthur line=what time is it in tokyo?")
+        .next()
+        .unwrap_or("");
+    if before.contains("DESKTOP arthur turn path=") {
+        return Err(format!(
+            "`{}` a clock question took the model path",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
 /// OT-85: every readout the WM drew, and the intro's greeting row, against
 /// the host oracle: the date is the pinned day, the time is the oracle's for
 /// the logged realtime, within the run's span of the pinned instant, and the
@@ -21182,16 +22313,38 @@ fn require_clock_words(scenario: TestScenario, observed: &ObservedTest) -> Resul
     let serial = read_serial(observed)?;
     let mut shown = 0;
     let mut first_hour = None;
-    for line in serial
-        .lines()
-        .filter(|l| l.contains("DESKTOP clock shown ") || l.contains("DESKTOP clock minute "))
-    {
+    for line in serial.lines().filter(|l| {
+        l.contains("DESKTOP clock shown ")
+            || l.contains("DESKTOP clock minute ")
+            || l.contains("DESKTOP clock zone ")
+    }) {
         let s = numeric(line, "realtime_s").unwrap_or(0);
-        let (d, t, hour) = civil_oracle(s);
+        // THINK-2026-11-02-time-zones: the wall time shown. "zone not set" is
+        // the RTC's reading (realtime, unconfirmed). Once confirmed, realtime
+        // is UTC (`utc_s`): the pinned reading + 4 h (it was EDT), and the
+        // zone only changes the display. Offsets worked out by hand for 21
+        // October 2026: EDT is UTC-4 (New York's DST runs 8 March to 1
+        // November), BST UTC+1 (London's runs 29 March to 25 October).
+        let zone = quoted(line, "zone").unwrap_or_default();
+        let utc = numeric(line, "utc_s");
+        let confirmed = |u: u64| {
+            (WALLCLOCK_RTC_UNIX_S + 14_400..WALLCLOCK_RTC_UNIX_S + 14_400 + 900).contains(&u)
+                && u == s
+        };
+        let (wall, in_range) = match (zone, utc) {
+            ("zone not set", None) => (
+                s,
+                (WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&s),
+            ),
+            ("EDT", Some(u)) => (u.saturating_sub(14_400), confirmed(u)),
+            ("BST", Some(u)) => (u + 3_600, confirmed(u)),
+            _ => (s, false),
+        };
+        let (d, t, hour) = civil_oracle(wall);
         if quoted(line, "date") != Some(d.as_str())
             || quoted(line, "time") != Some(t.as_str())
             || d != "Wednesday, October 21, 2026"
-            || !(WALLCLOCK_RTC_UNIX_S..WALLCLOCK_RTC_UNIX_S + 900).contains(&s)
+            || !in_range
         {
             return Err(format!(
                 "`{}` readout {line:?}: the host oracle says {d:?} {t:?} for {s}",
@@ -23850,6 +25003,25 @@ mod tests {
         assert!(arthur.contains("\"arthur-busy-emblem\""), "{arthur}");
     }
 
+    /// F8 (Jarvis, #68): Arthur's clock answers are a separate feature (its
+    /// kill-switch), and the product image's Arthur turns them on.
+    #[test]
+    fn product_image_answers_the_time() {
+        let src = include_str!("main.rs");
+        let arthur = src
+            .split("Some(\"desktop-with-model\") => vec![\n            \"desktop-session\"")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(arthur.contains("\"arthur-clock\""), "{arthur}");
+        let cargo = include_str!("../../../userland/neo-arthur/Cargo.toml");
+        let session = cargo
+            .lines()
+            .find(|l| l.starts_with("desktop-session = "))
+            .unwrap();
+        assert!(!session.contains("arthur-clock"), "{session}");
+    }
+
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A
     /// builds too (`build_user_with_feature(Some("desktop-with-model"))`),
     /// draws the Spine chips' icons.
@@ -23869,6 +25041,29 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    /// THINK-2026-11-02-time-zones: the product image keeps the zone (the
+    /// WM's settings store) and confirms realtime as UTC (the kernel's
+    /// `rtc-offset`, part of `desktop`).
+    #[test]
+    fn product_image_keeps_the_time_zone() {
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"desktop"));
+        let kernel = include_str!("../../../kernel/Cargo.toml");
+        let desktop = kernel
+            .split("\ndesktop = [")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(desktop.contains("\"rtc-offset\""), "{desktop}");
+        let src = include_str!("main.rs");
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"desktop-clock\""), "{init}");
+        assert!(init.contains("\"atrium-settings-store\""), "{init}");
     }
 
     /// A9-C2: the product image turns the wheel on in the kernel and the WM

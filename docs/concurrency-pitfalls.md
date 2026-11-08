@@ -145,6 +145,7 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-99 | **A kernel copy to or from user memory with no fault recovery** (found 2026-10-31, the PM on main). `validate_user_buf` checks only that a range is in the user half; the copy then ran as a plain `copy_nonoverlapping` inside the SMAP window. A page that is unmapped, read-only, or unmapped by another thread of the process between the check and the copy faults in ring 0, and the page-fault handler halts on every kernel-mode fault ⇒ any process stops the machine with one syscall and a bad pointer | Syscall user copies / page-fault entry | **Was EXPOSED on main → fixed (`user-copy-fixup`):** every syscall user copy goes through `arch::x86_64::user_copy`, one `rep movsb` at a known RIP. The page-fault shim, for a ring-0 fault at that RIP on a user-half CR2, rewrites the saved RIP to the fixup and `iretq`s, and the copy returns EFAULT. Any other kernel-mode fault still halts. A concurrent unmap is the same case: the TLB shootdown completes before `vm_unmap` returns, so the copying CPU faults and recovers. Futex's compare is a second registered instruction (one aligned 4-byte load); the IPC copy uses the routine on the caller's side and, on the peer's, a permission-checked walk (`translate_user`) under the peer's `inner` lock held until the copy is done (`with_user_frame`), so the peer's sibling can't free the frame mid-copy; the test tail hook checks its word in the page tables when armed and writes it through the routine. **No committed state on EFAULT, for these paths:** SYS_READ moves the offset only after its copy; SYS_INFER_RUN closes the handles it installed; SYS_THREAD_JOIN writes the status while it still holds the exit record; SYS_SOCKET_RECV (TCP and UDP) and SYS_SOCKET_RECVFROM copy out before the bytes leave the socket queue; SYS_NET_TCP_ENABLE_TLS wipes the key before installing TLS. **Outside that guarantee:** SYS_INPUT_FOCUS_RECV and stdin SYS_READ take an event or byte that can't be put back; they check the buffer in the page tables first, but a sibling's unmap after the check loses it | **Yes (`user_copy_fault`: SYS_HANDLE_INFO and SYS_READDIR (unmapped, crossing and read-only outputs; a read-only cursor), SYS_WRITE (unmapped and crossing inputs), SYS_READ (offset kept), futex (unmapped, and unmapped under the queue lock), IPC (read-only, unmapped and crossing buffers, both directions; and a sibling on a third CPU unmapping the peer's page mid-copy, which must wait: with the lock released early it fails `ipc_unmap_race result=3`), join (still joinable), TLS key (EFAULT, a half read-only key kept), UDP receive (datagram kept); `threads_exit_group` role 6 arms the tail hook on an unmapped word; control `neo-test-user-copy-fault-control` halts on the first. The futex leg removes the page deterministically; the receive and join legs use static bad buffers, not a concurrent unmap)** |
 | CP-100 | **An XSAVE area sized from CPUID.(0DH,0):EBX alone** (found 2026-11-02, the preview under WHPX). EBX is "the size for the features enabled in XCR0", so it is only right if whoever answers CPUID tracks the guest's XCR0. QEMU under WHPX (`kernel-irqchip=off`) answered 576 (x87\|SSE) with XCR0 = x87\|SSE\|AVX ⇒ every `xsave` wrote AVX state 256 bytes past the area: in the timer stub, over the saved registers and the iretq frame copy, so the first LAPIC tick's `iretq` took a #GP(0) and the boot froze; per-thread save buffers on the heap overran the same way | Interrupt entry / FPU state (`fpu::finish_xsave_init`) | **Was EXPOSED → fixed:** the area is the largest of EBX, 576, and each enabled component's offset + size from CPUID.(0DH,i) (`fpu_logic::xsave_area_size`); an understated EBX is logged (`cpuid_0d_ebx=576 (understated; …)`) | **Yes (`xsave_ebx_understated`: EBX forced to 576, the YMM/XMM/x87 context-switch legs must pass with area 832; control `neo-test-xsave-ebx-understated-control` (EBX trusted) takes the same #GP at `timer_isr_entry+0xe0`; host KATs `fpu-logic-tests`)** |
 | CP-101 | **Withdrawn (2026-10-31).** Filed in 27ce30f0 as a loopback-pump reordering race (two CPUs pop `OUTBOUND` in order, then inject out of order) behind the `fetch_broker` lost request. A per-segment trace then showed every segment delivered in order; the real cause was the TLS fixture server dropping a request decrypted during its handshake (fixed in `libneo::tls`, dcf91989). The `LOOPBACK_PUMP` lock was removed. The shape is still possible in principle but has not been observed | Network / loopback TCP (`tcp::pump_loopback_egress`) | **Not guarded; unproven hazard**, no change | **No (the discriminator it cited was the fixture bug)** |
+| CP-102 | **A check against a route epoch, then an act that reads it again** (found 2026-11-02, Jarvis's review of #61). Key auto-repeat checked the held key's activation epoch, then staged the repeat with `stage_event`, which stamps the stage with the epoch read *then* ⇒ a focus change or Super+L between the check and the stage (another CPU) gives a repeat checked for the old owner to the new owner or the lock screen | Input routing / key auto-repeat (`key-autorepeat`) | **Guarded:** the repeat carries the epoch it was checked under (`key_repeat::poll` returns it); `stage_event_at` drops it if the epoch has moved and otherwise stamps the stage with *that* epoch, so a move after staging is caught by the flush's comparison under `DELIVERY` (where every route change bumps it). The legacy routed path compares under `DELIVERY` (`route_event_at`). Pure decision: `key_repeat_logic::stage_action`, host-KAT'd | **Yes (`key_repeat_epoch`: a focus change and Super+L forced between the check and the stage, and Super+L between the stage and the flush; nothing reaches B or the lock screen. Falsified by `neo-test-key-repeat-epoch-control`, the fresh-read shape: FAIL `reason=repeat_crossed_focus_change`)** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
 prevents it and there is (or should be) a discriminator; *N-A* = the construct doesn't exist in our kernel
@@ -4663,8 +4664,11 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
      the fallback at all.
   3. **A parked CPU holds a lock.** STOP is taken only with interrupts on, so its parks hold no IRQ-safe
      lock, but they can hold a plain spin lock taken with interrupts on; an NMI park can hold anything. Any
-     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free.
-- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5.
+     lock the stopper takes afterwards (the UART's, a cached plan's) may never come free. **That includes
+     the heap allocator's lock, taken by any drop of a heap value** (a `Vec` going out of scope), so a
+     plan built before the stop and dropped after it hangs the stopper before the power-off.
+- **Found by.** Janus's cross-family review of OT-90 P3b-1 (#6), items 1, 2 and 5; the allocator-lock case
+  and the per-step waits by his review of P3b-2 (#7), items 2a and 3.
 - **Guard (OT-90 P3b-1).**
   - The stopper takes the TLB-shootdown sender lock with interrupts on (waiting out and acknowledging any
     sender in flight), then masks interrupts and leaves the ready set, and never releases the lock
@@ -4675,11 +4679,17 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
     with a holdout's), and the power plan is read from a copy taken before the stop.
   - With any holdout, the single-CPU steps (I/O APIC and PCI masking) are skipped and the path goes straight
     to the power-off or reset, which ends every CPU. The holdouts are reported.
+  - **(P3b-2, K6.)** K6's plan (heap vectors, built before the stop) is held in `ManuallyDrop`, so no path
+    after the stop frees it, the holdout return included. Every K6 wait is bounded by a poll count as well
+    as the timer (`power_logic::wait_bounded`), so a frozen timer can't hold it either.
 - **Discriminators.** `ot90_stop_shootdown`: an AP sends IF=0 shootdowns at every other CPU while K4
   starts; every AP must park by STOP (with the old mask-first order it fails 4/4, the sender parked only
   by the NMI). `ot90_stop_wedged`: the highest AP ignores STOP and, in its NMI handler, takes the UART lock
   and never acknowledges; the PM timer reads as frozen. K4 must end on its poll count, report that AP as
-  the holdout, skip K5 and reach S5.
+  the holdout, skip K5 and reach S5. `ot90_quiesce_heap_held` (P3b-2): the highest AP ignores STOP, takes
+  the allocator's lock in its NMI handler and parks holding it; K6 must run and S5 must still come (with the
+  plan dropped at the end of `stop_world` it hangs, 4 of 4). Host KAT `a_k6_wait_ends_on_a_frozen_pm_timer`:
+  the real `pm_wait` on a timer reading 0, with a controller that never finishes.
 - **Source.** Ours, with the principle from Linux's `smp_send_stop` / `crash_smp_send_stop` (read for
   principle only): the stop is best-effort, the caller must not assume it worked, and panic-time printing
   uses a lock-free console path.
@@ -4713,3 +4723,30 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   - `ok(17)`: six threads print 600-byte runs with no newline at once (the bounce's repro).
 - **Source.** The PM's AAG on #261 (2026-10-31). Principle: musl's `__stdio_*` locking and `libc.threaded`
   (`src/thread/pthread_create.c`), read for the design only.
+
+### CP-107 — A sequence condvar that wakes after dropping its lock, on a futex that wakes the lowest slot first
+
+- **Shape.**
+  - A condvar built as "a sequence number under a lock, plus a wait queue": a waiter records the number, releases
+    the caller's mutex, and sleeps until the number changes; `signal` bumps the number and wakes one sleeper.
+  - If `signal` releases the lock **before** it wakes, a thread can arrive in the gap, record the *new* number and
+    start sleeping. If the wake can reach that late thread, it sees no change and sleeps again. The signal is
+    spent, and the waiter it was for (asleep at the time of the call, as POSIX requires) sleeps on.
+  - Whether the late thread can be woken first depends on the wait queue. Our futex puts a waiter in the first free
+    queue slot and wakes the lowest slot first (`kernel/src/sched/futex.rs`), so a late waiter can take a slot
+    freed by an unrelated waiter and be first in line. A FIFO queue hides the bug.
+- **Guard (#67, C3b).** `neo-crt/src/seqcond.rs`: `signal` and `broadcast` wake while holding the sequence lock. A
+  thread can only record a number while holding that lock, so every thread the wake can reach recorded the old
+  number and returns to its caller.
+- **Discriminators.**
+  - Host KAT `tools/neo-crt-logic-tests`, `signal_reaches_the_waiter_it_was_for`. A model condvar wakes the newest
+    waiter first and, inside `notify_one`, waits for one more waiter to register. Waiter A waits; the producer
+    signals; waiter B starts waiting during the wake. A must get the signal.
+  - Its control, `control_waking_after_unlock_loses_the_signal`, runs the old order (bump, unlock, wake), and A
+    must **not** get the signal. That keeps the model honest: if the control ever passes, the KAT no longer
+    reproduces the race.
+  - On target, `cxx_runtime_smoke` items 22 and 27 (condvar wake and timeout, pthread and libc++).
+- **Source.** Chad's cross-family review of #67 (relay 299, item 2): a deterministic scheduling model of the first
+  version reproduced both waiters asleep after `signal` returned. Principle: the standard "signal under the
+  condvar's internal lock" rule for sequence-counter condvars (as in std's own futex condvar, which bumps and wakes
+  in one step on the futex word).

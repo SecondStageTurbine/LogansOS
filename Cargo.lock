@@ -1184,6 +1184,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-crt-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "neo-edit-core"
 version = "0.0.1"
 dependencies = [
@@ -1259,6 +1263,10 @@ dependencies = [
  "vault-core",
  "zeroize",
 ]
+
+[[package]]
+name = "neofs-cache-logic-tests"
+version = "0.0.1"
 
 [[package]]
 name = "neofs-commit-logic-tests"
@@ -2176,6 +2184,10 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "tz-logic-tests"
+version = "0.0.1"
 
 [[package]]
 name = "uart_16550"

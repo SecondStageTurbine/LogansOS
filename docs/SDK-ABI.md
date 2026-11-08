@@ -88,7 +88,7 @@ Surface is active under development. Expect additions, struct layout changes, an
 |---------|----------|
 | **AI syscalls** (0x100–0x12F) | Tensor/model/inference calls added across Phase 5–8. `SYS_GENERATE*` changes shape with `real-lm`; without it they return `EINVAL`. |
 | **Network syscalls** (0x180–0x190) | TCP/DNS/TLS stack functional; the optional `net-dial-cap` build changes several argument shapes. |
-| **Atrium/GPU/input syscalls** (0x1A0–0x1B6) | Gated by `atrium-compositor-g1`/`atrium-pointer-forward`/`desktop-session` and a runtime switch; shapes may still move with the desktop. |
+| **Atrium/GPU/input syscalls** (0x1A0–0x1B9) | Gated by `atrium-compositor-g1`/`atrium-pointer-forward`/`desktop-session` and a runtime switch; shapes may still move with the desktop. |
 
 ### BREAKS FREELY
 
@@ -304,7 +304,7 @@ Notes:
 - `SYS_NET_SHUTDOWN_TCP` and `SYS_NET_CONNECT_TCP` have libneo number constants but no wrapper
   functions.
 
-### Atrium: compositor, GPU, input (0x1A0–0x1B6)
+### Atrium: compositor, GPU, input (0x1A0–0x1B9)
 
 All are compiled under `atrium-compositor-g1` (or the narrower feature named) and additionally guarded
 by the Atrium runtime switch: with the switch off they return `ENOSYS`.
@@ -333,6 +333,9 @@ by the Atrium runtime switch: with the switch off they return `ENOSYS`.
 | 436 | 0x1B4 | `SYS_TRY_RECV` | `h: u32, buf: ptr, max_len` | bytes received, or `EAGAIN` | `EAGAIN` (no sender), `EINVAL`, `EFAULT`, `EBADF`, `EPERM` | `atrium-pointer-forward` | yes | `sys_try_recv` |
 | 437 | 0x1B5 | `SYS_WAIT_ANY` | `items: ptr, n, deadline_ns: u64` | ready mask (bit `i`), or `ETIMEDOUT` | `EPIPE`, `EAGAIN`, `EINVAL`, `EFAULT`, `EBADF`, `EPERM`, `ETIMEDOUT` | `wait-multiplex` | **no** | `sys_wait_any` |
 | 438 | 0x1B6 | `SYS_BUFFER_UNMAP` | `va: u64` (a `SYS_BUFFER_MAP` base) | 0 | `EINVAL` (no mapping at `va`) | `atrium-compositor-g1` | rt | `sys_buffer_unmap` |
+| 439 | 0x1B7 | `SYS_TRY_SEND` | `h: u32, buf: ptr, len` | bytes sent, or `EAGAIN` | `EAGAIN` (no receiver parked), `EINVAL`, `EFAULT`, `EBADF`, `EPERM` | `ipc-try-send` | yes | `sys_try_send` |
+| 440 | 0x1B8 | `SYS_TRY_GRANT` | `channel: u32, src: u32, rights: u16` | 0, or `EAGAIN` | `EAGAIN` (no `SYS_RECV_GRANT` parked), `EBADF`, `EPERM`, `EINVAL` | `ipc-try-send` | yes | `sys_try_grant` |
+| 441 | 0x1B9 | `SYS_TRY_RECV_GRANT` | `channel: u32, max: u16` (rights) | new handle, or `EAGAIN` | `EAGAIN` (no grantor parked), `EBADF`, `EPERM`, `EINVAL` | `ipc-try-send` | yes | `sys_try_recv_grant` |
 
 Notes:
 - `BufferDescV1` = `{ width, height, stride, format: u32, bytes: u64 }` (24 bytes);
@@ -360,6 +363,18 @@ Notes:
 inherited only by the shell.
 
 ---
+
+### Clock (0x1C8–0x1C9)
+
+| # | Hex | Name | Args | Returns | Errors | Gate | A | libneo |
+|---|-----|------|------|---------|--------|------|---|--------|
+| 456 | 0x1C8 | `SYS_CLOCK_CONFIRM_REALTIME` | `offset_s: i64` (the RTC's offset from UTC, seconds east) | 0 | `EPERM` (not input-system holder), `EINVAL` (past ±24 h), `EALREADY` (confirmed once), `EAGAIN` (no RTC epoch), `ENOSYS` (no `rtc-offset`) | `rtc-offset` | **no** | `sys_clock_confirm_realtime` |
+| 457 | 0x1C9 | `SYS_CLOCK_REALTIME_STATUS` | — | 1 confirmed UTC, 0 unconfirmed | `ENOSYS` (no `rtc-offset`) | `rtc-offset` | yes | `sys_clock_realtime_status` |
+
+`rtc-offset` (`docs/THINK-2026-11-02-time-zones.md` §2.1): `CLOCK_REALTIME` is UTC. The RTC epoch starts
+unconfirmed; the session (the WM, which has the zone) confirms it once with the RTC's offset from UTC (0 when the RTC
+holds UTC), which moves realtime by that offset. Read the status before the clock: a `1` means the realtime read after
+it is UTC.
 
 ## Test-only syscalls (not SDK)
 
@@ -457,7 +472,7 @@ Nested structs (no independent version, inherit the parent's versioning):
 | 0x56–0xFF | Reserved | Empty |
 | 0x100–0x17F | AI: tensors, models, inference (Bible Article 6.1) | **Formally reserved**; 0x100–0x123 populated |
 | 0x180–0x190 | Network: sockets, TCP, DNS, TLS, CSPRNG | Populated |
-| 0x1A0–0x1B6 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
+| 0x1A0–0x1B9 | Atrium: compositor, GPU compute, input routing | Populated under the Atrium features |
 | 0x1C0–0x1C1 | Installer | Populated under `installer` |
 | 0xF00–0xF0A | Test-only probes | **Never ships** |
 | 0x4E, 0x1AC | Test-only probes in production ranges | **Never ships** |

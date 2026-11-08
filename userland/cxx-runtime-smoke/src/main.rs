@@ -6,7 +6,8 @@
 //! The C checks live in `c/crt_checks.c`, each against an independent
 //! oracle (see that file's header), and the C++ ones in `c/cxx_checks.cpp`.
 //! This binary runs them in order, then runs three on several threads at
-//! once: `errno` must be per thread, the allocator must hold up under
+//! once (and, from C3b, the pthread and libc++ thread checks in
+//! `c/pthread_checks.c` and `c/cxx_thread_checks.cpp`): `errno` must be per thread, the allocator must hold up under
 //! concurrent use, and a function-local static must be built exactly once
 //! while every thread waits for it.
 //!
@@ -17,7 +18,7 @@
 
 use std::ffi::c_void;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -56,6 +57,44 @@ unsafe extern "C" {
     fn __unlockfile(f: *mut c_void);
     fn __errno_location() -> *mut i32;
     fn __neo_crt_write(fd: i32, buf: *const u8, len: usize) -> std::ffi::c_long;
+    fn pt_check_threads() -> i32;
+    fn pt_check_mutex_kinds() -> i32;
+    fn pt_check_condvar() -> i32;
+    fn pt_check_keys() -> i32;
+    fn pt_check_once() -> i32;
+    fn pt_check_rwlock() -> i32;
+    fn cxx_check_threads() -> i32;
+    fn cxx_check_condition_variable() -> i32;
+    fn cxx_check_sync() -> i32;
+    fn pthread_key_create(key: *mut u32, dtor: Option<unsafe extern "C" fn(*mut c_void)>) -> i32;
+    fn pthread_key_delete(key: u32) -> i32;
+    fn pthread_setspecific(key: u32, value: *const c_void) -> i32;
+}
+
+static STD_THREAD_DTORS: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn count_std_thread_dtor(v: *mut c_void) {
+    if v as usize == 0x5eed {
+        STD_THREAD_DTORS.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// #67 review (Chad), item 3: a key set on a thread that `pthread_create` didn't
+/// make (a plain `std::thread`) has its destructor run once, with the value
+/// set, when that thread exits. Before the fix the count stayed 0: only
+/// `pthread_create`'s threads ran key destructors.
+fn std_thread_runs_key_destructors() -> bool {
+    let mut key = 0u32;
+    if unsafe { pthread_key_create(&mut key, Some(count_std_thread_dtor)) } != 0 {
+        return false;
+    }
+    STD_THREAD_DTORS.store(0, Ordering::SeqCst);
+    let set = thread::spawn(move || unsafe { pthread_setspecific(key, 0x5eed as *const c_void) })
+        .join()
+        .unwrap_or(-1);
+    let ran = STD_THREAD_DTORS.load(Ordering::SeqCst);
+    unsafe { pthread_key_delete(key) };
+    set == 0 && ran == 1
 }
 
 fn check(n: i32, what: &str, ok: bool) {
@@ -239,6 +278,48 @@ pub extern "C" fn _start() -> ! {
         19,
         "arc4random_buf and page-aligned posix_memalign (C3c-1 prerequisites)",
         crt_check_entropy,
+    );
+    c_check(
+        20,
+        "pthread: create/join, a mutex that excludes, self/equal",
+        pt_check_threads,
+    );
+    c_check(
+        21,
+        "pthread: recursive, error-checking and normal mutexes",
+        pt_check_mutex_kinds,
+    );
+    c_check(
+        22,
+        "pthread: cond wake, monotonic timeout, realtime refused",
+        pt_check_condvar,
+    );
+    c_check(
+        23,
+        "pthread: keys per thread, destructors at exit",
+        pt_check_keys,
+    );
+    c_check(24, "pthread: once under 6 threads", pt_check_once);
+    c_check(25, "pthread: rwlock", pt_check_rwlock);
+    c_check(
+        26,
+        "C++: std::thread + std::mutex, hardware_concurrency",
+        cxx_check_threads,
+    );
+    c_check(
+        27,
+        "C++: condition_variable wait_for timeout and wake",
+        cxx_check_condition_variable,
+    );
+    c_check(
+        28,
+        "C++: call_once, shared_mutex, atomic wait/notify",
+        cxx_check_sync,
+    );
+    check(
+        29,
+        "pthread: a std::thread's key destructor runs at its exit",
+        std_thread_runs_key_destructors(),
     );
     println!("{TAG} PASS");
     std::process::exit(0)

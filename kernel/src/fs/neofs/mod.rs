@@ -8,6 +8,8 @@
 
 mod alloc_logic;
 mod cache;
+// The block cache's lookup (pure; host-tested).
+mod cache_logic;
 // The commit order on a write-back disk (pure; host-tested).
 mod commit_logic;
 mod format;
