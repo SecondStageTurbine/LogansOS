@@ -6008,6 +6008,32 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // neofs-cache-index: the OT-92 legs above with every cache lookup made
+    // through both the index and the scan (they must agree) and the index
+    // checked against a rebuild after every change; with eviction, and
+    // without it (`forget_range`'s `retain`). `_off` is the kill-switch leg:
+    // the same legs with every lookup by scan.
+    TestScenario {
+        name: "phase3_neofs_cache_index_crosscheck",
+        feature: "neo-test-neofs-cache-index-crosscheck",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_cache_index_crosscheck_noevict",
+        feature: "neo-test-neofs-cache-index-crosscheck-noevict",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "phase3_neofs_cache_index_off",
+        feature: "neo-test-neofs-cache-index-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // L7.1: the boot-time stamps, QEMU's no-FPDT path, the record, and
     // SYS_BOOT_TIMES's checks.
     TestScenario {
@@ -16612,7 +16638,11 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         "phase3_neofs_mount_rejects_bad_superblock" => Some("corrupt-primary"),
         "phase3_neofs_create_small_file" => Some("normal"),
         "phase3_neofs_write_readback_same_boot" => Some("normal"),
-        "phase3_neofs_cache_evict" | "phase3_neofs_cache_evict_off" => Some("normal"),
+        "phase3_neofs_cache_evict"
+        | "phase3_neofs_cache_evict_off"
+        | "phase3_neofs_cache_index_crosscheck"
+        | "phase3_neofs_cache_index_crosscheck_noevict"
+        | "phase3_neofs_cache_index_off" => Some("normal"),
         "phase3_neofs_allocator_reuse_guard" => Some("normal"),
         "phase3_neofs_reboot_persistence_small_file" => Some("normal"),
         "ot90_s5_durability" | "ot90_quiesce" | "ot90_quiesce_heap_held" | "ot90_stuck_disk" => {

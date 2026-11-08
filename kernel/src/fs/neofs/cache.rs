@@ -140,6 +140,11 @@ struct CacheInner {
     /// indexed by `evictions % RECENT_EVICTED` (`evicted_since`).
     #[cfg(feature = "neofs-cache-evict")]
     recent_evicted: [u64; RECENT_EVICTED],
+    /// `blocks` by block number (`cache_logic::BlockIndex`), changed in the
+    /// same critical section as `blocks` (`push_block`, `evict_locked`,
+    /// `forget_range`).
+    #[cfg(feature = "neofs-cache-index")]
+    index: super::cache_logic::BlockIndex,
 }
 
 pub(super) struct NeoFsBlockCache {
@@ -213,6 +218,8 @@ impl NeoFsBlockCache {
                 evictions: 0,
                 #[cfg(feature = "neofs-cache-evict")]
                 recent_evicted: [0; RECENT_EVICTED],
+                #[cfg(feature = "neofs-cache-index")]
+                index: super::cache_logic::BlockIndex::new(),
             }),
         }
     }
@@ -220,7 +227,7 @@ impl NeoFsBlockCache {
     pub(super) fn read_block(&self, block: u64) -> Result<[u8; FS_BLOCK_SIZE], NeoFsError> {
         let epoch = {
             let mut inner = self.inner.lock();
-            if let Some(idx) = find_cached_block(&inner.blocks, block) {
+            if let Some(idx) = find_cached_block(&inner, block) {
                 inner.hits = inner.hits.saturating_add(1);
                 touch(&mut inner, idx);
                 let mut out = [0u8; FS_BLOCK_SIZE];
@@ -233,7 +240,7 @@ impl NeoFsBlockCache {
 
         let bytes = read_fs_block(&self.device, block)?;
         let mut inner = self.inner.lock();
-        if let Some(idx) = find_cached_block(&inner.blocks, block) {
+        if let Some(idx) = find_cached_block(&inner, block) {
             let mut out = [0u8; FS_BLOCK_SIZE];
             out.copy_from_slice(&inner.blocks[idx].bytes);
             return Ok(out);
@@ -252,7 +259,7 @@ impl NeoFsBlockCache {
         validate_fs_block(&self.device, block)?;
         let epoch = {
             let mut inner = self.inner.lock();
-            if let Some(idx) = find_cached_block(&inner.blocks, block) {
+            if let Some(idx) = find_cached_block(&inner, block) {
                 inner.hits = inner.hits.saturating_add(1);
                 touch(&mut inner, idx);
                 out.copy_from_slice(&inner.blocks[idx].bytes[..out.len()]);
@@ -266,7 +273,7 @@ impl NeoFsBlockCache {
         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
 
         let mut inner = self.inner.lock();
-        if let Some(idx) = find_cached_block(&inner.blocks, block) {
+        if let Some(idx) = find_cached_block(&inner, block) {
             out.copy_from_slice(&inner.blocks[idx].bytes[..out.len()]);
             return Ok(());
         }
@@ -344,7 +351,7 @@ impl NeoFsBlockCache {
                 }
                 let needs_read = {
                     let mut inner = self.inner.lock();
-                    if find_cached_block(&inner.blocks, block).is_some() {
+                    if find_cached_block(&inner, block).is_some() {
                         None
                     } else {
                         inner.misses = inner.misses.saturating_add(1);
@@ -361,7 +368,7 @@ impl NeoFsBlockCache {
                 };
 
                 let mut inner = self.inner.lock();
-                if find_cached_block(&inner.blocks, block).is_some() {
+                if find_cached_block(&inner, block).is_some() {
                     break inner;
                 }
                 match read {
@@ -372,7 +379,7 @@ impl NeoFsBlockCache {
                     _ => {}
                 }
             };
-            let idx = find_cached_block(&inner.blocks, block).ok_or(NeoFsError::BlockDevice)?;
+            let idx = find_cached_block(&inner, block).ok_or(NeoFsError::BlockDevice)?;
             touch(&mut inner, idx);
             inner.blocks[idx].bytes[in_block..in_block + take]
                 .copy_from_slice(&input[copied..copied + take]);
@@ -397,9 +404,17 @@ impl NeoFsBlockCache {
         let mut inner = self.inner.lock();
         // Off (the previous layer): drop them, and nothing else changes.
         #[cfg(not(feature = "neofs-cache-evict"))]
-        inner
-            .blocks
-            .retain(|cached| cached.block < first || cached.block >= end);
+        {
+            inner
+                .blocks
+                .retain(|cached| cached.block < first || cached.block >= end);
+            #[cfg(feature = "neofs-cache-index")]
+            {
+                let inner = &mut *inner;
+                inner.index.rebuild(&inner.blocks);
+                check_index(inner);
+            }
+        }
         // On: each one counts as an eviction, so a miss that read it before
         // it was dropped doesn't insert its old bytes.
         #[cfg(feature = "neofs-cache-evict")]
@@ -409,6 +424,12 @@ impl NeoFsBlockCache {
                 let block = inner.blocks[idx].block;
                 if block >= first && block < end {
                     inner.blocks.remove(idx);
+                    #[cfg(feature = "neofs-cache-index")]
+                    {
+                        let inner = &mut *inner;
+                        inner.index.removed(&inner.blocks, idx, block);
+                        check_index(inner);
+                    }
                     record_eviction(&mut inner, block);
                 } else {
                     idx += 1;
@@ -756,13 +777,52 @@ impl super::cache_logic::BlockKey for CachedBlock {
     }
 }
 
-/// The hot path of a large read-back: see `cache_logic`.
-fn find_cached_block(blocks: &[CachedBlock], block: u64) -> Option<usize> {
-    super::cache_logic::find_block(blocks, block)
+/// The hot path of a large read-back: see `cache_logic`. With
+/// `neofs-cache-index`, the index; without it, or with the kill-switch leg
+/// (`neo-test-neofs-cache-index-off`), the scan. The crosscheck scenario runs
+/// both on every lookup and on the index after every change.
+fn find_cached_block(inner: &CacheInner, block: u64) -> Option<usize> {
+    #[cfg(all(
+        feature = "neofs-cache-index",
+        not(feature = "neo-test-neofs-cache-index-off")
+    ))]
+    {
+        let found = inner.index.find(block);
+        #[cfg(feature = "neofs-cache-index-crosscheck")]
+        assert_eq!(
+            found,
+            super::cache_logic::find_block(&inner.blocks, block),
+            "neofs cache index: lookup of block {} differs from the scan",
+            block
+        );
+        found
+    }
+    #[cfg(not(all(
+        feature = "neofs-cache-index",
+        not(feature = "neo-test-neofs-cache-index-off")
+    )))]
+    {
+        super::cache_logic::find_block(&inner.blocks, block)
+    }
+}
+
+/// After a change to `blocks`, in the crosscheck scenario: the index is what
+/// a rebuild would make of it. Elsewhere nothing (a rebuild per change would
+/// cost more than the scan it replaces).
+#[cfg(feature = "neofs-cache-index")]
+#[inline(always)]
+fn check_index(inner: &CacheInner) {
+    #[cfg(feature = "neofs-cache-index-crosscheck")]
+    assert!(
+        inner.index.matches(&inner.blocks),
+        "neofs cache index out of step with the cache ({} blocks)",
+        inner.blocks.len()
+    );
+    let _ = inner;
 }
 
 fn find_or_insert_full_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
-    if let Some(idx) = find_cached_block(&inner.blocks, block) {
+    if let Some(idx) = find_cached_block(&inner, block) {
         return idx;
     }
 
@@ -781,6 +841,11 @@ fn push_block(inner: &mut CacheInner, block: u64, bytes: Vec<u8>) -> usize {
         role: CachedBlockRole::Data,
         last_use,
     });
+    #[cfg(feature = "neofs-cache-index")]
+    {
+        inner.index.pushed(&inner.blocks);
+        check_index(inner);
+    }
     inner.blocks.len() - 1
 }
 
@@ -828,6 +893,11 @@ fn evict_locked(inner: &mut CacheInner) {
         // `remove`, not `swap_remove`: the drain takes the first dirty block
         // of the lowest role, so keep the others in insertion order.
         let block = inner.blocks.remove(victim).block;
+        #[cfg(feature = "neofs-cache-index")]
+        {
+            inner.index.removed(&inner.blocks, victim, block);
+            check_index(inner);
+        }
         record_eviction(inner, block);
     }
 }
@@ -971,7 +1041,7 @@ fn drain_pass(
         } else {
             inner.data_unflushed = true;
         }
-        if let Some(idx) = find_cached_block(&inner.blocks, block)
+        if let Some(idx) = find_cached_block(&inner, block)
             && inner.blocks[idx].dirty
             && inner.blocks[idx].role == role
             && inner.blocks[idx].bytes.as_slice() == bytes.as_slice()
