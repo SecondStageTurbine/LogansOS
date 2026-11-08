@@ -1,0 +1,49 @@
+#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3c-1: the C/C++ compiler the SpiderMonkey generator hands to
+# configure for x86_64-unknown-neoplutarch (trap T6). It is neo-crt's own
+# compile line (userland/cxx-runtime-smoke/build.rs): clang for
+# x86_64-unknown-none-elf over musl's and libc++'s headers, with
+# __neoplutarch__ predefined so configure's kernel check finds us.
+#
+# Run as `neo-cc` for C and `neo-c++` (a symlink) for C++. NEO_REPO is the
+# repository root; NEO_CLANG the clang to use (default clang).
+#
+# Linking: configure links small test programs. There is no neo-crt archive
+# here, so a link resolves nothing and ignores undefined symbols. That makes
+# any symbol check pass; the generator lists configure's link-based answers so
+# they're checked against neo-crt by hand (and, next, against its symbols).
+set -eu
+repo=${NEO_REPO:?NEO_REPO must name the repository root}
+clang=${NEO_CLANG:-clang}
+crt=$repo/third_party/ot61-crt/vendor
+res=$("$clang" -print-resource-dir)
+
+cxx=
+case "$0" in *++) cxx=1 ;; esac
+
+link=1
+for a in "$@"; do
+  case "$a" in -c|-E|-S|-M|-MM) link= ;; esac
+done
+
+set -- --target=x86_64-unknown-none-elf -D__neoplutarch__ \
+  -mno-red-zone -mcmodel=small -fno-pic -fno-pie -fno-stack-protector \
+  -D_XOPEN_SOURCE=700 -nostdinc "$@"
+inc="-isystem $crt/musl-generated -isystem $crt/musl/arch/x86_64 \
+  -isystem $crt/musl/arch/generic -isystem $crt/musl/include \
+  -isystem $res/include"
+if [ -n "$cxx" ]; then
+  inc="-nostdinc++ -fno-exceptions -fno-rtti \
+    -isystem $repo/userland/neo-crt/cxx -isystem $crt/libcxx/include $inc"
+  exe="$clang --driver-mode=g++"
+else
+  exe="$clang"
+fi
+if [ -n "$link" ]; then
+  # shellcheck disable=SC2086
+  exec $exe $inc "$@" -nostdlib -static -fuse-ld=lld \
+    -Wl,--unresolved-symbols=ignore-all -Wl,-e,0
+fi
+# shellcheck disable=SC2086
+exec $exe $inc "$@"
