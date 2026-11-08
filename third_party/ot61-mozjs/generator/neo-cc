@@ -24,6 +24,12 @@ res=$("$clang" -print-resource-dir)
 cxx=
 case "$0" in *++) cxx=1 ;; esac
 
+# `neo-c++ --neo-print-flags`: print the flags this wrapper adds (target,
+# defines, headers), one per line, for tools that parse C++ themselves
+# (the generator's bindgen step) and so never run this script.
+print_flags=
+[ "${1:-}" = "--neo-print-flags" ] && { print_flags=1; shift; }
+
 link=1
 for a in "$@"; do
   case "$a" in -c|-E|-S|-M|-MM) link= ;; esac
@@ -35,7 +41,7 @@ done
 set -- --target=x86_64-unknown-none-elf -D__neoplutarch__ \
   -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -nostdinc "$@" \
   -mno-red-zone -mcmodel=small -fno-pic -fno-pie
-here=$(dirname "$0")
+here=$(cd "$(dirname "$0")" && pwd)
 inc="-isystem $repo/third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6/include \
   -isystem $repo/third_party/ot61-mozjs/vendor/mozjs-138c9470/mozjs-sys/mozjs/modules/zlib/src \
   -isystem $crt/musl-generated -isystem $crt/musl/arch/x86_64 \
@@ -49,6 +55,11 @@ if [ -n "$cxx" ]; then
   exe="$clang --driver-mode=g++"
 else
   exe="$clang"
+fi
+if [ -n "$print_flags" ]; then
+  # shellcheck disable=SC2086
+  for f in "$@" $inc; do printf '%s\n' "$f"; done
+  exit 0
 fi
 if [ -n "$link" ]; then
   # clang hands an x86_64-unknown-none-elf link to the host's gcc driver,
