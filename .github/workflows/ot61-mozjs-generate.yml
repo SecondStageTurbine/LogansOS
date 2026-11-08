@@ -72,6 +72,7 @@ jobs:
               --disable-js-shell \
               --disable-export-js \
               --disable-shared-memory \
+              --disable-wasm-moz-intgemm \
               --disable-shared-js \
               --disable-tests \
               --disable-debug \
