@@ -29,11 +29,28 @@ Two more linear walks sit next to it:
 1. **Bit-for-bit kill-switch** (complexity-governance rule 1): with the index off, the cache must behave as it does
    today. With it on, every lookup must return the same block as the linear scan. That includes the write-back
    order, which depends on `Vec` order.
-2. **Same lock, no new lock.** Everything runs under `CacheInner`'s `IrqSafeMutex` (IF=0). The index is a field of
-   `CacheInner`, so it is updated in the same critical sections as `blocks`.
+2. **Same locks, no new lock, lock order `drain → inner`.**
+   - The cache has two locks:
+     - `drain`, a `SwitchMutex` held across block I/O with IF=1 by `drain_all`, `drain_worker_cycle` and
+       `debug_drain_to_barrier` (`cache.rs:158-162`);
+     - `inner`, an `IrqSafeMutex` (IF=0).
+   - `drain_pass` takes `inner` inside `drain`. No path holds `inner` and then takes `drain`: `drain_worker_cycle`
+     drops `inner` before its `try_lock`, `pause_worker`'s guard holds no `inner`, and `evict_locked` takes only
+     `inner` and is never called under `drain`.
+   - The index is a field of `CacheInner`, read and changed only under `inner`, in the same critical sections as
+     `blocks`. So it adds no lock and no edge.
 3. **Allocation under the lock is already normal here** (`push_block` grows the `Vec` under it; the heap is
-   `IrqSafeHeap`), so a tree node allocation adds no new hazard class.
-4. **No new dependency**, and nothing in a hot path that only the product build exercises.
+   `IrqSafeHeap`), so the index's allocations add no new hazard class.
+4. **One entry per block, in one cache per device.**
+   - **Scope:** a `NeoFsBlockCache` owns exactly one device (`cache.rs:146,178`), made per mount (`inode.rs:197`),
+     so a block number alone is the right key. A cache shared by several devices would need a `(device, block)`
+     key, and this index must not be reused for one without it.
+   - **The invariant:** within a cache, `blocks` never holds a block twice. Every push follows a lookup miss under
+     the same `inner` (`read_block`, `write_bytes_at`, `find_or_insert_full_block`, `insert_read_locked`).
+   - **Enforcement:** `BlockIndex::pushed` reports a second entry for a block, the cache `debug_assert!`s it never
+     does, and a host KAT covers the double insert. The index still keeps the scan's first-match answer if a
+     duplicate ever appeared, so release builds stay correct.
+5. **No new dependency**, and nothing in a hot path that only the product build exercises.
 
 ## 3. Options
 
@@ -52,6 +69,9 @@ build once the KATs and the scenarios are green).**
   eviction (product) and `forget_range`.
 - C and D are faster on removal but change the drain's iteration order or need a new crate. Neither is worth it while
   removal is rare.
+- **Memory:** the index holds one 16-byte entry per cached block, so it is bounded by `blocks.len()` and adds no new
+  memory tier. At about 35,000 entries (the installer's no-evict cache) it is about 560 KB, against about 140 MB of
+  cached blocks; in the product (about 256 plus the dirty blocks) it is a few KB.
 
 **Separately, for the PM (not part of B):** whether the installer scenarios should run with `neofs-cache-evict` as
 the product does (option A). It makes them test what ships, but it is a test-coverage decision, not a fix: the
@@ -66,9 +86,20 @@ installer scenario in each mode.
 - **`cache.rs`:** `find_cached_block` uses the index when the feature is on, else today's loop. The four places
   that change `blocks` keep the index in step: `push_block`, the `remove` in `evict_locked`, the `remove` loop and
   the `retain` in `forget_range` (the `retain` becomes a rebuild).
-- **Checks:** in the crosscheck scenarios, every lookup runs through both the index and the scan, which must
-  agree, and `matches` checks the index against a rebuild after every change. A missed update then fails at the
-  change, not at a wrong read later. Not in every debug kernel: a rebuild per change costs more than the scan.
+- **Write-back is a no-op for the index.** `drain_pass` only clears `dirty` and never changes `blocks`. Its lookup
+  (`cache.rs:974`) uses the index, which the four update sites keep current.
+- **Checks, incremental (Dexter #73, 1d).** A "change" is an index mutation: a push, a removal or a rebuild. A hit
+  or a `touch` changes nothing in the index and checks nothing.
+  - **Every debug-assertions kernel,** after each change, checks in O(log n):
+    - one index entry per cached block (`index.len() == blocks.len()`);
+    - after a push, that block's slot.
+
+    The write path stays O(log n) per block in the debug build `install_fresh_4k` times.
+  - **The crosscheck scenarios** add the full O(n log n) comparison with a rebuild after every change, and run
+    every lookup through both the index and the scan.
+  - **The host KATs and the model check** do the same at every step.
+
+  A missed update then fails at the change, not at a wrong read later.
 - **The evict scan and the drain scan** stay linear in this change. The drain's scan covers dirty blocks, which the
   throttle bounds between mutations. An ordered LRU index for `evict_locked` is a possible later step, which is only
   worth doing if a profile shows it.
@@ -98,7 +129,7 @@ The expectation is that the W5 verify stops slowing down file by file, which the
 
 | Project | What it does | Licence | Last commit (checked 2026-11-08) | Fit / what we take |
 |---|---|---|---|---|
-| Rust `alloc::collections::BTreeMap` (toolchain) | ordered map, `no_std` with `alloc` | MIT OR Apache-2.0 | ships with our pinned toolchain | tried first, then **replaced by a sorted `Vec`** (§9): its node allocations fragmented the kernel heap |
+| Rust `alloc::collections::BTreeMap` (toolchain) | ordered map, `no_std` with `alloc` | MIT OR Apache-2.0 | ships with our pinned toolchain | `BTreeMap` tried first, then **replaced by a sorted `Vec`** (§9): its node allocations fragmented the kernel heap. Both ship with the pinned toolchain (`rust-toolchain.toml`, `nightly-2026-04-16`), so no new dependency |
 | [rust-lang/hashbrown](https://github.com/rust-lang/hashbrown) | SwissTable hash map, `no_std` | MIT OR Apache-2.0 | `f7bae3d`, 2026-10-31; active | option D; not needed while O(log n) is enough and the order must hold |
 | [jeromefroe/lru-rs](https://github.com/jeromefroe/lru-rs) | O(1) LRU cache (hash map plus intrusive list), `no_std` | MIT | `3ed2e28`, 2026-10-18; active | design reference for a later O(1) `evict_locked`; no code taken |
 | [tokio-rs/slab](https://github.com/tokio-rs/slab) | slot arena with stable keys, `no_std` | MIT | `7d1d8ab`, 2026-08-16; active | the slot half of option D; no code taken |
@@ -108,9 +139,11 @@ The expectation is that the W5 verify stops slowing down file by file, which the
 
 ## 7. Concurrency pitfall bank (CP consult)
 
-- **Lock ordering:** no new lock. The index is a field under `CacheInner`'s existing `IrqSafeMutex`.
-- **Torn state between `blocks` and the index:** guarded, because both change in the same critical section, and the
-  debug `check` is the discriminator.
+- **Lock ordering:** no new lock and no new edge. The existing order is `drain → inner` (§2.2), and the index is only
+  ever touched under `inner`.
+- **Torn state between `blocks` and the index:** guarded, because both change in the same critical section. The
+  discriminators are the incremental debug checks (every debug kernel) and the full comparison (the crosscheck
+  scenarios).
 - **Allocation with IF=0:** unchanged class, as `push_block` already allocates there.
 - **Read outside the lock, then insert** (`insert_read_locked`, the OT-92 epoch check): unchanged. The index does not
   move the miss path out of the lock; it is consulted under it as the scan is.
@@ -145,7 +178,8 @@ serial timestamps):
 |---|---|---|---|
 | main `13eed2c5` | 133.2, 133.7 s | 63.7, 63.7 s | 1.0 s |
 | index, `BTreeMap` (discarded) | 131.1 s | 31.1 s | 38.3 s |
-| **index, sorted `Vec` (`06993824`)** | **87.2, 86.5 s** | **26.8, 26.9 s** | 1.0 s |
+| index, sorted `Vec` (`06993824`) | 87.2, 86.5 s | 26.8, 26.9 s | 1.0 s |
+| **index with the incremental debug checks (`b1b49a31`)** | **91.9, 92.3 s** | **28.1, 28.7 s** | 1.1 s |
 
 **Scenarios, all PASS locally:**
 - `phase3_neofs_cache_index_crosscheck` (40.7 s), `_crosscheck_noevict` (11.1 s) and `phase3_neofs_cache_index_off`
@@ -160,6 +194,26 @@ serial timestamps):
 **Host KATs:** 10 pass (`tools/neofs-cache-logic-tests`), among them a 64-seed model check against the scan, with
 and without repeated blocks.
 
-**Still to do before the PR:** merge main (the branch is behind `91f70620`), then the close-gate. The hosted
-`install_fresh_4k` time will be in the PR run.
+**The small cache costs no more with the index (Dexter #73, item 4).**
+- `phase3_neofs_cache_index_off` runs `phase3_neofs_cache_evict`'s legs with every lookup by scan, on a cache of at
+  most 256 clean blocks.
+- Run back to back: 40.0 s with the scan, 36.1 s with the index; an earlier pair was 37.2 and 35.5 s.
+- A binary search over a few hundred entries costs no more than the scan. No size threshold is needed.
 
+**The incremental debug checks (§4) cost about 5 s** of `install_fresh_4k` boot 1 (91.9-92.3 s against 86.5-87.2 s).
+They don't change the shape: the verify stays flat per file.
+
+**Scenarios, with the checks in, all PASS locally:**
+
+| Scenario | Time |
+|---|---|
+| `phase3_neofs_cache_index_crosscheck` | 46.6 s |
+| `phase3_neofs_cache_index_crosscheck_noevict` | 12.0 s |
+| `phase3_neofs_cache_index_off` | 40.0 s |
+| `phase3_neofs_cache_evict` | 36.1 s |
+| `phase3_neofs_cache_evict_off` | 11.3 s |
+
+**Host KATs:** 12 pass. They include the double insert (reported, first slot kept) and the one-entry-per-block length
+check.
+
+**The build PR** opens from `claude/neofs-cache-index`, with main merged in, with the hosted timing in its PR run.
