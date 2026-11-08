@@ -401,6 +401,7 @@ The code follows revisions 1-2 except where this table says, each a detail the b
 | §4 feature | (none) | plus `close-object-handles` | leg 9's `T` closes the term page's buffer with `SYS_CLOSE`, which refuses a buffer without it |
 | §4 leg 3 | `SYS_WAIT` reaps the killed shell | `SYS_WAIT` is `Ok` or `ESRCH` | a killed process keeps no exit code, so a wait after the kill finished is `ESRCH` (first boot, run 42475546797) |
 | §4 leg 6 | a 4095-byte term page | 4092 bytes | a buffer's size is `stride × height` in 4-byte pixels |
+| §4 leg 6 | an 8192-byte term page | 1024 × 2 pixels | a buffer may be no wider than the framebuffer (`ExceedsOutput`); a 2048 × 1 one was refused at creation (run 42485247696) |
 | §4 leg 7 | all-none gives the no-selection row | the probe prints the row on the console; xtask pins it | with no selection its fd 1 is the console |
 | §4 order | legs 1-9 in number order | leg 4 last | its marker splits the log for the quiet-prefix check |
 | §4 control | a per-pid counter in the spawn path | a first-other-syscall recorder, a yield after the spawn, and a named failure on a miss | a missed window would otherwise let the control pass |
