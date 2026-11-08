@@ -296,8 +296,13 @@ hooks), these are now here:
   - musl's `ferror`, `fileno`, `setvbuf`, `perror` and `fread` work on the standard streams.
 - **`getpid`** is std's `process::id`.
 - **`pthread_setname_np`** is accepted and ignored.
-- **The stack protector.** SpiderMonkey's configure turns on `-fstack-protector-strong`. `__stack_chk_guard` is
-  randomised by `neo_crt::init()` before any C code runs, with the low byte zero. `__stack_chk_fail` reports and
-  aborts.
+- **The stack protector.** SpiderMonkey's configure turns on `-fstack-protector-strong`.
+  - `neo_crt::seed_stack_canary()` randomises `__stack_chk_guard`, with the low byte zero. A program with
+    stack-protected code calls it first, before `init()` and before any C runs.
+  - It draws from the kernel CSPRNG. `init()` doesn't call it, so a bundle with no stack-protected code (SWGL)
+    needs no entropy to start.
+  - The first quick-tier run had seeded it inside `init()`. That aborted `swgl_smoke`, whose test kernel has no
+    `kernel-rng`, by std's no-weaker-fallback rule.
+  - `__stack_chk_fail` reports and aborts.
 
 Smoke item 31 checks these with hand-worked values (1971-01-01 is 31,536,000 s and a Friday).

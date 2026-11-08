@@ -453,6 +453,22 @@ pub extern "C" fn getpid() -> c_int {
     std::process::id() as c_int
 }
 
+/// Give `-fstack-protector`'s canary (`__stack_chk_guard`, c/neo_posix.c) a
+/// random value, low byte zero so a string overflow can't copy it. A program
+/// whose C or C++ is compiled with the stack protector (SpiderMonkey's is)
+/// calls this first thing, before `init` and before any C code runs, so no
+/// live frame holds the old value. It draws from the kernel's CSPRNG, so the
+/// kernel must have it (`kernel-rng`); without it std aborts by name rather
+/// than fall back to a weaker source. `init` doesn't do this itself, so a
+/// bundle with no stack-protected code (SWGL's) needs no entropy to start.
+pub fn seed_stack_canary() {
+    unsafe {
+        let mut g = 0usize;
+        arc4random_buf((&raw mut g).cast(), size_of::<usize>());
+        __stack_chk_guard = g & !0xff;
+    }
+}
+
 /// Run the C/C++ static constructors (`.init_array`), once. A program's entry
 /// point calls this before any C or C++ code: neo-crt has no C start-up code
 /// of its own, and the Rust `_start` doesn't run them.
@@ -460,14 +476,6 @@ pub fn init() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) {
         return;
-    }
-    // The stack protector's canary (c/neo_posix.c): random, low byte zero
-    // so a string overflow can't copy it. Set before any C code runs, so no
-    // live frame holds the old value.
-    unsafe {
-        let mut g = 0usize;
-        arc4random_buf((&raw mut g).cast(), size_of::<usize>());
-        __stack_chk_guard = g & !0xff;
     }
     unsafe {
         let mut f = (&raw const __init_array_start).cast::<Option<unsafe extern "C" fn()>>();

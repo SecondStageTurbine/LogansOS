@@ -25,12 +25,15 @@ extern uintptr_t __stack_chk_guard;
 
 int crt_check_posix(void) {
   time_t t = 31536000;
+  /* Zeroed first: memcmp below compares the padding too. */
   struct tm g;
+  memset(&g, 0, sizeof g);
   CHECK(100, "gmtime_r(365 days)",
         gmtime_r(&t, &g) == &g && g.tm_year == 71 && g.tm_mon == 0 &&
             g.tm_mday == 1 && g.tm_hour == 0 && g.tm_wday == 5 &&
             g.tm_yday == 0);
   struct tm l;
+  memset(&l, 0, sizeof l);
   CHECK(101, "localtime_r is UTC",
         localtime_r(&t, &l) == &l && memcmp(&l, &g, sizeof g) == 0);
   struct tm m = {0};

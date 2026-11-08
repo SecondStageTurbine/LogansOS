@@ -103,9 +103,10 @@ int memfd_create(const char *name, unsigned flags)
 }
 
 /* -fstack-protector-strong (SpiderMonkey's configure turns it on). On a
- * target with no TLS ABI, clang reads this global canary. neo_crt::init()
- * replaces the fixed value with a random one, low byte zero, before any C
- * code runs; this value stands only if a program never calls init. */
+ * target with no TLS ABI, clang reads this global canary.
+ * neo_crt::seed_stack_canary() replaces the fixed value with a random one,
+ * low byte zero, before any C code runs; a program with stack-protected code
+ * must call it. This value stands only if it doesn't. */
 uintptr_t __stack_chk_guard = 0x595e9fbd94fda700;
 
 

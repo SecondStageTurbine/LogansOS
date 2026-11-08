@@ -202,6 +202,7 @@ fn write_errors_keep_their_errno() -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // The C and C++ static constructors, before any C or C++ runs.
+    neo_crt::seed_stack_canary();
     neo_crt::init();
     println!("{TAG} start: musl 1.2.5 + libc++ 18.1.8 over neo-crt's std bottom half");
     c_check(1, "printf family == hand-written strings", crt_check_format);
