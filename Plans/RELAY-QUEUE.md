@@ -139,3 +139,4 @@ RELAY 318 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-315-3
 RELAY 319 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-315-321.md | Section 319 (#73 NeoFS index THINK; RETURN `Plans/RETURN-2026-11-08-pr73-design-dexter.md`)
 RELAY 320 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-315-321.md | Section 320 (#74 Raven THINK; RETURN `Plans/RETURN-2026-11-08-pr74-design-dexter.md`)
 RELAY 321 | janus | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-315-321.md | Section 321 (#76 file-viewer survey; RETURN `Plans/RETURN-2026-11-08-pr76-survey-review-janus.md`)
+RELAY 322 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relay-322.md | Section 322 (#72 stdio-at-spawn design read; RETURN `Plans/RETURN-2026-11-08-pr72-design-dexter.md`)
