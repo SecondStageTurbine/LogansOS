@@ -70,3 +70,20 @@ The PM picked option (i) of THINK #10 §6.1 (2026-11-08).
 - [ ] `crt_checks.c` would fail on the old code (realtime aborting or not advancing). Pass/fail plus line.
 - [ ] std's `SystemTime::now()` is untouched. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-08-pr86-review-dexter.md` on `dexter/pr86-review`.
+
+## Section 348: Dexter, #78 (SWGL rasters into a kernel Atrium surface). Head `7fd9eaf5`, stacked on #77. Rerouted from Codex relay 329 (its #78 part).
+Run the **#78** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#78 only: `git diff refs/pr/77...refs/pr/78`.
+RETURN: `Plans/RETURN-2026-11-08-pr78-review-dexter.md` on `dexter/pr78-review`.
+
+## Section 349: Dexter, #10 (THINK: SpiderMonkey on neo-crt, interpreter-only). Head `c2d5f3cc`. A design read.
+The PM decided §6.1 option (i) and §3.3 option (c) (comment on #10, 2026-11-08).
+- [ ] §2.2's licence table holds at the pin `servo/mozjs` @ `138c9470`: every linked part is on the allowed list, and
+  nothing GPL/LGPL is linked. Check each against the files in a clone. Pass/fail per row.
+- [ ] §3.3 option (c) is written so the product build fetches nothing, and the CI generator job fails if its output
+  differs from the committed files. Pass/fail plus line.
+- [ ] §6.1 option (i) is stated as decided, and C1.3's std behaviour is unchanged. Pass/fail plus line.
+- [ ] The trap list (T1 …) each has a discriminator, and the CP table covers the threads the interpreter can start
+  (single-threaded must be enforced, not assumed). Pass/fail plus line.
+- [ ] The next steps name a gate for each rung. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr10-design-dexter.md` on `dexter/pr10-design`.
