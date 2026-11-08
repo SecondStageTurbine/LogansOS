@@ -122,7 +122,7 @@ impl RefRun {
                     let id = fields.get(1).ok_or_else(|| bad("prompt id"))?;
                     let entry = by_id.entry(id.to_string()).or_default();
                     entry.id = id.to_string();
-                    entry.text_hex = fields.get(2).ok_or_else(|| bad("prompt text"))?.to_string();
+                    entry.text_hex = fields.get(2).unwrap_or(&"").to_string();
                 }
                 "prompt_ids" => {
                     let id = fields.get(1).ok_or_else(|| bad("prompt_ids id"))?;

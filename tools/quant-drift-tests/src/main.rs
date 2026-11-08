@@ -227,9 +227,18 @@ fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {
     let ours_vs_q4 = report::compare(&ours, &q4)?;
     let q4_vs_fp32 = report::compare(&q4, &fp32)?;
     let ours_vs_fp32 = report::compare(&ours, &fp32)?;
+    // The boot "reply" is the greedy stream up to the first <|im_end|>; tokens
+    // after EOS are forced by the 32-token cap and are not part of the reply.
     let boot = |run: &RefRun| {
         run.prompt("boot_hello_world")
-            .map(|prompt| prompt.generated.clone())
+            .map(|prompt| {
+                let end = prompt
+                    .generated
+                    .iter()
+                    .position(|&token| token == 151_645)
+                    .unwrap_or(prompt.generated.len());
+                prompt.generated[..end].to_vec()
+            })
             .ok_or_else(|| format!("{} lacks the boot prompt", run.model))
     };
     // Bar B is the SHIPPED model's quantization loss: ours (Q4_K_M) vs F32.
