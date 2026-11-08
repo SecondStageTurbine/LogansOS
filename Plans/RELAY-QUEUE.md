@@ -162,3 +162,4 @@ RELAY 341 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-
 RELAY 342 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-342-343-quant-drift.md | Section 342 (quant drift: dequantized-f32 test of the 37 bar-A gaps; Q4/Q5/Q6/Q8 ladder vs F16; RETURN `Plans/RETURN-2026-11-08-quant-drift-ladder-dexter.md`)
 RELAY 343 | prometheus | Qwen | - | Plans/DISPATCH-2026-11-08-relays-342-343-quant-drift.md | Section 343 (quant-drift harness review, rerouted from Jarvis 334; RETURN `Plans/RETURN-2026-11-08-quant-drift-review-prometheus.md`)
 RELAY 344 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 344 (#75 = Section 318, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr75-review-dexter.md`)
+RELAY 345 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 345 (#85 L5 first page in a window; RETURN `Plans/RETURN-2026-11-08-pr85-review-jarvis.md`)
