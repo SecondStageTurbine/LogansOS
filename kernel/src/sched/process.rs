@@ -230,6 +230,26 @@ pub mod power_control_rights {
     pub use crate::acpi::power_abi::{RIGHT_POWER_OFF, RIGHT_RESTART};
 }
 
+/// L1a.1 step 2a: semantic rights of a pipe handle. A read end carries
+/// `READ`, a write end `WRITE`; a handle may only do what its end allows.
+#[cfg(feature = "pipe")]
+pub mod pipe_rights {
+    pub const READ: u8 = 1 << 0;
+    pub const WRITE: u8 = 1 << 1;
+}
+
+/// Full rights for a new pipe end: every meta right (`REVOKE` too, so a
+/// process can take back an end it granted: Dexter #56 F5), and the end's
+/// own semantic right.
+#[cfg(feature = "pipe")]
+pub fn full_pipe_rights(end: crate::ipc::pipe_logic::End) -> CapRights {
+    let semantic = match end {
+        crate::ipc::pipe_logic::End::Read => pipe_rights::READ,
+        crate::ipc::pipe_logic::End::Write => pipe_rights::WRITE,
+    };
+    CapRights::new(full_meta_rights(), semantic)
+}
+
 /// OT-63 Rung 1 Slice 2 — semantic rights for the scarce `GpuSubmit` cap.
 #[cfg(feature = "atrium-compositor-g1")]
 pub mod gpu_submit_rights {
@@ -1037,6 +1057,17 @@ pub enum Handle {
     /// into neo-init at spawn; no create syscall, never inherited or granted.
     #[cfg(feature = "power-cap")]
     PowerControl { cap_id: CapId, rights: CapRights },
+    /// L1a.1 step 2a: one end of a byte pipe. Endpoints are counted per
+    /// table entry (`retain_pipe` / `release_pipe`), so a granted copy keeps
+    /// its end open after the original closes. Semantic rights:
+    /// `pipe_rights::READ` on a read end, `pipe_rights::WRITE` on a write end.
+    #[cfg(feature = "pipe")]
+    Pipe {
+        pipe: Arc<crate::ipc::pipe::PipeObject>,
+        end: crate::ipc::pipe_logic::End,
+        cap_id: CapId,
+        rights: CapRights,
+    },
     /// GPU P1 Slice 6 — post-Slice-5 userland compute capabilities.  The
     /// nested kind realizes the concrete three-cap split without adding a
     /// second handle table: `Buffer` is a generation-tagged immutable range,
@@ -1096,6 +1127,8 @@ impl Handle {
             Handle::MountAuthority { cap_id, .. } => *cap_id,
             #[cfg(feature = "power-cap")]
             Handle::PowerControl { cap_id, .. } => *cap_id,
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { cap_id, .. } => *cap_id,
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { cap_id, .. }
             | Handle::InputFocus { cap_id, .. }
@@ -1125,6 +1158,8 @@ impl Handle {
             Handle::MountAuthority { rights, .. } => *rights,
             #[cfg(feature = "power-cap")]
             Handle::PowerControl { rights, .. } => *rights,
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { rights, .. } => *rights,
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { rights, .. }
             | Handle::InputFocus { rights, .. }
@@ -1174,6 +1209,8 @@ impl Handle {
             Handle::MountAuthority { .. } => hi::KIND_MOUNT_AUTHORITY,
             #[cfg(feature = "power-cap")]
             Handle::PowerControl { .. } => hi::KIND_POWER_CONTROL,
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { .. } => hi::KIND_PIPE,
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { .. } => hi::KIND_BUFFER,
             #[cfg(feature = "atrium-compositor-g1")]
@@ -1284,6 +1321,13 @@ impl Handle {
             Handle::MountAuthority { .. } => Handle::MountAuthority { cap_id, rights },
             #[cfg(feature = "power-cap")]
             Handle::PowerControl { .. } => Handle::PowerControl { cap_id, rights },
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { pipe, end, .. } => Handle::Pipe {
+                pipe,
+                end,
+                cap_id,
+                rights,
+            },
             #[cfg(feature = "atrium-compositor-g1")]
             Handle::Buffer { buffer, .. } => Handle::Buffer {
                 buffer,
@@ -1758,6 +1802,12 @@ pub mod obj_weights {
             }
             Handle::NetDial { .. } => NET_DIAL,
             Handle::Model { .. } => MODEL,
+            // L1a.1 step 2a: the object and its storage. A pipe shared by
+            // two ends is counted once per handle, like a channel.
+            #[cfg(feature = "pipe")]
+            Handle::Pipe { pipe, .. } => {
+                (ARC + size_of::<crate::ipc::pipe::PipeObject>() + pipe.capacity()) as u64
+            }
             _ => 0,
         }
     }
@@ -1829,6 +1879,7 @@ impl Detached {
             HandleTable::release_tensor(handle);
             HandleTable::release_net(handle);
             HandleTable::release_process(handle);
+            HandleTable::release_pipe(handle);
         }
     }
 
@@ -2032,6 +2083,28 @@ impl HandleTable {
         });
     }
 
+    /// L1a.1 step 2a: a pipe handle entering a table is one more endpoint on
+    /// its end (the socket count's pattern; same chokepoints).
+    #[cfg_attr(not(feature = "pipe"), allow(unused_variables))]
+    fn retain_pipe(h: &Handle) {
+        #[cfg(feature = "pipe")]
+        if let Handle::Pipe { pipe, end, .. } = h {
+            pipe.retain(*end);
+        }
+    }
+
+    /// The pipe handle left: one endpoint fewer. The last one of an end wakes
+    /// everyone parked on the other side (EOF for readers, EPIPE for
+    /// writers). Runs where `Detached` releases, after the `CAP_GRAPH`
+    /// section; the wakes take the scheduler lock.
+    #[cfg_attr(not(feature = "pipe"), allow(unused_variables))]
+    fn release_pipe(h: &Handle) {
+        #[cfg(feature = "pipe")]
+        if let Handle::Pipe { pipe, end, .. } = h {
+            pipe.release(*end);
+        }
+    }
+
     /// OT-22 (Jarvis rung-1 F1): a channel handle leaving a table wakes any
     /// `SYS_WAIT_ANY` waiter watching what it named, so a wait on a closed,
     /// revoked or drained handle re-resolves it (EBADF) instead of sleeping
@@ -2043,6 +2116,12 @@ impl HandleTable {
         if let Handle::Channel { channel, side, .. } = h {
             crate::sched::wait_any::fire_handle_gone(channel.wait_key(*side));
         }
+        // L1a.1 step 2a, CP-61: a pipe handle leaving fires its key too, so a
+        // wait on a closed or reused slot re-resolves.
+        #[cfg(feature = "pipe")]
+        if let Handle::Pipe { pipe, end, .. } = h {
+            crate::sched::wait_any::fire_handle_gone(pipe.wait_key(*end));
+        }
     }
 
     /// Install `h` at the lowest unused index. Returns the assigned index.
@@ -2050,6 +2129,7 @@ impl HandleTable {
         Self::retain_tensor(&h);
         Self::retain_net(&h);
         Self::retain_process(&h);
+        Self::retain_pipe(&h);
         for (i, slot) in self.entries.iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(h);
@@ -2110,6 +2190,7 @@ impl HandleTable {
         Self::retain_tensor(&h);
         Self::retain_net(&h);
         Self::retain_process(&h);
+        Self::retain_pipe(&h);
         for (i, slot) in self.entries.iter_mut().enumerate() {
             if slot.is_none() && !excluded.contains(&(i as u32)) {
                 *slot = Some(h);

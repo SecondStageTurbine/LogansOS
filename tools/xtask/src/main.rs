@@ -1226,6 +1226,19 @@ const DESKTOP_CLOCK_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
+/// OT-90 P5: type `shut down` at Home, Enter; Enter on the confirm card.
+///
+/// Jarvis's #14 review, item 1: the first card gets `a`, which must go back
+/// to Home without powering off; only the second card gets Enter.
+const OT90_POWER_MENU_STEPS: &[SerialScriptStep] = &[
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"shut down"),
+    step(b"DESKTOP home keystroke ascii=110\n", b"\r"),
+    step(b"DESKTOP power confirm shown action=shut-down", b"a"),
+    step(b"DESKTOP power back to=home", b"shut down"),
+    step(b"DESKTOP home keystroke ascii=110\n", b"\r"),
+    step(b"DESKTOP power confirm shown action=shut-down", b"\r"),
+];
+
 /// The intro's start line on a machine without NeoFS (QEMU: no disk).
 const DESKTOP_INTRO_SHOWN_PROMPT: &[u8] =
     b"DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0";
@@ -5346,6 +5359,35 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // L1a.1 step 2a: the kernel pipe through its syscalls, run by
+        // stand-in processes: SYS_PIPE_CREATE, a round trip, EOF and EPIPE
+        // on the last endpoint, an atomic write woken by a partial read,
+        // per-handle counts, end-aware SYS_WAIT_ANY items, a slot reused
+        // under a wait (CP-61) and a write landing in the reader's
+        // check-to-park window from CPU 1 (CP-14). Controls, each must FAIL:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-pipe-core-cp14-control
+        // (pipe_cp14_lost_wake) and =wait-multiplex-no-identity-check
+        // (pipe_rebind_stranded).
+        name: "pipe_core",
+        feature: "neo-test-pipe-core",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1a.1 step 2a (CP-33, CP-67): threads killed while parked in a pipe
+        // read and a pipe write leave no pipe count; a killed thread's token
+        // is harmless; a full waiter list drops dead tokens, and with
+        // PARK_MAX live waiters the next is EAGAIN. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-pipe-park-kill-control (must FAIL:
+        // pipe_park_kill_arc_leaked).
+        name: "pipe_park_kill",
+        feature: "neo-test-pipe-park-kill",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-98 (CP-98): a kill that races a natural exit (the child's thread
         // waits unreaped in a zombie ring, or runs inside SYS_EXIT on another
         // CPU) returns ESRCH or defers to the reap; a kill of a process parked
@@ -6529,6 +6571,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-90 P5: `shut down` typed at Home, confirmed: SYS_POWER from neo-init
+    // (the cap's holder), the clean shutdown, S5.
+    TestScenario {
+        name: "ot90_power_menu",
+        feature: "neo-test-ot90-power-menu",
+        user_feature: Some("power-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
     // OT-90 P4: SYS_POWER's refusals, then a power-off through it.
     TestScenario {
         name: "ot90_cap",
@@ -6979,6 +7030,12 @@ const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
     // contains the path. neo-init holds `/`; Arthur only `/neofs/.arthur`
     // and `/boot`; with the WM's `cap-rooted-open`.
     "cap-rooted-open",
+    // OT-90 (L1.4): Shut down and Restart from Home, behind a confirm, with
+    // the WM's `power-menu`. The clean shutdown (K1-K7) stops the apps, NeoFS,
+    // the other CPUs and device DMA first; SYS_POWER is the session root's
+    // PowerControl cap's alone. K6 stops only disks the write guard armed, so
+    // the Zenbook's Windows NVMe is never touched.
+    "power-cap",
 ];
 
 /// The product image's kernel opt-level (Arthur latency NOTE, fix 1). The
@@ -7586,6 +7643,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             // OT-66 K1b (L1.1): the WM spawns Arthur with his scopes only;
             // with the kernel's `cap-rooted-open`.
             "cap-rooted-open",
+            // OT-90 (L1.4): Shut down / Restart from Home, with the kernel's
+            // `power-cap`.
+            "power-menu",
             // THINK-2026-11-02-time-zones: the settings store (OT-88 S1)
             // keeps the zone and the RTC mode across boots (Home's
             // `timezone` / `rtc` verbs); with the kernel's `rtc-offset`.
@@ -7655,6 +7715,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // Installer cap. The installed disk runs the same userland.
         Some("install-console") => vec!["arthur-console", "installer"],
         Some("install-atrium-boot-test") => vec!["desktop-intro-boot-test", "installer"],
+        // OT-90 P5: the intro session with the power card.
+        Some("power-menu-boot-test") => vec!["power-menu-boot-test"],
         Some("arthur-real-brain-boot-15b") => vec!["arthur-console"],
         Some("arthur-real-brain-boot-3b") => vec!["arthur-console"],
         Some("arthur-real-brain-boot-qwen35") => vec!["arthur-console"],
@@ -7793,6 +7855,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-intro")
         | Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
+        | Some("power-menu-boot-test")
         | Some("desktop-clock-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
@@ -8083,7 +8146,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-resize",
         ],
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
-        Some("desktop-intro-boot-test") | Some("install-atrium-boot-test") => vec![
+        Some("desktop-intro-boot-test")
+        | Some("install-atrium-boot-test")
+        | Some("power-menu-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -11078,6 +11143,7 @@ const CORE_PATHS: &[&str] = &[
     // 7. The test machinery and the workflow.
     "kernel/src/test_harness.rs",
     "kernel/src/test_harness_latency_oracle.rs",
+    "kernel/src/test_harness_pipe.rs",
     "tools/xtask/",
     "scripts/",
     ".github/workflows/",
@@ -11848,6 +11914,7 @@ fn ot90_power_expect(name: &str) -> Option<qmp::PowerExpect> {
         | "ot90_stop_wedged"
         | "ot90_quiesce"
         | "ot90_cap"
+        | "ot90_power_menu"
         | "ot90_quiesce_heap_held" => Some(qmp::PowerExpect::PowerOff),
         "ot90_restart_second_boot" | "ot90_stuck_sink_restart" => {
             Some(qmp::PowerExpect::RestartThenPowerOff { fallback: false })
@@ -11950,6 +12017,45 @@ fn run_ot90_power_scenario(scenario: TestScenario, attempt: usize) -> Result<(),
         if !serial.contains("survivors=0 ticks=") || serial.contains("K1 terminated=0 ") {
             return Err(format!(
                 "`{}`: K1 did not terminate the straggler within its bound; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    // OT-90 P5: the WM's card, then SYS_POWER from neo-init (0), the
+    // shutdown sparing it in K1, K4, S5.
+    if scenario.name == "ot90_power_menu" {
+        ot90_require_in_order(
+            scenario.name,
+            &serial,
+            &[
+                // A key other than Enter on the first card goes back to
+                // Home (Jarvis's #14 review, item 1); the second card's
+                // Enter powers off.
+                "DESKTOP power confirm shown action=shut-down",
+                "DESKTOP power back to=home",
+                "DESKTOP power confirm shown action=shut-down",
+                "DESKTOP power stage=power_off_requested",
+                "[ power ] shutdown: started kind=PowerOff keep=",
+                "DESKTOP power requested action=shut-down status=0",
+                "[ power ] K1 terminated=",
+                "[ power ] K4 targets=",
+                "power: S5 PM1a=",
+            ],
+        )?;
+        // Nothing powered off before the card went back on `a`.
+        let back = serial.find("DESKTOP power back to=home");
+        let first_request = serial.find("DESKTOP power stage=power_off_requested");
+        if back.zip(first_request).is_none_or(|(b, r)| r < b) {
+            return Err(format!(
+                "`{}`: a power-off was requested before the card went back on a non-Enter key; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+        if serial.contains("shutdown: started kind=PowerOff keep=0 ") {
+            return Err(format!(
+                "`{}`: the shutdown spared no process (neo-init's pid expected); serial={}",
                 scenario.name,
                 observed.serial_log.display()
             ));
@@ -13372,10 +13478,14 @@ fn scenario_desktop_resolution(scenario_name: &str) -> Option<(u32, u32)> {
 }
 
 /// Scenarios that boot the desktop session's machine (its mode, CPU and
-/// input devices): the [`DESKTOP_SCENARIOS`] table and OT-66 L1's sign-in
-/// scenarios (`login_*`), which carry their own scripts and checks.
+/// input devices): the [`DESKTOP_SCENARIOS`] table, OT-66 L1's sign-in
+/// scenarios (`login_*`) and OT-90 P5's `ot90_power_menu`, which carry their
+/// own scripts and checks.
 fn is_desktop_kernel_scenario(scenario_name: &str) -> bool {
-    is_desktop_session_scenario(scenario_name) || scenario_name.starts_with("login_")
+    is_desktop_session_scenario(scenario_name)
+        || scenario_name.starts_with("login_")
+        // OT-90 P5: the intro desktop, powered off from Home.
+        || scenario_name == "ot90_power_menu"
 }
 
 /// The desktop-session gate scenarios ([`DESKTOP_SCENARIOS`]).
@@ -15128,6 +15238,13 @@ fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
         });
     }
     match scenario_name {
+        // OT-90 P5: `shut down` at Home, then Enter on the confirm card.
+        "ot90_power_menu" => Some(ScenarioScript {
+            steps: OT90_POWER_MENU_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
         "neo_shell_repl" => Some(ScenarioScript {
             steps: NEO_SHELL_REPL_SERIAL_STEPS,
             transport: ScriptTransport::Serial,
@@ -19095,6 +19212,46 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "token_park_teardown=no_corruption rounds=60",
             ],
             "tearing down a process whose thread is token-parked must never leave a CPU on its freed PML4 (CP-60)",
+        )?;
+    }
+    if scenario.name == "pipe_core" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "PIPE create bad_capacity=-22 small_capacity=-22 handles_ok=true write=3 read=3 bytes_ok=true read_end_write=-1 close_write=0 read_after_close=0",
+                "PIPE round read=5 write=5 bytes_ok=true counts=0/0/0 arc=1",
+                "PIPE eof zero_write=0 read=0",
+                "PIPE epipe zero_read=0 partial_write=16 later_write_epipe=true",
+                "PIPE atomic held_while_parked=300 write=300 drained=500 order_ok=true",
+                "PIPE nonblock read=-11",
+                "PIPE two_writers kill1=0 still_parked=true writers_left=1 kill2=0 read=0 arc=1",
+                "PIPE wait_read early=false result=1 latency_ticks=",
+                "PIPE wait_write early=false result=1 latency_ticks=",
+                "PIPE close_parked_read closed=true result=-9 arc=1",
+                "PIPE close_parked_write closed=true result=-9 arc=1",
+                "PIPE rebind result=1 latency_ticks=",
+                " arc=1/1",
+                "PIPE cp14 rounds=8 woken=8 window_hits=",
+                "pipe_core=ok create=round_trip round=5 eof=0 epipe=partial_then_epipe atomic=whole nonblock=eagain two_writers=eof_on_last wait=read,write_atomic close_parked=ebadf rebind=rewatched cp14=no_lost_wake",
+            ],
+            "the pipe's syscalls must round-trip, end with EOF and EPIPE on the last endpoint (a blocking write returning what it wrote), wake an atomic writer on any read that frees room, count endpoints per handle, wake SYS_WAIT_ANY on either end, re-watch a reused slot (CP-61) and never lose a write that lands between a reader's check and its park (CP-14)",
+        )?;
+    }
+    if scenario.name == "pipe_park_kill" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "PIPE kill leg=read terminate=0 returned=None arc parked=",
+                " after=1 readers=1",
+                "PIPE stale tokens_before=1 read=1",
+                "PIPE kill leg=write terminate=0 returned=None arc parked=",
+                " after=1 writers=0 buffered=16",
+                "PIPE full stale_before=8 extra=-11 live_total=8 arc=1",
+                "pipe_park_kill=ok legs=read,write arc=1 stale=harmless full=purged_then_eagain",
+            ],
+            "a thread killed while parked in a pipe must leave no pipe count behind (CP-67), its stale token must not hurt the next reader, and a full waiter list must drop dead tokens before refusing a live one",
         )?;
     }
     if scenario.name == "wait_any_core" {
@@ -25280,6 +25437,21 @@ mod tests {
             .unwrap();
         assert!(init.contains("\"login\""), "{init}");
         assert!(init.contains("\"cap-rooted-open\""), "{init}");
+    }
+
+    /// OT-90 (L1.4): the product image's WM offers Shut down and Restart, so
+    /// its kernel has the PowerControl cap; `power-menu` without `power-cap`
+    /// would get ENOSYS on every confirm.
+    #[test]
+    fn product_image_pairs_power_menu_with_power_cap() {
+        assert!(PRODUCT_IMAGE_KERNEL_FEATURES.contains(&"power-cap"));
+        let src = include_str!("main.rs");
+        let init = src
+            .split("Some(\"desktop-with-model\") => vec![")
+            .find(|r| r.trim_start().starts_with("\"desktop-intro\""))
+            .and_then(|r| r.split(']').next())
+            .unwrap();
+        assert!(init.contains("\"power-menu\""), "{init}");
     }
 
     /// A9-C2: the wheel check wants both forwards to Arthur and a

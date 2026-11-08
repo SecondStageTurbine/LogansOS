@@ -84,6 +84,8 @@ mod atrium_wm;
 // `serial_println!`, and the `asm` import. Every item inside is gated on
 // `neo-test-ai-latency-oracle`, so this is a no-op unless that scenario is built.
 include!("test_harness_latency_oracle.rs");
+// L1a.1 step 2a: the pipe scenarios.
+include!("test_harness_pipe.rs");
 
 #[cfg(any(
     feature = "neo-test-smep-catch",
@@ -589,9 +591,14 @@ const SCENARIO: &str = "desktop_full_boot";
 /// Home end view with the hint).
 #[cfg(all(
     feature = "neo-test-desktop-intro-boot",
-    not(feature = "neo-test-desktop-clock-boot")
+    not(feature = "neo-test-desktop-clock-boot"),
+    not(feature = "neo-test-ot90-power-menu")
 ))]
 const SCENARIO: &str = "desktop_intro_boot";
+/// OT-90 P5: the intro desktop, powered off from Home's confirm card (judged
+/// by QMP: the session never ends on its own).
+#[cfg(feature = "neo-test-ot90-power-menu")]
+const SCENARIO: &str = "ot90_power_menu";
 /// OT-85: the intro session with the wall clock on a pinned RTC (the Home
 /// end view with the hint and the readout).
 #[cfg(feature = "neo-test-desktop-clock-boot")]
@@ -1042,6 +1049,10 @@ const SCENARIO: &str = "admission_park_kill_threaded";
 const SCENARIO: &str = "admission_park_kill_sink_held";
 #[cfg(feature = "neo-test-ipc-park-kill")]
 const SCENARIO: &str = "ipc_park_kill";
+#[cfg(feature = "neo-test-pipe-core")]
+const SCENARIO: &str = "pipe_core";
+#[cfg(feature = "neo-test-pipe-park-kill")]
+const SCENARIO: &str = "pipe_park_kill";
 #[cfg(feature = "neo-test-kill-at-exit")]
 const SCENARIO: &str = "kill_at_exit";
 #[cfg(all(
@@ -1690,6 +1701,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-accel-admission-livepath",
     feature = "neo-test-admission-park-kill",
     feature = "neo-test-ipc-park-kill",
+    feature = "neo-test-pipe-core",
+    feature = "neo-test-pipe-park-kill",
     feature = "neo-test-kill-at-exit",
     feature = "neo-test-block-write-guard",
     feature = "neo-test-install-claim",
@@ -5121,6 +5134,12 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-ipc-park-kill")]
     run_ipc_park_kill();
+
+    #[cfg(feature = "neo-test-pipe-core")]
+    run_pipe_core();
+
+    #[cfg(feature = "neo-test-pipe-park-kill")]
+    run_pipe_park_kill();
 
     #[cfg(feature = "neo-test-kill-at-exit")]
     run_kill_at_exit();
