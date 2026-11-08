@@ -246,7 +246,8 @@ jobs:
           gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
           frozen="$RUNNER_TEMP/frozen"
           rm -rf "$frozen"
-          python3 -I "$gen/freeze.py" "$obj" "$MOZJS_SRC/mozjs-sys/mozjs" "$GITHUB_WORKSPACE" "$frozen"
+          python3 -I "$gen/freeze.py" "$obj" "$MOZJS_SRC/mozjs-sys/mozjs" "$GITHUB_WORKSPACE" "$frozen" \
+            "$MOZJS_SRC" "$GITHUB_WORKSPACE/third_party/ot61-mozjs/patches"
           committed="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generated"
           emit() {
             tar -C "$frozen" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \

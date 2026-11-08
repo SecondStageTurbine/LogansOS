@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 """OT-61 C3c-1: freeze what SpiderMonkey's build generated for our target.
 
-Usage: freeze.py OBJ SRC REPO OUT
+Usage: freeze.py OBJ SRC REPO OUT [PATCHED PATCHES]
 
 OBJ is the configured and exported object directory, SRC the patched source
 root (`.../mozjs-sys/mozjs`), REPO the repository root, and OUT an empty
@@ -15,6 +15,11 @@ directory. OUT receives:
 - `system_wrappers.txt`: the names in `dist/system_wrappers`. Every wrapper is
   the same four lines (checked here), so only the names are kept.
 - `bindings/`: bindgen's `jsapi.rs` and `gluebindings.rs` for our target.
+- `patched/...` (given PATCHED, the patched copy's root, and PATCHES, the
+  patch directory): every file our patches change, whole, as patched, at its
+  path under the vendored crate root. `patched/deleted.txt` lists the files
+  they delete. The product build lays these over the vendored tree, and
+  doesn't run `git apply`.
 
 Absolute paths become `@SRC@`, `@OBJ@` and `@REPO@`, so the output doesn't
 depend on where the runner put things. The product build substitutes its own
@@ -50,6 +55,8 @@ SKIP_PREFIXES = (
 
 def main():
     obj, src, repo, out = (os.path.realpath(a) for a in sys.argv[1:5])
+    patched_root = os.path.realpath(sys.argv[5]) if len(sys.argv) > 6 else None
+    patch_dir = os.path.realpath(sys.argv[6]) if len(sys.argv) > 6 else None
     roots = sorted(
         [(src, "@SRC@"), (obj, "@OBJ@"), (repo, "@REPO@")],
         key=lambda r: -len(r[0]),
@@ -204,6 +211,32 @@ def main():
         text = tokenise_text(open(path, encoding="utf-8").read())
         with open(os.path.join(out, "bindings", name), "w", encoding="utf-8") as fh:
             fh.write(text)
+
+    # The files our patches touch, whole and as patched.
+    if patched_root:
+        changed, deleted = set(), set()
+        for name in sorted(os.listdir(patch_dir)):
+            if not name.endswith(".patch"):
+                continue
+            minus = None
+            for line in open(os.path.join(patch_dir, name), encoding="utf-8"):
+                if line.startswith("--- "):
+                    minus = line[4:].strip()
+                elif line.startswith("+++ "):
+                    plus = line[4:].strip()
+                    if plus == "/dev/null":
+                        deleted.add(minus[2:])
+                    else:
+                        changed.add(plus[2:])
+        for rel in sorted(changed - deleted):
+            text = open(os.path.join(patched_root, rel), encoding="utf-8").read()
+            dest = os.path.join(out, "patched", rel)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8") as fh:
+                fh.write(text)
+        with open(os.path.join(out, "patched", "deleted.txt"), "w") as fh:
+            fh.write("".join(f"{d}\n" for d in sorted(deleted)))
+        print(f"freeze: {len(changed - deleted)} patched files, {len(deleted)} deleted")
 
     # dist/include: links only.
     links = []
