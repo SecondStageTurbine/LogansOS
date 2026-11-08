@@ -101,11 +101,15 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
 - **`bindings/`:** bindgen's `jsapi.rs` and `gluebindings.rs` for our target. The generator's bindgen step makes them
   by running upstream `mozjs-sys`'s own `build_bindings`, with libclang from the runner's `clang` and `neo-cc`'s target
   flags. The step fails if `jsapi.rs` lacks `wasiRecursionDepth` (trap B1).
+- **`patched/`:** the 29 files patches 0001–0004 change, whole and as patched, at their paths under the vendored
+  crate root. `patched/deleted.txt` names the one file they delete (`MoveOnlyFunction.h`). The product build lays
+  these over the vendored tree instead of running `git apply`. The drift check proves they equal vendor plus
+  patches.
 - **`system_wrappers.txt`:** the 1,061 names in `dist/system_wrappers`. Each wrapper is the same four lines
   (`#pragma GCC system_header`, `visibility push(default)`, `#include_next`, `visibility pop`).
 
-Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The current copy is from run 42526473839 at
-`25a237bd`: a gzip'd tar with sha256 `f7c67711e5c7e80072af593da32b3ce97d7b62d76068526db0057335c8f90dd8`, taken from
+Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The current copy is from run 42527592472 at
+`9abbb2cf`: a gzip'd tar with sha256 `299fe0e352035b56e061d82eb7678845179f2fa3dd7c70f10aa8e411c533c0cf`, taken from
 the job log and checked against that hash. The first copy was run 42518384967; the rest of the set is unchanged since.
 
 ## Left out of the copy
