@@ -19939,6 +19939,20 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "DESKTOP setup page=network",
             "S1 has no Network page, and the walk never skips",
         )?;
+        // The Language and Keyboard stubs are hidden in this build (Janus,
+        // #70 item 5).
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=language",
+            "the default build hides the Language stub",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=keyboard",
+            "the default build hides the Keyboard stub",
+        )?;
         require_serial_absent(
             scenario,
             observed,
@@ -19986,6 +20000,18 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             scenario,
             observed,
             "DESKTOP setup page=network",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=language",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=keyboard",
             "a skipped menu shows no other page",
         )?;
         require_framebuffer_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL)?;
