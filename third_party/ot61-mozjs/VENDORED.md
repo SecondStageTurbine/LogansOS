@@ -115,9 +115,18 @@ the job log and checked against that hash.
 | `mozjs-sys/mozjs/nsprpub/` | Standalone JS doesn't build NSPR unless `--enable-nspr-build` |
 | `.gitattributes` (the repository's own) | Git metadata. It sets `text=auto eol=lf`, but upstream stores four files with CRLF in its own index. Our `vendor/.gitattributes` (`* -text`) keeps every blob byte-identical to upstream's |
 | `android-build`, `Cross.toml`, `shell.nix`, `publish_crates_io.py`, `PULL_REQUEST_TEMPLATE.md` | Upstream's release and CI tooling |
+| GPL- and LGPL-licensed files (Dexter's #10 design read, then a sweep of the whole copy): `third_party/python/yamllint` (GPL-3.0), `third_party/python/pylru` (GPL-2.0+), `python/mozbuild/mozbuild/action/tooltool.py` (GPL-2.0), `js/src/util/make_unicode.py` and `js/src/devtools/rootAnalysis/run_complete` (GPL-3.0), `third_party/python/setuptools/setuptools/_vendor/autocommand` (LGPL-3.0), and ICU's unused autoconf files `intl/icu/source/config.sub`, `config.guess`, `aclocal.m4` (GPL with the autoconf exception) | CLAUDE.md: GPL/LGPL code is never copied. None is on the generator's path: mach's site files list `yamllint` and `pylru` as `.pth` entries, which Python skips when the directory is absent, and `tooltool` and `autocommand` serve commands we never run |
 | 10 binaries: setuptools' Windows launchers (`*.exe`), `config/external/icu/data/icudt78l.dat` (ICU data; intl is off), `config/tests/test.manifest.jar`, and `python/mozperftest/mozperftest/tests/fetched_artifact.zip` | Executables or data we don't run or link |
 
-**Kept, and flagged:** three pure-Python wheels (`pip`, `setuptools`, `wheel`, all `py3-none-any`) under
+**Kept, and flagged for the PM:** `build/autoconf/config.sub` and `config.guess` are GPL-3.0 **with the autoconf
+exception**, which permits them in a configure system under any licence. configure runs them on the CI runners to
+canonicalise the host triple, and patch 0002 passes ours straight through. They are never compiled or linked, and
+nothing in the product reads them. If the exception isn't enough, the fallback is a small patch: mozbuild
+canonicalises both triples in Python and drops the two scripts.
+`js/src/vtune/` and `mozglue/baseprofiler/core/vtune/ittnotify.h` are dual BSD/GPLv2 (Intel's notice). They're taken
+as BSD, and they aren't compiled without `--enable-vtune`.
+
+**Also kept, and flagged:** three pure-Python wheels (`pip`, `setuptools`, `wheel`, all `py3-none-any`) under
 `mozjs-sys/mozjs/third_party/python/_venv/wheels/`. mach uses them to make its virtualenv without the network. They
 run only in the generator job, never in the product build. If the generator works without them, they go.
 
