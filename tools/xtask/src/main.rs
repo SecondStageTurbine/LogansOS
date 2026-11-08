@@ -24136,14 +24136,19 @@ fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
 }
 
 /// OT-61 L5: the browser's client rect on the 1920x1080 screen, worked by hand
-/// from `atrium_desktop::layout(1920, 1080, 640, 400)` (Tier::Full):
-/// - the frame is 642 x 430 (640 + 2 borders; 400 + a 28 px title + 2 borders);
-/// - the workfield is right of the 72 px spine and below the 32 px craft bar,
-///   x 72, y 32, 1848 x 1048;
-/// - the frame is centred in it at x = 72 + (1848 - 642) / 2 = 675 and
-///   y = 32 + (1048 - 430) / 2 = 341;
-/// - the client starts one border and the title below: (676, 370).
-const BROWSER_CLIENT: (usize, usize, usize, usize) = (676, 370, 640, 400);
+/// from the layout the Home session's WM uses: `desktop-home` turns on
+/// `desktop-glass`, whose scene is `neo_atrium::Layout::new(1920, 1080, 640,
+/// 400)` (`neo-atrium/src/layout.rs`), not libneo's `atrium_desktop`. (The
+/// first full on-target run used the latter's numbers and found the page's
+/// ring 6 px right and 1 px down of them.)
+/// - the frame is 656 x 442: `frame_size` adds 2 x PAD (8) across, and the
+///   34 px title plus one PAD down;
+/// - the workfield is right of the 84 px spine and below the 36 px bar:
+///   x 84, y 36, 1836 x 1044;
+/// - the frame is centred in it at x = 84 + (1836 - 656) / 2 = 674 and
+///   y = 36 + (1044 - 442) / 2 = 337, inside `clamp_origin`'s bounds;
+/// - the client is PAD in and the title down: (674 + 8, 337 + 34) = (682, 371).
+const BROWSER_CLIENT: (usize, usize, usize, usize) = (682, 371, 640, 400);
 
 /// OT-61 L5: the screendump taken with the browser in front shows, in its
 /// client rect, exactly the hand-derived frame of the oracle page: white,
