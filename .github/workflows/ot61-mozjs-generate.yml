@@ -69,6 +69,8 @@ jobs:
               --disable-jit \
               --without-intl-api \
               --disable-jemalloc \
+              --disable-js-shell \
+              --disable-export-js \
               --disable-shared-memory \
               --disable-shared-js \
               --disable-tests \
@@ -88,8 +90,8 @@ jobs:
           echo "== configure.log (last 60 lines)"; tail -60 "$RUNNER_TEMP/configure.log"
           echo "== js-confdefs.h"; find "$obj" -name js-confdefs.h -exec cat {} \; | head -200
           echo "== Unified_*.cpp files"; find "$obj" -name 'Unified_*.cpp' | sort | head -400
-          echo "== unified file count: $(find "$obj" -name 'Unified_*.cpp' | wc -l)"
-          echo "== backend.mk files: $(find "$obj" -name backend.mk | wc -l)"
+          n=$(find "$obj" -name 'Unified_*.cpp' | wc -l); echo "== unified file count: $n"
+          n=$(find "$obj" -name backend.mk | wc -l); echo "== backend.mk files: $n"
           for d in js/src mfbt mozglue/misc modules/fdlibm; do
             f="$obj/$d/backend.mk"; [ -f "$f" ] || continue
             echo "== $d/backend.mk (sources)"; grep -E '^(CPPSRCS|CSRCS|UNIFIED_CPPSRCS)' "$f" | head -20
