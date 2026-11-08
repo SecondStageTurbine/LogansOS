@@ -30,6 +30,18 @@ one thread, interpreter only, and build option (c).
   - `0002-configure-neoplutarch-target.patch` teaches configure our triple, `x86_64-unknown-neoplutarch` (THINK
     trap T6). `config.sub` passes it through, `split_triplet` maps it to kernel and OS `NeoPlutarch`, and the
     kernel's preprocessor check is `__neoplutarch__`. Like WASI, it is accepted only for `--enable-project=js`.
+  - `0003-neoplutarch-source-choices.patch`: where upstream picks code with `__wasi__`, our target takes WASI's
+    branch only where the POSIX one needs something neo-crt doesn't have:
+    - `mmap`: GC chunks, ArrayBuffers, `TaggedAnonymousMemory`, executable memory, `MmapFaultHandler`;
+    - `getpid`: assertions, the base profiler;
+    - `tzset`: `DateTime`, two testing functions;
+    - signals: `WasmSignalHandlers`, plus no helper threads in `Runtime.cpp`;
+    - the native-stack base (no `pthread_getattr_np`): the stack-limit cluster in `StackLimits.h`,
+      `NativeStackLimits.h`, `RootingAPI.h`, `NativeStack.cpp`, `jsapi.cpp`, `FrontendContext` and `JSContext.cpp`;
+    - `arc4random_buf` for `RandomNum`.
+
+    Everything else (atomics, `ThreadLocal`, mutexes, condition variables) stays POSIX. `Poison.cpp` gets its own
+    small `__neoplutarch__` branch, because WASI's calls a wasm builtin.
 - `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
   neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
   `__neoplutarch__` predefined. configure's test programs link against a stub that defines exactly the symbols in

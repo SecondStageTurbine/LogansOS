@@ -149,6 +149,31 @@ jobs:
           diff "$RUNNER_TEMP/obj/js/src/js-confdefs.h" "$obj/js/src/js-confdefs.h" || true
           exit "$rc"
 
+      # A probe, not yet a gate: compile every object for our target, keep
+      # going past errors, and list the first error of each failing file, so
+      # the next patch knows what neo-crt or our source choices still lack.
+      - name: compile probe for x86_64-unknown-neoplutarch (network off)
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          obj="$RUNNER_TEMP/obj-neo"
+          [ -f "$obj/config.status" ] || { echo "no configured tree"; exit 1; }
+          gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
+          sudo unshare -n -- sudo -u "$(id -un)" env \
+            PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG=clang \
+            make -C "$obj" -k -j"$(nproc)" compile > "$RUNNER_TEMP/compile-neo.log" 2>&1
+          rc=$?
+          echo "compile (neoplutarch) exit: $rc"
+          echo "== objects built: $(find "$obj" -name '*.o' | wc -l)"
+          echo "== error lines: $(grep -c ' error: ' "$RUNNER_TEMP/compile-neo.log")"
+          echo "== distinct errors (file: message), most common first"
+          grep -E ' error: ' "$RUNNER_TEMP/compile-neo.log" \
+            | sed -E 's|^.*/mozjs/||; s|:[0-9]+:[0-9]+: error: |: |' \
+            | sort | uniq -c | sort -rn | head -150
+          exit "$rc"
+
       - name: What came out (unified files, defines, source lists)
         if: always()
         run: |
@@ -177,6 +202,7 @@ jobs:
             ${{ runner.temp }}/export-files.txt
             ${{ runner.temp }}/configure-neo.log
             ${{ runner.temp }}/export-neo.log
+            ${{ runner.temp }}/compile-neo.log
             ${{ runner.temp }}/obj-neo/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/**/Unified_*.cpp

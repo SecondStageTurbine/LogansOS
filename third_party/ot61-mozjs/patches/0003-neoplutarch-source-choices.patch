@@ -1,0 +1,636 @@
+diff --git a/mozjs-sys/mozjs/js/public/NativeStackLimits.h b/mozjs-sys/mozjs/js/public/NativeStackLimits.h
+index df523d8..2293d64 100644
+--- a/mozjs-sys/mozjs/js/public/NativeStackLimits.h
++++ b/mozjs-sys/mozjs/js/public/NativeStackLimits.h
+@@ -27,7 +27,7 @@ constexpr NativeStackLimit NativeStackLimitMin = UINTPTR_MAX;
+ constexpr NativeStackLimit NativeStackLimitMax = 0;
+ #endif
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+ // We build with the "stack-first" wasm-ld option, so the stack grows downward
+ // toward zero. Let's set a limit just a bit above this so that we catch an
+ // overflow before a Wasm trap occurs.
+diff --git a/mozjs-sys/mozjs/js/public/RootingAPI.h b/mozjs-sys/mozjs/js/public/RootingAPI.h
+index 836ecbb..decadad 100644
+--- a/mozjs-sys/mozjs/js/public/RootingAPI.h
++++ b/mozjs-sys/mozjs/js/public/RootingAPI.h
+@@ -1054,7 +1054,7 @@ class RootingContext {
+   /* Limit pointer for checking native stack consumption. */
+   JS::NativeStackLimit nativeStackLimit[StackKindCount];
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   // For WASI we can't catch call-stack overflows with stack-pointer checks, so
+   // we count recursion depth with RAII based AutoCheckRecursionLimit.
+   uint32_t wasiRecursionDepth = 0u;
+diff --git a/mozjs-sys/mozjs/js/public/friend/StackLimits.h b/mozjs-sys/mozjs/js/public/friend/StackLimits.h
+index 9524c5d..c0b31f1 100644
+--- a/mozjs-sys/mozjs/js/public/friend/StackLimits.h
++++ b/mozjs-sys/mozjs/js/public/friend/StackLimits.h
+@@ -32,7 +32,7 @@ namespace js {
+ 
+ class FrontendContext;
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+ extern MOZ_COLD JS_PUBLIC_API void IncWasiRecursionDepth(JSContext* cx);
+ extern MOZ_COLD JS_PUBLIC_API void DecWasiRecursionDepth(JSContext* cx);
+ extern MOZ_COLD JS_PUBLIC_API bool CheckWasiRecursionLimit(JSContext* cx);
+@@ -80,7 +80,7 @@ class MOZ_RAII AutoCheckRecursionLimit {
+ 
+   JS_PUBLIC_API JS::StackKind stackKindForCurrentPrincipal(JSContext* cx) const;
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   // The JSContext outlives AutoCheckRecursionLimit so it is safe to use raw
+   // pointer here.
+   mozilla::Variant<JSContext*, FrontendContext*> context_;
+@@ -88,32 +88,32 @@ class MOZ_RAII AutoCheckRecursionLimit {
+ 
+  public:
+   explicit MOZ_ALWAYS_INLINE AutoCheckRecursionLimit(JSContext* cx)
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+       : context_(mozilla::AsVariant(cx))
+ #endif  // __wasi__
+   {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+     incWasiRecursionDepth();
+ #endif  // __wasi__
+   }
+ 
+   explicit MOZ_ALWAYS_INLINE AutoCheckRecursionLimit(FrontendContext* fc)
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+       : context_(mozilla::AsVariant(fc))
+ #endif  // __wasi__
+   {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+     incWasiRecursionDepth();
+ #endif  // __wasi__
+   }
+ 
+   MOZ_ALWAYS_INLINE ~AutoCheckRecursionLimit() {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+     decWasiRecursionDepth();
+ #endif  // __wasi__
+   }
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   MOZ_ALWAYS_INLINE void incWasiRecursionDepth() {
+     if (context_.is<JSContext*>()) {
+       JSContext* cx = context_.as<JSContext*>();
+@@ -186,7 +186,7 @@ MOZ_ALWAYS_INLINE bool AutoCheckRecursionLimit::checkLimitImpl(
+     JS::NativeStackLimit limit, void* sp) const {
+   JS_STACK_OOM_POSSIBLY_FAIL();
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   if (!checkWasiRecursionLimit()) {
+     return false;
+   }
+diff --git a/mozjs-sys/mozjs/js/src/builtin/TestingFunctions.cpp b/mozjs-sys/mozjs/js/src/builtin/TestingFunctions.cpp
+index 643600e..26e08f7 100644
+--- a/mozjs-sys/mozjs/js/src/builtin/TestingFunctions.cpp
++++ b/mozjs-sys/mozjs/js/src/builtin/TestingFunctions.cpp
+@@ -8811,7 +8811,7 @@ static bool GetTimeZone(JSContext* cx, unsigned argc, Value* vp) {
+     return false;
+   }
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+   auto getTimeZone = [](std::time_t* now) -> const char* {
+     std::tm local{};
+ #  if defined(_WIN32)
+@@ -8865,7 +8865,7 @@ static bool SetTimeZone(JSContext* cx, unsigned argc, Value* vp) {
+     return false;
+   }
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+   auto setTimeZone = [](const char* value) {
+ #  if defined(_WIN32)
+     return _putenv_s("TZ", value) == 0;
+diff --git a/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp b/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp
+index 2235d0e..fc39949 100644
+--- a/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp
++++ b/mozjs-sys/mozjs/js/src/frontend/FrontendContext.cpp
+@@ -48,7 +48,7 @@ FrontendContext::~FrontendContext() {
+ }
+ 
+ void FrontendContext::setStackQuota(JS::NativeStackSize stackSize) {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   stackLimit_ = JS::WASINativeStackLimit;
+ #else   // __wasi__
+   if (stackSize == 0) {
+@@ -258,7 +258,7 @@ void FrontendContext::assertNativeStackLimitThread() {
+ }
+ #endif
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+ void FrontendContext::incWasiRecursionDepth() {
+   if (maybeCx_) {
+     IncWasiRecursionDepth(maybeCx_);
+diff --git a/mozjs-sys/mozjs/js/src/frontend/FrontendContext.h b/mozjs-sys/mozjs/js/src/frontend/FrontendContext.h
+index a2ad060..0df5ad4 100644
+--- a/mozjs-sys/mozjs/js/src/frontend/FrontendContext.h
++++ b/mozjs-sys/mozjs/js/src/frontend/FrontendContext.h
+@@ -199,7 +199,7 @@ class FrontendContext {
+   // Clear warnings only.
+   void clearWarnings();
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   void incWasiRecursionDepth();
+   void decWasiRecursionDepth();
+   bool checkWasiRecursionLimit();
+diff --git a/mozjs-sys/mozjs/js/src/gc/Memory.cpp b/mozjs-sys/mozjs/js/src/gc/Memory.cpp
+index 76dad23..3149cbf 100644
+--- a/mozjs-sys/mozjs/js/src/gc/Memory.cpp
++++ b/mozjs-sys/mozjs/js/src/gc/Memory.cpp
+@@ -35,7 +35,7 @@
+ #    include <sys/syscall.h>
+ #  endif
+ 
+-#  if !defined(__wasi__)
++#  if !(defined(__wasi__) || defined(__neoplutarch__))
+ #    include <sys/mman.h>
+ #    include <sys/resource.h>
+ #    include <sys/stat.h>
+@@ -174,7 +174,7 @@ enum class PageAccess : DWORD {
+   ReadExecute = PAGE_EXECUTE_READ,
+   ReadWriteExecute = PAGE_EXECUTE_READWRITE,
+ };
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ enum class PageAccess : int {
+   None = 0,
+   Read = 0,
+@@ -198,7 +198,7 @@ template <bool AlwaysGetNew = true>
+ static bool TryToAlignChunk(void** aRegion, void** aRetainedRegion,
+                             size_t length, size_t alignment);
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+ static void* MapAlignedPagesSlow(size_t length, size_t alignment);
+ #endif  // wasi
+ static void* MapAlignedPagesLastDitch(size_t length, size_t alignment,
+@@ -242,7 +242,7 @@ static inline void* MapInternal(void* desired, size_t length) {
+   } else {
+     region = VirtualAlloc(desired, length, flags, DWORD(PageAccess::ReadWrite));
+   }
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   if (int err = posix_memalign(&region, gc::SystemPageSize(), length)) {
+     MOZ_RELEASE_ASSERT(err == ENOMEM);
+     return nullptr;
+@@ -267,7 +267,7 @@ static inline void UnmapInternal(void* region, size_t length) {
+ 
+ #ifdef XP_WIN
+   MOZ_RELEASE_ASSERT(VirtualFree(region, 0, MEM_RELEASE) != 0);
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   free(region);
+ #else
+   if (munmap(region, length)) {
+@@ -579,7 +579,7 @@ void* MapAlignedPages(size_t length, size_t alignment,
+     alignment = allocGranularity;
+   }
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   void* region = nullptr;
+   if (int err = posix_memalign(&region, alignment, length)) {
+     MOZ_ASSERT(err == ENOMEM);
+@@ -761,7 +761,7 @@ static void* MapAlignedPagesRandom(size_t length, size_t alignment) {
+ 
+ #endif  // defined(JS_64BIT)
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+ static void* MapAlignedPagesSlow(size_t length, size_t alignment) {
+   void* alignedRegion = nullptr;
+   do {
+@@ -968,7 +968,7 @@ void UnmapPages(void* region, size_t length) {
+ 
+   UnmapInternal(region, length);
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+   RecordMemoryFree(length);
+ #endif
+ }
+@@ -996,7 +996,7 @@ bool MarkPagesUnusedSoft(void* region, size_t length) {
+ #if defined(XP_WIN)
+   return VirtualAlloc(region, length, MEM_RESET,
+                       DWORD(PageAccess::ReadWrite)) == region;
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   return 0;
+ #else
+   int status;
+@@ -1067,7 +1067,7 @@ size_t GetPageFaultCount() {
+     return 0;
+   }
+   return pmc.PageFaultCount;
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   return 0;
+ #else
+   struct rusage usage;
+@@ -1081,7 +1081,7 @@ size_t GetPageFaultCount() {
+ 
+ void* AllocateMappedContent(int fd, size_t offset, size_t length,
+                             size_t alignment) {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   MOZ_CRASH("Not yet supported for WASI");
+ #else
+   if (length == 0 || alignment == 0 || offset % alignment != 0 ||
+@@ -1186,7 +1186,7 @@ void* AllocateMappedContent(int fd, size_t offset, size_t length,
+ }
+ 
+ void DeallocateMappedContent(void* region, size_t length) {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   MOZ_CRASH("Not yet supported for WASI");
+ #else
+   if (!region) {
+@@ -1229,7 +1229,7 @@ static inline void ProtectMemory(void* region, size_t length, PageAccess prot) {
+   DWORD oldProtect;
+   MOZ_RELEASE_ASSERT(VirtualProtect(region, length, DWORD(prot), &oldProtect) !=
+                      0);
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   /* nothing */
+ #else
+   MOZ_RELEASE_ASSERT(mprotect(region, length, int(prot)) == 0);
+diff --git a/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp b/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp
+index c2028b3..594030e 100644
+--- a/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp
++++ b/mozjs-sys/mozjs/js/src/jit/ProcessExecutableMemory.cpp
+@@ -29,7 +29,7 @@
+ 
+ #ifdef XP_WIN
+ #  include "mozilla/StackWalk_windows.h"
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ #  if defined(JS_CODEGEN_WASM32)
+ #    include <cstdlib>
+ #  else
+@@ -392,7 +392,7 @@ static void DecommitPages(void* addr, size_t bytes) {
+     MOZ_CRASH("DecommitPages failed");
+   }
+ }
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ #  if defined(JS_CODEGEN_WASM32)
+ static void* ReserveProcessExecutableMemory(size_t bytes) {
+   return malloc(bytes);
+@@ -844,7 +844,7 @@ void* ProcessExecutableMemory::allocate(size_t bytes,
+     return nullptr;
+   }
+ 
+-#if !defined(__wasi__)
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+   gc::RecordMemoryAlloc(bytes);
+ #endif
+ 
+@@ -871,7 +871,7 @@ void ProcessExecutableMemory::deallocate(void* addr, size_t bytes,
+   MOZ_MAKE_MEM_NOACCESS(addr, bytes);
+   if (decommit) {
+     DecommitPages(addr, bytes);
+-#if !defined(__wasi__)
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+     gc::RecordMemoryFree(bytes);
+ #endif
+   }
+@@ -966,7 +966,7 @@ bool js::jit::ReprotectRegion(void* start, size_t size,
+   // We use the C++ fence here -- and not AtomicOperations::fenceSeqCst() --
+   // primarily because ReprotectRegion will be called while we construct our own
+   // jitted atomics.  But the C++ fence is sufficient and correct, too.
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   MOZ_CRASH("NYI FOR WASI.");
+ #else
+   std::atomic_thread_fence(std::memory_order_seq_cst);
+diff --git a/mozjs-sys/mozjs/js/src/jsapi.cpp b/mozjs-sys/mozjs/js/src/jsapi.cpp
+index d65d095..c67bb49 100644
+--- a/mozjs-sys/mozjs/js/src/jsapi.cpp
++++ b/mozjs-sys/mozjs/js/src/jsapi.cpp
+@@ -1557,7 +1557,7 @@ JS_GetExternalStringCallbacks(JSString* str) {
+ 
+ static void SetNativeStackSize(JSContext* cx, JS::StackKind kind,
+                                JS::NativeStackSize stackSize) {
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+   cx->nativeStackLimit[kind] = JS::WASINativeStackLimit;
+ #else   // __wasi__
+   if (stackSize == 0) {
+diff --git a/mozjs-sys/mozjs/js/src/util/NativeStack.cpp b/mozjs-sys/mozjs/js/src/util/NativeStack.cpp
+index ab0f9a1..8287c32 100644
+--- a/mozjs-sys/mozjs/js/src/util/NativeStack.cpp
++++ b/mozjs-sys/mozjs/js/src/util/NativeStack.cpp
+@@ -8,7 +8,7 @@
+ 
+ #ifdef XP_WIN
+ #  include "util/WindowsWrapper.h"
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ // Nothing
+ #elif defined(XP_DARWIN) || defined(DARWIN) || defined(XP_UNIX)
+ #  include <pthread.h>
+@@ -114,7 +114,7 @@ void* js::GetNativeStackBaseImpl() {
+ #  endif
+ }
+ 
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ 
+ // Since we rearrange the layout for wasi via --stack-first flag for the linker
+ // the final layout is: 0x00 | <- stack | data | heap -> |.
+diff --git a/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp b/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp
+index bd301b0..c2faeda 100644
+--- a/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/ArrayBufferObject.cpp
+@@ -16,7 +16,7 @@
+ #include <algorithm>  // std::max, std::min
+ #include <memory>     // std::uninitialized_copy_n
+ #include <string.h>
+-#if !defined(XP_WIN) && !defined(__wasi__)
++#if !defined(XP_WIN) && !(defined(__wasi__) || defined(__neoplutarch__))
+ #  include <sys/mman.h>
+ #endif
+ #include <tuple>  // std::tuple
+@@ -203,7 +203,7 @@ void* js::MapBufferMemory(wasm::AddressType t, wasm::PageSize pageSize,
+   }
+ 
+   gc::RecordMemoryAlloc(initialCommittedSize);
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   void* data = nullptr;
+   if (int err = posix_memalign(&data, gc::SystemPageSize(), mappedSize)) {
+     MOZ_ASSERT(err == ENOMEM);
+@@ -248,7 +248,7 @@ bool js::CommitBufferMemory(void* dataEnd, size_t delta) {
+   if (!VirtualAlloc(dataEnd, delta, MEM_COMMIT, PAGE_READWRITE)) {
+     return false;
+   }
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   // posix_memalign'd memory is already committed
+   return true;
+ #else
+@@ -275,7 +275,7 @@ void js::UnmapBufferMemory(wasm::AddressType t, void* base, size_t mappedSize,
+ #ifdef XP_WIN
+   VirtualFree(base, 0, MEM_RELEASE);
+   gc::RecordMemoryFree(committedSize);
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   free(base);
+   (void)committedSize;
+ #else
+@@ -1598,7 +1598,7 @@ void WasmArrayRawBuffer::discard(size_t byteOffset, size_t byteLen) {
+   if (!VirtualAlloc(addr, byteLen, MEM_COMMIT, PAGE_READWRITE)) {
+     MOZ_CRASH("wasm discard: decommitted memory but failed to recommit");
+   };
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   memset(addr, 0, byteLen);
+ #else  // !XP_WIN
+   void* data = MozTaggedAnonymousMmap(addr, byteLen, PROT_READ | PROT_WRITE,
+diff --git a/mozjs-sys/mozjs/js/src/vm/DateTime.cpp b/mozjs-sys/mozjs/js/src/vm/DateTime.cpp
+index 5b3e07f..af5cbb6 100644
+--- a/mozjs-sys/mozjs/js/src/vm/DateTime.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/DateTime.cpp
+@@ -46,7 +46,7 @@ static bool ComputeLocalTime(time_t local, struct tm* ptm) {
+   _tzset();
+   return localtime_s(ptm, &local) == 0;
+ #elif defined(HAVE_LOCALTIME_R)
+-#  ifndef __wasi__
++#  if !(defined(__wasi__) || defined(__neoplutarch__))
+   tzset();
+ #  endif
+   return localtime_r(&local, ptm);
+diff --git a/mozjs-sys/mozjs/js/src/vm/JSContext.cpp b/mozjs-sys/mozjs/js/src/vm/JSContext.cpp
+index 3bf694e..dd51214 100644
+--- a/mozjs-sys/mozjs/js/src/vm/JSContext.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/JSContext.cpp
+@@ -1694,7 +1694,7 @@ AutoUnsafeCallWithABI::~AutoUnsafeCallWithABI() {
+ 
+ #endif  // JS_CHECK_UNSAFE_CALL_WITH_ABI
+ 
+-#ifdef __wasi__
++#if (defined(__wasi__) || defined(__neoplutarch__))
+ JS_PUBLIC_API void js::IncWasiRecursionDepth(JSContext* cx) {
+   ++JS::RootingContext::get(cx)->wasiRecursionDepth;
+ }
+diff --git a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
+index b13dc1e..ab8dedb 100644
+--- a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
+@@ -60,7 +60,7 @@ JS::FilenameValidationCallback js::gFilenameValidationCallback = nullptr;
+ 
+ namespace js {
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+ bool gCanUseExtraThreads = true;
+ #else
+ bool gCanUseExtraThreads = false;
+@@ -147,7 +147,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
+   JS_COUNT_CTOR(JSRuntime);
+   liveRuntimesCount++;
+ 
+-#ifndef __wasi__
++#if !(defined(__wasi__) || defined(__neoplutarch__))
+   // See function comment for why we call this now, not in JS_Init().
+   wasm::EnsureEagerProcessSignalHandlers();
+ #endif  // __wasi__
+diff --git a/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp b/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp
+index 01c8763..8140fc8 100644
+--- a/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/SharedArrayObject.cpp
+@@ -226,7 +226,7 @@ void WasmSharedArrayRawBuffer::discard(size_t byteOffset, size_t byteLen) {
+     MOZ_ASSERT(!result);  // this always "fails" when unlocking unlocked
+                           // memory...which is the only case we care about
+   }
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+   AtomicOperations::memsetSafeWhenRacy(addr, 0, byteLen);
+ #else  // !XP_WIN
+   void* data = MozTaggedAnonymousMmap(
+diff --git a/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp b/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp
+index 817f93c..ea08534 100644
+--- a/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp
++++ b/mozjs-sys/mozjs/js/src/wasm/WasmSignalHandlers.cpp
+@@ -32,7 +32,7 @@
+ #elif defined(XP_DARWIN)
+ #  include <mach/exc.h>
+ #  include <mach/mach.h>
+-#elif !defined(__wasi__)
++#elif !(defined(__wasi__) || defined(__neoplutarch__))
+ #  include <signal.h>
+ #endif
+ 
+diff --git a/mozjs-sys/mozjs/mfbt/Assertions.h b/mozjs-sys/mozjs/mfbt/Assertions.h
+index d7a62bf..784dac5 100644
+--- a/mozjs-sys/mozjs/mfbt/Assertions.h
++++ b/mozjs-sys/mozjs/mfbt/Assertions.h
+@@ -14,7 +14,7 @@
+ #endif
+ 
+ #if (defined(MOZ_HAS_MOZGLUE) || defined(MOZILLA_INTERNAL_API)) && \
+-    !defined(__wasi__)
++    !defined(__wasi__) && !defined(__neoplutarch__)
+ #  define MOZ_DUMP_ASSERTION_STACK
+ #endif
+ #if defined(XP_WIN) && (defined(DEBUG) || defined(FUZZING))
+@@ -25,7 +25,7 @@
+ #if defined(_WIN32)
+ #  include <process.h>
+ #  define MOZ_GET_PID() _getpid()
+-#elif !defined(__wasi__)
++#elif !(defined(__wasi__) || defined(__neoplutarch__))
+ #  include <unistd.h>
+ #  define MOZ_GET_PID() getpid()
+ #else
+@@ -257,7 +257,7 @@ MOZ_ReportAssertionFailure(const char* aStr, const char* aFilename,
+       MOZ_NoReturn(line);         \
+     } while (false)
+ 
+-#elif __wasi__
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ 
+ #  define MOZ_REALLY_CRASH(line) __builtin_trap()
+ 
+diff --git a/mozjs-sys/mozjs/mfbt/Poison.cpp b/mozjs-sys/mozjs/mfbt/Poison.cpp
+index b46c57f..53c6944 100644
+--- a/mozjs-sys/mozjs/mfbt/Poison.cpp
++++ b/mozjs-sys/mozjs/mfbt/Poison.cpp
+@@ -14,7 +14,7 @@
+ #  include <windows.h>
+ #elif !defined(__OS2__)
+ #  include <unistd.h>
+-#  ifndef __wasi__
++#  if !(defined(__wasi__) || defined(__neoplutarch__))
+ #    include <sys/mman.h>
+ #    ifndef MAP_ANON
+ #      ifdef MAP_ANONYMOUS
+@@ -84,6 +84,23 @@ static uintptr_t GetDesiredRegionSize() {
+ 
+ #  define RESERVE_FAILED 0
+ 
++#elif defined(__neoplutarch__)
++
++// LogansOS (OT-61 C3c-1): no mmap. On x86_64, ReservePoisonArea returns the
++// non-canonical address before it calls any of these, so they only have to
++// exist; none of them reserves or probes anything.
++#  define RESERVE_FAILED 0
++
++static void* ReserveRegion(uintptr_t aRegion, uintptr_t aSize) {
++  return RESERVE_FAILED;
++}
++
++static void ReleaseRegion(void* aRegion, uintptr_t aSize) {}
++
++static bool ProbeRegion(uintptr_t aRegion, uintptr_t aSize) { return false; }
++
++static uintptr_t GetDesiredRegionSize() { return 4096; }
++
+ #elif defined(__wasi__)
+ 
+ #  define RESERVE_FAILED 0
+diff --git a/mozjs-sys/mozjs/mfbt/RandomNum.cpp b/mozjs-sys/mozjs/mfbt/RandomNum.cpp
+index 42ce50f..391dc05 100644
+--- a/mozjs-sys/mozjs/mfbt/RandomNum.cpp
++++ b/mozjs-sys/mozjs/mfbt/RandomNum.cpp
+@@ -27,7 +27,7 @@ extern "C" BOOLEAN NTAPI RtlGenRandom(PVOID RandomBuffer,
+ 
+ #if defined(ANDROID) || defined(XP_DARWIN) || defined(__DragonFly__) ||    \
+     defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
+-    defined(__wasi__)
++    defined(__wasi__) || defined(__neoplutarch__)
+ #  define USE_ARC4RANDOM
+ #endif
+ 
+diff --git a/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h b/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
+index 596c0ca..80d5b85 100644
+--- a/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
++++ b/mozjs-sys/mozjs/mfbt/TaggedAnonymousMemory.h
+@@ -31,7 +31,7 @@
+ 
+ #ifndef XP_WIN
+ 
+-#  ifdef __wasi__
++#  if (defined(__wasi__) || defined(__neoplutarch__))
+ #    include <stdlib.h>
+ #  else
+ #    include <sys/types.h>
+@@ -65,7 +65,7 @@ static inline void MozTagAnonymousMemory(const void* aPtr, size_t aLength,
+ static inline void* MozTaggedAnonymousMmap(void* aAddr, size_t aLength,
+                                            int aProt, int aFlags, int aFd,
+                                            off_t aOffset, const char* aTag) {
+-#    ifdef __wasi__
++#    if (defined(__wasi__) || defined(__neoplutarch__))
+   MOZ_CRASH("We don't use this memory for WASI right now.");
+   return nullptr;
+ #    else
+diff --git a/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp b/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp
+index 87dafa2..221ba22 100644
+--- a/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp
++++ b/mozjs-sys/mozjs/mozglue/baseprofiler/core/ProfilerUtils.cpp
+@@ -10,7 +10,7 @@
+ #include "mozilla/BaseProfilerUtils.h"
+ 
+ // --------------------------------------------- WASI process & thread ids
+-#if defined(__wasi__)
++#if (defined(__wasi__) || defined(__neoplutarch__))
+ 
+ namespace mozilla::baseprofiler {
+ 
+diff --git a/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h b/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h
+index 680cb75..3732f4a 100644
+--- a/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h
++++ b/mozjs-sys/mozjs/mozglue/baseprofiler/public/BaseProfilerUtils.h
+@@ -9,7 +9,7 @@
+ // It is safe to include unconditionally.
+ 
+ // --------------------------------------------- WASI process & thread ids
+-#if defined(__wasi__)
++#if (defined(__wasi__) || defined(__neoplutarch__))
+ 
+ namespace mozilla::baseprofiler::detail {
+ using ProcessIdType = unsigned;
+diff --git a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp
+index ef75631..fa659d3 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp
++++ b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.cpp
+@@ -4,7 +4,7 @@
+ 
+ #include "MmapFaultHandler.h"
+ 
+-#if defined(XP_UNIX) && !defined(XP_DARWIN) && !defined(__wasi__)
++#if defined(XP_UNIX) && !defined(XP_DARWIN) && !(defined(__wasi__) || defined(__neoplutarch__))
+ 
+ #  include "mozilla/Assertions.h"
+ #  include "mozilla/Atomics.h"
+diff --git a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h
+index f8aa1ef..927ed53 100644
+--- a/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h
++++ b/mozjs-sys/mozjs/mozglue/misc/MmapFaultHandler.h
+@@ -32,7 +32,7 @@
+ #  define MMAP_FAULT_HANDLER_BEGIN_BUFFER(buf, bufLen) {
+ #  define MMAP_FAULT_HANDLER_CATCH(retval) }
+ 
+-#elif defined(__wasi__)
++#elif (defined(__wasi__) || defined(__neoplutarch__))
+ 
+ #  define MMAP_FAULT_HANDLER_BEGIN_HANDLE(fd) {
+ #  define MMAP_FAULT_HANDLER_BEGIN_BUFFER(buf, bufLen) {
