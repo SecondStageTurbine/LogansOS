@@ -1596,6 +1596,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "quant-drift-tests"
+version = "0.0.1"
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
