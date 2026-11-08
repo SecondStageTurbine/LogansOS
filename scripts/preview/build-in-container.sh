@@ -38,7 +38,7 @@ cat > "$out/MODEL-NOTICE.txt" <<EOF
 Arthur's language model in this preview
 =======================================
 
-Model:    Qwen2.5-0.5B-Instruct, Q4_K_M quantization (GGUF)
+Model:    Qwen2.5-0.5B-Instruct, Q8_0 quantization (GGUF)
 Source:   https://huggingface.co/${MODEL_REPO}
 Revision: ${MODEL_REV}
 File:     ${MODEL_FILE}
