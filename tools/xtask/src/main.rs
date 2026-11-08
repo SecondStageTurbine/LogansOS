@@ -251,9 +251,9 @@ const DESKTOP_APPS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_boot.p
 /// with the browser in front, which the pixel check reads.
 const DESKTOP_BROWSER_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_browser_boot.ppm";
 const DESKTOP_BROWSER_BOOT_MID_REL: &str = "target/neo-test/desktop_browser_boot_front.ppm";
-/// The browser's first turn: the WM has shown its surface and handed it the
-/// keyboard (it answers `K` only after `show` presented its frame).
-const DESKTOP_BROWSER_FRONT_PROMPT: &[u8] = b"[ neo-browser ] turn: discarded";
+/// The browser's page frame is on screen: the WM presents a shown client's
+/// commit before it replies, and the browser logs this on the reply.
+const DESKTOP_BROWSER_FRONT_PROMPT: &[u8] = b"[ neo-browser ] ok(96) the WM took the page frame";
 const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_fault_boot.ppm";
 const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
 const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
@@ -21367,6 +21367,15 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
     }
     if scenario.name == "desktop_browser_boot" {
+        // What the browser and the WM's client table said, whatever fails
+        // below (the serial tail xtask prints is mostly the WM's end view).
+        if let Ok(serial) = read_serial(observed) {
+            for line in serial.lines().filter(|l| {
+                l.contains("neo-browser") || l.contains("DESKTOP apps") || l.contains("browser")
+            }) {
+                eprintln!("[xtask] desktop_browser_boot: {line}");
+            }
+        }
         require_serial_sequence(
             scenario,
             observed,
@@ -21385,7 +21394,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         for needle in [
             "[ neo-browser ] ok(83) the page rendered into the Atrium buffer",
             "[ neo-browser ] ok(84) every pixel of the 640x400 buffer == the hand-derived frame, top row first",
-            "[ neo-browser ] ok(96) the WM took the first frame",
+            "[ neo-browser ] ok(94) the WM took the first (white) frame",
+            "[ neo-browser ] turn: discarded",
+            "[ neo-browser ] ok(96) the WM took the page frame",
             "[ neo-browser ] ready",
             "DESKTOP arthur browser opened",
             "DESKTOP apps client ended client=2 value=0",
