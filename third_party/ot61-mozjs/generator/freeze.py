@@ -107,7 +107,43 @@ def main():
             i += 1
         f = e["file"] if os.path.isabs(e["file"]) else os.path.join(d, e["file"])
         entries.append({"directory": token(d), "file": token(f), "arguments": kept})
-    entries.sort(key=lambda e: e["file"])
+    # mozbuild's clangd database lists every source on its own, but make
+    # compiles unified files (the build the compile probe proved). One
+    # entry per object: each Unified_*.cpp with its members' flags, and
+    # every source no unified file includes, as it is.
+    by_file = {e["file"]: e for e in entries}
+    unified = []
+    members = set()
+    inc_line = re.compile(r'^#include "([^"]+)"$', re.M)
+    for dirpath, dirnames, filenames in os.walk(obj):
+        for name in filenames:
+            if not (name.startswith("Unified_") and name.endswith((".cpp", ".c"))):
+                continue
+            path = os.path.join(dirpath, name)
+            srcs = [
+                token(p if os.path.isabs(p) else os.path.join(dirpath, p))
+                for p in inc_line.findall(open(path, encoding="utf-8").read())
+            ]
+            known = [s for s in srcs if s in by_file]
+            if not known:
+                sys.exit(f"{path}: none of its sources is in the compile database")
+            members.update(srcs)
+            t = by_file[known[0]]
+            args = [token(path) if a == known[0] else a for a in t["arguments"]]
+            unified.append({"directory": token(dirpath), "file": token(path), "arguments": args})
+    entries = sorted(
+        unified + [e for e in entries if e["file"] not in members],
+        key=lambda e: e["file"],
+    )
+    objects = [
+        f
+        for dp, _, fs in os.walk(obj)
+        for f in fs
+        if f.endswith(".o") and not f.startswith(("host_", "conftest"))
+    ]
+    print(f"freeze: {len(unified)} unified files; {len(objects)} objects built")
+    if len(entries) != len(objects):
+        print(f"freeze: {len(entries)} compile entries but {len(objects)} objects built")
     with open(os.path.join(out, "compile_commands.json"), "w") as fh:
         json.dump(entries, fh, indent=1, sort_keys=True)
         fh.write("\n")
