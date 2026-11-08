@@ -7,7 +7,9 @@
 # __neoplutarch__ predefined so configure's kernel check finds us.
 #
 # Run as `neo-cc` for C and `neo-c++` (a symlink) for C++. NEO_REPO is the
-# repository root; NEO_CLANG the clang to use (default clang).
+# repository root; NEO_CLANG the clang to use (default clang); NEO_CXX_CONFIG
+# a directory holding libc++'s __config_site (default neo-crt's own).
+# _GNU_SOURCE: libc++'s locale headers need musl's strto*_l and vasprintf.
 #
 # Linking: configure links small test programs. They link against a stub
 # that defines exactly the symbols in neo-crt-symbols.txt (what neo-crt
@@ -29,7 +31,7 @@ done
 
 set -- --target=x86_64-unknown-none-elf -D__neoplutarch__ \
   -mno-red-zone -mcmodel=small -fno-pic -fno-pie -fno-stack-protector \
-  -D_XOPEN_SOURCE=700 -nostdinc "$@"
+  -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -nostdinc "$@"
 here=$(dirname "$0")
 inc="-isystem $repo/third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6/include \
   -isystem $crt/musl-generated -isystem $crt/musl/arch/x86_64 \
@@ -37,8 +39,8 @@ inc="-isystem $repo/third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6/include \
   -isystem $res/include"
 if [ -n "$cxx" ]; then
   inc="-nostdinc++ -fno-exceptions -fno-rtti \
-    -isystem $here/include \
-    -isystem $repo/userland/neo-crt/cxx -isystem $crt/libcxx/include $inc"
+    -isystem ${NEO_CXX_CONFIG:-$repo/userland/neo-crt/cxx} \
+    -isystem $crt/libcxx/include $inc"
   exe="$clang --driver-mode=g++"
 else
   exe="$clang"
