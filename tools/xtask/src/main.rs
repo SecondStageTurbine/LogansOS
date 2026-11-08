@@ -224,6 +224,7 @@ const SETUP_MENU_WALK_CAPTURE_REL: &str = "target/neo-test/setup_menu_walk.ppm";
 const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
 const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
 const SETUP_MENU_SKIP_WELCOME_REL: &str = "target/neo-test/setup_menu_skip_welcome.ppm";
+const SETUP_MENU_STORE_TRY_CAPTURE_REL: &str = "target/neo-test/setup_menu_store_try.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -932,7 +933,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 42] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 43] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1256,6 +1257,16 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 42] = [
             b"\r",
         )
     },
+    // F11 S2: the walk on the volatile overlay, then the intro session.
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_store_try",
+            SETUP_MENU_STORE_TRY_STEPS,
+            SETUP_MENU_STORE_TRY_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // OT-87 R4.4: the Atrium installer in the intro session, booted as an
     // install scenario (`run_install_scenario`): the list captured as it
     // shows, the confirmation after Enter (`\r`).
@@ -1471,6 +1482,30 @@ const SETUP_MENU_WALK_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP setup redraw page=comfort focus=0", b"\t"),
     step(b"DESKTOP setup redraw page=comfort focus=1", b"\n"),
     step(b"DESKTOP setup redraw page=comfort focus=1", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S2 (`setup_menu_store_try`): the walk with Reduce motion only (the
+/// intro's glass end frame stays), then the intro session.
+const SETUP_MENU_STORE_TRY_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=0", &[HMP_UP]),
     step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
     step(b"DESKTOP setup page=try rows=5", b"\n"),
     step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
@@ -3581,6 +3616,17 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // F11 S2: the setup menu over two boots. Boot 1 walks it (both
+        // Comfort options on), each choice written to the store and read
+        // back by digest, then makes the account; boot 2 finds the record,
+        // skips the menu and builds from it.
+        name: login_scenarios::LOGIN_SETUP_STORE_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("setup-store-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-88 S1: the settings store over two boots. A test client sets
         // three settings (each applied live, its store write read back by
         // digest) and two the WM refuses; the idle lock fires at the chosen
@@ -3906,6 +3952,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "setup_menu_skip",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("setup-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S2: the walk with Reduce motion on, on a store with no
+        // `.system/` (the intro kernel mounts no NeoFS): the volatile
+        // overlay. The choices apply live and nothing is written.
+        name: "setup_menu_store_try",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-store-try-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8023,6 +8079,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-busy-boot-test")
         // OT-66 L1: sign-in is neo-init's; the worker plays no part.
         | Some("login-boot-test")
+        | Some("setup-store-boot-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -8083,6 +8140,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("power-menu-boot-test")
         | Some("desktop-clock-boot-test")
         | Some("setup-menu-boot-test")
+        | Some("setup-store-try-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -8239,6 +8297,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         ],
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
+        | Some("setup-store-boot-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -8379,7 +8438,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
         | Some("power-menu-boot-test")
-        | Some("setup-menu-boot-test") => vec![
+        | Some("setup-menu-boot-test")
+        | Some("setup-store-try-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -19183,7 +19243,9 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
         | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
         // F11 S1: the intro session's kernel, after the setup menu.
-        "setup_menu_walk" | "setup_menu_skip" => "desktop_intro_boot",
+        "setup_menu_walk" | "setup_menu_skip" | "setup_menu_store_try" => "desktop_intro_boot",
+        // F11 S2: the plain sign-in kernel, with the setup menu before it.
+        login_scenarios::LOGIN_SETUP_STORE_SCENARIO => "login_two_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }
@@ -20684,6 +20746,42 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         require_framebuffer_capture(scenario, SETUP_MENU_WALK_TRY_REL)?;
         require_setup_capture(scenario, SETUP_MENU_WALK_TRY_REL, true)?;
         require_framebuffer_capture(scenario, SETUP_MENU_WALK_CAPTURE_REL)?;
+    }
+    // F11 S2: no `.system/` (the intro kernel mounts no NeoFS), so the
+    // store is the volatile overlay: the menu still runs, each choice
+    // applies live, and nothing reaches a disk.
+    if scenario.name == "setup_menu_store_try" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=1 reduce_transparency=0",
+                "SETTING applied key=1 value=0 status=0",
+                "SETTINGS volatile writes=0 rt=0 rm=1 idle=10 lang=0 kb=0",
+                "SETTING applied key=2 value=1 status=0",
+                "SETTING applied key=6 value=0 status=0",
+                "SETTING applied key=7 value=0 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the walk on the volatile overlay: Reduce motion applied in memory, the other three keys already in force, nothing written",
+        )?;
+        for (needle, why) in [
+            ("SETTINGS written", "the volatile overlay writes no record"),
+            ("SETTINGS loaded", "no record exists to load"),
+            ("SETTINGS migrated", "the volatile overlay migrates nothing"),
+            (
+                "DESKTOP setup skipped",
+                "a volatile store always runs the menu",
+            ),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_framebuffer_capture(scenario, SETUP_MENU_STORE_TRY_CAPTURE_REL)?;
     }
     // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
     // defaults and no other page, and the session is the intro's.

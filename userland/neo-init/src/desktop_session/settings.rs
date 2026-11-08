@@ -34,13 +34,72 @@ static VALUES: AtomicU64 = AtomicU64::new(0);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 static FILE: AtomicU8 = AtomicU8::new(0);
 static LOADED: AtomicU8 = AtomicU8::new(0);
+/// F11 S2 (`setup-store`): the volatile overlay (setup-menu THINK §2.2): a
+/// session whose store can't be written (Try: no `/neofs/.system`, or a
+/// read-only mount) starts from the defaults, never reads the installed
+/// record, and keeps every write in memory.
+static VOLATILE: AtomicU8 = AtomicU8::new(0);
+
+/// Whether `load` found a valid record on disk (F11 S2: an installed
+/// system's setup menu runs only until one exists, setup-menu THINK §2.4).
+static FOUND: AtomicU8 = AtomicU8::new(0);
+
+/// Whether the first-boot setup menu should run: on a Try session (the
+/// volatile overlay: nothing persists, so every boot), or on an installed
+/// system whose store held no valid record when this boot began.
+pub fn setup_due() -> bool {
+    volatile() || FOUND.load(Ordering::Acquire) == 0
+}
+
+/// Whether this session's store is the volatile overlay.
+pub fn volatile() -> bool {
+    VOLATILE.load(Ordering::Acquire) == 1
+}
+
+/// Until OT-87 R5's Try flag exists: the store is volatile when it can't be
+/// written: no `.system/`, or the record file (or, with none, `settings.a`)
+/// doesn't open for writing (how a read-only volume shows itself, as the
+/// login gate tells it). The test build can force it.
+#[cfg(feature = "setup-store")]
+fn store_is_volatile() -> bool {
+    if cfg!(feature = "setup-store-volatile-test") {
+        return true;
+    }
+    match sys_open(sc::SYSTEM_DIR, OPEN_ROOT_TEMPORARY, FileRights::LOOKUP) {
+        Ok(dir) => {
+            let _ = sys_close(dir);
+        }
+        Err(_) => return true,
+    }
+    let a = login::read_small(sc::SETTINGS_A);
+    let b = login::read_small(sc::SETTINGS_B);
+    let path = sc::select(a.as_deref(), b.as_deref()).map_or(sc::SETTINGS_A, |c| c.file.path());
+    let rw = FileRights::READ.union(FileRights::WRITE);
+    let opened = match sys_open(path, OPEN_ROOT_TEMPORARY, rw) {
+        Err(libneo::ENOENT) => sys_open(path, libneo::OPEN_CREATE_REGULAR, rw),
+        other => other,
+    };
+    match opened {
+        Ok(handle) => {
+            let _ = sys_close(handle);
+            false
+        }
+        Err(_) => true,
+    }
+}
 
 fn pack(s: &Settings) -> u64 {
-    u64::from(s.get(sc::Key::ReduceTransparency))
+    let v = u64::from(s.get(sc::Key::ReduceTransparency))
         | u64::from(s.get(sc::Key::ReduceMotion)) << 8
         | u64::from(s.get(sc::Key::IdleLockMinutes)) << 16
         | u64::from(s.get(sc::Key::TimeZone)) << 32
-        | u64::from(s.get(sc::Key::RtcLocal)) << 48
+        | u64::from(s.get(sc::Key::RtcLocal)) << 48;
+    // F11 S2: the setup menu's keys in the top byte (each count is < 16).
+    #[cfg(feature = "setup-store")]
+    let v = v
+        | u64::from(s.get(sc::Key::Language) & 0xf) << 56
+        | u64::from(s.get(sc::Key::KeyboardLayout) & 0xf) << 60;
+    v
 }
 
 fn unpack(v: u64) -> Settings {
@@ -50,7 +109,19 @@ fn unpack(v: u64) -> Settings {
         .and_then(|s| s.with(3, (v >> 16 & 0xffff) as u32))
         .and_then(|s| s.with(4, (v >> 32 & 0xffff) as u32))
         .and_then(|s| s.with(5, (v >> 48 & 0xff) as u32))
+        .and_then(|s| unpack_setup(s, v))
         .unwrap_or_default()
+}
+
+#[cfg(feature = "setup-store")]
+fn unpack_setup(s: Settings, v: u64) -> Result<Settings, sc::SetError> {
+    s.with(6, (v >> 56 & 0xf) as u32)
+        .and_then(|s| s.with(7, (v >> 60 & 0xf) as u32))
+}
+
+#[cfg(not(feature = "setup-store"))]
+fn unpack_setup(s: Settings, _v: u64) -> Result<Settings, sc::SetError> {
+    Ok(s)
 }
 
 /// The settings in force (the defaults until [`load`]).
@@ -165,20 +236,42 @@ fn file_name(file: File) -> &'static [u8] {
 }
 
 fn log_settings(line: Line, s: &Settings) -> Line {
-    line.s(b" rt=")
+    let line = line
+        .s(b" rt=")
         .n(u64::from(s.get(sc::Key::ReduceTransparency)))
         .s(b" rm=")
         .n(u64::from(s.get(sc::Key::ReduceMotion)))
         .s(b" idle=")
-        .n(u64::from(s.idle_lock_minutes))
+        .n(u64::from(s.idle_lock_minutes));
+    // F11 S2: the setup menu's keys.
+    #[cfg(feature = "setup-store")]
+    let line = line
+        .s(b" lang=")
+        .n(u64::from(s.language))
+        .s(b" kb=")
+        .n(u64::from(s.keyboard_layout));
+    line
 }
 
 /// Read the store at boot; with no record, migrate the presence files and
 /// write the first one.
 pub fn load() {
+    #[cfg(feature = "setup-store")]
+    if store_is_volatile() {
+        VOLATILE.store(1, Ordering::Release);
+        store(None, &Settings::default());
+        log_settings(
+            Line::new().s(b"SETTINGS volatile writes=0"),
+            &Settings::default(),
+        )
+        .s(b"\n")
+        .emit();
+        return;
+    }
     let a = login::read_small(sc::SETTINGS_A);
     let b = login::read_small(sc::SETTINGS_B);
     if let Some(c) = sc::select(a.as_deref(), b.as_deref()) {
+        FOUND.store(1, Ordering::Release);
         store(Some(c), &c.record.settings);
         log_settings(
             Line::new()
@@ -205,6 +298,14 @@ pub fn load() {
 /// Write `next` to the file not holding the record, read it back, and make
 /// it the record. `false`: nothing changed (the old record stays in force).
 fn commit(next: &Settings) -> bool {
+    // The volatile overlay: in memory only, nothing touches the disk.
+    if volatile() {
+        store(None, next);
+        log_settings(Line::new().s(b"SETTINGS volatile writes=0"), next)
+            .s(b"\n")
+            .emit();
+        return true;
+    }
     let current = current_record();
     let Some((file, bytes)) = sc::plan(current.as_ref(), next) else {
         return false;
