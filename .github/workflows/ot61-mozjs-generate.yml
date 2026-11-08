@@ -179,6 +179,19 @@ jobs:
           grep -E ' error: ' "$RUNNER_TEMP/compile-neo.log" \
             | sed -E 's|^.*/mozjs/||; s|:[0-9]+:[0-9]+: error: |: |' \
             | sort | uniq -c | sort -rn | head -150
+          # The link gap: every symbol the objects reference that neither
+          # another object nor neo-crt (generator/neo-crt-symbols.txt) defines.
+          nm=$(command -v llvm-nm || ls /usr/lib/llvm-*/bin/llvm-nm | tail -1)
+          find "$obj" -name '*.o' ! -path '*/host_*' ! -name 'host_*' > "$RUNNER_TEMP/objs.txt"
+          xargs "$nm" --defined-only --extern-only --format=just-symbols < "$RUNNER_TEMP/objs.txt" 2>/dev/null \
+            | grep -v ':$' | sort -u > "$RUNNER_TEMP/defined.txt"
+          xargs "$nm" --undefined-only --format=just-symbols < "$RUNNER_TEMP/objs.txt" 2>/dev/null \
+            | grep -v ':$' | sort -u > "$RUNNER_TEMP/undefined.txt"
+          grep -v '^#' "$gen/neo-crt-symbols.txt" | sort -u > "$RUNNER_TEMP/crt.txt"
+          comm -23 "$RUNNER_TEMP/undefined.txt" "$RUNNER_TEMP/defined.txt" \
+            | comm -23 - "$RUNNER_TEMP/crt.txt" > "$RUNNER_TEMP/link-gap.txt"
+          echo "== link gap: $(wc -l < "$RUNNER_TEMP/link-gap.txt") symbols (demangled)"
+          c++filt < "$RUNNER_TEMP/link-gap.txt" | head -300
           exit "$rc"
 
       - name: What came out (unified files, defines, source lists)
@@ -210,6 +223,7 @@ jobs:
             ${{ runner.temp }}/configure-neo.log
             ${{ runner.temp }}/export-neo.log
             ${{ runner.temp }}/compile-neo.log
+            ${{ runner.temp }}/link-gap.txt
             ${{ runner.temp }}/obj-neo/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/js/src/js-confdefs.h
             ${{ runner.temp }}/obj/**/Unified_*.cpp
