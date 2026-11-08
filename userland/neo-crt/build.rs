@@ -62,11 +62,40 @@ const FILES: &[&str] = &[
     "src/stdio/__toread.c",
     "src/stdio/__uflow.c",
     "src/stdio/ofl.c",
-    // locale: the C locale only.
+    // stdio for libc++'s iostreams (C3c-1): reading (std::cin reads EOF;
+    // c/stdin.c), wide characters and asprintf.
+    "src/stdio/getc.c",
+    "src/stdio/ungetc.c",
+    "src/stdio/fgetwc.c",
+    "src/stdio/getwc.c",
+    "src/stdio/ungetwc.c",
+    "src/stdio/fputwc.c",
+    "src/stdio/vasprintf.c",
+    "src/stdio/fwide.c",
+    // locale: the C locale only. newlocale/setlocale find no locale files
+    // (getenv returns NULL), so every name resolves to "C" or C.UTF-8.
     "src/locale/c_locale.c",
     "src/locale/__lctrans.c",
     "src/locale/langinfo.c",
     "src/locale/localeconv.c",
+    "src/locale/locale_map.c",
+    "src/locale/__mo_lookup.c",
+    "src/locale/newlocale.c",
+    "src/locale/freelocale.c",
+    "src/locale/duplocale.c",
+    "src/locale/uselocale.c",
+    "src/locale/setlocale.c",
+    "src/locale/strcoll.c",
+    "src/locale/strxfrm.c",
+    "src/locale/wcscoll.c",
+    "src/locale/wcsxfrm.c",
+    "src/locale/strtod_l.c",
+    // time: strftime for libc++'s time_put. No time zones: %Z is "UTC"
+    // (c/neo_bottom.c's __tm_to_tzname).
+    "src/time/strftime.c",
+    "src/time/__tm_to_secs.c",
+    "src/time/__year_to_secs.c",
+    "src/time/__month_to_secs.c",
     // strerror's message table.
     "src/errno/strerror.c",
     // rand/random/drand48.
@@ -115,6 +144,7 @@ fn main() {
     sources.push(manifest.join("c/neo_bottom.c"));
     sources.push(manifest.join("c/stdout.c"));
     sources.push(manifest.join("c/stderr.c"));
+    sources.push(manifest.join("c/stdin.c"));
 
     let clang = std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into());
     let mut build = cc::Build::new();
@@ -166,7 +196,9 @@ fn main() {
         .flag("-fno-exceptions")
         .flag("-fno-rtti")
         .flag("-Wno-everything")
-        .define("_XOPEN_SOURCE", "700")
+        // libc++'s locale code calls musl's strto*_l and vasprintf, which
+        // musl declares only for _GNU_SOURCE.
+        .define("_GNU_SOURCE", None)
         .define("_LIBCPP_BUILDING_LIBRARY", None)
         .define("_LIBCPP_REMOVE_TRANSITIVE_INCLUDES", None)
         .include(&cxx_config)
@@ -201,10 +233,17 @@ fn main() {
 
 /// libc++ 18.1.8 library sources for this configuration (`cxx/__config_site`).
 /// Left out, as libc++'s own CMake leaves them out under the same options:
-/// localization and iostreams (fstream, ios*, iostream, locale, ostream,
-/// regex, strstream), random_device (random) and the time-zone database
+/// fstream (no filesystem), random_device (random) and the time-zone database
 /// (tz, tzdb_list).
 const LIBCXX_SOURCES: &[&str] = &[
+    // Localization and iostreams (C3c-1).
+    "ios.cpp",
+    "ios.instantiations.cpp",
+    "iostream.cpp",
+    "locale.cpp",
+    "ostream.cpp",
+    "regex.cpp",
+    "strstream.cpp",
     "algorithm.cpp",
     "any.cpp",
     "atomic.cpp",

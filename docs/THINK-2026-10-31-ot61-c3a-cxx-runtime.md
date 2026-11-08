@@ -237,3 +237,46 @@ gets the signal to the waiter it was for, and a control with the old order loses
 - `pthread_getattr_np`/stack bounds (SpiderMonkey's stack limit; comes with C3 proper);
 - C++ `thread_local` stays unusable on this target: it compiles to `%fs` accesses. SpiderMonkey must take its
   pthread-key path (`MOZ_THREAD_LOCAL` without compiler TLS).
+
+## 10. C3c-1 amendment: localization and iostreams on (2026-11-08)
+
+§3 configured libc++ with no localization or iostreams. SpiderMonkey needs them:
+- `mfbt/Maybe.h`, `Array.h`, `ToString.h`, `mozglue/misc/TimeStamp.h` and `js/public/RegExpFlags.h` include
+  `<ostream>`/`<sstream>`, and `Maybe.h` writes to the stream in non-dependent code;
+- irregexp's imported V8 printers use `<iostream>`/`<iomanip>`.
+
+Upstream's WASI build never meets this, because wasi-sdk's libc++ has localization. The other route was patching
+about 15 SpiderMonkey files, irregexp's V8 imports included, and re-doing that on every `mozjs` move. The PM was told
+on #87.
+
+**What changes:**
+- **`cxx/__config_site`:** drops `_LIBCPP_HAS_NO_LOCALIZATION`. Filesystem, `random_device` and the tz database stay off.
+- **libc++ sources added:** `ios.cpp`, `ios.instantiations.cpp`, `iostream.cpp`, `locale.cpp`, `ostream.cpp`,
+  `regex.cpp` and `strstream.cpp`. `fstream.cpp` stays out, because there is no filesystem.
+- **musl files added, all from the same tag:**
+  - locale: `locale_map`, `__mo_lookup`, `newlocale`, `freelocale`, `duplocale`, `uselocale`, `setlocale`,
+    `strcoll`, `strxfrm`, `wcscoll`, `wcsxfrm`, `strtod_l`;
+  - stdio: `getc`, `ungetc`, `fgetwc`, `getwc`, `ungetwc`, `fputwc`, `vasprintf`;
+  - time: `strftime` and its three date helpers. `src/time/` is newly vendored whole; the rest of it isn't compiled.
+- **neo-crt's own:**
+  - `c/stdin.c`: musl's `stdin`, locked always, and every read is end-of-file, because the bundle has no input.
+  - `neo_bottom.c`: `__tm_to_tzname` returns `"UTC"`, because there are no time zones. `__map_file` returns NULL; it
+    is never reached, since `getenv` returns NULL and musl therefore never looks for locale files.
+- **Locales:** still only `"C"` and C.UTF-8 in practice.
+- **`_GNU_SOURCE`:** code that includes the locale or stream headers must define it, because musl declares
+  `strto*_l` and `vasprintf` only then. libc++'s own build and the smoke define it.
+
+**Smoke item 30** covers the following, each expected value worked by hand:
+- `ostringstream` formatting (`"42 1.5 ff ****7"`);
+- `istringstream` extraction and its failbit;
+- `std::locale().name() == "C"`;
+- `put_time` over `strftime` (`"2026-11-08 09:05 UTC"`);
+- `regex_match`;
+- `std::cin` at end-of-file.
+
+**Cost:** about 7 more libc++ objects and 23 musl objects in every C++-using bundle. A Rust-only bundle doesn't link
+neo-crt.
+
+**Kill-switch:** none at run time. This is a build configuration: reverting `__config_site` and the source lists gives
+back §3's runtime bit for bit. Everything §3 already compiled is unchanged. Items 1-29 still pass and keep their
+expected values.

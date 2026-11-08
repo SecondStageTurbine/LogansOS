@@ -66,6 +66,7 @@ unsafe extern "C" {
     fn cxx_check_threads() -> i32;
     fn cxx_check_condition_variable() -> i32;
     fn cxx_check_sync() -> i32;
+    fn cxx_check_streams() -> i32;
     fn pthread_key_create(key: *mut u32, dtor: Option<unsafe extern "C" fn(*mut c_void)>) -> i32;
     fn pthread_key_delete(key: u32) -> i32;
     fn pthread_setspecific(key: u32, value: *const c_void) -> i32;
@@ -320,6 +321,11 @@ pub extern "C" fn _start() -> ! {
         29,
         "pthread: a std::thread's key destructor runs at its exit",
         std_thread_runs_key_destructors(),
+    );
+    c_check(
+        30,
+        "C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
+        cxx_check_streams,
     );
     println!("{TAG} PASS");
     std::process::exit(0)
