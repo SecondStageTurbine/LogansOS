@@ -250,9 +250,12 @@ const SCENARIO: &str = "irqsafe_mutex_bench";
 const SCENARIO: &str = "ai_latency_oracle";
 #[cfg(all(
     feature = "neo-test-xsave-ymm-context-switch",
-    not(feature = "neo-test-xsave-ebx-understated")
+    not(feature = "neo-test-xsave-ebx-understated"),
+    not(feature = "neo-test-xsave-ap-policy")
 ))]
 const SCENARIO: &str = "xsave_ymm_context_switch";
+#[cfg(feature = "neo-test-xsave-ap-policy")]
+const SCENARIO: &str = "xsave_ap_policy";
 #[cfg(feature = "neo-test-xsave-ebx-understated")]
 const SCENARIO: &str = "xsave_ebx_understated";
 #[cfg(all(
@@ -1054,8 +1057,13 @@ const SCENARIO: &str = "install_claim_identity";
 const SCENARIO: &str = "install_claim_nvme_events";
 #[cfg(feature = "neo-test-fb-progress")]
 const SCENARIO: &str = "fb_progress_console";
-#[cfg(feature = "neo-test-fb-panic-holding-serial")]
+#[cfg(all(
+    feature = "neo-test-fb-panic-holding-serial",
+    not(feature = "neo-test-fb-gp-holding-serial")
+))]
 const SCENARIO: &str = "fb_panic_holding_serial";
+#[cfg(feature = "neo-test-fb-gp-holding-serial")]
+const SCENARIO: &str = "fb_gp_holding_serial";
 #[cfg(feature = "neo-test-x2apic-smp")]
 const SCENARIO: &str = "x2apic_smp_ipi";
 #[cfg(all(
@@ -6766,6 +6774,50 @@ fn run_xsave_ymm_context_switch() -> ! {
             debug_exit(EXIT_FAILURE);
         }
     }
+    // `xsave_ap_policy` (#52 review item 1): the policy is the boot CPU's.
+    // The first AP needed more than it holds and stayed offline; the second
+    // needed less and came online without shrinking it. The YMM/XMM/x87
+    // checks above ran on the admitted CPUs under that policy.
+    #[cfg(feature = "neo-test-xsave-ap-policy")]
+    {
+        let (published, checks) = crate::arch::x86_64::fpu::ap_policy_for_test();
+        let area = crate::arch::x86_64::fpu::save_area_size();
+        let rejected = crate::arch::x86_64::smp::aps_rejected_for_test();
+        serial_println!(
+            "xsave_ap_policy: published_area={} area={} ap_checks={} aps_rejected={}",
+            published,
+            area,
+            checks,
+            rejected
+        );
+        if checks < 2 {
+            fail("reason=needs_two_aps (NEO_SMP>=3)");
+        }
+        if area != published {
+            fail("reason=ap_changed_policy");
+        }
+        if rejected != 1 {
+            fail("reason=larger_ap_not_rejected");
+        }
+        // #57 re-check: bringup attributed the rejection to the AP that made
+        // it, so every AP it counts as started signalled ready.
+        let (started, ready) = crate::arch::x86_64::smp::aps_started_ready_for_test();
+        serial_println!(
+            "xsave_ap_policy: aps_started={} aps_ready={}",
+            started,
+            ready
+        );
+        if started != ready {
+            fail("reason=rejected_ap_counted_as_started");
+        }
+        // The rejected AP (the first launched, cpu_id 1) has no kernel IDT, so
+        // it must be out of the registry `cpu_stop::stop_others` targets; the
+        // admitted ones stay in it.
+        use crate::arch::x86_64::smp::cpu_registered_for_test as registered;
+        if registered(1) || !registered(2) {
+            fail("reason=rejected_ap_still_registered");
+        }
+    }
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fpu=xsave area={} mask=0x{:x} ymm=preserved xmm=preserved x87=preserved",
         SCENARIO,
@@ -10626,11 +10678,17 @@ compat_mode_probe_end:
 
     pub(super) fn run() -> ! {
         let gdt_bad = gdt_ring3_bad_slots();
-        // SAFETY: reading IA32_CSTAR / IA32_SYSENTER_CS has no side effects.
+        // SAFETY: reading IA32_CSTAR / IA32_SYSENTER_CS has no side effects;
+        // the latter exists only with SEP (without it SYSENTER is #UD, and 0
+        // reports that nothing is open).
         let (cstar, sysenter_cs) = unsafe {
             (
                 Msr::new(IA32_CSTAR).read(),
-                Msr::new(IA32_SYSENTER_CS).read(),
+                if crate::arch::x86_64::syscall::has_sep() {
+                    Msr::new(IA32_SYSENTER_CS).read()
+                } else {
+                    0
+                },
             )
         };
         GDT_BAD.store(gdt_bad, Ordering::Release);
@@ -21013,6 +21071,10 @@ fn run_fb_panic_holding_serial() -> ! {
         scale,
         before
     );
+    // #52 review item 4: the same, through a kernel-mode #GP.
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    crate::drivers::console::serial::gp_holding_lock_for_test();
+    #[cfg(not(feature = "neo-test-fb-gp-holding-serial"))]
     crate::drivers::console::serial::panic_holding_lock_for_test();
 }
 
@@ -21066,6 +21128,14 @@ fn fb_panic_holding_serial_verdict() {
         );
         return;
     }
+    // #52 review item 4: the panic came from the #GP's fatal path.
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    if !crate::arch::x86_64::idt::fatal_gp_seen_for_test() {
+        serial_println!("fb_gp_holding_serial: verdict FAIL reason=panic_not_from_gp_fatal_path");
+        return;
+    }
+    #[cfg(feature = "neo-test-fb-gp-holding-serial")]
+    serial_println!("fb_gp_holding_serial: fatal_trap=#GP panic_first=yes");
     serial_println!(
         "NEO_TEST/1 event=PASS name={} fb_panic_holding_serial=ok serial_lock_held=yes panic_cells={} lit_after={} serial=raw other_cpu=halted mirror_active=yes",
         SCENARIO,

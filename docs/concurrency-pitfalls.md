@@ -146,6 +146,9 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-100 | **An XSAVE area sized from CPUID.(0DH,0):EBX alone** (found 2026-11-02, the preview under WHPX). EBX is "the size for the features enabled in XCR0", so it is only right if whoever answers CPUID tracks the guest's XCR0. QEMU under WHPX (`kernel-irqchip=off`) answered 576 (x87\|SSE) with XCR0 = x87\|SSE\|AVX ⇒ every `xsave` wrote AVX state 256 bytes past the area: in the timer stub, over the saved registers and the iretq frame copy, so the first LAPIC tick's `iretq` took a #GP(0) and the boot froze; per-thread save buffers on the heap overran the same way | Interrupt entry / FPU state (`fpu::finish_xsave_init`) | **Was EXPOSED → fixed:** the area is the largest of EBX, 576, and each enabled component's offset + size from CPUID.(0DH,i) (`fpu_logic::xsave_area_size`); an understated EBX is logged (`cpuid_0d_ebx=576 (understated; …)`) | **Yes (`xsave_ebx_understated`: EBX forced to 576, the YMM/XMM/x87 context-switch legs must pass with area 832; control `neo-test-xsave-ebx-understated-control` (EBX trusted) takes the same #GP at `timer_isr_entry+0xe0`; host KATs `fpu-logic-tests`)** |
 | CP-101 | **Withdrawn (2026-10-31).** Filed in 27ce30f0 as a loopback-pump reordering race (two CPUs pop `OUTBOUND` in order, then inject out of order) behind the `fetch_broker` lost request. A per-segment trace then showed every segment delivered in order; the real cause was the TLS fixture server dropping a request decrypted during its handshake (fixed in `libneo::tls`, dcf91989). The `LOOPBACK_PUMP` lock was removed. The shape is still possible in principle but has not been observed | Network / loopback TCP (`tcp::pump_loopback_egress`) | **Not guarded; unproven hazard**, no change | **No (the discriminator it cited was the fixture bug)** |
 | CP-102 | **A check against a route epoch, then an act that reads it again** (found 2026-11-02, Jarvis's review of #61). Key auto-repeat checked the held key's activation epoch, then staged the repeat with `stage_event`, which stamps the stage with the epoch read *then* ⇒ a focus change or Super+L between the check and the stage (another CPU) gives a repeat checked for the old owner to the new owner or the lock screen | Input routing / key auto-repeat (`key-autorepeat`) | **Guarded:** the repeat carries the epoch it was checked under (`key_repeat::poll` returns it); `stage_event_at` drops it if the epoch has moved and otherwise stamps the stage with *that* epoch, so a move after staging is caught by the flush's comparison under `DELIVERY` (where every route change bumps it). The legacy routed path compares under `DELIVERY` (`route_event_at`). Pure decision: `key_repeat_logic::stage_action`, host-KAT'd | **Yes (`key_repeat_epoch`: a focus change and Super+L forced between the check and the stage, and Super+L between the stage and the flush; nothing reaches B or the lock screen. Falsified by `neo-test-key-repeat-epoch-control`, the fresh-read shape: FAIL `reason=repeat_crossed_focus_change`)** |
+| CP-108 | **A per-CPU init that republishes a global policy** (found 2026-11-02, #52 review). Every CPU ran `enable_sse`, and each AP's `finish_xsave_init` stored its own XSAVE size and mask into the globals every CPU saves with. An AP whose CPUID differed (a hybrid part, a hypervisor CPU model) would resize areas other CPUs had already allocated and were saving into: a smaller size overruns them (CP-100's shape), a larger mask faults XRSTOR elsewhere | SMP bringup / FPU state (`fpu::finish_xsave_init`, `smp::ap_entry`) | **Was EXPOSED → fixed:** the boot CPU publishes the policy once (`POLICY_PUBLISHED`); an AP only checks it (`fpu_logic::ap_verdict`: XSAVE support, XCR0 takes the mask exactly, its own area need <= the policy's) and never stores it; a CPU that fails stays offline, and bringup moves on (`APS_REJECTED`) | **Yes (`xsave_ap_policy`: the first AP needs 64 bytes more (must stay offline), the second 64 bytes less (online, policy unchanged), and every AP counted as started signalled ready; controls `neo-test-xsave-ap-policy-control` (APs republish) FAILs `larger_ap_not_rejected`, `neo-test-xsave-ap-policy-late-sample` (rejection baseline read after launch) times out; host KATs `fpu-logic-tests::ap_policy`)** |
+| CP-109 | **A fatal trap that prints before it panics** (found 2026-11-02, #52 review). The kernel-mode #GP/#PF/… handlers printed their diagnostics through `serial_println!` (a blocking `SERIAL` lock) and only then reached the panic handler, whose console takeover is the part that never waits. A CPU that faults while holding `SERIAL` (mid-print) spins on its own lock forever: no panic screen, on a target with no serial port | Exception entry / panic path (`idt::fatal_kernel_trap`) | **Was EXPOSED → fixed:** every fatal kernel-mode exception panics first, its diagnostics (name, err, cr2 for #PF, rip, `link_rip`, rsp, cs, ss, rflags) in the panic message; the test harness keeps print-then-fail-by-name | **Yes (`fb_gp_holding_serial`: a kernel #GP while holding `SERIAL` must paint the panic on screen and report over raw UART; control `neo-test-fb-gp-holding-serial-control` (print first) times out; the product witness `product-xsave-boot.sh control` ends in the panic screen with the #GP line)** |
+| CP-110 | **Inline asm that saves a register around an instruction and lets the allocator pick it for an output** (found 2026-11-02, the product-kernel witness). `push rbx; cpuid; mov {out:e}, ebx; pop rbx` with `out = lateout(reg)`: at opt-level 3 the allocator chose rbx for `out`, so `pop rbx` threw CPUID's EBX away and the caller read whatever rbx held (a stack address). An AP then computed a 2 GiB XSAVE need. Three copies (`fpu`, `cpuid_leaf7_ebx` (SMEP/SMAP), `tlb_shootdown`) | Any CPUID read | **Was EXPOSED → fixed:** `core::arch::x86_64::__cpuid_count` everywhere; no hand-written CPUID asm with an EBX output remains | **Yes (`product-xsave-boot.sh witness`: the opt-level-3 product kernel must admit the AP; the defective asm left it offline)** |
 | CP-111 | **A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O** (standing rule, 2026-11-08, from J.c.'s architecture read). The general form of CP-91 and CP-92, and CP-56's `Drop` blind spot at a global lock: cleanup that waits on another CPU (a shootdown), takes another lock, or does I/O, run inside the locked (often IF-off) section, can wait on what a CPU spinning for that lock must provide | Any global lock (`CAP_GRAPH` today; the tensor and model object paths next) | **Guard: the last reference is detached and released at a deferral point outside the locked section (the reaper, a post-unlock tail in the caller, or a work queue). A `Drop` that only decrements a count and returns is fine anywhere** | **Yes for its instances (CP-91, CP-92, CP-98 discriminators); every new object with drop-time teardown adds its own** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
@@ -4751,6 +4754,59 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   version reproduced both waiters asleep after `signal` returned. Principle: the standard "signal under the
   condvar's internal lock" rule for sequence-counter condvars (as in std's own futex condvar, which bumps and wakes
   in one step on the futex word).
+
+### CP-108 — A per-CPU init that republishes a global policy
+
+- **Shape.** `enable_sse` runs on every CPU. The boot CPU decided the XSAVE size and mask and stored them in
+  the globals the timer stub, the syscall path and every `FpuState` use. Each AP's `finish_xsave_init` then
+  recomputed them from its own CPUID and stored them again. With identical CPUs that is harmless; with an AP
+  whose CPUID differs it silently changes the save area every CPU already uses.
+- **Guard.** One policy, owned by the boot CPU and immutable once published (`POLICY_PUBLISHED`). An AP runs
+  `check_ap`: XSAVE support for the policy's components, XCR0 reads back exactly the policy's mask, and its
+  own area need fits the policy's area (`fpu_logic::ap_verdict`). A CPU that fails halts before any per-CPU
+  init and stays offline; `bring_up_aps` sees `APS_REJECTED` move and goes on to the next AP. A CPU under an
+  FXSAVE policy is always admitted. A rejected AP is also kept out of the AVX2 census and HWP.
+- **Discriminator.** `xsave_ap_policy` (NEO_SMP>=3): the first AP checked needs 64 bytes more than the policy
+  (must stay offline), the second 64 bytes less (must come online without shrinking it); the YMM/XMM/x87
+  context-switch legs then run on the admitted CPUs. Control: each AP republishes, as before.
+- **Second trap, in the guard itself (#57 re-check, relay 274).** `bring_up_aps` read the rejection count
+  *after* `cpu.bootstrap` had published the AP's entry. A rejecting AP increments it as its first act, so it
+  could land before that read: the rejection was lost, the BSP waited out its spin limit and counted the AP
+  as started. The baseline is now read before `bootstrap` (bringup is serialized, so the next increment is
+  this AP's). Discriminator: `xsave_ap_policy` holds the BSP until the AP decides (the window always open)
+  and requires `aps_started == aps_ready`; control `neo-test-xsave-ap-policy-late-sample` (the read after
+  launch) times out.
+- **Third, from CP-105's stop path.** A rejected AP halts before its IDT is loaded, but it was registered
+  (`apic::register_lapic_id`) before launch, and `cpu_stop::stop_others` sends a STOP IPI and then an NMI to
+  every registered CPU. Bringup now unregisters it (`apic::unregister_lapic_id`). `xsave_ap_policy` requires
+  CPU 1 (the rejected one) out of the registry and CPU 2 in it; with the unregister removed it FAILs
+  `rejected_ap_still_registered`.
+
+### CP-109 — A fatal trap that prints before it panics
+
+- **Shape.** A kernel-mode exception handler printed its trap lines with `serial_println!`, then called the
+  panic handler. `serial_println!` takes `SERIAL` and waits. If the fault happened while this CPU held
+  `SERIAL` (a fault inside a print), the handler deadlocks on its own lock before the panic handler's
+  takeover (`panic_takeover` + `serial::enter_panic`, which never waits) runs.
+- **Guard.** `idt::fatal_kernel_trap`: outside the test harness it panics first, with every diagnostic in
+  the panic message (`FatalTrap`'s `Display`); nothing blocking runs before it. The ring-0-fault-halts hook
+  still runs first. Builds without `fb-progress-console` have no lock-free panic print at all; the product
+  image has it.
+- **Discriminator.** `fb_gp_holding_serial`: takes `SERIAL`, never releases it, and loads through a
+  non-canonical address; the panic must reach the screen and the raw UART, and come from the #GP path.
+  Control: print first (must time out).
+
+### CP-110 — An asm output that aliases the register the asm saves
+
+- **Shape.** Hand-written CPUID: `push rbx`, `cpuid`, `mov {out:e}, ebx`, `pop rbx`, with `out` a `reg`
+  operand. Nothing stops the allocator from picking rbx for `out` (it did, at opt-level 3, in
+  `fpu::cpuid_count` inlined into the AP check); the `pop` then restores the old rbx over the result.
+  Debug builds happened to pick another register, so every scenario kernel passed.
+- **Guard.** Use `core::arch::x86_64::__cpuid_count`, which handles rbx correctly. Any future asm that saves
+  and restores a register around an instruction must give its outputs explicit registers that differ from
+  the saved one.
+- **Discriminator.** `product-xsave-boot.sh witness` boots the opt-level-3 product kernel on two CPUs; the
+  defective read left the AP offline (`AreaTooSmall { need: 2146115904, … }`).
 
 ### CP-111 — A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O
 
