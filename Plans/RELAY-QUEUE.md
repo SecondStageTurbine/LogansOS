@@ -163,3 +163,5 @@ RELAY 342 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-342-343-
 RELAY 343 | prometheus | Qwen | - | Plans/DISPATCH-2026-11-08-relays-342-343-quant-drift.md | Section 343 (quant-drift harness review, rerouted from Jarvis 334; RETURN `Plans/RETURN-2026-11-08-quant-drift-review-prometheus.md`)
 RELAY 344 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 344 (#75 = Section 318, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr75-review-dexter.md`)
 RELAY 345 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-08-relays-329-332.md | Section 345 (#85 L5 first page in a window; RETURN `Plans/RETURN-2026-11-08-pr85-review-jarvis.md`)
+RELAY 346 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 346 (#77 = Section 329's #77 part, rerouted from Codex; RETURN `Plans/RETURN-2026-11-08-pr77-review-dexter.md`)
+RELAY 347 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-335-339-reroute.md | Section 347 (#86 CLOCK_REALTIME from 1970; RETURN `Plans/RETURN-2026-11-08-pr86-review-dexter.md`)

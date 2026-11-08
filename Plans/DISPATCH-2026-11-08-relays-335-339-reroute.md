@@ -55,3 +55,18 @@ RETURN: `Plans/RETURN-2026-11-08-pr82-review-dexter.md` on `dexter/pr82-review`.
 ## Section 344: Dexter, #75 (key destructors run at most PTHREAD_DESTRUCTOR_ITERATIONS). Head `efb63b9d`. Rerouted from Codex relay 318.
 Run Section 318 of `Plans/DISPATCH-2026-11-08-relays-315-321.md` as written.
 RETURN: `Plans/RETURN-2026-11-08-pr75-review-dexter.md` on `dexter/pr75-review`.
+
+## Section 346: Dexter, #77 (WebRender 0.70 on SWGL). Head `c8a06574`. Rerouted from Codex relay 329 (its #77 part).
+Run the **#77** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#77 only. Vendored trees: check `VENDORED.md`, the licences and our two patches, not the upstream contents.
+RETURN: `Plans/RETURN-2026-11-08-pr77-review-dexter.md` on `dexter/pr77-review`.
+
+## Section 347: Dexter, #86 (neo-crt answers CLOCK_REALTIME, counted from 1970). Head `0b650a4d`. Small; contained.
+The PM picked option (i) of THINK #10 §6.1 (2026-11-08).
+- [ ] `CLOCK_REALTIME` returns the process-relative count read from 1970: it advances, and it never claims a real
+  date. Pass/fail plus `userland/neo-crt/src/lib.rs` line.
+- [ ] `CLOCK_MONOTONIC` is unchanged, including `main`'s `monotonic_epoch()` structure that the conflict touched.
+  Pass/fail plus line.
+- [ ] `crt_checks.c` would fail on the old code (realtime aborting or not advancing). Pass/fail plus line.
+- [ ] std's `SystemTime::now()` is untouched. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr86-review-dexter.md` on `dexter/pr86-review`.
