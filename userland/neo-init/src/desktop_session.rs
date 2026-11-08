@@ -3595,8 +3595,12 @@ mod apps {
     /// app with its session channel, plus thread authority: real std and
     /// WebRender start threads, and `SYS_THREAD_CREATE` needs a
     /// `BrowserRuntime` handle. It gets a copy of the session root's, derived
-    /// to `USE | THREAD_SPAWN` (no DERIVE or GRANT), so it can't pass the
-    /// authority on; our copy of the derived handle is closed after the spawn.
+    /// to `USE | GRANT` and `THREAD_SPAWN`. GRANT is what spawn needs to
+    /// inherit a non-file handle (`sys_spawn_impl`: `EPERM` without it, the
+    /// second on-target run's code 61). There is no DERIVE, and the browser
+    /// holds no channel but the WM's session, so it can't widen or pass on
+    /// more than this one right. Our copy of the derived handle is closed
+    /// after the spawn.
     #[cfg(feature = "atrium-apps-browser")]
     fn spawn_browser(session_client: Handle) -> Result<libneo::ProcessHandle, i32> {
         use libneo::handle_info::HandleKind;
@@ -3608,12 +3612,22 @@ mod apps {
         const THREAD_SPAWN: u8 = 1 << 0;
         let runtime = libneo::sys_derive(
             Handle(root),
-            libneo::CapRights::new(libneo::meta_rights::USE, THREAD_SPAWN),
+            libneo::CapRights::new(
+                libneo::meta_rights::USE | libneo::meta_rights::GRANT,
+                THREAD_SPAWN,
+            ),
         )
         .map_err(|_| 63)?;
         let spawned = libneo::sys_spawn_client("browser", &[session_client, runtime]);
         let _ = libneo::sys_close(libneo::FileHandle(runtime.0));
-        spawned.map(|(_pid, process)| process).map_err(|_| 61)
+        spawned.map(|(_pid, process)| process).map_err(|errno| {
+            Line::new()
+                .s(b"DESKTOP apps browser spawn errno=")
+                .n(errno.unsigned_abs())
+                .s(b"\n")
+                .emit();
+            61
+        })
     }
 
     /// A module's surface namespace, buffer provenance and spawn.
