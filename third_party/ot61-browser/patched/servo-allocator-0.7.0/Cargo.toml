@@ -71,6 +71,9 @@ optional = true
 [target.'cfg(target_env = "ohos")'.dependencies.libc]
 version = "0.2"
 
+[target.'cfg(target_os = "neoplutarch")'.dependencies.neo-std-pal]
+path = "../../../../userland/neo-std-pal"
+
 [target."cfg(windows)".dependencies.windows-sys]
 version = "0.61"
 features = ["Win32_System_Memory"]

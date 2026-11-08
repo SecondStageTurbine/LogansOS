@@ -503,6 +503,9 @@ neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
 # kernel-rng: WebRender's HashMaps seed from std's RandomState
 # (SYS_GETRANDOM); the scenario runs on -cpu max like std_entropy.
 neo-test-webrender-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+# OT-61 L0/L1: Servo's layout without script, and its bundled-font backend,
+# on-target (userland/layout-smoke). kernel-rng: std's HashMap RandomState.
+neo-test-layout-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-61 rung 4 (SWGL S3a): SWGL renders into a kernel Atrium buffer; the
 # Atrium syscalls are on only under the atrium runtime switch.
 neo-test-swgl-atrium-smoke = ["neo-test", "browser-runtime", "mem-quota", "atrium-compositor-g1", "neo-test-atrium-runtime"]

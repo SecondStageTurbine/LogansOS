@@ -42,7 +42,8 @@ use style::context::QuirksMode;
 use style::media_queries::MediaList;
 use style::stylesheets::{AllowImportRules, Origin, Stylesheet, UrlExtraData};
 use webrender_api::{
-    BuiltDisplayList, DisplayListPayload, FontInstanceKey, FontKey, IdNamespace, ImageKey,
+    BuiltDisplayList, DisplayListPayload, FontInstanceFlags, FontInstanceKey,
+    FontInstancePlatformOptions, FontKey, FontVariation, IdNamespace, ImageKey,
 };
 
 mod no_images;
@@ -60,6 +61,36 @@ type SentDisplayList = (
     GenericReceiver<SerializableDisplayListPayload>,
 );
 
+/// A font layout's display lists name, as WebRender's `add_raw_font` takes
+/// it: its key, its bytes and its face index.
+pub struct PageFont {
+    pub key: FontKey,
+    pub bytes: Vec<u8>,
+    pub index: u32,
+}
+
+/// A font instance (a font at a size, with flags and variations), as
+/// WebRender's `add_font_instance` takes it.
+pub struct PageFontInstance {
+    pub key: FontInstanceKey,
+    pub font_key: FontKey,
+    pub size: f32,
+    pub flags: FontInstanceFlags,
+    pub platform_options: FontInstancePlatformOptions,
+    pub variations: Vec<FontVariation>,
+}
+
+/// The fonts and font instances layout added for the page (OT-61 L4). A
+/// display list's text names them by key, so WebRender needs them before it
+/// can draw that text.
+#[derive(Default)]
+pub struct PageFonts {
+    pub fonts: Vec<PageFont>,
+    pub instances: Vec<PageFontInstance>,
+    /// Fonts that couldn't be added: a system font whose name isn't bundled.
+    pub missing: Vec<String>,
+}
+
 /// What layout sent to "paint" during a reflow.
 #[derive(Default)]
 pub struct Painted {
@@ -67,6 +98,8 @@ pub struct Painted {
     pub display_lists: usize,
     /// The display lists not yet taken, oldest first.
     sent: Vec<SentDisplayList>,
+    /// Fonts and instances added and not yet taken.
+    fonts: PageFonts,
 }
 
 /// The in-process stand-in for Servo's paint thread: it hands out WebRender
@@ -74,6 +107,11 @@ pub struct Painted {
 pub struct PaintHost {
     next_key: u32,
     painted: Arc<Mutex<Painted>>,
+}
+
+std::thread_local! {
+    /// Whether this thread's pipeline namespace is installed (`StaticPage::new`).
+    static NAMESPACE_INSTALLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// The id namespace this host's keys come from.
@@ -114,7 +152,54 @@ impl PaintHost {
                     ));
                 }
             }
-            // Fonts added, frames requested, epochs, viewport: nothing to
+            // The font service adds a font once, by its bundled name (our
+            // `LocalFontIdentifier::native_font_handle`), or as bytes for a
+            // web font. WebRender's font backend here takes only bytes
+            // (`wr_glyph_rasterizer` neoplutarch `add_native_font` refuses),
+            // so a bundled name is resolved to its bytes now.
+            PaintMessage::AddSystemFont(_painter, key, handle) => {
+                let name = handle.path.to_string_lossy();
+                if let Ok(mut p) = self.painted.lock() {
+                    match neo_font_store::bytes(&name) {
+                        Some(bytes) => p.fonts.fonts.push(PageFont {
+                            key,
+                            bytes: bytes.to_vec(),
+                            index: handle.index,
+                        }),
+                        None => p.fonts.missing.push(name.into_owned()),
+                    }
+                }
+            }
+            PaintMessage::AddFont(_painter, key, data, index) => {
+                if let Ok(mut p) = self.painted.lock() {
+                    p.fonts.fonts.push(PageFont {
+                        key,
+                        bytes: data.to_vec(),
+                        index,
+                    });
+                }
+            }
+            PaintMessage::AddFontInstance(
+                _painter,
+                key,
+                font_key,
+                size,
+                flags,
+                platform_options,
+                variations,
+            ) => {
+                if let Ok(mut p) = self.painted.lock() {
+                    p.fonts.instances.push(PageFontInstance {
+                        key,
+                        font_key,
+                        size,
+                        flags,
+                        platform_options,
+                        variations,
+                    });
+                }
+            }
+            // Frames requested, epochs, viewport, font removal: nothing to
             // answer for a static page.
             _ => {}
         }
@@ -150,7 +235,16 @@ impl StaticPage {
         // set. Without it the first reflow panics in `thread_state::exit`
         // (the first on-target L2 run, 2026-11-03).
         style::thread_state::initialize(style::thread_state::ThreadState::SCRIPT);
-        PipelineNamespace::install(PipelineNamespaceId(1));
+        // Servo installs a thread's pipeline namespace once (it asserts so,
+        // `servo-base` `id.rs:208`); a script thread then hosts every
+        // document it loads in that one namespace. So a second page made on
+        // this thread reuses it (L4 makes its text page after L3's page; the
+        // first L4 run, 2026-11-03, panicked here).
+        NAMESPACE_INSTALLED.with(|done| {
+            if !done.replace(true) {
+                PipelineNamespace::install(PipelineNamespaceId(1));
+            }
+        });
         let url = ServoUrl::parse("about:blank").expect("about:blank");
         let extra = UrlExtraData::from(url.as_url().clone());
         let extra_url = url.clone();
@@ -336,6 +430,15 @@ impl StaticPage {
             spatial_tree: data.spatial_tree,
         };
         Some((info, BuiltDisplayList::from_data(payload, descriptor)))
+    }
+
+    /// The fonts and font instances layout has added since the last call.
+    /// Add them to WebRender before the display list that uses them.
+    pub fn take_fonts(&self) -> PageFonts {
+        self.painted
+            .lock()
+            .map(|mut p| std::mem::take(&mut p.fonts))
+            .unwrap_or_default()
     }
 
     /// How many display lists layout has sent.

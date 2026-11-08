@@ -26,6 +26,10 @@
 //! Exit 0 on a pass; a failed check prints `FAIL(n)` and exits `n`.
 
 #![no_main]
+#![feature(random)]
+
+mod l3;
+mod l4;
 
 use app_units::Au;
 use fonts::PlatformFontMethods;
@@ -33,8 +37,8 @@ use fonts::platform::font::PlatformFont;
 use fonts_traits::LocalFontIdentifier;
 use style::Atom;
 
-// The heap is servo-allocator's global allocator, std's `System`, which this
-// target's std overlay implements on SYS_MAP_REGION.
+// The heap is servo-allocator's global allocator, which on this target is
+// neo-std-pal's `SyscallHeap` (its patch, OT-61 L3).
 const TAG: &str = "[ layout-smoke ]";
 
 const ROBOTO_SLAB: &str = "neo-font:/robotoslab/RobotoSlab-wght.ttf";
@@ -71,8 +75,27 @@ fn au(v: Au) -> i32 {
     v.0
 }
 
+/// getrandom 0.4's custom backend (`.cargo/config.toml` sets
+/// `getrandom_backend="custom"`; uuid and rand take this path): the kernel
+/// CSPRNG through std's own entropy source, as neo-crt's `arc4random_buf`
+/// does, so it adds no syscall site.
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom04::Error> {
+    use std::random::{DefaultRandomSource, RandomSource};
+    if len != 0 {
+        DefaultRandomSource.fill_bytes(unsafe { std::slice::from_raw_parts_mut(dest, len) });
+    }
+    Ok(())
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
+    // The C/C++ runtime HarfBuzz, OTS and zlib run on (and the reason it's
+    // linked at all: an unnamed dependency would be dropped).
+    neo_crt::init();
     println!("{TAG} start: servo-layout 0.7.0 over neo-layout-dom, no servo-script");
 
     // L0: layout's entry point and the host DOM are linked in.
@@ -166,6 +189,56 @@ pub extern "C" fn _start() -> ! {
         "no U+6C34 advance (the glyph isn't there)",
         m.ic_horizontal_advance.is_none(),
     );
+
+    // L2 runs on its own thread with the 8 MiB stack Servo gives the script
+    // thread layout runs on (servo-script 0.7.0, script_thread.rs:490). This
+    // thread stands in for script: it creates the page, so its thread state
+    // is SCRIPT. On the process's 64 KiB main stack the first reflow
+    // overflowed into the guard page (ring-3 #PF 83 KiB below the stack top,
+    // the third on-target L2 run, 2026-11-03).
+    let l2 = std::thread::Builder::new()
+        .name("static-page".into())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            // L2: one reflow of a block-only page through neo-static-page (layout
+            // driven without script), its border boxes checked against the
+            // hand-worked oracle (neo-static-page/src/oracle.rs, CSS 2.1 8.3.1 and
+            // 10.3.3; no text, so no font metric enters the numbers).
+            let (w, h) = neo_static_page::oracle::VIEWPORT;
+            let mut page = neo_static_page::StaticPage::new(neo_static_page::oracle::PAGE, w, h);
+            check(
+                50,
+                "one reflow of the oracle page produced a result",
+                page.reflow(w, h),
+            );
+            for (i, &(id, want)) in neo_static_page::oracle::EXPECT.iter().enumerate() {
+                let got = page.border_box(id);
+                println!("{TAG} #{id} border box: {got:?}");
+                check(
+                    51 + i as i32,
+                    &format!("#{id} border box = {want:?} (x, y, w, h px)"),
+                    got == Some(want),
+                );
+            }
+            check(
+                56,
+                "layout sent a display list to the in-process paint host",
+                page.display_lists() >= 1,
+            );
+            // L3: that display list, rendered by WebRender on SWGL.
+            l3::render_and_check(&page);
+            drop(page);
+            // L4: a line of text in the bundled font, through the same path.
+            let mut text = neo_static_page::StaticPage::new(l4::PAGE, w, h);
+            check(
+                70,
+                "one reflow of the text page produced a result",
+                text.reflow(w, h),
+            );
+            l4::render_and_check(&text);
+        })
+        .expect("spawn the static-page thread");
+    check(57, "the static-page thread finished", l2.join().is_ok());
 
     println!("{TAG} PASS");
     std::process::exit(0)

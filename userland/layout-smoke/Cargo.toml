@@ -20,6 +20,8 @@ bench = false
 
 [dependencies]
 neo-std-pal = { path = "../neo-std-pal" }
+# The private C/C++ runtime (musl + libc++) for HarfBuzz and fontsan.
+neo-crt = { path = "../neo-crt" }
 app_units = "=0.7.8"
 fonts = { package = "servo-fonts", version = "=0.7.0" }
 fonts_traits = { package = "servo-fonts-traits", version = "=0.7.0" }
@@ -27,6 +29,13 @@ style = { package = "stylo", version = "=0.22.0" }
 url = "=2.5.8"
 layout = { package = "servo-layout", version = "=0.7.0" }
 neo-layout-dom = { path = "../neo-layout-dom" }
+# OT-61 L3: the page's display list rendered by WebRender 0.70 on SWGL (#25's
+# recipe and versions).
+webrender = { version = "=0.70.0", default-features = false, features = ["sw_compositor"] }
+swgl = "=0.70.0"
+gleam = "=0.15.1"
+# OT-61 L2: the static-page driver (one reflow) and its hand-worked oracle.
+neo-static-page = { path = "../neo-static-page" }
 # servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
 # `derive` feature; upstream gets it through servo-script's half of the graph.
 zeroize = { version = "1", features = ["derive"] }
@@ -35,15 +44,15 @@ ipc-channel = { version = "=0.23.1", features = ["force-inprocess"] }
 # zlib for fontsan, built from libz-sys's bundled source (there is no system zlib).
 libz-sys = { version = "1", features = ["static"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+# Only for the custom backend's Error type (main.rs, __getrandom_v03_custom).
+getrandom04 = { package = "getrandom", version = "=0.4.3" }
 
 # Every crate comes from third_party/ot61-browser: vendor/ (as published),
 # patched/ (with a <crate>-<version>-neoplutarch.patch beside it), or stubs/
 # (empty stand-ins for crates the target never compiles; VENDORED.md, "The
 # stubs for other platforms"). The table below is generated, never typed:
 #   python3 ../../third_party/ot61-browser/gen-patch-table.py ../../third_party/ot61-browser Cargo.lock
-# WIP until #66 and #25 land: the 36 crates they vendor under
-# third_party/ot61-swgl/vendor (webrender 0.70.0 and SWGL's closure) still
-# resolve from crates.io here, and get their entries when #55 rebases onto them.
+# The crates only #25 vendors (third_party/ot61-swgl) follow it.
 [patch.crates-io]
 accesskit = { path = "../../third_party/ot61-browser/vendor/accesskit-0.24.1" }
 adler2 = { path = "../../third_party/ot61-browser/vendor/adler2-2.0.1" }
@@ -64,7 +73,6 @@ byte-slice-cast = { path = "../../third_party/ot61-browser/vendor/byte-slice-cas
 byteorder = { path = "../../third_party/ot61-browser/vendor/byteorder-1.5.0" }
 byteorder-lite = { path = "../../third_party/ot61-browser/vendor/byteorder-lite-0.1.0" }
 bytes = { path = "../../third_party/ot61-browser/vendor/bytes-1.12.1" }
-cc = { path = "../../third_party/ot61-browser/vendor/cc-1.11.0" }
 cfg-if = { path = "../../third_party/ot61-browser/vendor/cfg-if-1.0.5" }
 chacha20 = { path = "../../third_party/ot61-browser/vendor/chacha20-0.10.2" }
 chrono = { path = "../../third_party/ot61-browser/stubs/chrono-0.4.45" }
@@ -428,8 +436,55 @@ zlib-rs = { path = "../../third_party/ot61-browser/stubs/zlib-rs-0.6.8" }
 zmij = { path = "../../third_party/ot61-browser/vendor/zmij-1.0.23" }
 zune-core = { path = "../../third_party/ot61-browser/vendor/zune-core-0.5.3" }
 zune-jpeg = { path = "../../third_party/ot61-browser/vendor/zune-jpeg-0.5.15" }
+# WebRender 0.70.0 and SWGL's closure, from #25's third_party/ot61-swgl:
+#   python3 ../../third_party/ot61-swgl/gen-patch-table.py ../../third_party/ot61-swgl Cargo.lock
+# keeping the crates the table above doesn't already supply.
+allocator-api2 = { path = "../../third_party/ot61-swgl/vendor/allocator-api2-0.2.21" }
+bincode = { path = "../../third_party/ot61-swgl/vendor/bincode-1.3.3" }
+build-parallel = { path = "../../third_party/ot61-swgl/vendor/build-parallel-0.1.2" }
+bytemuck = { path = "../../third_party/ot61-swgl/vendor/bytemuck-1.25.2" }
+bytemuck_derive = { path = "../../third_party/ot61-swgl/vendor/bytemuck_derive-1.12.1" }
+crossbeam-channel = { path = "../../third_party/ot61-swgl/vendor/crossbeam-channel-0.5.17" }
+etagere = { path = "../../third_party/ot61-swgl/vendor/etagere-0.2.15" }
+find-msvc-tools = { path = "../../third_party/ot61-swgl/vendor/find-msvc-tools-0.1.15" }
+font-types = { path = "../../third_party/ot61-swgl/vendor/font-types-0.12.7" }
+gl_generator = { path = "../../third_party/ot61-swgl/vendor/gl_generator-0.14.0" }
+gleam = { path = "../../third_party/ot61-swgl/vendor/gleam-0.15.1" }
+glsl = { path = "../../third_party/ot61-swgl/vendor/glsl-6.0.2" }
+glsl-to-cxx = { path = "../../third_party/ot61-swgl/vendor/glsl-to-cxx-0.70.0" }
+glslopt = { path = "../../third_party/ot61-swgl/vendor/glslopt-0.1.14" }
+jobserver = { path = "../../third_party/ot61-swgl/vendor/jobserver-0.1.35" }
+khronos_api = { path = "../../third_party/ot61-swgl/vendor/khronos_api-3.1.0" }
+lazy_static = { path = "../../third_party/ot61-swgl/vendor/lazy_static-1.5.1" }
+linked_list_allocator = { path = "../../third_party/ot61-swgl/vendor/linked_list_allocator-0.10.6" }
+minimal-lexical = { path = "../../third_party/ot61-swgl/vendor/minimal-lexical-0.2.1" }
+nom = { path = "../../third_party/ot61-swgl/vendor/nom-7.1.3" }
+once_cell = { path = "../../third_party/ot61-swgl/vendor/once_cell-1.21.4" }
+peek-poke = { path = "../../third_party/ot61-swgl/vendor/peek-poke-0.3.0" }
+peek-poke-derive = { path = "../../third_party/ot61-swgl/vendor/peek-poke-derive-0.3.0" }
+plane-split = { path = "../../third_party/ot61-swgl/vendor/plane-split-0.18.0" }
+serde_bytes = { path = "../../third_party/ot61-swgl/vendor/serde_bytes-0.11.19" }
+shlex = { path = "../../third_party/ot61-swgl/vendor/shlex-2.0.1" }
+svg_fmt = { path = "../../third_party/ot61-swgl/vendor/svg_fmt-0.4.5" }
+topological-sort = { path = "../../third_party/ot61-swgl/vendor/topological-sort-0.1.0" }
+tracy-rs = { path = "../../third_party/ot61-swgl/vendor/tracy-rs-0.1.2" }
+webrender_api = { path = "../../third_party/ot61-swgl/vendor/webrender_api-0.70.0" }
+webrender_build = { path = "../../third_party/ot61-swgl/vendor/webrender_build-0.70.0" }
+wr_malloc_size_of = { path = "../../third_party/ot61-swgl/vendor/wr_malloc_size_of-0.2.2" }
+xml-rs = { path = "../../third_party/ot61-swgl/vendor/xml-rs-0.8.29" }
+zeitstempel = { path = "../../third_party/ot61-swgl/vendor/zeitstempel-0.2.2" }
+zeno = { path = "../../third_party/ot61-swgl/vendor/zeno-0.3.3" }
+# Second versions of crates the table above also supplies.
+cc = { path = "../../third_party/ot61-swgl/vendor/cc-1.2.63" }
+foldhash_0_2_0 = { package = "foldhash", path = "../../third_party/ot61-swgl/vendor/foldhash-0.2.0" }
+getrandom_0_4_3 = { package = "getrandom", path = "../../third_party/ot61-swgl/vendor/getrandom-0.4.3" }
+read-fonts_0_46_0 = { package = "read-fonts", path = "../../third_party/ot61-swgl/vendor/read-fonts-0.46.0" }
+skrifa_0_49_0 = { package = "skrifa", path = "../../third_party/ot61-swgl/vendor/skrifa-0.49.0" }
 # #25's patched copy (byte-identical, same path as on #25).
 wr_glyph_rasterizer = { path = "../../third_party/ot61-swgl/patched/wr_glyph_rasterizer-0.70.1" }
+# #25's patched copies (L3), at the same paths as on #25.
+swgl = { path = "../../third_party/ot61-swgl/patched/swgl-0.70.0" }
+webrender = { path = "../../third_party/ot61-swgl/patched/webrender-0.70.0" }
 
 # The on-target binary carries no debuginfo: with it, the linked ELF was 575 MB;
 # without it, 12.9 MB (5.3 MB of text), the size of the other gated smokes.
