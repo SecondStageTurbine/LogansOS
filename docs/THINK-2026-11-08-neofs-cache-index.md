@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # THINK: an index for the NeoFS block cache (the follow-up to #69)
 
-**Date:** 2026-11-08. **Seat:** E. **Status:** proposal for the PM; no code yet.
+**Date:** 2026-11-08. **Seat:** E. **Status:** proposal for the PM. Updated the same day: option B is prototyped on `claude/neofs-cache-index`
+(`06993824`, no PR yet); see §9 for what the prototype changed and measured.
 **Builds on:** #69 (`kernel/src/fs/neofs/cache_logic.rs`, landed `97874d3b`), OT-92 (`neofs-cache-evict`),
 `kernel/src/fs/neofs/commit_logic.rs` (the write-back order).
 
@@ -39,7 +40,7 @@ Two more linear walks sit next to it:
 | # | Design | Lookup | Insert | Remove (eviction, `forget_range`) | Keeps `Vec` order (the drain's tie-break) | Size of change |
 |---|---|---|---|---|---|---|
 | A | Turn `neofs-cache-evict` on for the scenarios that mirror the product (the installer ones) | linear, bounded by 256 + dirty | as today | as today | yes | a feature line per scenario; changes what those scenarios test |
-| B | **Side index:** `BTreeMap<u64 block, usize slot>` next to the `Vec`; `Vec::remove` stays, and the index's slots above the removed one are shifted down | O(log n) | O(log n) | O(n), as `Vec::remove` already is | **yes**, the `Vec` is untouched | small: `cache_logic` gains the index ops, `cache.rs` calls them at the four places that change `blocks` |
+| B | **Side index:** a map of block number to slot next to the `Vec` (a sorted `Vec<(block, slot)>`, see §9); `Vec::remove` stays, and the index's slots above the removed one are shifted down | O(log n) | O(log n) | O(n), as `Vec::remove` already is | **yes**, the `Vec` is untouched | small: `cache_logic` gains the index ops, `cache.rs` calls them at the four places that change `blocks` |
 | C | Key the cache by block: `BTreeMap<u64, CachedBlock>` plus an insertion sequence number for the drain's tie-break | O(log n) | O(log n) | O(log n) | only if every scan sorts by the sequence number | large: every `idx` user in `cache.rs` changes, and the drain must sort |
 | D | Slot arena with stable slot ids and a hash map (`hashbrown`) | O(1) | O(1) | O(1), but free slots break `Vec` order | needs a separate order list | large, and a new vendored crate |
 
@@ -59,15 +60,15 @@ installer scenario in each mode.
 
 ## 4. B in detail
 
-- **`cache_logic.rs` (pure, host-tested)** gains `BlockIndex` (a `BTreeMap<u64, usize>`) with `find`, `insert_at_end`,
-  `remove_at(slot)` (removes that block's entry and shifts every slot above it down by one), `rebuild(&[T])`, and a
-  `check(&[T])` used by the KATs and by a debug assertion.
+- **`cache_logic.rs` (pure, host-tested)** gains `BlockIndex` (a `Vec<(block, slot)>` sorted by block; §9 says why
+  not a `BTreeMap`) with `find`, `pushed`, `removed(slot, block)` (drops that block's entry and shifts every slot
+  above it down by one), `rebuild(&[T])`, and `matches(&[T])` for the KATs and the crosscheck scenarios.
 - **`cache.rs`:** `find_cached_block` uses the index when the feature is on, else today's loop. The four places
   that change `blocks` keep the index in step: `push_block`, the `remove` in `evict_locked`, the `remove` loop and
   the `retain` in `forget_range` (the `retain` becomes a rebuild).
-- **Debug check (debug-assertions kernels):** after each change, `check` confirms the index has one entry per cached
-  block, pointing at that block, so a missed update fails the scenario at the change instead of at a wrong read
-  later.
+- **Checks:** in the crosscheck scenarios, every lookup runs through both the index and the scan, which must
+  agree, and `matches` checks the index against a rebuild after every change. A missed update then fails at the
+  change, not at a wrong read later. Not in every debug kernel: a rebuild per change costs more than the scan.
 - **The evict scan and the drain scan** stay linear in this change. The drain's scan covers dirty blocks, which the
   throttle bounds between mutations. An ordered LRU index for `evict_locked` is a possible later step, which is only
   worth doing if a profile shows it.
@@ -97,7 +98,7 @@ The expectation is that the W5 verify stops slowing down file by file, which the
 
 | Project | What it does | Licence | Last commit (checked 2026-11-08) | Fit / what we take |
 |---|---|---|---|---|
-| Rust `alloc::collections::BTreeMap` (toolchain) | ordered map, `no_std` with `alloc` | MIT OR Apache-2.0 | ships with our pinned toolchain | **used**: already in the kernel (`kernel/src/ai/evict.rs`, `reservation.rs`, …), so no new dependency |
+| Rust `alloc::collections::BTreeMap` (toolchain) | ordered map, `no_std` with `alloc` | MIT OR Apache-2.0 | ships with our pinned toolchain | tried first, then **replaced by a sorted `Vec`** (§9): its node allocations fragmented the kernel heap |
 | [rust-lang/hashbrown](https://github.com/rust-lang/hashbrown) | SwissTable hash map, `no_std` | MIT OR Apache-2.0 | `f7bae3d`, 2026-10-31; active | option D; not needed while O(log n) is enough and the order must hold |
 | [jeromefroe/lru-rs](https://github.com/jeromefroe/lru-rs) | O(1) LRU cache (hash map plus intrusive list), `no_std` | MIT | `3ed2e28`, 2026-10-18; active | design reference for a later O(1) `evict_locked`; no code taken |
 | [tokio-rs/slab](https://github.com/tokio-rs/slab) | slot arena with stable keys, `no_std` | MIT | `7d1d8ab`, 2026-08-16; active | the slot half of option D; no code taken |
@@ -121,3 +122,44 @@ The expectation is that the W5 verify stops slowing down file by file, which the
    timing table.
 2. Whether some installer scenarios should also run with `neofs-cache-evict` (option A, a coverage question), keeping
    at least one in each mode.
+
+## 9. Prototype results (2026-11-08)
+
+The prototype of option B, `claude/neofs-cache-index` at `06993824`, pushed but with no PR, is built as §4 says,
+with one change of data structure.
+
+**A `BTreeMap` index made the install slower, because of the heap, not the lookup.**
+- With it, the W5 verify ran in 31 s instead of 64 s. But the read-only mount's drop after the verify took **38 s,
+  against 1 s** with no index.
+- Guest RIP samples in that window were all in `linked_list_allocator::hole::deallocate`.
+- The cause: the kernel heap keeps one address-ordered free list. The tree's roughly 3,000 small nodes sat between
+  the cache's 4 KiB buffers, so each freed buffer became a hole of its own, and every free walked them all.
+- A `Vec<(block, slot)>` sorted by block is a handful of allocations, and an insert is nearly always an append
+  (the installer and the verify read in nearly ascending block order).
+- This is worth knowing for any kernel code that holds many small allocations next to many page-sized ones.
+
+**Measured locally** (QEMU 8.2.2 under TCG, the pinned OVMF; `cargo xtask neo-test install_fresh_4k`, boot 1,
+serial timestamps):
+
+| Build | Boot 1 | W5 verify | Verify end to "install done" |
+|---|---|---|---|
+| main `13eed2c5` | 133.2, 133.7 s | 63.7, 63.7 s | 1.0 s |
+| index, `BTreeMap` (discarded) | 131.1 s | 31.1 s | 38.3 s |
+| **index, sorted `Vec` (`06993824`)** | **87.2, 86.5 s** | **26.8, 26.9 s** | 1.0 s |
+
+**Scenarios, all PASS locally:**
+- `phase3_neofs_cache_index_crosscheck` (40.7 s), `_crosscheck_noevict` (11.1 s) and `phase3_neofs_cache_index_off`
+  (37.2 s, the kill-switch leg);
+- the OT-92 pair, `phase3_neofs_cache_evict` (35.5 s) and `_off` (10.8 s), with the index on by default.
+
+**Falsified:**
+- With the slot shift in `removed` disabled, the crosscheck scenario panics with "neofs cache index out of step with
+  the cache (256 blocks)".
+- Three host KATs fail with the same break, the model check among them.
+
+**Host KATs:** 10 pass (`tools/neofs-cache-logic-tests`), among them a 64-seed model check against the scan, with
+and without repeated blocks.
+
+**Still to do before the PR:** merge main (the branch is behind `91f70620`), then the close-gate. The hosted
+`install_fresh_4k` time will be in the PR run.
+
