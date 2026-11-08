@@ -517,7 +517,9 @@ mod tests {
     #[test]
     fn stdio_info_oracle() {
         use super::libneo_pipe_abi as user;
-        let rows: [([u8; 8], (Option<u16>, Option<u16>, Option<u16>, bool)); 4] = [
+        // (bytes, (stdin, stdout, term, selected))
+        type Row = ([u8; 8], (Option<u16>, Option<u16>, Option<u16>, bool));
+        let rows: [Row; 4] = [
             // stdin 0, stdout 1, term 2, selected.
             (
                 [0x00, 0x00, 0x01, 0x00, 0x02, 0x00, 0x01, 0x00],
