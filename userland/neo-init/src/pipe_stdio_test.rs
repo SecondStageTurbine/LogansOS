@@ -13,7 +13,7 @@
 
 use alloc::vec::Vec;
 use libneo::{
-    EAGAIN, EBADF, EFAULT, EINVAL, EPIPE, Handle, PIPE_NONBLOCK, ProcessHandle, StdioInfo,
+    EAGAIN, EBADF, EFAULT, EINVAL, EPIPE, ESRCH, Handle, PIPE_NONBLOCK, ProcessHandle, StdioInfo,
     sys_chan_create, sys_channel_close, sys_kill, sys_pipe_create, sys_pipe_read, sys_pipe_write,
     sys_spawn, sys_spawn_stdio, sys_spawn_stdio_word, sys_stdio_info, sys_stdio_info_raw, sys_wait,
     sys_write,
@@ -187,7 +187,10 @@ fn leg_kill() -> bool {
     let mut acc = Vec::new();
     let parked = read_until(c.out_rd, b"neo> ", &mut acc);
     let kill = sys_kill(c.process);
-    let reaped = sys_wait(c.process, 0).is_ok();
+    // Gone either way: a wait that caught the exit has its code; once the kill
+    // has finished, a killed process keeps no code and the wait is ESRCH.
+    let wait = sys_wait(c.process, 0);
+    let reaped = matches!(wait, Ok(_) | Err(ESRCH));
     let out_eof = read_to_eof(c.out_rd, &mut acc);
     let in_epipe = sys_pipe_write(c.in_wr, b"x", PIPE_NONBLOCK) == EPIPE;
     close(c.in_wr);
