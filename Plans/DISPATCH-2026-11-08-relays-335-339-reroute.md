@@ -51,3 +51,7 @@ compiles the index out). You wrote the design reviews (319, 326), so also confir
 `4b2628c0`. Note: you are the same family as your own design review, so the cross-family check on the design came from
 your read of a Claude-authored THINK; that still holds for this build.
 RETURN: `Plans/RETURN-2026-11-08-pr82-review-dexter.md` on `dexter/pr82-review`.
+
+## Section 344: Dexter, #75 (key destructors run at most PTHREAD_DESTRUCTOR_ITERATIONS). Head `efb63b9d`. Rerouted from Codex relay 318.
+Run Section 318 of `Plans/DISPATCH-2026-11-08-relays-315-321.md` as written.
+RETURN: `Plans/RETURN-2026-11-08-pr75-review-dexter.md` on `dexter/pr75-review`.
