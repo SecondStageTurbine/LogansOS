@@ -398,6 +398,20 @@ pub const SYS_PIPE_READ: u64 = 0x1BB;
 /// `flags & PIPE_NONBLOCK`; `EPIPE` once the last reader is gone.
 #[cfg(feature = "pipe")]
 pub const SYS_PIPE_WRITE: u64 = 0x1BC;
+/// L1a.1 step 2b: `(name, len, handles, n, stdio)` → `SYS_SPAWN`'s return.
+/// `stdio` names the child's stdin, stdout and term page by index into
+/// `handles` (bytes 0-2, `0xFF` none; bits 24-63 zero), checked before
+/// anything is built (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.2).
+#[cfg(feature = "pipe")]
+pub const SYS_SPAWN_STDIO: u64 = 0x1BD;
+/// L1a.1 step 2b: `(out, 8)` → 0: the caller's stdin, stdout and term page
+/// slots (LE `u16`, `0xFFFF` none or gone), then flags (bit 0: selected).
+#[cfg(feature = "pipe")]
+pub const SYS_STDIO_INFO: u64 = 0x1BE;
+/// L1a.1 step 2b: `(role)` → address: `SYS_BUFFER_MAP` on the selected term
+/// page, whose `CapId` is checked first (`EBADF` if it has gone).
+#[cfg(feature = "pipe")]
+pub const SYS_STDIO_TERM_MAP: u64 = 0x1BF;
 /// `SYS_PIPE_READ` / `SYS_PIPE_WRITE` flag: don't park (`EAGAIN` instead).
 #[cfg(feature = "pipe")]
 pub const PIPE_NONBLOCK: u64 = crate::ipc::pipe_logic::PIPE_NONBLOCK;
@@ -1074,6 +1088,11 @@ extern "C" fn syscall_dispatch(
     #[cfg(feature = "browser-runtime")]
     crate::sched::process::retire_current_if_dying();
 
+    // L1a.1 step 2b's late-control: note the first syscall made by a process
+    // other than the one spawning (the child, in `pipe_stdio`).
+    #[cfg(feature = "neo-test-pipe-stdio-late-control")]
+    late_control::note_syscall();
+
     let ret = match num {
         SYS_EXIT => sys_exit_impl(a0 as i32),
         SYS_WRITE => sys_write_impl(a0 as u32, a1 as *const u8, a2 as usize),
@@ -1085,6 +1104,8 @@ extern "C" fn syscall_dispatch(
             #[cfg(feature = "mem-quota")]
             None,
             #[cfg(feature = "obj-quota")]
+            None,
+            #[cfg(feature = "pipe")]
             None,
         ),
         SYS_CHAN_CREATE => sys_chan_create_impl(),
@@ -1389,6 +1410,22 @@ extern "C" fn syscall_dispatch(
         SYS_PIPE_READ => sys_pipe_read_impl(a0 as u32, a1, a2 as usize, a3),
         #[cfg(feature = "pipe")]
         SYS_PIPE_WRITE => sys_pipe_write_impl(a0 as u32, a1, a2 as usize, a3),
+        #[cfg(feature = "pipe")]
+        SYS_SPAWN_STDIO => sys_spawn_impl(
+            a0 as *const u8,
+            a1 as usize,
+            a2 as *const u32,
+            a3 as usize,
+            #[cfg(feature = "mem-quota")]
+            None,
+            #[cfg(feature = "obj-quota")]
+            None,
+            Some(a4),
+        ),
+        #[cfg(feature = "pipe")]
+        SYS_STDIO_INFO => sys_stdio_info_impl(a0, a1 as usize),
+        #[cfg(feature = "pipe")]
+        SYS_STDIO_TERM_MAP => sys_stdio_term_map_impl(a0),
         #[cfg(feature = "installer")]
         SYS_INSTALL_LIST => sys_install_list_impl(a0, a1 as usize),
         #[cfg(feature = "installer")]
@@ -1613,7 +1650,7 @@ const SYS_WRITE_CHUNK: usize = 256;
 const MAX_OPEN_PATH_LEN: usize = 256;
 const MAX_FILE_IO: usize = 4096;
 const MAX_DIRENT_IO: usize = 4096;
-#[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
+#[cfg(any(feature = "serial-stdin", feature = "usb-hid", feature = "pipe"))]
 const STDIN_FD: u32 = 0;
 const STDOUT_FD: u32 = 1;
 #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
@@ -1954,6 +1991,8 @@ fn sys_spawn_impl(
     #[cfg(feature = "mem-quota")] budget_frames: Option<u64>,
     // OT-61 C2.2b: `Some(bytes)` from `SYS_SPAWN_BUDGETED2`.
     #[cfg(feature = "obj-quota")] obj_budget: Option<u64>,
+    // L1a.1 step 2b: `Some(word)` from `SYS_SPAWN_STDIO`.
+    #[cfg(feature = "pipe")] stdio_word: Option<u64>,
 ) -> i64 {
     if name_len == 0 || name_len > MAX_SPAWN_NAME_LEN {
         return EINVAL;
@@ -1973,6 +2012,20 @@ fn sys_spawn_impl(
             return e;
         }
     }
+
+    // L1a.1 step 2b, error step 2: the stdio word alone (THINK §2.2).
+    #[cfg(feature = "pipe")]
+    let stdio_sel = match stdio_word {
+        None => process::SpawnStdio::NONE,
+        Some(word) => match crate::ipc::pipe_logic::decode_stdio_word(
+            word,
+            handles_count,
+            cfg!(feature = "atrium-compositor-g1"),
+        ) {
+            Some(sel) => sel,
+            None => return EINVAL,
+        },
+    };
 
     let name_bytes = match copy_user_bytes(name_ptr, name_len) {
         Ok(bytes) => bytes,
@@ -2061,16 +2114,35 @@ fn sys_spawn_impl(
         }
     }
 
+    // L1a.1 step 2b, error step 4: each role names the right kind, end, size
+    // and rights, checked on the clones the spawn installs.
+    #[cfg(feature = "pipe")]
+    if !stdio_roles_ok(stdio_sel, &inherited) {
+        return EINVAL;
+    }
+    // The late-control stores the stdio only after the child can run.
+    #[cfg(feature = "neo-test-pipe-stdio-late-control")]
+    let (stdio_sel, late_sel) = (process::SpawnStdio::NONE, stdio_sel);
+    #[cfg(feature = "neo-test-pipe-stdio-late-control")]
+    late_control::arm(cur_pid);
+    // Every unbudgeted spawn carries the selection (`NONE` for `SYS_SPAWN`).
+    #[cfg(feature = "pipe")]
+    let spawn_plain = |name: &str, inherited: &[InheritedHandle]| {
+        process::spawn_user_by_name_stdio(name, inherited, stdio_sel)
+    };
+    #[cfg(not(feature = "pipe"))]
+    let spawn_plain = process::spawn_user_by_name;
+
     #[cfg(not(feature = "mem-quota"))]
-    let spawned = process::spawn_user_by_name(name, &inherited);
+    let spawned = spawn_plain(name, &inherited);
     #[cfg(all(feature = "mem-quota", not(feature = "obj-quota")))]
     let spawned = match budget_frames {
-        None => process::spawn_user_by_name(name, &inherited),
+        None => spawn_plain(name, &inherited),
         Some(frames) => process::spawn_user_by_name_budgeted(name, &inherited, frames),
     };
     #[cfg(feature = "obj-quota")]
     let spawned = match (budget_frames, obj_budget) {
-        (None, None) => process::spawn_user_by_name(name, &inherited),
+        (None, None) => spawn_plain(name, &inherited),
         (Some(frames), None) => process::spawn_user_by_name_budgeted(name, &inherited, frames),
         (frames, Some(obj)) => process::spawn_user_by_name_budgeted2(
             name,
@@ -2101,6 +2173,8 @@ fn sys_spawn_impl(
     if name == "arthur" {
         crate::watchdog::note_arthur_spawned();
     }
+    #[cfg(feature = "neo-test-pipe-stdio-late-control")]
+    late_control::store_after_run(child_pid, late_sel, &inherited);
 
     // Install ProcessHandle in caller's table — ADR-007 §Q1 capability.
     // Done AFTER spawn succeeds so a spawn failure leaves the caller's
@@ -2149,6 +2223,8 @@ fn sys_spawn_budgeted_impl(
         Some(frames),
         #[cfg(feature = "obj-quota")]
         None,
+        #[cfg(feature = "pipe")]
+        None,
     )
 }
 
@@ -2179,7 +2255,202 @@ fn sys_spawn_budgeted2_impl(
         handles_count,
         frames,
         Some(obj_bytes),
+        #[cfg(feature = "pipe")]
+        None,
     )
+}
+
+/// L1a.1 step 2b: one role of the calling process's stdio selection, copied
+/// out so no lock is held while the caller resolves it or parks (THINK §2.1).
+#[cfg(feature = "pipe")]
+fn selected_stdio(
+    role: impl FnOnce(process::Stdio) -> Option<process::StdioRef>,
+) -> Option<process::StdioRef> {
+    let proc = process::get(crate::sched::current_pid())?;
+    role(proc.stdio())
+}
+
+/// L1a.1 step 2b's late-control (`neo-test-pipe-stdio-late-control`, THINK
+/// §4): the stdio is stored only after the child can run, the bug the real
+/// path's set-before-`register` closes. The witness: the spawn waits (1 s at
+/// most) for the child's first syscall, so the control can tell "the window
+/// was hit" from "it never opened". Test only; never in a product build.
+#[cfg(feature = "neo-test-pipe-stdio-late-control")]
+mod late_control {
+    use super::{InheritedHandle, process};
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    /// The spawning process's pid while a spawn is armed, else 0.
+    static CALLER: AtomicU64 = AtomicU64::new(0);
+    /// The first other user process to enter a syscall since `arm`.
+    static FIRST: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn arm(caller: process::ProcessId) {
+        FIRST.store(0, Ordering::Release);
+        CALLER.store(u64::from(caller.0), Ordering::Release);
+    }
+
+    pub(super) fn note_syscall() {
+        let caller = CALLER.load(Ordering::Acquire);
+        if caller == 0 {
+            return;
+        }
+        let me = u64::from(crate::sched::current_pid().0);
+        if me != caller && me != 0 {
+            let _ = FIRST.compare_exchange(0, me, Ordering::AcqRel, Ordering::Acquire);
+        }
+    }
+
+    pub(super) fn store_after_run(
+        child: process::ProcessId,
+        sel: process::SpawnStdio,
+        inherited: &[InheritedHandle],
+    ) {
+        if sel.is_none() {
+            CALLER.store(0, Ordering::Release);
+            return;
+        }
+        let ticks = &crate::arch::x86_64::timer::TICKS;
+        let start = ticks.load(Ordering::Relaxed);
+        let hit = crate::arch::x86_64::with_interrupts_enabled(|| {
+            loop {
+                if FIRST.load(Ordering::Acquire) == u64::from(child.0) {
+                    break true;
+                }
+                if ticks.load(Ordering::Relaxed).wrapping_sub(start) > 100 {
+                    break false;
+                }
+                crate::sched::yield_now();
+            }
+        });
+        CALLER.store(0, Ordering::Release);
+        if hit {
+            crate::serial_println!("[ kernel ] pipe_stdio late-control: window hit");
+        } else {
+            crate::serial_println!("[ kernel ] pipe_stdio_late_window_not_hit");
+        }
+        if let Some(p) = process::get(child) {
+            p.set_stdio_late_for_control(process::Stdio::for_spawn(sel, inherited));
+        }
+    }
+}
+
+/// L1a.1 step 2b, `SYS_SPAWN_STDIO`'s error step 4 (THINK §2.2): stdin is
+/// a pipe read end with `USE` and `READ`; stdout a pipe write end with `USE`
+/// and `WRITE`; the term page a 4096-byte buffer with `USE`, `MAP_READ` and
+/// `MAP_WRITE`. The indices were checked against `inherited` by
+/// `decode_stdio_word`.
+#[cfg(feature = "pipe")]
+fn stdio_roles_ok(sel: process::SpawnStdio, inherited: &[InheritedHandle]) -> bool {
+    use crate::ipc::pipe_logic::End;
+    let pipe_ok = |i: Option<u8>, want: End, right: u8| {
+        i.is_none_or(|i| match &inherited[usize::from(i)].handle {
+            Handle::Pipe { end, rights, .. } => {
+                *end == want && rights.has_meta(meta_rights::USE) && rights.has_semantic(right)
+            }
+            _ => false,
+        })
+    };
+    if !pipe_ok(sel.stdin, End::Read, process::pipe_rights::READ)
+        || !pipe_ok(sel.stdout, End::Write, process::pipe_rights::WRITE)
+    {
+        return false;
+    }
+    #[cfg(feature = "atrium-compositor-g1")]
+    {
+        use crate::atrium::logic::buffer_rights;
+        sel.term
+            .is_none_or(|i| match &inherited[usize::from(i)].handle {
+                Handle::Buffer { buffer, rights, .. } => {
+                    buffer.desc().bytes == TERM_PAGE_BYTES
+                        && rights.has_meta(meta_rights::USE)
+                        && rights.has_semantic(buffer_rights::MAP_READ)
+                        && rights.has_semantic(buffer_rights::MAP_WRITE)
+                }
+                _ => false,
+            })
+    }
+    // Without buffers `decode_stdio_word` already refused a term index.
+    #[cfg(not(feature = "atrium-compositor-g1"))]
+    sel.term.is_none()
+}
+
+/// The term page's size (terminal THINK §3.2: one 4 KiB page).
+#[cfg(all(feature = "pipe", feature = "atrium-compositor-g1"))]
+const TERM_PAGE_BYTES: u64 = 4096;
+
+/// L1a.1 step 2b: the slot `r` names, if it still holds `r`'s capability.
+/// Run IF-off with the caller's table.
+#[cfg(feature = "pipe")]
+fn stdio_slot_live(proc: &process::Process, r: Option<process::StdioRef>) -> Option<u16> {
+    let r = r?;
+    let live = proc
+        .handles
+        .lock()
+        .get(r.slot)
+        .is_some_and(|h| h.cap_id() == r.cap_id);
+    if live {
+        u16::try_from(r.slot).ok()
+    } else {
+        None
+    }
+}
+
+/// `SYS_STDIO_INFO(out, len)` (L1a.1 step 2b, THINK §2.4): `len != 8` is
+/// `EINVAL` (checked first), a bad `out` `EFAULT`. Each slot is reported only
+/// while it still holds the selected capability.
+#[cfg(feature = "pipe")]
+fn sys_stdio_info_impl(out: u64, len: usize) -> i64 {
+    use crate::ipc::pipe_logic::{STDIO_INFO_LEN, encode_stdio_info};
+    if len != STDIO_INFO_LEN {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(out, STDIO_INFO_LEN) {
+        return e;
+    }
+    let proc = match current_process_for_syscall() {
+        Ok(proc) => proc,
+        Err(e) => return e,
+    };
+    let stdio = proc.stdio();
+    let record = crate::arch::x86_64::without_interrupts(|| {
+        encode_stdio_info(
+            stdio_slot_live(&proc, stdio.stdin),
+            stdio_slot_live(&proc, stdio.stdout),
+            stdio_slot_live(&proc, stdio.term),
+            stdio.selected(),
+        )
+    });
+    match user_copy(out as *mut u8, record.as_ptr(), STDIO_INFO_LEN) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// `SYS_STDIO_TERM_MAP(role)` (L1a.1 step 2b, THINK §2.4): `SYS_BUFFER_MAP`
+/// on the selected term page. Its `CapId` is checked first, under the table
+/// lock, so a buffer that only sits in the term page's old slot is `EBADF`.
+#[cfg(feature = "pipe")]
+fn sys_stdio_term_map_impl(role: u64) -> i64 {
+    #[cfg(not(feature = "atrium-compositor-g1"))]
+    {
+        let _ = role;
+        ENOSYS
+    }
+    #[cfg(feature = "atrium-compositor-g1")]
+    {
+        let Ok(role) = u32::try_from(role) else {
+            return EINVAL;
+        };
+        let proc = match current_process_for_syscall() {
+            Ok(proc) => proc,
+            Err(e) => return e,
+        };
+        let Some(term) = proc.stdio().term else {
+            return EBADF;
+        };
+        buffer_map_at(term.slot, role, Some(term.cap_id))
+    }
 }
 
 #[cfg(not(feature = "cap-rooted-open"))]
@@ -2189,15 +2460,18 @@ fn is_spawn_inheritable_dir(rights: FileRights) -> bool {
 
 // === IPC syscalls (Phase 1.5b) ==========================================
 
-/// SYS_CHAN_CREATE — create a fresh anonymous channel and install both
-/// endpoints in the calling process's handle table. Returns the two handle
-/// indices packed into a single i64: low 32 bits = h_a, high 32 bits = h_b.
 /// L1a.1 step 2a: the pipe end handle `h` names, if it carries `USE` and
 /// `need` (its end's right; `None` accepts either end, for `SYS_WAIT_ANY`).
+///
+/// L1a.1 step 2b: with `expect`, the handle must also be that capability,
+/// compared **first**, under the same table lock, so a stdio slot that was
+/// closed or reused is `EBADF` whatever now sits there, never `EPERM`
+/// (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.1, §2.3).
 #[cfg(feature = "pipe")]
 fn pipe_lookup(
     h: u32,
     need: Option<u8>,
+    expect: Option<process::CapId>,
 ) -> Result<
     (
         alloc::sync::Arc<crate::ipc::pipe::PipeObject>,
@@ -2209,6 +2483,9 @@ fn pipe_lookup(
     crate::arch::x86_64::without_interrupts(|| {
         let proc = process::get(crate::sched::current_pid()).ok_or(EINVAL)?;
         let handle = proc.handles.lock().get(h).ok_or(EBADF)?;
+        if expect.is_some_and(|want| handle.cap_id() != want) {
+            return Err(EBADF);
+        }
         match handle {
             Handle::Pipe {
                 pipe,
@@ -2292,10 +2569,17 @@ const PIPE_CHUNK: usize = crate::ipc::pipe::PIPE_ATOMIC;
 /// only what the call can move, not the whole user `len` (Dexter #56 F6).
 #[cfg(feature = "pipe")]
 fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
+    pipe_read_at(h, buf, len, flags, None)
+}
+
+/// `SYS_PIPE_READ`'s body, also fd 0's for a selected stdin (step 2b), which
+/// passes the selected `CapId` as `expect`.
+#[cfg(feature = "pipe")]
+fn pipe_read_at(h: u32, buf: u64, len: usize, flags: u64, expect: Option<process::CapId>) -> i64 {
     if let Err(e) = validate_user_buf(buf, len) {
         return e;
     }
-    let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::READ)) {
+    let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::READ), expect) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -2352,10 +2636,17 @@ fn sys_pipe_read_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
 /// `EAGAIN`.
 #[cfg(feature = "pipe")]
 fn sys_pipe_write_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
+    pipe_write_at(h, buf, len, flags, None)
+}
+
+/// `SYS_PIPE_WRITE`'s body, also fd 1's for a selected stdout (step 2b),
+/// which passes the selected `CapId` as `expect`.
+#[cfg(feature = "pipe")]
+fn pipe_write_at(h: u32, buf: u64, len: usize, flags: u64, expect: Option<process::CapId>) -> i64 {
     if let Err(e) = validate_user_buf(buf, len) {
         return e;
     }
-    let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::WRITE)) {
+    let (pipe, _end, _cap) = match pipe_lookup(h, Some(process::pipe_rights::WRITE), expect) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -2398,6 +2689,9 @@ fn sys_pipe_write_impl(h: u32, buf: u64, len: usize, flags: u64) -> i64 {
     })
 }
 
+/// SYS_CHAN_CREATE — create a fresh anonymous channel and install both
+/// endpoints in the calling process's handle table. Returns the two handle
+/// indices packed into a single i64: low 32 bits = h_a, high 32 bits = h_b.
 fn sys_chan_create_impl() -> i64 {
     let proc = match crate::sched::process::get(crate::sched::current_pid()) {
         Some(p) => p,
@@ -6693,7 +6987,7 @@ fn wait_any_scan(items: &[WaitItem], ident: &mut WaitIdentity) -> Result<u64, i6
             }
             #[cfg(feature = "pipe")]
             crate::sched::wait_any_logic::WAIT_KIND_PIPE => {
-                let (pipe, end, cap_id) = pipe_lookup(item.handle, None)?;
+                let (pipe, end, cap_id) = pipe_lookup(item.handle, None, None)?;
                 ident.keys[ident.n] = pipe.wait_key(end);
                 ident.caps[ident.n] = cap_id.0;
                 ident.n += 1;
@@ -6840,9 +7134,22 @@ fn sys_write_impl(fd: u32, buf: *const u8, len: usize) -> i64 {
         return e;
     }
 
+    // L1a.1 step 2b: a stdout pipe chosen at spawn takes fd 1 (THINK §2.3).
+    // A zero-length write is 0 before any lookup, as on the console path; a
+    // selection whose handle has gone is `EBADF`, never the console.
+    #[cfg(feature = "pipe")]
+    if fd == STDOUT_FD
+        && let Some(out) = selected_stdio(|s| s.stdout)
+    {
+        if len == 0 {
+            return 0;
+        }
+        return pipe_write_at(out.slot, buf as u64, len, 0, Some(out.cap_id));
+    }
+
     // Namespace rule for BUILD-1: fd 1 is permanently stdout.
     // sys_open never returns 1, and sys_write(1, ...) never resolves the
-    // process handle table.
+    // process handle table (unless a stdout pipe was chosen at spawn, above).
     if fd != STDOUT_FD {
         return sys_file_write_impl(fd, buf, len);
     }
@@ -7002,6 +7309,14 @@ fn sys_read_impl(fd: u32, buf: *mut u8, len: usize) -> i64 {
     }
     if let Err(e) = validate_user_buf(buf as u64, len) {
         return e;
+    }
+    // L1a.1 step 2b: a stdin pipe chosen at spawn takes fd 0, ahead of the
+    // keyboard (THINK §2.3); `len == 0` returned 0 above.
+    #[cfg(feature = "pipe")]
+    if fd == STDIN_FD
+        && let Some(inp) = selected_stdio(|s| s.stdin)
+    {
+        return pipe_read_at(inp.slot, buf as u64, len, 0, Some(inp.cap_id));
     }
     #[cfg(any(feature = "serial-stdin", feature = "usb-hid"))]
     if fd == STDIN_FD {
@@ -8747,9 +9062,29 @@ fn buffer_handle_lookup(
     h: u32,
     need_semantic: u8,
 ) -> Result<alloc::sync::Arc<crate::atrium::buffer::SharedPixelBuffer>, i64> {
+    buffer_handle_lookup_at(
+        h,
+        need_semantic,
+        #[cfg(feature = "pipe")]
+        None,
+    )
+}
+
+/// [`buffer_handle_lookup`]; with `expect` (L1a.1 step 2b's term page), the
+/// handle must also be that capability, compared first.
+#[cfg(feature = "atrium-compositor-g1")]
+fn buffer_handle_lookup_at(
+    h: u32,
+    need_semantic: u8,
+    #[cfg(feature = "pipe")] expect: Option<process::CapId>,
+) -> Result<alloc::sync::Arc<crate::atrium::buffer::SharedPixelBuffer>, i64> {
     crate::arch::x86_64::without_interrupts(|| {
         let proc = process::get(crate::sched::current_pid()).ok_or(EINVAL)?;
         let handle = proc.handles.lock().get(h).ok_or(EBADF)?;
+        #[cfg(feature = "pipe")]
+        if expect.is_some_and(|want| handle.cap_id() != want) {
+            return Err(EBADF);
+        }
         match handle {
             Handle::Buffer { buffer, rights, .. } => {
                 if !rights.has_meta(process::meta_rights::USE)
@@ -8862,6 +9197,22 @@ fn sys_buffer_create_impl(desc_ptr: *const u8, desc_len: usize) -> i64 {
 /// and the mapping pins the buffer `Arc` until the PTEs are gone.
 #[cfg(feature = "atrium-compositor-g1")]
 fn sys_buffer_map_impl(h: u32, role: u32) -> i64 {
+    buffer_map_at(
+        h,
+        role,
+        #[cfg(feature = "pipe")]
+        None,
+    )
+}
+
+/// `SYS_BUFFER_MAP`'s body; with `expect` (L1a.1 step 2b's term page), the
+/// handle must be that capability, compared before its kind and rights.
+#[cfg(feature = "atrium-compositor-g1")]
+fn buffer_map_at(
+    h: u32,
+    role: u32,
+    #[cfg(feature = "pipe")] expect: Option<process::CapId>,
+) -> i64 {
     use crate::atrium::logic::buffer_rights;
     use crate::mm::pmap::flags as mmflags;
     if !crate::atrium::syscalls_enabled() {
@@ -8872,7 +9223,12 @@ fn sys_buffer_map_impl(h: u32, role: u32) -> i64 {
         1 => (buffer_rights::MAP_READ, mmflags::USER_DATA_RO),
         _ => return EINVAL,
     };
-    let buffer = match buffer_handle_lookup(h, need) {
+    let buffer = match buffer_handle_lookup_at(
+        h,
+        need,
+        #[cfg(feature = "pipe")]
+        expect,
+    ) {
         Ok(b) => b,
         Err(e) => return e,
     };
