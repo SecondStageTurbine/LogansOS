@@ -9493,6 +9493,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 L5: the browser as a desktop-session client, staged as
+/// `/modules/neo-browser` (module `"browser"`, libneo's `MODULE_BROWSER`).
+const BROWSER_BIN: &str = "neo-browser";
 /// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
 /// the same crate (`src/atrium.rs`).
 const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
@@ -9523,7 +9526,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SWGL_BIN | SWGL_ATRIUM_BIN | SWGL_GRANT_CLIENT_BIN | SWGL_GRANT_COMPOSITOR_BIN => {
             Some(SWGL_DIR)
         }
-        LAYOUT_SMOKE_BIN => Some(LAYOUT_SMOKE_DIR),
+        LAYOUT_SMOKE_BIN | BROWSER_BIN => Some(LAYOUT_SMOKE_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
         _ => None,
@@ -9729,8 +9732,13 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
             &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
             CXX_RUNTIME_DIR,
         ),
-        // `--layout`: OT-61 L0/L1, Servo's layout without script over neo-crt.
-        [a] if a == "--layout" => (LAYOUT_SMOKE_BIN, &[LAYOUT_SMOKE_BIN], LAYOUT_SMOKE_DIR),
+        // `--layout`: OT-61 L0-L4, Servo's layout without script over
+        // neo-crt, and L5's `neo-browser` from the same crate.
+        [a] if a == "--layout" => (
+            LAYOUT_SMOKE_BIN,
+            &[LAYOUT_SMOKE_BIN, BROWSER_BIN],
+            LAYOUT_SMOKE_DIR,
+        ),
         _ => {
             return Err(
                 "usage: cargo xtask ot61-closure-build [--stylo | --crt | --layout]".to_string(),
@@ -9740,14 +9748,16 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
     build_standalone_std_smoke(bin, bins, dir)?;
-    let elf = std_real_bin_path(bin);
-    let len = fs::metadata(&elf)
-        .map_err(|e| format!("stat {}: {e}", elf.display()))?
-        .len();
-    println!(
-        "ot61-closure-build: {} ({len} bytes), A4 checks passed",
-        elf.display()
-    );
+    for b in bins {
+        let elf = std_real_bin_path(b);
+        let len = fs::metadata(&elf)
+            .map_err(|e| format!("stat {}: {e}", elf.display()))?
+            .len();
+        println!(
+            "ot61-closure-build: {} ({len} bytes), A4 checks passed",
+            elf.display()
+        );
+    }
     Ok(())
 }
 

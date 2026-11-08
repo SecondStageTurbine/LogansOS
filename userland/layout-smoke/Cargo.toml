@@ -18,6 +18,14 @@ path = "src/main.rs"
 test = false
 bench = false
 
+# OT-61 L5: the browser as a desktop-session client (one window, the oracle
+# page). Same closure and lock as layout-smoke.
+[[bin]]
+name = "neo-browser"
+path = "src/browser.rs"
+test = false
+bench = false
+
 [dependencies]
 neo-std-pal = { path = "../neo-std-pal" }
 # The private C/C++ runtime (musl + libc++) for HarfBuzz and fontsan.
@@ -36,6 +44,8 @@ swgl = "=0.70.0"
 gleam = "=0.15.1"
 # OT-61 L2: the static-page driver (one reflow) and its hand-worked oracle.
 neo-static-page = { path = "../neo-static-page" }
+# OT-61 L5: the client's NMC1 records (no_std, no dependencies).
+nmc1-client = { path = "../nmc1-client" }
 # servo-constellation-traits 0.7.0 derives Zeroize without enabling zeroize's
 # `derive` feature; upstream gets it through servo-script's half of the graph.
 zeroize = { version = "1", features = ["derive"] }
