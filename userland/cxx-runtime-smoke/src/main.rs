@@ -67,6 +67,7 @@ unsafe extern "C" {
     fn cxx_check_condition_variable() -> i32;
     fn cxx_check_sync() -> i32;
     fn cxx_check_streams() -> i32;
+    fn crt_check_posix() -> i32;
     fn pthread_key_create(key: *mut u32, dtor: Option<unsafe extern "C" fn(*mut c_void)>) -> i32;
     fn pthread_key_delete(key: u32) -> i32;
     fn pthread_setspecific(key: u32, value: *const c_void) -> i32;
@@ -326,6 +327,11 @@ pub extern "C" fn _start() -> ! {
         30,
         "C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
         cxx_check_streams,
+    );
+    c_check(
+        31,
+        "POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary",
+        crt_check_posix,
     );
     println!("{TAG} PASS");
     std::process::exit(0)

@@ -20,7 +20,7 @@
 //! default refused, there being no wall clock); keys with destructors; once;
 //! rwlocks; and the attribute calls they make.
 
-use core::ffi::{c_int, c_void};
+use core::ffi::{c_char, c_int, c_void};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -223,6 +223,13 @@ pub extern "C" fn pthread_self() -> *const PThread {
         });
         Arc::as_ptr(rec)
     })
+}
+
+/// `pthread_setname_np`: accepted and ignored (threads have no names here;
+/// SpiderMonkey names its own for debugging).
+#[unsafe(no_mangle)]
+pub extern "C" fn pthread_setname_np(_t: *const PThread, _name: *const c_char) -> c_int {
+    0
 }
 
 #[unsafe(no_mangle)]

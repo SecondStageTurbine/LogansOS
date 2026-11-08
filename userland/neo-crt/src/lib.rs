@@ -439,9 +439,18 @@ pub extern "C" fn atexit(_f: Option<extern "C" fn()>) -> c_int {
 // ── static constructors ──────────────────────────────────────────────────
 
 unsafe extern "C" {
+    // c/neo_posix.c: -fstack-protector's canary.
+    static mut __stack_chk_guard: usize;
     // Defined by the linker (lld) around the output's .init_array.
     static __init_array_start: [Option<unsafe extern "C" fn()>; 0];
     static __init_array_end: [Option<unsafe extern "C" fn()>; 0];
+}
+
+/// `getpid`: this process's id (SpiderMonkey's assertion and profiler
+/// paths ask for it).
+#[unsafe(no_mangle)]
+pub extern "C" fn getpid() -> c_int {
+    std::process::id() as c_int
 }
 
 /// Run the C/C++ static constructors (`.init_array`), once. A program's entry
@@ -451,6 +460,14 @@ pub fn init() {
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) {
         return;
+    }
+    // The stack protector's canary (c/neo_posix.c): random, low byte zero
+    // so a string overflow can't copy it. Set before any C code runs, so no
+    // live frame holds the old value.
+    unsafe {
+        let mut g = 0usize;
+        arc4random_buf((&raw mut g).cast(), size_of::<usize>());
+        __stack_chk_guard = g & !0xff;
     }
     unsafe {
         let mut f = (&raw const __init_array_start).cast::<Option<unsafe extern "C" fn()>>();

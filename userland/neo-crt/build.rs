@@ -90,12 +90,23 @@ const FILES: &[&str] = &[
     "src/locale/wcscoll.c",
     "src/locale/wcsxfrm.c",
     "src/locale/strtod_l.c",
-    // time: strftime for libc++'s time_put. No time zones: %Z is "UTC"
-    // (c/neo_bottom.c's __tm_to_tzname).
+    // time: strftime for libc++'s time_put, and UTC calendar conversion
+    // (gmtime, timegm; localtime and mktime are UTC, c/neo_posix.c). No time
+    // zones: %Z is "UTC" (c/neo_bottom.c's __tm_to_tzname).
     "src/time/strftime.c",
     "src/time/__tm_to_secs.c",
     "src/time/__year_to_secs.c",
     "src/time/__month_to_secs.c",
+    "src/time/__secs_to_tm.c",
+    "src/time/gmtime.c",
+    "src/time/gmtime_r.c",
+    "src/time/timegm.c",
+    // stdio on the standard streams, for SpiderMonkey (C3c-1).
+    "src/stdio/ferror.c",
+    "src/stdio/fileno.c",
+    "src/stdio/setvbuf.c",
+    "src/stdio/perror.c",
+    "src/stdio/fread.c",
     // strerror's message table.
     "src/errno/strerror.c",
     // rand/random/drand48.
@@ -145,6 +156,7 @@ fn main() {
     sources.push(manifest.join("c/stdout.c"));
     sources.push(manifest.join("c/stderr.c"));
     sources.push(manifest.join("c/stdin.c"));
+    sources.push(manifest.join("c/neo_posix.c"));
 
     let clang = std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into());
     let mut build = cc::Build::new();
@@ -166,6 +178,7 @@ fn main() {
         .include(musl.join("arch/generic"))
         .include(musl.join("src/include"))
         .include(musl.join("src/internal"))
+        .include(musl.join("src/time"))
         .include(&generated)
         .include(musl.join("include"))
         .files(&sources);

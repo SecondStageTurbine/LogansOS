@@ -280,3 +280,24 @@ neo-crt.
 **Kill-switch:** none at run time. This is a build configuration: reverting `__config_site` and the source lists gives
 back §3's runtime bit for bit. Everything §3 already compiled is unchanged. Items 1-29 still pass and keep their
 expected values.
+
+**Also for C3c-1: the POSIX calls SpiderMonkey links against** (`c/neo_posix.c`, the musl files named in `build.rs`).
+The generator's link probe (#87) listed every symbol SpiderMonkey's 213 objects need that neo-crt didn't define.
+Apart from the Rust crates the product link supplies (`encoding_c_mem`, `normalizer_glue`, zlib, `mozjs-sys`'s own
+hooks), these are now here:
+- **Time.**
+  - musl's `gmtime`, `gmtime_r` and `timegm`.
+  - `localtime`/`localtime_r` and `mktime` are UTC, because the bundle has no time zones.
+  - `time()` reads `CLOCK_REALTIME`. That gives a time once C1.3's clock is in (#86) and returns -1 until then.
+- **Files.**
+  - `fopen` and `remove` refuse with `ENOENT`; `fstat`, `fcntl` and `close` refuse with `EBADF`; `memfd_create`
+    refuses with `ENOSYS`.
+  - `fclose` flushes the standard stream it's given; there is no other kind.
+  - musl's `ferror`, `fileno`, `setvbuf`, `perror` and `fread` work on the standard streams.
+- **`getpid`** is std's `process::id`.
+- **`pthread_setname_np`** is accepted and ignored.
+- **The stack protector.** SpiderMonkey's configure turns on `-fstack-protector-strong`. `__stack_chk_guard` is
+  randomised by `neo_crt::init()` before any C code runs, with the low byte zero. `__stack_chk_fail` reports and
+  aborts.
+
+Smoke item 31 checks these with hand-worked values (1971-01-01 is 31,536,000 s and a Friday).

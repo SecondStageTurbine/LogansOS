@@ -39,6 +39,7 @@ fn main() {
     system_includes(&mut c, &c_headers);
     c.file("c/crt_checks.c")
         .file("c/pthread_checks.c")
+        .file("c/crt_posix_checks.c")
         .compile("crt_checks");
     let mut cxx = cc::Build::new();
     cxx.compiler(std::env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".into()))
