@@ -53,6 +53,41 @@ build PR lists each directory that links into the engine, with its licence file:
 The C3c build PR carries this list as its licence table. Any file without a compatible licence is cut from the
 source list, not vendored.
 
+### 2.2 The licence table at the vendoring pin (2026-11-08)
+
+**Pin:** `servo/mozjs` @ `138c9470151b8dcbb335f249cb83f9404857baf9` (2026-11-01; `mozjs_sys` 153.6.0-2, engine
+153.6.0, `config/milestone.txt`). It moved on from the `6e69c16` read above; the engine version is unchanged. Cloned
+with `git clone --depth 1 --filter=blob:none`. Every licence below was read from the file named in the clone, not
+through a summarizing fetch.
+
+"Links in C3c-1" is what `moz.build`/`moz.configure` say for an interpreter-only, no-wasm, no-intl, no-jemalloc
+standalone engine. The generator's source list (option (c)) is what confirms it; this table is the expectation it is
+checked against.
+
+| Directory | Files | Licence (file read) | Compatible? | Links in C3c-1? |
+|---|---|---|---|---|
+| `js/src` (engine), `js/public` | — | MPL-2.0 (Mozilla headers; top-level `LICENSE` points to `toolkit/content/license.html`) | yes | yes |
+| `mfbt` | 230 | MPL-2.0 | yes | yes |
+| `mfbt/double-conversion` | 27 | BSD-3-Clause, V8 authors (`mfbt/double-conversion/LICENSE`) | yes | yes |
+| `js/src/irregexp` | 76 | BSD-3-Clause, V8 authors (`js/src/irregexp/LICENSE.v8`) | yes | yes (RegExp) |
+| `modules/fdlibm` | 77 | BSD-2-Clause style, The FreeBSD Project (`modules/fdlibm/src/LICENSE`) | yes | yes (`Math`) |
+| `mozglue/misc` | 90 | MPL-2.0 | yes | yes (timestamps, stack walking helpers) |
+| `memory` (mozjemalloc) | 56 | MPL-2.0 | yes | **no**: `js_standalone` without `--enable-jemalloc` (`js/moz.configure:1436`); GC memory goes through `neo-crt`'s `malloc`/`posix_memalign` (trap T3) |
+| `third_party/fmt` | — | MIT (`third_party/fmt/LICENSE`) | yes | likely (`mfbt/DbgMacro.h` and `mozglue/moz.build` reference it) |
+| `third_party/function2` | — | BSL-1.0 (`third_party/function2/LICENSE.txt`) | **check**: Boost is permissive, but not on CLAUDE.md's list | likely (`mfbt/MoveOnlyFunction.h`) |
+| `js/src/zydis` | 101 | MIT (`Zydis/LICENSE`, `Zycore/LICENSE`) | yes | **no**: only with `JS_JITSPEW` (`js/src/moz.build:351`) |
+| `third_party/gemmology`, `third_party/xsimd` | — | MIT; BSD-3-Clause | yes | **no**: wasm intgemm only (`ENABLE_WASM_MOZ_INTGEMM`) |
+| `modules/zlib/src` | 2 (`zlib.h`, `zconf.h`) | zlib licence (`zlib.h` header) | yes | headers only; the zlib code itself comes from outside (`libz-sys`, already vendored for L0, or `libz-rs`) |
+| `nsprpub` | 536 | MPL-2.0 (`nsprpub/LICENSE`) | yes | **no**: standalone JS doesn't build NSPR unless `--enable-nspr-build` (`build/moz.configure/nspr.configure`) |
+| `intl` (ICU and friends) | 1,883 | ICU/Unicode | yes | **no**: intl off |
+| `python`, `third_party/python`, `build`, `testing` | — | MPL-2.0 and the Python packages' own | n/a | **no**: generator-time only, never in the product build |
+
+**The one to decide:** `function2` is under the **Boost Software License 1.0**. BSL-1.0 is OSI-approved and
+permissive: no copyleft, notice kept in source copies only. It is not on CLAUDE.md's vendoring list (MIT,
+Apache-2.0, BSD, zlib, ISC, MPL-2.0, Unicode-3.0, Unlicense/CC0). If `mfbt/MoveOnlyFunction.h` is in the C3c-1
+source list (the generator will say), either J.c. adds BSL-1.0 to the list, or `MoveOnlyFunction` is given a small
+target-cfg replacement. Everything else that links is MPL-2.0, BSD or MIT.
+
 ## 3. The design: SpiderMonkey's WASI port, re-targeted, in two steps
 
 ### 3.1 Why the WASI port is our shape
