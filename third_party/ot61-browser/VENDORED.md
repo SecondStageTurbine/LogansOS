@@ -26,8 +26,25 @@ stub. Their survey (licences, last commits, what links and what only builds) is
   switches off (`servo-script`, `surfman`):
   "The stubs for other platforms", below.
 - `licenses/` — licence texts a vendored crate was published without (`void` 1.0.2, below).
+- **Licence choices for multi-licensed crates.** Where a crate offers a choice, we take only options on
+  CLAUDE.md's list. **`r-efi` 6.0.0** ("MIT OR Apache-2.0 OR LGPL-2.1-or-later", a stub here: it is reached only
+  through `getrandom`'s `cfg(target_os = "uefi")` backend, and no code is vendored) is taken under **MIT OR
+  Apache-2.0, never the LGPL-2.1 option**. The same holds for every "A OR B" row below: an LGPL/GPL alternative,
+  where one is offered, is never the one taken.
 - `gen-vendored-table.py` prints this file's crate table from the crates' own files; `gen-patch-table.py` prints a
   smoke's `[patch.crates-io]` table.
+- `verify-patches.sh` reproduces every `patched/<crate>-<version>/` from upstream. It needs the network to reach
+  static.crates.io. For each `*-neoplutarch.patch`, it:
+  - downloads the published `.crate`;
+  - checks its SHA-256 against the "(patched)" row of the table below;
+  - applies the patch;
+  - diffs the result against `patched/`, ignoring exactly what the patches were made ignoring: our SPDX lines,
+    `.cargo-checksum.json` and `.cargo-ok`.
+
+  All 11 reproduce (2026-11-08), including the eight L0 crates with no pristine copy in `vendor/`
+  (`servo-allocator`, `servo-base`, `servo-embedder-traits`, `servo-fonts`, `servo-fonts-traits`, `servo-layout`,
+  `servo-paint-api`, `servo-url`), plus `libc`, `parking_lot_core` and `stylo`. A reviewer can re-run it at any time; it writes only to a scratch
+  directory.
 - `userland/servo-closure-smoke` (C2.3b) and `userland/stylo-smoke` (C2.4) use this tree, through
   `[patch.crates-io]` path entries in their `Cargo.toml`. (Not `[source]` replacement: `-Z build-std` resolves std's own dependencies through the same
   sources, and std's are not vendored.) The CI job fails if any closure crate resolves to crates.io instead.
