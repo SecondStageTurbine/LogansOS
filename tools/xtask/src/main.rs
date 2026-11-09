@@ -81,6 +81,8 @@ mod ci_memory_floor_tests;
 #[cfg(test)]
 mod i8042_tests;
 #[cfg(test)]
+mod keymap_layout_tests;
+#[cfg(test)]
 mod keymap_tests;
 #[cfg(test)]
 mod ot61_c05_tests;
