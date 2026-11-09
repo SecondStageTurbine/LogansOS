@@ -163,6 +163,19 @@ run there too (trap B1).
 4. **The smoke on target.** Gate: a quick tier with `mozjs_smoke`, then the full four shards before merge. It's
    kernel-touching only through the scenario.
 
+   The scenario is `mozjs_smoke` (kernel feature `neo-test-mozjs-smoke`: `browser-runtime`, `mem-quota`,
+   `kernel-rng`). The kernel spawns the smoke with a 256 MiB budget, and needs exit 0 and every frame back. xtask
+   runs it under `-cpu max` in 1024M and requires each `ok(n)` line. The smoke's debug profile strips debuginfo:
+   the frozen `-gdwarf-4` made a 165 MB binary, too big to stage as a boot module.
+
+   The first run on target (try run 42548550310) got through `JSEngine::init`, then `JS_NewContext` returned
+   null. SpiderMonkey's GC chunks are 1 MiB at 1 MiB alignment, through `posix_memalign` (our target takes
+   `gc/Memory.cpp`'s WASI branch). `neo-std-pal`'s `SyscallHeap` grew by the request's size plus 64 KiB, but a
+   fresh map is only page-aligned, so it could not hold that block. Growth now adds the alignment when it exceeds
+   a page (`grow_need`, with host tests), and the smoke's check 12 takes that block shape before the engine starts.
+   The second run, try run 42556683335 (the full four shards, on the product crates with #88 and #81's crates
+   merged in), is green: `mozjs_smoke` passed on its first attempt, and every other scenario passed.
+
 Each step's failure is diagnosable from its own output:
 - **step 2:** the generator's drift diff;
 - **step 3:** the link gap list (now Rust crates only, #87) and the linker's undefined symbols;
