@@ -2431,6 +2431,7 @@ fn scenario_timeout(name: &str) -> Duration {
         | "login_lock_idle"
         | "login_lock_stall"
         | "login_lock_park"
+        | "login_terminal_lock"
         | "login_settings_store"
         | "login_settings_refused"
         | "login_arthur_permission" => Duration::from_secs(600),
@@ -3777,6 +3778,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: login_scenarios::LOGIN_SETUP_TZ_REREAD_FAIL_SCENARIO,
         feature: "neo-test-login-two-boot",
         user_feature: Some("setup-tz-reread-fail-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1a.3 (terminal_lock_park): keys typed while the session is locked
+        // never reach the terminal window or its child.
+        name: login_scenarios::LOGIN_TERMINAL_LOCK_SCENARIO,
+        feature: "neo-test-terminal-lock",
+        user_feature: Some("lock-terminal-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8530,6 +8540,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("lock-spawn-test") => vec!["lock-spawn-test", "desktop-busy"],
         Some("lock-stall-test") => vec!["lock-stall-test", "desktop-busy"],
         Some("lock-park-test") => vec!["lock-park-test", "desktop-busy"],
+        // L1a.3: the lock with the terminal window in the client table.
+        Some("lock-terminal-test") => vec!["lock-terminal-test", "desktop-busy"],
         Some("settings-boot-test") => vec!["settings-boot-test", "desktop-busy"],
         Some("settings-refused-test") => vec!["settings-refused-test", "desktop-busy"],
         Some("settings-authority-control") => vec!["settings-authority-control", "desktop-busy"],
@@ -8726,7 +8738,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // L1a.3: the worker is the terminal (and, spawned by it with a stdio,
         // its test child).
         Some("desktop-terminal-shell-boot-test") => vec!["terminal-app"],
-        Some("desktop-terminal-echo-boot-test") => vec!["terminal-test-echo"],
+        Some("desktop-terminal-echo-boot-test") | Some("lock-terminal-test") => {
+            vec!["terminal-test-echo"]
+        }
         Some("desktop-terminal-flood-boot-test") => vec!["terminal-test-flood"],
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
@@ -8963,6 +8977,13 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-busy-emblem",
             "arthur-scrollback",
             "arthur-lock-park-test",
+        ],
+        // L1a.3: the lock's Arthur, who opens the terminal on `open terminal`.
+        Some("lock-terminal-test") => vec![
+            "desktop-session",
+            "desktop-home",
+            "arthur-busy-emblem",
+            "atrium-terminal",
         ],
         Some("settings-boot-test") | Some("settings-wm-only-control") => vec![
             "desktop-session",
@@ -21019,7 +21040,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     }
     if matches!(
         scenario.name,
-        "desktop_terminal_shell_boot" | "desktop_terminal_echo_boot" | "desktop_terminal_flood_boot"
+        "desktop_terminal_shell_boot"
+            | "desktop_terminal_echo_boot"
+            | "desktop_terminal_flood_boot"
     ) {
         require_terminal_pass(scenario, observed)?;
     }
