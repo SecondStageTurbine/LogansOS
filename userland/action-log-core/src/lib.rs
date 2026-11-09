@@ -45,6 +45,11 @@ pub enum Kind {
     Done = 7,
     GrantRevoked = 8,
     Undone = 9,
+    /// F11 S3 (setup-menu THINK §4.4): a setup-menu choice. `path` is the
+    /// page left (`welcome`, `timezone`, `comfort`, `done`), `intent` the
+    /// choice (`begin`, a zone name, `rm=1 rt=0`, `try`); `action` and
+    /// `detail` are 0. Appended at the wizard's end, each with its own time.
+    Setup = 10,
 }
 
 impl Kind {
@@ -59,6 +64,7 @@ impl Kind {
             7 => Self::Done,
             8 => Self::GrantRevoked,
             9 => Self::Undone,
+            10 => Self::Setup,
             _ => return None,
         })
     }

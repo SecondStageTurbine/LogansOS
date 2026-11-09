@@ -19,9 +19,19 @@
 //! page is then review-only. A clock already confirmed when the wizard starts
 //! makes it review-only from the start, and a kernel without `rtc-offset`
 //! hides it (the kill-switch: the wizard doesn't offer a zone it can't apply).
+//!
+//! **The action log** (S3 with `arthur-action-log`, §4.4): each choice made
+//! leaving a page forward, and the end, is held in a small queue with its
+//! monotonic instant, and appended (`Kind::Setup`) only when the wizard ends,
+//! after the confirm. Each record's time is the clock now less the time since
+//! the choice, so a choice made before the confirm still carries the
+//! confirmed UTC instant (never the RTC's local reading as if it were UTC);
+//! without a confirm the records carry the clock as read, flagged as such.
 
 use super::home::HomeFocus;
 use super::{Line, Rect, Scene, wm_rect};
+#[cfg(feature = "setup-journal")]
+use alloc::string::String;
 use alloc::vec::Vec;
 use libneo::{EAGAIN, INPUT_EVENT_V1_LEN, sys_input_focus_recv};
 use neo_atrium::keys::{self, Key};
@@ -33,6 +43,8 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
     #[cfg(feature = "setup-tz")]
     let wizard = tz_page::attach(scene, wizard);
     let mut wizard = wizard;
+    #[cfg(feature = "setup-journal")]
+    let mut journal = journal::Journal::default();
     begin(scene)?;
     show(scene, &wizard)?;
     log_page(&wizard);
@@ -40,6 +52,8 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
         let Some(input) = next_input(scene, focus)? else {
             continue;
         };
+        #[cfg(feature = "setup-journal")]
+        let page_before = wizard.page();
         match wizard.on(input) {
             Outcome::Redraw => {
                 show(scene, &wizard)?;
@@ -52,6 +66,8 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                     .emit();
             }
             Outcome::Page(_) => {
+                #[cfg(feature = "setup-journal")]
+                journal.left(&wizard, page_before);
                 show(scene, &wizard)?;
                 log_page(&wizard);
             }
@@ -66,6 +82,8 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                     false
                 };
                 wizard.confirmed(ok);
+                #[cfg(feature = "setup-journal")]
+                journal.left(&wizard, page_before);
                 show(scene, &wizard)?;
                 log_page(&wizard);
             }
@@ -103,6 +121,17 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                 if finish == Finish::Try {
                     store(scene, &c);
                 }
+                #[cfg(feature = "setup-journal")]
+                {
+                    journal.note(
+                        "done",
+                        String::from(match finish {
+                            Finish::Try => "try",
+                            Finish::Skipped => "skip",
+                        }),
+                    );
+                    journal.flush();
+                }
                 return end(scene);
             }
         }
@@ -137,6 +166,104 @@ fn store(scene: &mut Scene, c: &setup_core::Choices) {
         .n(u64::from(super::settings::volatile()))
         .s(b"\n")
         .emit();
+}
+
+/// S3: the queue of choices for the action log (§4.4).
+#[cfg(feature = "setup-journal")]
+mod journal {
+    use super::super::{Line, action_log};
+    use action_log_core::{Kind, TIME_UTC};
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use libneo::{CLOCK_MONOTONIC, sys_clock_gettime};
+    use setup_core::{Page, Wizard};
+
+    struct Event {
+        page: &'static str,
+        choice: String,
+        mono_ns: u64,
+    }
+
+    /// The choices, in order, each with the monotonic instant it was made.
+    #[derive(Default)]
+    pub struct Journal(Vec<Event>);
+
+    impl Journal {
+        pub fn note(&mut self, page: &'static str, choice: String) {
+            let mono_ns = sys_clock_gettime(CLOCK_MONOTONIC).unwrap_or(0);
+            self.0.push(Event {
+                page,
+                choice,
+                mono_ns,
+            });
+        }
+
+        /// `wizard` now shows a page after `before`: note the choice
+        /// `before` was left with. Back, and the skip question, note nothing.
+        pub fn left(&mut self, wizard: &Wizard, before: Page) {
+            let pages = wizard.pages();
+            let at = |p: Page| pages.iter().position(|&q| q == p);
+            let (Some(from), Some(to)) = (at(before), at(wizard.page())) else {
+                return;
+            };
+            if to <= from {
+                return;
+            }
+            let c = wizard.choices();
+            let choice = match before {
+                Page::Welcome => String::from("begin"),
+                Page::TimeZone => String::from(wizard.zone_name().unwrap_or("unset")),
+                Page::Comfort => format!(
+                    "rm={} rt={}",
+                    u8::from(c.reduce_motion),
+                    u8::from(c.reduce_transparency)
+                ),
+                _ => String::from("continue"),
+            };
+            self.note(before.name(), choice);
+        }
+
+        /// Append every choice, in order: each at the clock now less the
+        /// time since it was made, with the clock's flag now (`TIME_UTC`
+        /// once confirmed). A failed append (a read-only volume) drops the
+        /// rest: the wizard writes nothing it can't.
+        pub fn flush(self) {
+            let (now_s, flags) = action_log::now();
+            let mono = sys_clock_gettime(CLOCK_MONOTONIC).unwrap_or(0);
+            let mut appended = 0u64;
+            for e in &self.0 {
+                let ago_s = mono.saturating_sub(e.mono_ns) / 1_000_000_000;
+                let time_s = now_s.saturating_sub(ago_s);
+                let ok = action_log::append_at(Kind::Setup, e.page, &e.choice, time_s, flags);
+                Line::new()
+                    .s(b"DESKTOP setup journal page=")
+                    .s(e.page.as_bytes())
+                    .s(b" choice=")
+                    .s(e.choice.as_bytes())
+                    .s(b" time_s=")
+                    .n(time_s)
+                    .s(b" utc=")
+                    .n(u64::from(flags & TIME_UTC))
+                    .s(b" ok=")
+                    .n(u64::from(ok))
+                    .s(b"\n")
+                    .emit();
+                if !ok {
+                    break;
+                }
+                appended += 1;
+            }
+            Line::new()
+                .s(b"DESKTOP setup journal records=")
+                .n(self.0.len() as u64)
+                .s(b" appended=")
+                .n(appended)
+                .s(b"\n")
+                .emit();
+            action_log::report();
+        }
+    }
 }
 
 /// S3: the zone directory over `libneo::tz`, and the one confirm.

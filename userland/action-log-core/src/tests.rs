@@ -253,3 +253,58 @@ fn a_rotated_log_verifies_from_its_marker() {
     // Any other first record must still start at 0 with a zero link.
     assert_eq!(verify(&R1).broken_at, Some(0));
 }
+
+/// Record 3 (F11 S3, setup-menu THINK §4.4): setup (kind 10), action 0,
+/// seq 3, 1793512735 s (2026-11-01T05:58:55Z: the wizard's Welcome choice,
+/// just before the New York confirm), detail 0, path `welcome`, intent
+/// `begin`, prev = L2, flags = TIME_UTC. Laid out by the same separate
+/// script (Python `struct`, BLAKE3 from the `blake3` package).
+const R3: [u8; 76] = [
+    0x4e, 0x41, 0x4c, 0x31, 0x01, 0x00, 0x0a, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x1f, 0xd5, 0xe6, 0x6a, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x05, 0x00,
+    0x6b, 0x72, 0x3e, 0x0e, 0x33, 0xe2, 0x4d, 0xbf, 0x53, 0x2a, 0x84, 0x71, 0x55, 0x33, 0xbb, 0x5c,
+    0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x77, 0x65, 0x6c, 0x63, 0x6f, 0x6d, 0x65, 0x62, 0x65, 0x67, 0x69, 0x6e,
+];
+/// BLAKE3(R3)[..16].
+const L3: [u8; 16] = [
+    0xba, 0x5d, 0x27, 0x02, 0xa7, 0xc7, 0xbb, 0xc3, 0x57, 0xbd, 0x72, 0xb6, 0x9d, 0x99, 0xaa, 0x00,
+];
+
+fn r3() -> Record<'static> {
+    Record {
+        kind: Kind::Setup,
+        action: 0,
+        seq: 3,
+        time_s: 1_793_512_735,
+        detail: 0,
+        path: "welcome",
+        intent: "begin",
+        prev: L2,
+        flags: TIME_UTC,
+    }
+}
+
+/// The setup kind (byte 6 = 10): encoded, decoded, linked and chained after
+/// the earlier kinds like any record; 11 is still not a kind.
+#[test]
+fn the_setup_kind_is_the_oracle() {
+    assert_eq!(encode(&r3()).unwrap(), R3);
+    assert_eq!(decode(&R3), Some((r3(), R3.len())));
+    assert_eq!(link(&R3), L3);
+    let mut log = log();
+    log.extend_from_slice(&R2);
+    log.extend_from_slice(&R3);
+    assert_eq!(
+        verify(&log),
+        Head {
+            records: 4,
+            len: R0.len() + R1.len() + R2.len() + R3.len(),
+            link: L3,
+            broken_at: None,
+        }
+    );
+    let mut bad = R3;
+    bad[6] = 11;
+    assert_eq!(decode(&bad), None);
+}
