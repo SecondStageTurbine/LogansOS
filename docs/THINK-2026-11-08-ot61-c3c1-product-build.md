@@ -42,23 +42,30 @@ Three upstream crates have build scripts or build-dependencies that run what the
 - `mozjs_normalizer_glue`: its `build.rs` runs cbindgen.
 
 Each gets a patched copy under `third_party/ot61-mozjs/patched/`, following the `ot61-browser/patched/` precedent.
-Each copy is the upstream crate with only its manifest, and for `mozjs-sys` its `build.rs`, replaced. In all three
-manifests:
+A copy holds only its manifest, and for `mozjs-sys` its `build.rs`. Its `[lib] path` is the vendored crate's own
+`src/lib.rs`, so there is no second copy of the sources to drift. In all three manifests:
 - the `[build-dependencies]` blocks are gone;
 - the `*.workspace = true` fields are written out (MPL-2.0, edition 2021);
 - path dependencies point at `vendor/mozjs-138c9470/mozjs-extracted-crates/` or the other patched copies.
 
-The `generated/` drift check covers the copies' sources. A small check in the generator job compares each copy's
-`src/` with the vendored crate's, so only the manifests and `mozjs-sys/build.rs` may differ.
+`mozjs-sys`'s features that change configure's options (`jit`, `intl`, `debugmozjs`, `profilemozjs`, `jitspew`,
+`libz-rs`) stay declared, because `src/` tests them with `cfg`, but they are empty, and `build.rs` fails if one is on.
+Their optional dependencies are gone. `mozjs`'s default features are `["libz-sys"]`.
+
+A check in the generator job (`generator/check_patched_crates.py`) holds each copy to that: only the allowed files;
+`[lib] path` at the vendored `src/lib.rs`; upstream's name, version, licence and edition; no build-dependencies;
+and upstream's dependencies and version requirements, less the dropped optional ones.
 
 - **`mozjs_normalizer_glue`:** `build = false`, and no `links` key. Its one output was `normalizer_glue.h`, which is
   frozen in `generator/include/` and checked against cbindgen 0.29.4 on every generator run (#87).
 - **`mozjs`:** the manifest only. It has no build script.
 - **`mozjs-sys`:** a new `build.rs` that uses only `std`. It:
   1. **Source view.** In `OUT_DIR/src`, mirrors the compiled directories of the vendored tree (`js/src`, `js/public`,
-     `mfbt`, `mozglue`, `memory`, `modules/fdlibm`, `modules/zlib/src`, `third_party/fmt`, `config`, `build`;
-     about 65 MB), with `generated/patched/` laid over them and `patched/deleted.txt` honoured. These are hard links
-     where the filesystem allows, copies otherwise.
+     `mfbt`, `mozglue`, `memory`, `modules/fdlibm`, `third_party/fmt`, `config`, `build`, `toolkit`, and
+     `mozjs-sys/src`; about 65 MB), with `generated/patched/` laid over them and `patched/deleted.txt` honoured.
+     These are hard links where the filesystem allows, copies otherwise; an overlaid file replaces its link, never
+     writes through it. The script fails if the frozen set names a path outside these directories. (zlib's headers
+     come from the vendored tree through `neo-cc`.)
   2. **Object view.** In `OUT_DIR/obj`, writes `generated/obj/` with `@SRC@`/`@OBJ@`/`@REPO@` replaced. Makes
      `dist/include` from `dist_include.txt`, pointing into the source view so patched headers win, and writes each
      `dist/system_wrappers/<name>` from its one template.
