@@ -110,3 +110,25 @@ The fix is `21272805` ("the confirm is transactional").
 - [ ] A scenario leg declines and checks that the stored id and the clock are unchanged. Pass/fail plus the xtask line.
 - [ ] Your other five items still hold. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-09-pr92-recheck-chad.md` on `codex/pr92-recheck-chad`.
+
+## Section 374: Jarvis, #94 re-check of item 1 (your relay 372). **MODEL** GPT-6.1-Sol, medium. Head `572fb6ff`.
+- [ ] `ref/run-q8.sh` refuses prompt IDs that differ from the pinned set, and any llama.cpp commit other than
+  `a2b30183`. Pass/fail plus line, and an input that each refusal catches.
+- [ ] The split-run TSVs (or their hashes) are committed, so the merge check is reproducible. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr94-recheck-jarvis.md` on `codex/pr94-recheck-jarvis`.
+
+## Section 375: Dexter, #95 (your relay-341 notes on #82, folded in). DeepSeek, high: docs plus one comment, light. Head `5fe0eb13`.
+- [ ] Each of your seven notes is answered, and the only code change is a comment. Pass/fail per note.
+RETURN: `Plans/RETURN-2026-11-09-pr95-notes-dexter.md` on `dexter/pr95-notes`.
+
+## Section 376: Chad, #96 (size-budget: measure a stable image A). **MODEL** GPT-6-Luna, high: build tooling and CI.
+Head `697ad91c`. The problem is in the PR body and #82 (a 6-line no-op moved `.text` by +64,384 B and the ISO by ~1 MB).
+- [ ] The measured kernel is built with `codegen-units=1` (or the PR's stated equivalent), and the measurement
+  matches what it claims: the product's own image A, or a stated, fixed proxy for it. Pass/fail plus line.
+- [ ] The ISO measurement excludes the kernel's debug sections (or measures the stripped kernel), so debug info can't
+  swing it. Pass/fail plus line.
+- [ ] `--stability` shows that a behaviour-free change moves the number by less than the stated tolerance. Check the
+  run it cites. Pass/fail.
+- [ ] The new ceilings come from the new measurement plus the file's margins, with reasons recorded. Pass/fail.
+- [ ] Nothing changes the product image itself; only the measurement changes. Pass/fail plus line.
+RETURN: `Plans/RETURN-2026-11-09-pr96-review-chad.md` on `codex/pr96-review-chad`.
