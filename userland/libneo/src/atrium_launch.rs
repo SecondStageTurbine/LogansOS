@@ -43,6 +43,14 @@ pub const MODULE_BROWSER: u32 = 5;
 /// "BRWSBU", as the probe app's spell PROBAP and PROBBU).
 pub const BROWSER_NAMESPACE: u64 = 0x4252_5753_4150_0001;
 pub const BROWSER_BUFFER_PROVENANCE: u64 = 0x4252_5753_4255_0001;
+/// L1a.3: the terminal window, `neo-worker` built with `terminal-app`
+/// (`docs/THINK-2026-10-31-l1a-terminal-window.md` §2). Its spawn name is
+/// `worker` only with libneo's `atrium-terminal`: off, the id names nothing,
+/// so the broker refuses it (§7's kill-switch).
+pub const MODULE_TERMINAL: u32 = 4;
+/// The terminal's surface namespace and buffer provenance.
+pub const TERMINAL_NAMESPACE: u64 = 0x5445_524D_0000_0001;
+pub const TERMINAL_BUFFER_PROVENANCE: u64 = 0x5445_524D_4255_0001;
 /// The probe app's surface namespace and buffer provenance (the WM's
 /// registry for it, and the import it accepts, are keyed by these).
 pub const PROBE_APP_NAMESPACE: u64 = 0x5052_4F42_4150_0001;
@@ -59,6 +67,8 @@ pub const fn module_name(module_id: u32) -> Option<&'static str> {
         MODULE_ARTHUR => Some("arthur"),
         MODULE_PROBE | MODULE_LENS | MODULE_PROBE_APP => Some("worker"),
         MODULE_BROWSER => Some("browser"),
+        #[cfg(feature = "atrium-terminal")]
+        MODULE_TERMINAL => Some("worker"),
         _ => None,
     }
 }

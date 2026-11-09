@@ -1259,6 +1259,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "neo-terminal"
+version = "0.0.1"
+dependencies = [
+ "neo-term-core",
+ "neo-text",
+ "vt100",
+]
+
+[[package]]
 name = "neo-text"
 version = "0.0.1"
 dependencies = [
