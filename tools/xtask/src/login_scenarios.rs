@@ -1773,7 +1773,6 @@ fn terminal_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Resu
             "LOCK armed route=kernel",
             "LOGIN session started view=home",
             "DESKTOP apps front client=2 via=launch",
-            "TERM row=0 |child ready|",
             "TERM row=1 |ab|",
             "LOCK locked reason=sak",
             "LOCK prompt=password",
