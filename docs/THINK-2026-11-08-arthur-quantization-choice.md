@@ -77,3 +77,67 @@ Two ways to make the decision cheaper, if J.c. wants them first:
   - Falsification test: run both readers with one tensor class at a time left quantized (Q4_K, Q5_0, Q6_K, Q8_0); the
     first class that moves a clear-gap row is the source.
 - PR #84 (the harness) waits on its review. Codex is down, so Prometheus has it as relay 343.
+
+## Addendum, 2026-11-09: the bars on the shipped Q8_0 (Seat C)
+
+Arthur now ships the Q8_0 import (#90, `.neom` BLAKE3 `1cfd06dc…`, from upstream `qwen2.5-0.5b-instruct-q8_0.gguf`
+@ `9217f5db`, SHA-256 `ca59ca7f…`). This re-runs bars A and B on that file. The bars, prompts, token IDs, window
+(offset 6,144, 2,048 tokens, eval from 1,024, BLAKE3 `1782216d…`) and llama.cpp commit (`a2b30183`) are unchanged.
+Control C doesn't depend on Arthur's file, so it isn't re-run. The KAT is
+`tools/quant-drift-tests/fixtures/quant-drift-kat-2026-11-09-q8.json`; `ref/run-q8.sh` reproduces it.
+
+**Reproduction checks.**
+- Our `neomc` import of the pinned Q8_0 GGUF gives #90's pins exactly: `.neom` `1cfd06dc…`, vocab `e8974121…`.
+- The F16 reference here has PPL 28.841103, exactly #84's figure.
+- Our committed Q4_K_M run scores 66.28% top-1 against this F16 run, exactly the Q4 KAT's figure.
+
+**The bars, as written.**
+
+| Bar | Q4_K_M (2026-11-08 KAT) | Q8_0 (this run) |
+|---|---|---|
+| A: replies identical to llama.cpp on the same file | FAIL, 16 / 30 | **FAIL, 21 / 30** |
+| A: PPL within 0.5% of llama.cpp | PASS, 0.39% | **PASS, 0.26%** |
+| B: ΔPPL vs F16 ≤ 10% | PASS, 0.94% | **PASS, 2.21%** |
+| B: top-1 vs F16 ≥ 90% | FAIL, 66.28% | **FAIL, 89.96% (627 / 697)** |
+| B: boot reply identical to F16 | PASS | **PASS** |
+
+Bar A fails the same way it did on Q4. All nine generated divergences are near-ties (both runtimes' top-two gaps below
+0.5), and 33 of the 34 teacher-forced divergences are below 0.2 in both runtimes.
+
+Bar B misses by **one position**: 627 of 697, against 628 needed.
+
+**Why bar B misses: one shared-prefix position, counted 30 times.**
+- Every prompt starts with the same chat-template prefix, and the bar counts every position of every prompt.
+- At prefix index 10, F16's top two are 0.558 apart, and ours are 0.080 apart. Ours picks F16's second choice, so
+  that one position is a miss in all 30 prompts.
+- In all 32 of our misses where F16 is clear (gap > 0.5), F16's pick is our second choice. 30 of those 32 are this
+  one position.
+- Relay 342 found the same thing on Q4: 30 of its 37 rows were one shared-prefix position.
+
+Counting each distinct prefix once (256 positions):
+
+| | all positions | clear (F16 gap > 0.5) | distinct | distinct and clear |
+|---|---:|---:|---:|---:|
+| ours, Q4_K_M | 66.28% | 81.57% | 89.06% | 95.63% |
+| ours, Q8_0 | 89.96% | 93.86% | **96.09%** | **98.54%** |
+| llama.cpp, Q8_0 | 93.97% | 99.42% | 95.70% | 98.54% |
+
+These extra columns explain the miss; they don't replace the bar. On distinct positions our Q8_0 is as close to F16
+as llama.cpp's Q8_0 is. The two differ only where the model is near a tie.
+
+**A correction to the table above.** Its Q8_0 row ("99.4% on clear positions") was measured with **llama.cpp**'s
+Q8_0, as were all of its rows. Our kernel's Q8_0 gives 93.86% on clear positions. The gap is the prefix position
+above. Counted once, both runtimes are at 98.54%.
+
+**Speed: measured slower than the estimate.** On the same 4-core cloud host, our host forward pass took 194.8 s on
+Q4_K_M and about 484 s on Q8_0 for the 21-token boot prompt with 32 generated tokens. That's 3.7 vs 9.1 s/token,
+**2.5× slower for 1.38× the bytes**. The section above estimated about a third slower, from bytes alone. This is the
+host harness, not the kernel on the Zenbook, so it doesn't settle reply speed there. The Zenbook measurement suggested
+above is now worth taking before the next release, and the Q8_0 path (`matmul_q8_0_q8_0_with_kernel`) is the first
+place to look.
+
+**Falsification test.** The claim is that the miss is reference numerics at a near-tie, not a Q8_0 reading error.
+Re-run the F16 reference with an **f32** attention cache, the cache precision relay 342 found llama.cpp differs on
+(llama.cpp's `type_k`/`type_v`). If the claim holds, the reference's pick at prefix index 10 becomes ours, or its gap
+there falls below 0.5, and our all-position top-1 rises above 90%. If index 10 doesn't move, the difference is in our
+Q8_0 reader, and the per-class test in "Open, either way" finds it.

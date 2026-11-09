@@ -192,3 +192,29 @@ artifacts are `fixtures/quant-drift-kat-2026-11-08-f32-control.json` (control,
 per-layer localization, and the byte-identity check) and
 `fixtures/quant-drift-kat-2026-11-08-quant-ladder.json`.
 
+
+## 2026-11-09 — the bars on Arthur's Q8_0 (#90)
+
+Arthur ships the Q8_0 import (`.neom` BLAKE3 `1cfd06dc…`). `ref/run-q8.sh` runs bars A and B on it, with the same
+prompts, IDs, window and llama.cpp commit. Bar B's reference is still the upstream F16. Control C doesn't depend on
+the model file, so it isn't re-run.
+
+| Bar | Q8_0 |
+|---|---|
+| A: replies identical to llama.cpp Q8_0 | FAIL, 21 / 30 (every divergence a near-tie) |
+| A: PPL within 0.5% | PASS, 0.26% |
+| B: ΔPPL ≤ 10% | PASS, 2.21% |
+| B: top-1 ≥ 90% | FAIL, 89.96% (627 / 697) |
+| B: boot reply identical | PASS |
+
+Bar B misses by one position. One shared chat-template prefix position is a near-tie in our run, and it's counted
+in all 30 prompts. Counting each distinct prefix once, our top-1 is 96.09% (llama.cpp Q8_0: 95.70%). The analysis is
+in the 2026-11-09 addendum to `docs/THINK-2026-11-08-arthur-quantization-choice.md`.
+
+- **Artifacts:** `fixtures/quant-drift-kat-2026-11-09-q8.{json,report.md,ours.tsv}`.
+- **Regression test:** `QUANT_DRIFT_NEOM_Q8=… cargo test --release -p quant-drift-tests --test quant_drift` checks a
+  Q8_0 `.neom` against that run. The Q4_K_M test (`QUANT_DRIFT_NEOM`) stays as the historical record.
+- **How the run was produced:** in four processes, three of 10 prompts each and one for the window. The scalar host
+  pass takes about 9 s/token on Q8_0, so one process would take 9–10 hours. A prompt and the window don't depend on
+  each other. The merged file has the same rows and order as a single run. The boot prompt, computed in two separate
+  processes, came out identical in all ten of its rows.
