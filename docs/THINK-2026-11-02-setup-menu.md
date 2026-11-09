@@ -196,6 +196,29 @@ corrected afterwards. The confirm therefore moves to the moment the zone becomes
   mode — it shows the confirmed zone and offers no re-selection, because write-once forbids a second confirm and
   the wizard will not store a zone the clock is not using. A changed mind is Home's `timezone <name>` after setup
   (the time-zone lane's verb; whether that re-confirms is §7 q. 8), or a reboot;
+- **the confirm is ordered store-first, and after a failure the durable record is the truth** (PM decision on
+  #92, 2026-11-09, after Chad's relays 369, 373 and 377). The kernel's confirm is write-once and can't be undone,
+  so leaving the page:
+  1. writes `TimeZone` and `RtcLocal` together, in one `NEOSET1` record, and reads it back (the write goes to the
+     file not holding the record, so a write that fails before landing leaves the old record in force); if that
+     fails, the kernel isn't asked;
+  2. asks the kernel to confirm; a refusal writes the previous record back;
+  3. on success, makes the zone and mode the clock's and shows them.
+
+  On **any** failure in those steps (including a write that lands but reports failure, and a rollback that itself
+  fails), the WM re-reads the store, puts exactly the record it selects (the valid one with the higher generation)
+  in force for the zone, the RTC mode and the clock, and resolves the clock from it as a boot would (confirming if
+  that record places the RTC reading). The next page says "Couldn't save the time zone. In use: <zone>." The live
+  state therefore always equals what the next boot builds; it is never "unchanged" by assumption.
+
+  If the re-read itself fails (a copy can't be read), what the next boot selects is unknown, so the confirm is
+  **unresolved** (Chad's relay 379): nothing is put in force, the clock stays exactly as it was, the wizard stays
+  on the Time zone page, and its notice names no stored zone: "Couldn't save the time zone. Restart to check it."
+  If both copies are read and neither is a valid record, the re-read takes the boot path's rule (migrate the
+  presence files and write that as the first record), so the confirm and the next boot agree.
+
+  Reconciliation covers the confirm's own failures. A display failure (`Scene::present` returning an error) is
+  not one of them: it ends the session, and the next boot reads the store, which is already the truth by then;
 - **no action-log record is written before the confirm.** The wizard holds its page choices in a small in-memory
   queue and appends them, in order, once the confirm succeeds; each record's `time_s` is the event's monotonic
   instant mapped onto the confirmed clock (`confirmed_utc − (m_confirm − m_event)`), not the RTC reading. Nothing

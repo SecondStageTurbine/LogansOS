@@ -103,21 +103,19 @@ mod on {
         }
     }
 
-    /// A character (`Some`) or Backspace (`None`) for the test field. Off the
-    /// Keyboard page, and past the field's end, nothing changes.
+    /// A character (`Some`) or Backspace (`None`) for the test field, on the
+    /// Keyboard page ([`Wizard::on`] routes them here). A key that changes
+    /// nothing (past the field's end, not printable, Backspace on an empty
+    /// field) is [`Outcome::Nothing`].
     pub fn typed(w: &mut Wizard, c: Option<u8>) -> Outcome {
-        if w.page == Page::Keyboard {
-            match c {
-                Some(c) if (0x20..=0x7e).contains(&c) && w.field.text.len() < FIELD_MAX => {
-                    w.field.text.push(c as char)
-                }
-                None => {
-                    w.field.text.pop();
-                }
-                _ => {}
+        match c {
+            Some(c) if (0x20..=0x7e).contains(&c) && w.field.text.len() < FIELD_MAX => {
+                w.field.text.push(c as char);
+                Outcome::Redraw
             }
+            None if w.field.text.pop().is_some() => Outcome::Redraw,
+            _ => Outcome::Nothing,
         }
-        Outcome::Redraw
     }
 
     /// The test field's text (the WM logs it).

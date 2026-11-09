@@ -43,6 +43,30 @@ static VOLATILE: AtomicU8 = AtomicU8::new(0);
 /// Whether `load` found a valid record on disk (F11 S2: an installed
 /// system's setup menu runs only until one exists, setup-menu THINK §2.4).
 static FOUND: AtomicU8 = AtomicU8::new(0);
+/// F11 S3's write-failure controls: the next [`commit`]'s write fails, through
+/// the real failed-write path. [`FAIL_WRITE`]: nothing is written
+/// (`setup-tz-write-fail-test`, and the rollback of
+/// `setup-tz-rollback-fail-test`); [`FAIL_AFTER_WRITE`]: the bytes land but
+/// the write reports failure, as when the flush fails
+/// (`setup-tz-fsync-fail-test`).
+#[cfg(any(
+    feature = "setup-tz-write-fail-test",
+    feature = "setup-tz-fsync-fail-test",
+    feature = "setup-tz-rollback-fail-test"
+))]
+static FAIL_NEXT_WRITE: AtomicU8 = AtomicU8::new(0);
+#[cfg(any(
+    feature = "setup-tz-write-fail-test",
+    feature = "setup-tz-fsync-fail-test",
+    feature = "setup-tz-rollback-fail-test"
+))]
+const FAIL_WRITE: u8 = 1;
+#[cfg(any(
+    feature = "setup-tz-write-fail-test",
+    feature = "setup-tz-fsync-fail-test",
+    feature = "setup-tz-rollback-fail-test"
+))]
+const FAIL_AFTER_WRITE: u8 = 2;
 
 /// Whether the first-boot setup menu should run: on a Try session (the
 /// volatile overlay: nothing persists, so every boot), or on an installed
@@ -318,7 +342,19 @@ fn commit(next: &Settings) -> bool {
     let Some((file, bytes)) = sc::plan(current.as_ref(), next) else {
         return false;
     };
-    let written = login::write_whole(file.path(), &bytes);
+    #[cfg(any(
+        feature = "setup-tz-write-fail-test",
+        feature = "setup-tz-fsync-fail-test",
+        feature = "setup-tz-rollback-fail-test"
+    ))]
+    let injected = FAIL_NEXT_WRITE.swap(0, Ordering::AcqRel);
+    #[cfg(not(any(
+        feature = "setup-tz-write-fail-test",
+        feature = "setup-tz-fsync-fail-test",
+        feature = "setup-tz-rollback-fail-test"
+    )))]
+    let injected = 0u8;
+    let written = injected != 1 && login::write_whole(file.path(), &bytes) && injected != 2;
     let landed = written && login::read_small(file.path()).is_some_and(|back| back == bytes);
     if !landed {
         Line::new()
@@ -356,6 +392,120 @@ fn commit(next: &Settings) -> bool {
         .s(b"\n")
         .emit();
     true
+}
+
+/// F11 S3 (Chad, #92 relay 373): the setup menu's zone and RTC mode, stored
+/// **together** in one record write and read back ([`commit`]: the file not
+/// holding the record, so a failed write leaves the old record in force).
+/// Nothing is applied live here; the clock applies them only once the kernel
+/// has also accepted the confirm. `Ok`: stored (or already in force), with the
+/// settings before, to [`restore`] if the kernel then refuses. `Err`: nothing
+/// stored, the old record still in force.
+#[cfg(feature = "setup-tz")]
+pub fn store_zone(zone: u16, rtc_local: bool) -> Result<Settings, ()> {
+    let before = current();
+    let next = before
+        .with(sc::Key::TimeZone.id(), u32::from(zone))
+        .and_then(|s| s.with(sc::Key::RtcLocal.id(), u32::from(rtc_local)))
+        .map_err(|_| ())?;
+    if next != before {
+        #[cfg(feature = "setup-tz-write-fail-test")]
+        FAIL_NEXT_WRITE.store(FAIL_WRITE, Ordering::Release);
+        #[cfg(feature = "setup-tz-fsync-fail-test")]
+        FAIL_NEXT_WRITE.store(FAIL_AFTER_WRITE, Ordering::Release);
+        if !commit(&next) {
+            Line::new().s(b"SETTINGS zone store=failed\n").emit();
+            return Err(());
+        }
+    }
+    Line::new()
+        .s(b"SETTINGS zone stored zone=")
+        .n(u64::from(zone))
+        .s(b" rtc=")
+        .n(u64::from(rtc_local))
+        .s(b"\n")
+        .emit();
+    Ok(before)
+}
+
+/// Put `previous` back in force after [`store_zone`], when the kernel
+/// refused the confirm. `false`: the write failed (logged); whatever the
+/// store then holds is put in force by [`reread`].
+#[cfg(feature = "setup-tz")]
+pub fn restore(previous: &Settings) -> bool {
+    #[cfg(feature = "setup-tz-rollback-fail-test")]
+    FAIL_NEXT_WRITE.store(FAIL_WRITE, Ordering::Release);
+    let ok = current() == *previous || commit(previous);
+    Line::new()
+        .s(if ok {
+            b"SETTINGS zone restored\n" as &[u8]
+        } else {
+            b"SETTINGS zone restore=failed\n"
+        })
+        .emit();
+    ok
+}
+
+/// What [`reread`] found.
+#[cfg(feature = "setup-tz")]
+pub enum Reread {
+    /// The settings now in force: the record the two copies select, or, with
+    /// no valid record, what the boot path puts in force ([`load`]'s
+    /// migration). The next boot selects the same.
+    Held(Settings),
+    /// A copy couldn't be read, so what the next boot selects is unknown.
+    /// Nothing is put in force (the cache is not the store's record).
+    Unresolved,
+}
+
+/// F11 S3 (the PM's rule, #92): the durable record is the truth. Read both
+/// copies again and put the record they select (the valid one with the higher
+/// generation) in force, as the next boot would; log what it holds. With both
+/// copies read and no valid record, take the boot path's rule ([`load`]):
+/// migrate the presence files and write that as the first record. A copy that
+/// can't be read is [`Reread::Unresolved`] (Chad, relay 379). The volatile
+/// overlay is its own record.
+#[cfg(feature = "setup-tz")]
+pub fn reread() -> Reread {
+    if volatile() {
+        return Reread::Held(current());
+    }
+    let copy = |path: &str| -> Result<Option<alloc::vec::Vec<u8>>, ()> {
+        #[cfg(feature = "setup-tz-reread-fail-test")]
+        {
+            let _ = path;
+            Err(())
+        }
+        #[cfg(not(feature = "setup-tz-reread-fail-test"))]
+        login::read_small_checked(path)
+    };
+    let (Ok(a), Ok(b)) = (copy(sc::SETTINGS_A), copy(sc::SETTINGS_B)) else {
+        Line::new().s(b"SETTINGS reread unresolved\n").emit();
+        return Reread::Unresolved;
+    };
+    let Some(c) = sc::select(a.as_deref(), b.as_deref()) else {
+        let migrated = sc::migrate(present(sc::RT_PRESENCE), present(sc::RM_PRESENCE));
+        store(None, &migrated);
+        log_settings(Line::new().s(b"SETTINGS reread none migrated"), &migrated)
+            .s(b"\n")
+            .emit();
+        let _ = commit(&migrated);
+        return Reread::Held(current());
+    };
+    store(Some(c), &c.record.settings);
+    let s = c.record.settings;
+    Line::new()
+        .s(b"SETTINGS reread generation=")
+        .n(c.record.generation)
+        .s(b" file=")
+        .s(file_name(c.file))
+        .s(b" zone=")
+        .n(u64::from(s.time_zone))
+        .s(b" rtc=")
+        .n(u64::from(s.rtc_local))
+        .s(b"\n")
+        .emit();
+    Reread::Held(s)
 }
 
 /// After a write whose read-back failed: read both copies again and put

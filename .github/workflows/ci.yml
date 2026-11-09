@@ -1380,6 +1380,15 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-store -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-store-boot-test -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-store-try-boot-test,setup-store-volatile-test -- -D warnings)
+          # F11 S3: the Time zone page and its confirm, the action-log queue, and the gate's WM.
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-journal -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-boot-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-refuse-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-write-fail-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-fsync-fail-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-rollback-fail-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-reread-fail-test -- -D warnings)
           # F11 S5: the keyboard layouts (the WM, its boot test, and Arthur).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features keyboard-layouts -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features keyboard-layouts-boot-test -- -D warnings)

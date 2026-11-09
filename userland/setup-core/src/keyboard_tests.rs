@@ -131,14 +131,28 @@ fn the_field_clears_on_a_new_layout_and_is_bounded() {
     assert_eq!(w.choices().layout, 1);
 }
 
-/// Characters do nothing off the Keyboard page.
+/// Characters do nothing off the Keyboard page (S3's rule: Space chooses,
+/// anything else is ignored), and a key that changes the field changes
+/// nothing else.
 #[test]
 fn characters_off_the_page_change_nothing() {
     let mut w = Wizard::new(false);
-    let before = w.clone();
-    assert_eq!(w.on(Input::Char(b'q')), Outcome::Redraw);
-    assert_eq!(w.on(Input::Erase), Outcome::Redraw);
-    assert_eq!(w, before);
+    assert_eq!(w.on(Input::Char(b'q')), Outcome::Nothing);
+    assert_eq!(w.on(Input::Erase), Outcome::Nothing);
+    assert_eq!(
+        (w.page(), w.focus(), w.choices()),
+        (Page::Welcome, 0, Choices::default())
+    );
+    let mut w = on_keyboard();
+    assert_eq!(w.on(Input::Erase), Outcome::Nothing);
+    assert_eq!(w.on(Input::Char(b'z')), Outcome::Redraw);
+    assert_eq!(
+        (w.page(), w.focus(), w.choices().layout),
+        (Page::Keyboard, 0, 0)
+    );
+    // Space chooses (here: US, already chosen).
+    assert_eq!(w.on(Input::Char(b' ')), Outcome::Redraw);
+    assert_eq!(w.field(), "");
 }
 
 /// The longest page still fits the card, with a full field.
@@ -168,4 +182,54 @@ fn rows_are_the_oracles_wording() {
         w.on(Input::Char(c));
     }
     assert_eq!(rows(&w), oracle::KEYBOARD_UK_ROWS);
+}
+
+/// S3 and S5 together: the Keyboard page (UK, a key typed into the field)
+/// comes before S3's searchable Time zone page, whose search still takes
+/// every character (Space included), and the Try summary names both.
+#[test]
+fn the_keyboard_page_then_s3s_search() {
+    struct Two;
+    impl Zones for Two {
+        fn shortlist(&self) -> Vec<u16> {
+            alloc::vec![0, 300]
+        }
+        fn search(&self, typed: &str) -> Vec<u16> {
+            if "europe/london".contains(&typed.to_ascii_lowercase()) {
+                alloc::vec![300]
+            } else {
+                Vec::new()
+            }
+        }
+        fn name(&self, id: u16) -> &'static str {
+            if id == 300 { "Europe/London" } else { "UTC" }
+        }
+        fn detail(&self, _id: u16) -> String {
+            String::from("fixed")
+        }
+    }
+    let mut w = Wizard::new(false).with_zones(Box::new(Two), None);
+    assert_eq!(w.on(Input::Choose), Outcome::Page(Page::Keyboard));
+    w.on(Input::Down);
+    w.on(Input::Choose);
+    assert_eq!(w.on(Input::Char(b'#')), Outcome::Redraw);
+    assert_eq!(w.field(), "#");
+    w.on(Input::Down);
+    assert_eq!(w.on(Input::Choose), Outcome::Page(Page::TimeZone));
+    for c in *b"lon" {
+        assert_eq!(w.on(Input::Char(c)), Outcome::Redraw);
+    }
+    assert_eq!(w.query(), "lon");
+    assert_eq!(w.field(), "#");
+    assert_eq!(w.on(Input::Choose), Outcome::Redraw);
+    w.on(Input::Down);
+    assert_eq!(w.on(Input::Choose), Outcome::Confirm(300));
+    assert_eq!(w.confirmed(true), Outcome::Page(Page::Comfort));
+    w.on(Input::Up);
+    assert_eq!(w.on(Input::Choose), Outcome::Page(Page::Try));
+    let summary = w.summary();
+    assert_eq!(summary[0], "Time zone: Europe/London");
+    assert_eq!(summary[1], "Keyboard: English (UK)");
+    assert_eq!(w.choices().layout, 1);
+    assert_eq!(w.choices().tz, Some(300));
 }

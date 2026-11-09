@@ -110,7 +110,8 @@ fn the_gate_walk() {
         Choices {
             zone: 0,
             reduce_motion: true,
-            reduce_transparency: true
+            reduce_transparency: true,
+            tz: None,
         }
     );
 }
@@ -202,8 +203,11 @@ fn every_page_fits_the_card() {
             }
             match w.on(Input::Choose) {
                 Outcome::Done(_) => break,
-                Outcome::Redraw => panic!("{:?}: onward only redrew", w.page()),
+                Outcome::Redraw | Outcome::Nothing => {
+                    panic!("{:?}: onward only redrew", w.page())
+                }
                 Outcome::Page(_) => {}
+                Outcome::Confirm(_) => panic!("no zones: no confirm"),
             }
         }
         assert!(seen.contains(&Page::Try), "{seen:?}");
