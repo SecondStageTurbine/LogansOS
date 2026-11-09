@@ -504,6 +504,13 @@ pub const SYS_TEST_TAIL_HOLD: u64 = 0xF09;
 /// result. `cap_graph_revoke` kernels only; never ships.
 #[cfg(feature = "neo-test-cap-graph-revoke")]
 pub const SYS_TEST_CAP_GRAPH_RACE: u64 = 0xF08;
+/// L1a.1 step 2b test-only: `SYS_TEST_PIPE_PARKED(h)` → how many threads are
+/// token-parked reading the pipe whose end the caller's handle `h` is (either
+/// end). `pipe_stdio`'s kill leg waits for 1 (its shell parked on fd 0, the
+/// pipe's only reader) before the kill (Janus #72 F2). `pipe_stdio` kernels
+/// only; never ships.
+#[cfg(feature = "neo-test-pipe-stdio")]
+pub const SYS_TEST_PIPE_PARKED: u64 = 0xF0B;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1426,6 +1433,13 @@ extern "C" fn syscall_dispatch(
         SYS_STDIO_INFO => sys_stdio_info_impl(a0, a1 as usize),
         #[cfg(feature = "pipe")]
         SYS_STDIO_TERM_MAP => sys_stdio_term_map_impl(a0),
+        #[cfg(feature = "neo-test-pipe-stdio")]
+        SYS_TEST_PIPE_PARKED => match pipe_lookup(a0 as u32, None, None) {
+            Ok((pipe, _end, _cap)) => {
+                pipe.parked_for_test(crate::ipc::pipe_logic::End::Read) as i64
+            }
+            Err(e) => e,
+        },
         #[cfg(feature = "installer")]
         SYS_INSTALL_LIST => sys_install_list_impl(a0, a1 as usize),
         #[cfg(feature = "installer")]
@@ -2474,9 +2488,12 @@ fn is_spawn_inheritable_dir(rights: FileRights) -> bool {
 /// `need` (its end's right; `None` accepts either end, for `SYS_WAIT_ANY`).
 ///
 /// L1a.1 step 2b: with `expect`, the handle must also be that capability,
-/// compared **first**, under the same table lock, so a stdio slot that was
-/// closed or reused is `EBADF` whatever now sits there, never `EPERM`
-/// (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.1, §2.3).
+/// compared **first**, so a stdio slot that was closed or reused is `EBADF`
+/// whatever now sits there, never `EPERM`
+/// (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.1, §2.3). The
+/// comparison is on the handle `get` cloned under the table lock: one
+/// coherent snapshot of the slot (its `CapId` and object together), whose
+/// `Arc` keeps the object alive whatever a close does next (Janus #72 item 3).
 #[cfg(feature = "pipe")]
 fn pipe_lookup(
     h: u32,

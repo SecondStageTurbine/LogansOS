@@ -281,7 +281,8 @@ The legs:
 2. **EOF:** close the stdin write end. The shell's `read_line` gets EOF, the shell exits with code 2 (`SYS_WAIT`), and
    the stdout pipe reads EOF once the bytes still buffered are delivered.
 3. **Kill while parked:**
-   - spawn the shell again the same way, and read its prompt, so it is parked on fd 0;
+   - spawn the shell again the same way, read its prompt, and wait until `SYS_TEST_PIPE_PARKED` reports it token-parked
+     on its stdin pipe (the prompt alone is not a park);
    - `SYS_KILL` it, and `SYS_WAIT` finds it gone (`Ok`, or `ESRCH` once the kill has finished: a killed process keeps
      no exit code);
    - the stdout read end then reads EOF, and a write to stdin is `EPIPE`, so both of its endpoints were released.
@@ -400,6 +401,7 @@ The code follows revisions 1-2 except where this table says, each a detail the b
 | §4 feature | `neo-test`, `pipe`, `atrium-compositor-g1` | plus `neo-test-atrium-runtime` | the buffer syscalls are `ENOSYS` without the runtime switch |
 | §4 feature | (none) | plus `close-object-handles` | leg 9's `T` closes the term page's buffer with `SYS_CLOSE`, which refuses a buffer without it |
 | §4 leg 3 | `SYS_WAIT` reaps the killed shell | `SYS_WAIT` is `Ok` or `ESRCH` | a killed process keeps no exit code, so a wait after the kill finished is `ESRCH` (first boot, run 42475546797) |
+| §4 leg 3 | the prompt shows the shell is parked on fd 0 | the leg waits for `SYS_TEST_PIPE_PARKED` (0xF0B, `pipe_stdio` kernels only) to report the shell token-parked on its stdin pipe before the kill (`leg_kill:park_not_seen` otherwise) | the shell writes its prompt before it reads fd 0, so the prompt alone is not a park (Janus #72 F2) |
 | §4 leg 6 | a 4095-byte term page | 4092 bytes | a buffer's size is `stride × height` in 4-byte pixels |
 | §4 leg 6 | an 8192-byte term page | 1024 × 2 pixels | a buffer may be no wider than the framebuffer (`ExceedsOutput`); a 2048 × 1 one was refused at creation (run 42485247696) |
 | §4 leg 7 | all-none gives the no-selection row | the probe prints the row on the console; xtask pins it | with no selection its fd 1 is the console |
