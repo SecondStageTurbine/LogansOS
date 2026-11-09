@@ -319,7 +319,9 @@ mod tests {
     #[test]
     fn draw_with_calls_back_per_row() {
         let (mut r, mut t, mut px) = setup();
-        let _ = t.process(b"\x1b[?25la\r\nb\r\nc");
+        let _ = t.process(b"\x1b[?25l");
+        r.draw_all(t.screen(), &mut px).expect("first");
+        let _ = t.process(b"a\r\nb\r\nc");
         let mut calls = 0;
         let band = r.draw_with(t.screen(), &mut px, || calls += 1);
         assert_eq!(calls, 3);
