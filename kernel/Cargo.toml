@@ -78,7 +78,7 @@ p256 = { version = "0.13", default-features = false, optional = true, features =
 hkdf = { version = "0.12", default-features = false, optional = true }
 
 [features]
-default = ["kernel-diagnostic", "accel-sim", "inference-preemptible", "user-copy-fixup"]
+default = ["kernel-diagnostic", "accel-sim", "inference-preemptible", "user-copy-fixup", "neofs-cache-index"]
 # A syscall's copy to or from user memory survives a fault on the user page
 # (unmapped, read-only, or unmapped by another thread mid-copy) and returns
 # EFAULT: the page-fault shim recognises the copy's one faulting instruction
@@ -157,6 +157,8 @@ product = [
     "boot-neofs",
     # OT-92: the boot NeoFS mount's cache stays bounded.
     "neofs-cache-evict",
+    # The cache finds a block through an index, not a scan.
+    "neofs-cache-index",
     "boot-eth0",
 ]
 # Desktop stage S1: a production (non-neo-test) session boot. neo-init stays
@@ -1464,6 +1466,13 @@ neofs-large-write = []
 # dirty blocks are never evicted. Off: the cache never evicts or throttles,
 # the previous layer.
 neofs-cache-evict = []
+# The NeoFS block cache finds a block through an index by block number
+# (`cache_logic::BlockIndex`) instead of scanning every cached block, which
+# made a large read-back quadratic (`install_fresh_4k`'s W5 verify;
+# docs/THINK-2026-11-08-neofs-cache-index.md). The cache's `Vec` and its
+# order are unchanged, so every lookup returns what the scan would. Off: the
+# scan, the previous layer.
+neofs-cache-index = []
 # OT-87 R4 (docs/THINK-2026-10-27-ot87-installer.md §2a, §4): the installer.
 # R4.1: device identity from the drivers (NVMe Identify, ATA IDENTIFY, virtio
 # GET_ID), each driver's media-change reporting, the registry generation and
@@ -1730,6 +1739,18 @@ neo-test-phase3-neofs-mount-rejects-bad-superblock = ["neo-test"]
 neo-test-phase3-neofs-create-small-file = ["neo-test"]
 neo-test-phase3-neofs-write-readback-same-boot = ["neo-test"]
 neo-test-phase3-neofs-cache-evict = ["neo-test", "neofs-cache-evict", "neofs-large-write"]
+# neofs-cache-index: `phase3_neofs_cache_evict`'s legs (inserts, hits,
+# evictions, `forget_range`'s removals) with every lookup run through both the
+# index and the scan (they must agree) and the index checked against a rebuild
+# after every change. `-noevict`: the same on `phase3_neofs_cache_evict_off`'s
+# legs (no eviction; `forget_range`'s `retain` and rebuild). `-off`: the
+# kill-switch leg, `phase3_neofs_cache_evict`'s legs with the index compiled out
+# entirely (no upkeep, no checks: the previous layer), on the same image.
+neo-test-neofs-cache-index-crosscheck = ["neo-test-phase3-neofs-cache-evict", "neofs-cache-index-crosscheck"]
+neo-test-neofs-cache-index-crosscheck-noevict = ["neo-test-phase3-neofs-cache-evict-off", "neofs-cache-index-crosscheck"]
+# Both crosscheck legs: the cache asserts the index against the scan.
+neofs-cache-index-crosscheck = ["neofs-cache-index"]
+neo-test-neofs-cache-index-off = ["neo-test-phase3-neofs-cache-evict"]
 neo-test-phase3-neofs-cache-evict-off = ["neo-test", "neofs-large-write"]
 # L7.1: the kernel half of the boot-time numbers (`boot_time`).
 neo-test-boot-time = ["neo-test", "boot-time"]
