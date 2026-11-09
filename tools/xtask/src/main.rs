@@ -230,6 +230,9 @@ const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
 const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
 const SETUP_MENU_SKIP_WELCOME_REL: &str = "target/neo-test/setup_menu_skip_welcome.ppm";
 const SETUP_MENU_STORE_TRY_CAPTURE_REL: &str = "target/neo-test/setup_menu_store_try.ppm";
+const SETUP_MENU_KEYS_CAPTURE_REL: &str = "target/neo-test/setup_menu_keys.ppm";
+const SETUP_MENU_KEYS_PAGE_REL: &str = "target/neo-test/setup_menu_keys_page.ppm";
+const SETUP_MENU_KEYS_US_CAPTURE_REL: &str = "target/neo-test/setup_menu_keys_us.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -938,7 +941,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 43] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 45] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1272,6 +1275,30 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 43] = [
             b"\r",
         )
     },
+    // F11 S5: the Keyboard page in UK, its field captured once the four keys
+    // are in, then Home and Arthur in UK; and the control, left on US.
+    DesktopScenario {
+        mid: Some((
+            b"DESKTOP setup typed layout=1 ascii=92",
+            SETUP_MENU_KEYS_PAGE_REL,
+        )),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_keys",
+            SETUP_MENU_KEYS_STEPS,
+            SETUP_MENU_KEYS_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_keys_us",
+            SETUP_MENU_KEYS_US_STEPS,
+            SETUP_MENU_KEYS_US_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // OT-87 R4.4: the Atrium installer in the intro session, booted as an
     // install scenario (`run_install_scenario`): the list captured as it
     // shows, the confirmation after Enter (`\r`).
@@ -1520,6 +1547,77 @@ const SETUP_MENU_STORE_TRY_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
     HOME_TYPED_ENTER,
     ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S5 (`setup_menu_keys`): Begin, then the Keyboard page: UK, and the
+/// four keys that a UK keyboard labels `"` `@` `#` `\` (Shift+2, Shift+',
+/// the key left of Enter and the key left of Z: `sendkey shift-2`,
+/// `shift-apostrophe`, `backslash`, `less`), then Continue, Time zone,
+/// Comfort and Try. In the intro session, Shift+2 in Home and in Arthur
+/// types `"` (then Backspace), and the intro's walk runs as usual.
+const SETUP_MENU_KEYS_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=keyboard rows=7", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=keyboard focus=1", b"\n"),
+    step(
+        b"DESKTOP setup redraw page=keyboard focus=1",
+        &[b'@', b'"', b'\\', HMP_LESS],
+    ),
+    step(b"DESKTOP setup typed layout=1 ascii=92", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=keyboard focus=2", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=6", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"@"),
+    step(b"DESKTOP home keystroke ascii=34\n", b"\x08help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP arthur answer composited round=1", b"@"),
+    step(b"DESKTOP arthur keystroke ascii=34\n", b"\x08"),
+    step(b"DESKTOP arthur keystroke ascii=8\n", b"\x1b"),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S5's control (`setup_menu_keys_us`): the same keys with the layout
+/// left on US; they type `@` `"` `\` and nothing (US has no key left of Z),
+/// and Shift+2 is `@` in Home and Arthur.
+const SETUP_MENU_KEYS_US_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(
+        b"DESKTOP setup page=keyboard rows=7",
+        &[b'@', b'"', b'\\', HMP_LESS],
+    ),
+    step(b"DESKTOP setup typed layout=0 ascii=92", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=keyboard focus=2", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=6", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"@"),
+    step(b"DESKTOP home keystroke ascii=64\n", b"\x08help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP arthur answer composited round=1", b"@"),
+    step(b"DESKTOP arthur keystroke ascii=64\n", b"\x08"),
+    step(b"DESKTOP arthur keystroke ascii=8\n", b"\x1b"),
     HOLD_TAB,
     CHIP1_TAB,
     CHIP0_AGAIN,
@@ -3985,6 +4083,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "setup_menu_store_try",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("setup-store-try-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S5: the Keyboard page in UK on the volatile overlay; the field,
+        // Home and Arthur type the UK characters.
+        name: "setup_menu_keys",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("keyboard-layouts-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S5's control: the same build and keys, the layout left on US.
+        name: "setup_menu_keys_us",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("keyboard-layouts-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8570,6 +8685,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-clock-boot-test")
         | Some("setup-menu-boot-test")
         | Some("setup-store-try-boot-test")
+        | Some("keyboard-layouts-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -8873,6 +8989,15 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-home",
             "desktop-lens",
             "desktop-resize",
+        ],
+        // F11 S5: the intro's Arthur, decoding in the layout his create reply
+        // carries.
+        Some("keyboard-layouts-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "keyboard-layouts",
         ],
         // F8: Arthur's third round (a question the clock leaves alone).
         Some("desktop-clock-boot-test") => vec![
@@ -16522,6 +16647,9 @@ const HMP_SUPER_ESCAPE: u8 = 0x9F;
 const HMP_CAPTURE_0: u8 = 0x97;
 /// `ps2_keyboard`: press and release Caps Lock.
 const HMP_CAPS_LOCK: u8 = 0xA2;
+/// F11 S5 (`setup_menu_keys`): the ISO key left of Z (QEMU's `less`, HID
+/// usage 0x64, "Non-US \\ and |").
+const HMP_LESS: u8 = 0xAC;
 /// `ps2_keyboard`: `"` typed with the right Shift.
 const HMP_RSHIFT_QUOTE: u8 = 0xA3;
 /// `ps2_keyboard`, the keypad: keypad 7, `*` (0x37), `/` (`E0 35`), Enter
@@ -16632,6 +16760,7 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         0x84 => Some("sendkey ctrl_r-c\n"),
         0x85 => Some("sendkey pause\n"),
         HMP_CAPS_LOCK => Some("sendkey caps_lock\n"),
+        HMP_LESS => Some("sendkey less\n"),
         HMP_RSHIFT_QUOTE => Some("sendkey shift_r-apostrophe\n"),
         HMP_KP_7 => Some("sendkey kp_7\n"),
         HMP_KP_MULTIPLY => Some("sendkey kp_multiply\n"),
@@ -19721,7 +19850,11 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
         | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
         // F11 S1: the intro session's kernel, after the setup menu.
-        "setup_menu_walk" | "setup_menu_skip" | "setup_menu_store_try" => "desktop_intro_boot",
+        "setup_menu_walk"
+        | "setup_menu_skip"
+        | "setup_menu_store_try"
+        | "setup_menu_keys"
+        | "setup_menu_keys_us" => "desktop_intro_boot",
         // F11 S2: the plain sign-in kernel, with the setup menu before it.
         login_scenarios::LOGIN_SETUP_STORE_SCENARIO => "login_two_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
@@ -21316,6 +21449,105 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             require_serial_absent(scenario, observed, needle, why)?;
         }
         require_framebuffer_capture(scenario, SETUP_MENU_STORE_TRY_CAPTURE_REL)?;
+    }
+    // F11 S5 (setup-menu THINK §5 S5): UK chosen on the Keyboard page; the
+    // field, then Home and Arthur, type the UK characters, and key 7 holds
+    // UK (on the volatile overlay: in force, nothing written).
+    if scenario.name == "setup_menu_keys" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=keyboard rows=7",
+                "DESKTOP setup redraw page=keyboard focus=1",
+                "DESKTOP setup redraw page=keyboard focus=1",
+                "DESKTOP setup typed layout=1 ascii=34 field=\"\n",
+                "DESKTOP setup typed layout=1 ascii=64 field=\"@\n",
+                "DESKTOP setup typed layout=1 ascii=35 field=\"@#\n",
+                "DESKTOP setup typed layout=1 ascii=92 field=\"@#\\\n",
+                "DESKTOP setup redraw page=keyboard focus=2",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup page=try rows=6",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 layout=1",
+                "SETTING applied key=6 value=0 status=0",
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=1",
+                "DESKTOP keyboard layout=1 cause=settings live=1",
+                "SETTING applied key=7 value=1 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP home keystroke ascii=34\n",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP arthur keystroke ascii=34\n",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "UK on the Keyboard page: the field, Home and Arthur type the UK characters, and key 7 holds UK",
+        )?;
+        for (needle, why) in [
+            (
+                "DESKTOP setup typed layout=0",
+                "every key on the page was typed after UK was chosen",
+            ),
+            ("SETTINGS written", "the volatile overlay writes no record"),
+            (
+                "DESKTOP home keystroke ascii=64\n",
+                "Shift+2 is \" in UK, in Home",
+            ),
+            (
+                "DESKTOP arthur keystroke ascii=64\n",
+                "Shift+2 is \" in UK, in Arthur",
+            ),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_framebuffer_capture(scenario, SETUP_MENU_KEYS_PAGE_REL)?;
+        require_setup_keyboard_capture(scenario, SETUP_MENU_KEYS_PAGE_REL)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_KEYS_CAPTURE_REL)?;
+    }
+    // F11 S5's control: the same build and keys with the layout left on US:
+    // the US characters (and nothing for the key US lacks), no layout change.
+    if scenario.name == "setup_menu_keys_us" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=keyboard rows=7",
+                "DESKTOP setup typed layout=0 ascii=64 field=@\n",
+                "DESKTOP setup typed layout=0 ascii=34 field=@\"\n",
+                "DESKTOP setup typed layout=0 ascii=92 field=@\"\\\n",
+                "DESKTOP setup redraw page=keyboard focus=2",
+                "DESKTOP setup page=try rows=6",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 layout=0",
+                "SETTING applied key=7 value=0 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP home keystroke ascii=64\n",
+                "DESKTOP arthur keystroke ascii=64\n",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the control: US left on the Keyboard page, the US characters everywhere",
+        )?;
+        for (needle, why) in [
+            (
+                "DESKTOP setup typed layout=1",
+                "the control never chooses UK",
+            ),
+            (
+                "DESKTOP setup typed layout=0 ascii=35",
+                "US has no key left of Z, and its key left of Enter is \\",
+            ),
+            (
+                "DESKTOP keyboard layout=",
+                "the layout never changes in the control",
+            ),
+            ("DESKTOP home keystroke ascii=34\n", "Shift+2 is @ in US"),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_framebuffer_capture(scenario, SETUP_MENU_KEYS_US_CAPTURE_REL)?;
     }
     // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
     // defaults and no other page, and the session is the intro's.
@@ -24092,6 +24324,27 @@ fn require_setup_capture(
             "setup welcome",
         )
     }
+}
+
+/// F11 S5 (`setup_menu_keys`): the Keyboard page in UK with the four keys
+/// typed, against `setup_oracle.py fixture`'s `KEYBOARD_UK` (the scene, and
+/// every row's words: the field reads `"@#\_`).
+fn require_setup_keyboard_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod setup {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    check_card_capture(
+        scenario,
+        capture_rel,
+        setup::KEYBOARD_UK_GLASS_1920X1080,
+        setup::KEYBOARD_UK_TEXT_BOX,
+        &setup::KEYBOARD_UK_PATTERNS[..],
+        "setup keyboard uk",
+    )
 }
 
 /// DL-1 (desktop_full_boot): the capture with the Lens docked to the moved

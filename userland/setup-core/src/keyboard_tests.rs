@@ -152,3 +152,20 @@ fn the_page_fits_the_card() {
     assert_eq!(LAYOUT_COUNT, 2);
     assert_eq!(LAYOUT_NAMES, ["English (US)", "English (UK)"]);
 }
+
+/// The gate compares the two: `scripts/desktop/setup_oracle.py`'s Keyboard
+/// page, typed again there, is these rows after the gate's keys.
+#[test]
+fn rows_are_the_oracles_wording() {
+    #[allow(dead_code)]
+    mod oracle {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    let mut w = on_keyboard();
+    w.on(Input::Down);
+    w.on(Input::Choose);
+    for c in *b"\"@#\\" {
+        w.on(Input::Char(c));
+    }
+    assert_eq!(rows(&w), oracle::KEYBOARD_UK_ROWS);
+}
