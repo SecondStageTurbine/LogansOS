@@ -138,7 +138,7 @@ version = "0.2.191"
 
 [[package]]
 name = "libz-sys"
-version = "1.1.32"
+version = "1.1.31"
 dependencies = [
  "cc",
  "libc",
@@ -173,6 +173,7 @@ dependencies = [
 name = "mozjs-smoke"
 version = "0.0.1"
 dependencies = [
+ "libz-sys",
  "mozjs",
  "neo-crt",
  "neo-std-pal",
