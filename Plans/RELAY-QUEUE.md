@@ -180,3 +180,4 @@ RELAY 359 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-359
 RELAY 360 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 360 (#81 re-check at `5f70ce34`; RETURN `Plans/RETURN-2026-11-08-pr81-recheck-jarvis.md`)
 RELAY 361 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 361 (#87 re-check at `4f7c4e75`; RETURN `Plans/RETURN-2026-11-08-pr87-recheck-dexter.md`)
 RELAY 362 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 362 (#89 re-check at `f52503e7`; RETURN `Plans/RETURN-2026-11-08-pr89-recheck-dexter.md`)
+RELAY 363 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 363 (#10 item 3 re-check at `10258cc1`; RETURN `Plans/RETURN-2026-11-08-pr10-recheck2-dexter.md`)
