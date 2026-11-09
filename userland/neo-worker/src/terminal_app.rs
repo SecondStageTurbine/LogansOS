@@ -74,6 +74,8 @@ const STDOUT_CAPACITY: u64 = 64 * 1024;
 const WAKE_NS: u64 = 20_000_000;
 /// The grid read-back on serial at most this often while output streams.
 const DUMP_NS: u64 = 250_000_000;
+/// How many of the first wakes and commits are logged.
+const TRACE: u64 = 4;
 /// Focus events served per wake (a focus queue holds at most 64).
 const KEYS_PER_WAKE: usize = 64;
 
@@ -326,10 +328,15 @@ pub fn run() -> i32 {
             n = 2;
         }
         let deadline = now_ns().saturating_add(WAKE_NS);
-        if sys_wait_any(&items[..n], deadline) == EAGAIN {
+        let ready = sys_wait_any(&items[..n], deadline);
+        if ready == EAGAIN {
             libneo::sys_sched_yield();
         }
         wakes += 1;
+        // The first wakes, for a scenario's diagnosis.
+        if wakes <= TRACE {
+            log_signed_pair(b"TERM wake n=", wakes, b" ready=", ready);
+        }
 
         // 1. The child's mode request, before any key of this wake.
         if let Some((mode, q)) = page.poll_mode_request(session.mode_seq()) {
@@ -438,9 +445,20 @@ pub fn run() -> i32 {
         // 5. Draw what changed and commit its band.
         if let Some(band) = renderer.draw(session.screen(), pixels) {
             serial += 1;
+            if serial <= TRACE + 1 {
+                log_pair(
+                    b"TERM commit y=",
+                    u64::from(band.0),
+                    b" h=",
+                    u64::from(band.1),
+                );
+            }
             if commit(surface, buffer, identity, next_id(), serial, band).is_err() {
                 end_child(&child);
                 return 36;
+            }
+            if serial <= TRACE + 1 {
+                log_pair(b"TERM commit done serial=", serial, b" wake=", wakes);
             }
         }
         let now = now_ns();
@@ -600,6 +618,19 @@ fn log_pair(prefix: &[u8], a: u64, middle: &[u8], b: u64) {
     push_dec(&mut line, a);
     line.extend_from_slice(middle);
     push_dec(&mut line, b);
+    line.push(b'\n');
+    log_line(&line);
+}
+
+fn log_signed_pair(prefix: &[u8], a: u64, middle: &[u8], b: i64) {
+    let mut line: Vec<u8> = Vec::new();
+    line.extend_from_slice(prefix);
+    push_dec(&mut line, a);
+    line.extend_from_slice(middle);
+    if b < 0 {
+        line.push(b'-');
+    }
+    push_dec(&mut line, b.unsigned_abs());
     line.push(b'\n');
     log_line(&line);
 }

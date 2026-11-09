@@ -701,9 +701,10 @@ const DESKTOP_TERMINAL_FLOOD_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"DESKTOP arthur answer composited round=1",
         b"open terminal\n",
     ),
+    // `flood start` scrolls off before the first dump: the turn is the cue.
     step(
-        b"TERM row=0 |flood start|",
-        &[HMP_PAUSE_1S, HMP_CTRL_SHIFT_C],
+        b"TERM turn n=1",
+        &[HMP_PAUSE_1S, HMP_PAUSE_1S, HMP_CTRL_SHIFT_C],
     ),
     step(b"TERM child ended", &[HMP_SUPER_TAB]),
     step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
@@ -11531,7 +11532,27 @@ fn print_serial_tail(err: &str) {
     for line in &lines[start..] {
         eprintln!("[serial] {line}");
     }
+    // L1a.3: the terminal's read-back and the WM's client-table and lock
+    // lines from the whole log (bounded), which the tail cuts off.
+    let witness: Vec<&&str> = lines[..start]
+        .iter()
+        .filter(|l| l.starts_with("TERM ") || l.contains("DESKTOP apps") || l.starts_with("LOCK "))
+        .collect();
+    if lines[..start].iter().any(|l| l.starts_with("TERM ")) {
+        let skip = witness.len().saturating_sub(SERIAL_WITNESS_LINES);
+        eprintln!(
+            "[xtask] neo-test: {} earlier TERM/DESKTOP apps/LOCK line(s) of {path}:",
+            witness.len() - skip
+        );
+        for line in &witness[skip..] {
+            eprintln!("[serial] {line}");
+        }
+    }
 }
+
+/// The earlier witness lines [`print_serial_tail`] adds for a terminal
+/// scenario.
+const SERIAL_WITNESS_LINES: usize = 150;
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
     let mut previous_error = None;
@@ -23667,25 +23688,27 @@ fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "TERM child exited value=0",
             "TERM row=5 |[process exited 0]|",
         ],
-        _ => &[
-            "TERM row=0 |flood start|",
-            "TERM end-process wake=",
-            "TERM child ended wake=",
-        ],
+        _ => &["TERM end-process wake=", "TERM child ended wake="],
     };
-    let mut sequence = vec![
-        "DESKTOP launchcap minted client=arthur",
-        "DESKTOP arthur line=open terminal",
-        "DESKTOP apps client connected client=2 value=1",
-        "DESKTOP apps front client=2 via=launch",
-        "TERM turn n=1 discarded=",
-    ];
+    // The WM's lines, in order.
+    require_serial_sequence(
+        scenario,
+        observed,
+        &[
+            "DESKTOP launchcap minted client=arthur",
+            "DESKTOP arthur line=open terminal",
+            "DESKTOP apps client connected client=2 value=1",
+            "DESKTOP apps front client=2 via=launch",
+            "DESKTOP apps front client=0",
+            // Exactly `again`: a key of the terminal's would be in it.
+            "DESKTOP arthur line=again\n",
+        ],
+        detail,
+    )?;
+    // The terminal's own lines, in order (another process's, so not ordered
+    // against the WM's).
+    let mut sequence = vec!["TERM ready cols=", "TERM turn n=1 discarded="];
     sequence.extend_from_slice(middle);
-    sequence.extend_from_slice(&[
-        "DESKTOP apps front client=0",
-        // Exactly `again`: a key of the terminal's would be in it.
-        "DESKTOP arthur line=again\n",
-    ]);
     require_serial_sequence(scenario, observed, &sequence, detail)?;
     for needle in [
         "TERM ready cols=",
