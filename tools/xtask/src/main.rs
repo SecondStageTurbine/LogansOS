@@ -3628,6 +3628,27 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // F11 S3: the Time zone page on a New York RTC in the repeated
+        // fall-back hour. The search finds New York, leaving the page
+        // confirms the clock once, and the wizard's choices reach the action
+        // log after the confirm with UTC times; boot 2 confirms from the
+        // stored zone and skips the menu.
+        name: login_scenarios::LOGIN_SETUP_TZ_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("setup-tz-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S3's control: skip the wizard; nothing is confirmed, and its
+        // one record carries the clock as read, without TIME_UTC.
+        name: login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("setup-tz-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // F11 S2: the setup menu over two boots. Boot 1 walks it (both
         // Comfort options on), each choice written to the store and read
         // back by digest, then makes the account; boot 2 finds the record,
@@ -8337,6 +8358,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-66 L1: sign-in is neo-init's; the worker plays no part.
         | Some("login-boot-test")
         | Some("setup-store-boot-test")
+        | Some("setup-tz-boot-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -8555,6 +8577,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
         | Some("setup-store-boot-test")
+        | Some("setup-tz-boot-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -15281,7 +15304,13 @@ fn run_qemu_test_invocation(
     // default is the host's UTC time, a host-variable input, and since
     // `rtc-epoch` the desktop kernels seed CLOCK_REALTIME from it; the
     // wall-clock scenarios assert against this instant.
-    qemu.arg("-rtc").arg(format!("base={WALLCLOCK_RTC_BASE}"));
+    // F11 S3's two scenarios pin a fall-back-day instant of their own.
+    let rtc_base = match scenario.name {
+        login_scenarios::LOGIN_SETUP_TZ_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO => login_scenarios::SETUP_TZ_RTC_BASE,
+        _ => WALLCLOCK_RTC_BASE,
+    };
+    qemu.arg("-rtc").arg(format!("base={rtc_base}"));
     let serial_script = configure_serial_for_scenario(&mut qemu, scenario.name, &serial_log)?;
 
     // Phase 7.5 BUILD-V: the VT-d scenario runs with an emulated IOMMU. Inject
@@ -19516,7 +19545,9 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         // F11 S1: the intro session's kernel, after the setup menu.
         "setup_menu_walk" | "setup_menu_skip" | "setup_menu_store_try" => "desktop_intro_boot",
         // F11 S2: the plain sign-in kernel, with the setup menu before it.
-        login_scenarios::LOGIN_SETUP_STORE_SCENARIO => "login_two_boot",
+        login_scenarios::LOGIN_SETUP_STORE_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO => "login_two_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }

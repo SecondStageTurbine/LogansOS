@@ -1361,6 +1361,10 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-store -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-store-boot-test -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-store-try-boot-test,setup-store-volatile-test -- -D warnings)
+          # F11 S3: the Time zone page and its confirm, the action-log queue, and the gate's WM.
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-journal -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-boot-test -- -D warnings)
           # OT-87 R4.4b: the intro Home with the installer (the Install chip).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)

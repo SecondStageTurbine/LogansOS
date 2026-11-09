@@ -51,6 +51,21 @@ pub const SETTINGS_CUT_SCENARIO: &str = "login_settings_cut";
 pub const SETTINGS_REFUSED_SCENARIO: &str = "login_settings_refused";
 pub const ARTHUR_PERMISSION_SCENARIO: &str = "login_arthur_permission";
 pub const LOGIN_SETUP_STORE_SCENARIO: &str = "login_setup_store";
+pub const LOGIN_SETUP_TZ_SCENARIO: &str = "login_setup_tz";
+pub const LOGIN_SETUP_TZ_SKIP_SCENARIO: &str = "login_setup_tz_skip";
+
+/// F11 S3's RTC (`-rtc base=`): 01:57 local time in New York on the
+/// fall-back day, inside the repeated hour (01:00-01:59 happens twice), three
+/// minutes before 02:00 so the boot and the walk stay inside it. Read as
+/// local time it is the earlier instant, 05:57Z.
+pub const SETUP_TZ_RTC_BASE: &str = "2026-11-01T01:57:00";
+/// That reading's UTC instant (EDT, the earlier one): 2026-11-01T05:57:00Z.
+const SETUP_TZ_UTC_S: u64 = 1_793_512_620;
+/// The same reading taken as UTC (four hours behind): what a record made
+/// before the confirm would carry if the wizard didn't correct it.
+const SETUP_TZ_RTC_AS_UTC_S: u64 = 1_793_498_220;
+/// `America/New_York`'s id in libneo's tz table (tz-logic-tests pins it).
+const NEW_YORK_ID: u16 = 105;
 
 pub fn is_login_vm_scenario(name: &str) -> bool {
     matches!(
@@ -69,6 +84,8 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | SETTINGS_REFUSED_SCENARIO
             | ARTHUR_PERMISSION_SCENARIO
             | LOGIN_SETUP_STORE_SCENARIO
+            | LOGIN_SETUP_TZ_SCENARIO
+            | LOGIN_SETUP_TZ_SKIP_SCENARIO
     )
 }
 
@@ -423,6 +440,38 @@ const SETUP_STORE1: &[SerialScriptStep] = &[
 /// Boot 2: no menu (the record exists); sign in.
 const SETUP_STORE2: &[SerialScriptStep] = &[step(b"LOGIN prompt=password", P1)];
 
+/// `login_setup_tz` (F11 S3), boot 1: Begin; on the Time zone page type
+/// `new y` (Space types there), choose America/New_York, Up to Continue and
+/// leave (the one confirm); Comfort's Continue; Try; then the account. Keys
+/// arrive in order, so the Enter after the typing chooses from its matches.
+const SETUP_TZ1: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", b"new y"),
+    step(
+        b"DESKTOP setup redraw page=timezone focus=0",
+        &[PAUSE, b'\n', PAUSE, HMP_UP, PAUSE, b'\n'],
+    ),
+    step(
+        b"DESKTOP setup page=comfort rows=6",
+        &[HMP_UP, PAUSE, b'\n'],
+    ),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(b"LOGIN prompt=name", b"ada\n"),
+    step(b"LOGIN prompt=choose", P1),
+    step(b"LOGIN prompt=again", P1),
+    step(b"LOGIN prompt=code", b"\n"),
+];
+
+/// `login_setup_tz_skip`: Esc on Welcome, skip, then the account.
+const SETUP_TZ_SKIP: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=skip rows=5", b"\n"),
+    step(b"LOGIN prompt=name", b"ada\n"),
+    step(b"LOGIN prompt=choose", P1),
+    step(b"LOGIN prompt=again", P1),
+    step(b"LOGIN prompt=code", b"\n"),
+];
+
 /// One boot of the VM layout with `steps` typed (none: no keyboard).
 #[allow(clippy::too_many_arguments)]
 fn boot(
@@ -620,6 +669,9 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         }
         LOGIN_SETUP_STORE_SCENARIO => {
             setup_store(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
+        }
+        LOGIN_SETUP_TZ_SCENARIO | LOGIN_SETUP_TZ_SKIP_SCENARIO => {
+            setup_tz(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
         }
         _ => cut_steps(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?,
     }
@@ -1816,6 +1868,196 @@ fn setup_store(
         (
             "SETTINGS resync",
             "a boot that only reads the store attempts no write",
+        ),
+    ] {
+        absent(scenario, &second, needle, why)?;
+    }
+    Ok(())
+}
+
+/// The `DESKTOP setup journal page=<page> ...` line's `time_s`, `utc` and
+/// `ok`, or an error naming the page.
+fn journal_line(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+    page: &str,
+) -> Result<(u64, u64, u64), String> {
+    let serial = read_serial(observed)?;
+    let needle = format!("DESKTOP setup journal page={page} ");
+    let line = serial
+        .lines()
+        .find_map(|l| l.split(needle.as_str()).nth(1))
+        .ok_or_else(|| {
+            format!(
+                "`{}`: no `{needle}` line; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+    let num = |key: &str| -> Result<u64, String> {
+        line.split_whitespace()
+            .find_map(|kv| kv.strip_prefix(key))
+            .and_then(|v| v.parse().ok())
+            .ok_or_else(|| format!("`{}`: journal line lacks `{key}`: {line}", scenario.name))
+    };
+    Ok((num("time_s=")?, num("utc=")?, num("ok=")?))
+}
+
+/// F11 S3 (setup-menu THINK §5 S3): `login_setup_tz`, Jarvis's
+/// discriminator, and its control `login_setup_tz_skip`.
+fn setup_tz(
+    scenario: TestScenario,
+    attempt: usize,
+    ovmf: &vm_image::Ovmf,
+    vars: &Path,
+    boot_disk: &Path,
+    data: &Path,
+) -> Result<(), String> {
+    let run = |label: &str, steps| {
+        boot(
+            scenario,
+            attempt,
+            label,
+            ovmf,
+            vars,
+            boot_disk,
+            data,
+            Some(steps),
+        )
+    };
+    if scenario.name == LOGIN_SETUP_TZ_SKIP_SCENARIO {
+        let first = run("boot1", SETUP_TZ_SKIP)?;
+        require_serial_sequence(
+            scenario,
+            &first,
+            &[
+                "zone=\"zone not set\"",
+                "DESKTOP setup tz page=search rtc=local",
+                "DESKTOP setup page=skip rows=5",
+                "DESKTOP setup done action=skip",
+                "DESKTOP setup journal page=done choice=skip time_s=",
+                "DESKTOP setup journal records=1 appended=1",
+                "ACTIONLOG verify records=1 broken=none head=",
+                "LOGIN account created generation=1",
+            ],
+            "the control: a skipped wizard confirms nothing; its one record is appended with the clock as read, unflagged",
+        )?;
+        for (needle, why) in [
+            (
+                "DESKTOP clock utc=confirmed",
+                "a skipped wizard confirms nothing",
+            ),
+            (
+                "DESKTOP setup tz=",
+                "a skipped wizard makes no confirm call",
+            ),
+        ] {
+            absent(scenario, &first, needle, why)?;
+        }
+        let (t, utc, ok) = journal_line(scenario, &first, "done")?;
+        if utc != 0 || ok != 1 || !(SETUP_TZ_RTC_AS_UTC_S..SETUP_TZ_RTC_AS_UTC_S + 600).contains(&t)
+        {
+            return Err(format!(
+                "`{}`: the skip record must carry the clock as read (near {SETUP_TZ_RTC_AS_UTC_S}), without TIME_UTC: time_s={t} utc={utc} ok={ok}",
+                scenario.name
+            ));
+        }
+        return Ok(());
+    }
+    use settings_core::Settings;
+    let defaults = Settings::default();
+    let ny = Settings {
+        time_zone: NEW_YORK_ID,
+        ..defaults
+    };
+    let w1 = settings7_written(&defaults, 1, "a");
+    let w2 = settings7_written(&ny, 2, "b");
+    let first = run("boot1", SETUP_TZ1)?;
+    require_serial_sequence(
+        scenario,
+        &first,
+        &[
+            "SETTINGS migrated rt=0 rm=0 idle=10 lang=0 kb=0",
+            &w1,
+            "zone=\"zone not set\"",
+            "DESKTOP setup tz page=search rtc=local",
+            "DESKTOP setup page=timezone rows=8",
+            // Leaving the page: the zone stored, the clock confirmed once.
+            &w2,
+            "SETTING applied key=4 value=105 status=0",
+            "SETTING applied key=5 value=1 status=0",
+            "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+            " zone=\"EDT\" realtime_s=",
+            "DESKTOP setup tz=America/New_York confirmed=1",
+            "DESKTOP setup page=comfort rows=6",
+            "DESKTOP setup page=try rows=5",
+            "DESKTOP setup done action=try zone=America/New_York reduce_motion=0 reduce_transparency=0",
+            "DESKTOP setup stored keys=4 refused=0 volatile=0",
+            // The queue, appended after the confirm, in order.
+            "DESKTOP setup journal page=welcome choice=begin time_s=",
+            "DESKTOP setup journal page=timezone choice=America/New_York time_s=",
+            "DESKTOP setup journal page=comfort choice=rm=0 rt=0 time_s=",
+            "DESKTOP setup journal page=done choice=try time_s=",
+            "DESKTOP setup journal records=4 appended=4",
+            "ACTIONLOG verify records=4 broken=none head=",
+            "LOGIN account created generation=1",
+            "LOGIN session started view=home",
+        ],
+        "boot 1: the search finds New York, leaving the page stores it and confirms the clock once (EDT, the earlier instant of the repeated hour), and the wizard's choices are appended after the confirm, the chain verifying end to end",
+    )?;
+    // Jarvis's discriminator: the Welcome choice was made before the
+    // confirm, yet its record carries the confirmed UTC instant (05:57Z
+    // plus the walk), not the RTC's 01:57 read as UTC (four hours behind).
+    for page in ["welcome", "timezone", "comfort", "done"] {
+        let (t, utc, ok) = journal_line(scenario, &first, page)?;
+        if utc != 1 || ok != 1 || !(SETUP_TZ_UTC_S..SETUP_TZ_UTC_S + 600).contains(&t) {
+            return Err(format!(
+                "`{}`: the `{page}` record must carry the confirmed UTC time (from {SETUP_TZ_UTC_S}, not {SETUP_TZ_RTC_AS_UTC_S}) with TIME_UTC: time_s={t} utc={utc} ok={ok}",
+                scenario.name
+            ));
+        }
+    }
+    let serial = read_serial(&first)?;
+    if serial.matches("DESKTOP clock utc=confirmed").count() != 1
+        || serial.matches("DESKTOP setup tz=").count() != 1
+    {
+        return Err(format!(
+            "`{}`: exactly one confirm expected; serial={}",
+            scenario.name,
+            first.serial_log.display()
+        ));
+    }
+    let writes = serial.matches("SETTINGS written").count();
+    if writes != 2 {
+        return Err(format!(
+            "`{}`: two store writes expected (the first record, the zone), saw {writes}",
+            scenario.name
+        ));
+    }
+    let second = run("boot2", SETUP_STORE2)?;
+    require_serial_sequence(
+        scenario,
+        &second,
+        &[
+            "SETTINGS loaded generation=2 file=b rt=0 rm=0 idle=10 lang=0 kb=0",
+            "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+            "DESKTOP setup skipped reason=stored",
+            "LOGIN signed in",
+        ],
+        "boot 2: the stored zone confirms the clock at the start, and the menu is done",
+    )?;
+    for (needle, why) in [
+        (
+            "DESKTOP setup page=",
+            "a stored record means the menu is done",
+        ),
+        (
+            "SETTINGS written",
+            "a boot that only reads the store writes nothing",
+        ),
+        (
+            "zone=\"zone not set\"",
+            "the stored zone confirms the clock",
         ),
     ] {
         absent(scenario, &second, needle, why)?;
