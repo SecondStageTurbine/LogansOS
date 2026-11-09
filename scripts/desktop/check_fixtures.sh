@@ -52,6 +52,7 @@ check fixtures/desktop-dl1/dock_labels.rs python3 $d/lens_content_oracle.py dock
 check fixtures/desktop-dm1/motion_digests.rs python3 $d/scene_oracle.py motion-fixture
 check fixtures/desktop-intro/intro.rs python3 $d/intro_oracle.py fixture
 check fixtures/desktop-clock/clock.rs python3 $d/clock_oracle.py fixture
+check fixtures/desktop-setup/setup.rs python3 $d/setup_oracle.py fixture
 
 # Every fixture under fixtures/desktop-* must be covered above.
 covered=$(grep -c '^check ' "$0")

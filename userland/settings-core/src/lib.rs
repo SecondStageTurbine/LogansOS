@@ -82,8 +82,18 @@ pub enum Key {
     TimeZone = 4,
     /// `Bool`: 1 = the RTC holds local time (Windows' convention); default 1.
     RtcLocal = 5,
+    /// `Choice`: a language id, below [`LANGUAGE_COUNT`]; default 0
+    /// (English). F11 S2, setup-menu THINK §2.2. WM-only.
+    #[cfg(feature = "setup-keys")]
+    Language = 6,
+    /// `Choice`: a keyboard layout id, below [`LAYOUT_COUNT`]; default 0
+    /// (US). F11 S2. WM-only: a layout a client could change could make a
+    /// password impossible to type again (§4.4).
+    #[cfg(feature = "setup-keys")]
+    KeyboardLayout = 7,
 }
 
+#[cfg(not(feature = "setup-keys"))]
 pub const KEYS: [Key; 5] = [
     Key::ReduceTransparency,
     Key::ReduceMotion,
@@ -91,6 +101,21 @@ pub const KEYS: [Key; 5] = [
     Key::TimeZone,
     Key::RtcLocal,
 ];
+#[cfg(feature = "setup-keys")]
+pub const KEYS: [Key; 7] = [
+    Key::ReduceTransparency,
+    Key::ReduceMotion,
+    Key::IdleLockMinutes,
+    Key::TimeZone,
+    Key::RtcLocal,
+    Key::Language,
+    Key::KeyboardLayout,
+];
+
+#[cfg(feature = "setup-keys")]
+mod setup_ids;
+#[cfg(feature = "setup-keys")]
+pub use setup_ids::{LANGUAGE_COUNT, LAYOUT_COUNT};
 
 mod tz_ids;
 pub use tz_ids::TZ_ZONE_COUNT;
@@ -106,6 +131,10 @@ impl Key {
             3 => Some(Self::IdleLockMinutes),
             4 => Some(Self::TimeZone),
             5 => Some(Self::RtcLocal),
+            #[cfg(feature = "setup-keys")]
+            6 => Some(Self::Language),
+            #[cfg(feature = "setup-keys")]
+            7 => Some(Self::KeyboardLayout),
             _ => None,
         }
     }
@@ -118,6 +147,8 @@ impl Key {
         match self {
             Self::ReduceTransparency | Self::RtcLocal => Type::Bool,
             Self::ReduceMotion | Self::TimeZone => Type::Choice,
+            #[cfg(feature = "setup-keys")]
+            Self::Language | Self::KeyboardLayout => Type::Choice,
             Self::IdleLockMinutes => Type::Minutes,
         }
     }
@@ -130,6 +161,10 @@ impl Key {
             Self::IdleLockMinutes => matches!(value, 0 | 5 | 10 | 30),
             Self::TimeZone => value < TZ_ZONE_COUNT,
             Self::RtcLocal => value <= 1,
+            #[cfg(feature = "setup-keys")]
+            Self::Language => value < LANGUAGE_COUNT,
+            #[cfg(feature = "setup-keys")]
+            Self::KeyboardLayout => value < LAYOUT_COUNT,
         }
     }
 
@@ -141,12 +176,16 @@ impl Key {
         match self {
             Self::ReduceTransparency | Self::ReduceMotion => true,
             Self::IdleLockMinutes | Self::TimeZone | Self::RtcLocal => false,
+            #[cfg(feature = "setup-keys")]
+            Self::Language | Self::KeyboardLayout => false,
         }
     }
 
     pub const fn default_value(self) -> u32 {
         match self {
             Self::ReduceTransparency | Self::ReduceMotion | Self::TimeZone => 0,
+            #[cfg(feature = "setup-keys")]
+            Self::Language | Self::KeyboardLayout => 0,
             Self::IdleLockMinutes => 10,
             Self::RtcLocal => 1,
         }
@@ -190,6 +229,12 @@ pub struct Settings {
     pub time_zone: u16,
     /// The RTC holds local time.
     pub rtc_local: bool,
+    /// A language id (0: English).
+    #[cfg(feature = "setup-keys")]
+    pub language: u16,
+    /// A keyboard layout id (0: US).
+    #[cfg(feature = "setup-keys")]
+    pub keyboard_layout: u16,
 }
 
 impl Default for Settings {
@@ -200,6 +245,10 @@ impl Default for Settings {
             idle_lock_minutes: 10,
             time_zone: 0,
             rtc_local: true,
+            #[cfg(feature = "setup-keys")]
+            language: 0,
+            #[cfg(feature = "setup-keys")]
+            keyboard_layout: 0,
         }
     }
 }
@@ -221,6 +270,10 @@ impl Settings {
             Key::IdleLockMinutes => self.idle_lock_minutes,
             Key::TimeZone => self.time_zone as u32,
             Key::RtcLocal => self.rtc_local as u32,
+            #[cfg(feature = "setup-keys")]
+            Key::Language => self.language as u32,
+            #[cfg(feature = "setup-keys")]
+            Key::KeyboardLayout => self.keyboard_layout as u32,
         }
     }
 
@@ -237,6 +290,10 @@ impl Settings {
             Key::IdleLockMinutes => next.idle_lock_minutes = value,
             Key::TimeZone => next.time_zone = value as u16,
             Key::RtcLocal => next.rtc_local = value == 1,
+            #[cfg(feature = "setup-keys")]
+            Key::Language => next.language = value as u16,
+            #[cfg(feature = "setup-keys")]
+            Key::KeyboardLayout => next.keyboard_layout = value as u16,
         }
         Ok(next)
     }
@@ -435,5 +492,8 @@ pub fn migrate(reduce_transparency: bool, reduce_motion: bool) -> Settings {
     }
 }
 
-#[cfg(test)]
+// The byte oracles: today's record, and with the setup menu's keys.
+#[cfg(all(test, feature = "setup-keys"))]
+mod setup_keys_tests;
+#[cfg(all(test, not(feature = "setup-keys")))]
 mod tests;

@@ -1,0 +1,151 @@
+<!-- SPDX-License-Identifier: CC-BY-4.0 -->
+# THINK: L1a.1 step 2, wiring the pipe into the kernel (2026-11-02)
+
+**Status:** design for review before the code. **Author:** Seat B. **Builds on:** `kernel/src/ipc/pipe_logic.rs`
+(step 1, #46, merged as `2a27d7c`), `docs/THINK-2026-10-29-ot88-app-model.md` §3.2 (T-a), and
+`docs/THINK-2026-10-31-l1a-terminal-window.md` §3.2-3.4. **Answers:** Dexter's #46 review notes (relay 263, items 1-5).
+
+Citations are to `origin/main` at `792f0bb`.
+
+## 1. Three facts about the kernel that shape this
+
+1. **Channels have no wait queues.** A channel is a synchronous rendezvous: the parked `Box<Thread>` lives inside
+   the endpoint state (`kernel/src/ipc/mod.rs:78-119`) and the completer hands off to it. A pipe has many-to-many
+   waiters and no rendezvous, so it **parks by wait token** instead, as the futex and `SYS_WAIT_ANY` do:
+   `scheduler::try_block_current_with_token_and_guard` (`kernel/src/sched/scheduler.rs:2167`) to park, and
+   `wake_thread_token` (`:2391`) to wake. The fallible form returns `Err(guard)` when the token table is full, which
+   becomes `EAGAIN`, so a user can't trip the infallible form's `expect`.
+2. **fd 0 and fd 1 never consult the handle table.** `sys_write_impl` sends fd 1 to serial and the framebuffer
+   console (`kernel/src/arch/x86_64/syscall.rs:6414-6443`); `sys_read_impl` sends fd 0 to `sys_read_stdin`
+   (`:6574`, `:6629-6671`). Inherited handles land at indices 0..n in spawn order (`kernel/src/sched/process.rs:4298-4320`),
+   so slots 0 and 1 already hold other things (Arthur's channels). Hence OT-88's rule stands: **stdio is selected
+   explicitly at spawn**, never by slot.
+3. **Closing a channel handle closes the channel** (`sys_close_impl` calls `close_peer`, `syscall.rs:6881-6908`),
+   even while a granted copy is open. A pipe must not copy that: its endpoints are counted **per handle**. The
+   template is the socket's `retain_net` / `release_net` (`process.rs:1945`, `:1958`): every handle entering a table
+   retains, every release that was the last one closes.
+
+## 2. The pieces
+
+**2a. The object, its syscalls and its wait item** (feature `pipe`, which needs `wait-multiplex` for the token park
+and the wait item):
+
+- `kernel/src/ipc/pipe.rs`: `struct PipeObject { state: IrqSafeMutex<Inner> }`, `Inner { logic: pipe_logic::Pipe,
+  storage: Box<[u8]>, readers: TokenList, writers: TokenList }`. One struct under one lock (Dexter 5.1): the storage
+  can't be paired with the wrong `Pipe`. The `TokenList` holds parked wait tokens, a small bounded array, never an
+  unbounded allocation. Stale tokens (a thread killed while parked) are harmless to a wake (`wake_thread_token`
+  returns `Gone`). A full list first drops the tokens whose thread is no longer parked on them
+  (`scheduler::token_still_parked`, under the pipe lock: the order pipe → scheduler, as the park); if it is still full,
+  `EAGAIN`. It never wakes live waiters to make room: they would re-park and evict each other forever (an earlier draft
+  of the code did that; `pipe_park_kill`'s full-list leg pins the fix). The bound is per pipe, so a process that
+  holds an end can park 8 threads and make another holder's blocking call `EAGAIN`: a bounded-resource outcome
+  between processes that already share the pipe, not POSIX's unbounded blocking (Dexter #56, §6 answer).
+- `Handle::Pipe { pipe: Arc<PipeObject>, end: End, cap_id, rights }`, `#[cfg(feature = "pipe")]` on the variant and
+  on every arm that matches it (Dexter 5.5): `cap_id`, `rights`, `handle_info`, `with_cap` (process.rs 1041-1169),
+  `ipc_lookup` (syscall.rs 5951-5995), `obj_weights::object` (weight `ARC + size_of::<PipeObject>() + capacity`),
+  and `notify_removed` (process.rs 1987-1992, so `SYS_WAIT_ANY` sees the handle go: CP-61).
+- **Endpoint counts:** `retain_pipe` on install calls `add_endpoint(end)`; `release_pipe` (in `Detached::release`,
+  process.rs 1772-1797) calls `close_endpoint(end)` and fires the returned wakes. An end at count 0 can't be revived:
+  `add_endpoint` refuses it (Dexter 1b; a step-1 follow-up in `pipe_logic.rs`, with a KAT).
+- **Closing an end under a parked sibling (Dexter #56 F1).** A thread holds the pipe's `Arc` (its anchor) while
+  parked, not an endpoint, so a sibling can close the end's last handle under it. The last close of an end wakes
+  **both** sides: the other side's waiters get `EPIPE` or `EOF` as before, and this side's retry finds the end closed.
+  `Pipe::read` and `Pipe::write` refuse a closed end (`PipeError::EndClosed`), which the syscall returns as `EBADF`
+  (or, for a write that already stored some bytes, the count so far). Without this, a reader whose sibling closed the
+  last read end slept until every writer was gone, since no write could reach it (writes see no reader: `EPIPE`).
+  KAT `a_closed_end_refuses_its_own_read_and_write`; scenario legs `close_parked_read` / `close_parked_write`.
+- **Rights.** A handle carries every meta right, `REVOKE` included, so a process can take back an end it granted
+  (Dexter #56 F5), and only its own end's semantic right (`READ` or `WRITE`); `pipe_lookup` requires `USE` and that
+  right, and grant/derive can only narrow it.
+- **Syscalls** at `0x1BA`-`0x1BC` (`0x1B7`-`0x1B9` are taken by #15's A0k calls; no branch uses `0x1BA`-`0x1BF`) (all `cfg(feature = "pipe")`, each with an SDK-ABI row):
+  - `SYS_PIPE_CREATE(capacity) -> rd | wr << 32`, two installs with the `sys_chan_create` rollback
+    (syscall.rs 2112-2155); capacity 512 B..=64 KiB, else `EINVAL`. The floor is `PIPE_ATOMIC`, so a write of at most
+    512 bytes always fits and is always atomic (POSIX: `PIPE_BUF` ≤ capacity; Chad #56 item 5;
+    `pipe_logic::create_capacity_ok`). Kernel-internal pipes (the scenarios) may be smaller. The packing is `pipe_logic::pack_ends`, with a
+    hand-laid byte oracle in `tools/pipe-logic-tests` and the same fixture against libneo's `pipe_split_ends` (`userland/libneo/src/pipe_abi.rs`, mounted in the same test)
+    (Dexter #56 F3).
+  - `SYS_PIPE_READ(h, buf, len, flags) -> n`, and `SYS_PIPE_WRITE(h, buf, len, flags) -> n`. `flags` 0 blocks;
+    `PIPE_NONBLOCK` (1) is a try (`EAGAIN`). A read with a deadline is `SYS_WAIT_ANY` on the pipe item, then a
+    non-blocking read: the terminal THINK's `read_timeout`, with one deadline path in the kernel instead of two. A
+    blocking read returns once it has some bytes (it parks only for the first chunk). Buffers move through `user_copy`
+    in `PIPE_ATOMIC`-byte stack chunks (the `SYS_WRITE_CHUNK` pattern, syscall.rs 1531); a read checks each chunk's
+    destination with `check_user_writable` before consuming bytes it can't put back (CP-99, syscall.rs 1574). Per
+    chunk, not the whole `len` up front: the walk is bounded by what the call moves (Dexter #56 F6). If a sibling
+    unmaps the buffer between a chunk's check and its copy, the read returns the bytes that reached the buffer
+    (`user_copy::try_copy_count`; `EFAULT` only when none did), and the rest of that chunk is lost, as stdin's byte is
+    (CP-99's "outside that guarantee"; Chad #56 item 5).
+- **Blocking write (Dexter 3a/5.4):** a blocking write loops until all `len` bytes are written. A write of at most
+  `PIPE_ATOMIC = 512` bytes is atomic: it waits for room for all of it, so two writers' small writes never
+  interleave. A kill or `EPIPE` mid-loop returns the count written so far, if any. KATs in `pipe-logic-tests` for
+  the atomic-write rule, which lives in `pipe_logic::Pipe::write` itself (`PIPE_ATOMIC`). **This changes one rule
+  step 1's review saw:** an atomic writer can park on a pipe that isn't full (too little room for its whole write), so
+  every read that frees space now wakes the writers, not only a read from a full pipe; a writer that still doesn't fit
+  parks again. Without that change the atomic rule would lose a wake.
+- **Zero-length I/O (Dexter 1a), pinned as the contract:** a zero-length write is `EPIPE` with no reader, else 0; a
+  zero-length read is 0 with bytes or a writer, `EOF` (0) with neither. Same as Linux. KATs for the full-pipe and
+  no-reader cases.
+- **`SYS_WAIT_ANY` item:** `WAIT_KIND_PIPE = 4` (`kernel/src/sched/wait_any_logic.rs`, `userland/libneo/src/wait_abi.rs`).
+  Readiness is end-aware (Dexter 5.7): a read end is ready when `readable()` (bytes, or no writer left), a write end
+  when `writable()`: room for a write of `min(PIPE_ATOMIC, capacity)` bytes, or no reader left. "Any room" is not
+  enough: under the atomic rule a ≤512-byte write waits for room for all of it, so a `SYS_WAIT_ANY` + non-blocking
+  write loop on "any room" would spin (Dexter #56 F2). With the threshold every write makes progress. The wait key is
+  `PipeObject::wait_key(end)`, the channel key's shape (the object's address with the end in bit 0). The state
+  changes under the pipe's lock; the tokens it collected are woken, and the wait keys fired, after the lock is
+  dropped (`Wakes::fire`; the CP-16 order). That is safe because the wait is level-triggered: a waiter registers its
+  key, then re-scans readiness before it parks, so a fire it misses is a state it sees. An EOF'd read end stays ready
+  (Dexter 3b); the terminal drops it from its wait set when it shows "[process exited]" (L1a.3).
+
+**2b. Stdio selection and the term page** (after 2a merges):
+
+- `Process` gains `#[cfg(feature = "pipe")] stdio: SwitchMutex<Option<Stdio>>`, `Stdio { stdin: Option<Arc<PipeObject>>,
+  stdout: Option<Arc<PipeObject>>, term: Option<Handle> }` (the `obj_spawn` cfg-field pattern, process.rs 489-490).
+- `SYS_SPAWN_STDIO` (or a flags word on spawn): names which inherited handles are stdin, stdout and the term page;
+  each is checked to be the right kind and end, else `EINVAL`.
+- `sys_write_impl` fd 1 and `sys_read_impl` fd 0: if the process has a selected pipe, use it (blocking); else
+  today's path, byte for byte.
+- `HandleKind::Pipe` and `HandleKind::TermPage` in the std overlay; `std::os::neoplutarch::term` and `IsTerminal`
+  (terminal THINK §3.4).
+
+## 3. Pitfall bank (`docs/concurrency-pitfalls.md`)
+
+| Class | Does 2a introduce it? | Guard | Discriminator (scenario `pipe_core` / `pipe_park_kill`) |
+|---|---|---|---|
+| **CP-14** lost wake | Yes, at empty→non-empty and full→non-full | The check, the token store and the release are one critical section: `try_block_current_with_token_and_guard` takes the `PipeObject` guard and drops it after the switch | `pipe_core` cp14 leg, 8 rounds: the reader holds its check-to-park window open (`ipc::pipe::race`) until a writer on CPU 1 has started; the reader wakes every round. Control `neo-test-pipe-core-cp14-control` drops the guard across the window: `pipe_cp14_lost_wake` |
+| **CP-33** kill completeness | Yes, a new park site | Token parks only, so `terminate`'s `zombify_parked_thread_by_pid` (process.rs 5819-5832) finds them; the pipe's token lists hold no `Box<Thread>` | Kill a child parked in a read and one parked in a full write; both reap, the zombie count returns to 0 |
+| **CP-61** wait on a reused slot | Yes, the new wait item | The pipe item pushes its key and `CapId` into `WaitIdentity`; `notify_removed` fires `fire_handle_gone` for `Handle::Pipe` | `pipe_core` rebind leg: a sibling closes the waiter's pipe-A read end and installs a pipe-B read end in the same slot between the scan and the registration (the `wait_any_core` hook); a write into B ends the wait. Control `wait-multiplex-no-identity-check`: `pipe_rebind_stranded` |
+| **CP-67** `Arc` across a park | Possible: the syscall frame holds `Arc<PipeObject>` | The syscall's `Arc` lives in the thread (`Thread::pipe_anchor`, via `scheduler::with_pipe_anchor`, the channel anchor's pattern), so a thread killed while parked drops it in `Thread::free` | `pipe_park_kill` read and write legs: the pipe's `Arc` count back to the harness's 1. Control `neo-test-pipe-park-kill-control` keeps it on the frame: `pipe_park_kill_arc_leaked` |
+| **CP-85** exit retiring one thread | N-A to 2a: the pipe adds no exit path. Whatever retires a process (exit, exit group, kill), its handles leave through `Detached`, which releases the endpoints | `release_pipe` in `Detached::release` | Covered by the kill legs: the endpoint counts after each kill, and EOF on the last writer's kill (`pipe_core` two-writers leg) |
+| Wake on the last endpoint (OT-88) | Yes | `release_pipe` fires `close_endpoint`'s wakes | Kill the only writer while the reader is parked: the reader gets EOF |
+| Close under a parked sibling (Dexter #56 F1; CP-14's shape, on the closing side) | Yes: a parked thread holds the object, not an endpoint | The last close of an end wakes both sides; a closed end refuses its own read and write (`EBADF`) | `pipe_core` `close_parked_read` / `close_parked_write`: the end's last handle removed under a parked reader and under a parked writer; each returns `EBADF` |
+| Counts across grants (OT-88) | Yes | Per-handle retain/release at the install chokepoint every grant goes through | `pipe_core` two-writers leg: two handles on the write end in two processes; killing one leaves the reader parked, killing the other ends it with EOF |
+
+I-14 (driver fault containment) and the AI-governance locks: N-A. No ISR path, and no governance lock is taken.
+
+## 4. Kill-switch
+
+`pipe` off: no `Handle::Pipe` variant, no syscall arms (the numbers return `ENOSYS`), no `SYS_WAIT_ANY` arm for
+kind 4 (the `WAIT_KIND_PIPE` constant stays, and a kind-4 item is `EINVAL`), no `Thread::pipe_anchor`, no `stdio`
+field. Every scenario in the gate other than the two pipe scenarios builds with `pipe` off, so the off path is the
+whole existing gate. An earlier draft also claimed a "`pipe` on, nothing creates a pipe" leg; there is none, and the
+claim is dropped (Dexter #56 F4). What `pipe` on changes with no pipe created is only new match arms, a new syscall
+range, a new wait kind and one `Option` field per thread.
+
+## 5. Gate and review
+
+2a: the 4-shard gate with `pipe_core` (`SYS_PIPE_CREATE`, a round trip, EOF and EPIPE on the last endpoint with a
+partial write's count, an atomic write woken by a partial read, a non-blocking read, counts across two handles, the
+`WAIT_ANY` item on each end, and the CP-61 reuse and CP-14 two-CPU legs) and `pipe_park_kill` (CP-33/CP-67: a reader
+and a writer killed while parked, a stale token, a full waiter list), with the three controls. The callers are
+stand-in processes making the real syscalls through the dispatcher (`ipc_park_kill`'s pattern). It touches thread park and teardown, so the AAG needs a
+cross-family lens (CLAUDE.md, the SMP-core rule): **GPT-6.1-Sol, high**.
+
+2b: the 4-shard gate with `pipe_stdio` (a child whose fd 0/1 are pipes; a child with channels in slots 0/1 and no
+selection is unchanged), and the same review lens for the spawn change.
+
+## 6. Questions
+
+1. The `TokenList` bound: 8 parked readers and 8 parked writers per pipe (a terminal has 1 of each), `EAGAIN` beyond
+   (after dropping killed threads' tokens). **Answered (Dexter #56):** 8, with the cross-holder `EAGAIN` caveat
+   recorded in §2a; revisit if a workload needs more.
+2. `PIPE_ATOMIC = 512` (POSIX's minimum `PIPE_BUF`). **Answered (Dexter #56):** 512; it is also the stack chunk, so
+   a ≤512-byte write is one atomic `Pipe::write`. Its consequence for write readiness is F2's threshold (§2a).

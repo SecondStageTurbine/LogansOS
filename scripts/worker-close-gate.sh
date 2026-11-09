@@ -85,6 +85,7 @@ if [[ "$FAILED" -eq 0 ]]; then
   run_check "cargo test -p neo-atrium (app-icons)"             cargo test -p neo-atrium --features app-icons
   run_check "cargo test -p neo-atrium (install-chip)"          cargo test -p neo-atrium --features install-chip
   run_check "cargo test -p neo-atrium (install-chip,app-icons)" cargo test -p neo-atrium --features install-chip,app-icons
+  run_check "cargo test -p settings-core (setup-keys)"         cargo test -p settings-core --features setup-keys
   run_check "cargo clippy --workspace --all-targets (-D)"     cargo clippy --workspace --all-targets -- -D warnings
   # kernel clippy is BLOCKING (ADR-056). Run it the way CI does, from kernel/.
   printf '  ... cargo clippy kernel (-D, blocking)\n'

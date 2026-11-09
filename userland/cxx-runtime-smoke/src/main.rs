@@ -225,7 +225,7 @@ pub extern "C" fn _start() -> ! {
     );
     c_check(
         6,
-        "clock_gettime: monotonic yes, realtime EINVAL",
+        "clock_gettime: monotonic, and realtime counted from 1970",
         crt_check_clock,
     );
     c_check(7, "stdout through musl's FILE", crt_check_stdout);

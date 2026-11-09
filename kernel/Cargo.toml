@@ -494,6 +494,11 @@ neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota", "kerne
 # OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+# OT-61 rung 4 (SWGL S2): WebRender 0.70 on SWGL, a display list rendered
+# into a caller buffer and compared with a hand-derived scene.
+# kernel-rng: WebRender's HashMaps seed from std's RandomState
+# (SYS_GETRANDOM); the scenario runs on -cpu max like std_entropy.
+neo-test-webrender-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is
@@ -554,6 +559,10 @@ ipc-try-send = []
 # handles (the WM's release of an ended client). Off: only files and channels
 # close, EBADF for the rest, exactly as before.
 close-object-handles = []
+# L1a.1 step 2a (docs/THINK-2026-11-02-l1a1-pipe-wiring.md): the byte pipe,
+# Handle::Pipe, SYS_PIPE_* and the SYS_WAIT_ANY pipe item. Parks by wait
+# token, so it needs wait-multiplex. Off = no handle type, no syscall arms.
+pipe = ["wait-multiplex"]
 # OT-22 test-only control: the channel send/grant/close paths do not fire
 # waiters, so an IPC-only wait can only end at its deadline. The
 # wait_any_core IPC leg must FAIL with it.
@@ -1153,6 +1162,14 @@ neo-test-desktop-wheel-boot = ["neo-test-desktop-pointer", "atrium-pointer-wheel
 # DI-1a: the DS-1 session with the B-ref pointer (WM-forwarded clicks, the
 # SAK escape, click-to-focus) over a real usb-mouse.
 neo-test-desktop-pointer-boot = ["neo-test-desktop-pointer"]
+# F7 (drag smoothness): a long title-band drag measured per frame, with the fix
+# and with the old bounding-box damage (the control). Kernel-identical to
+# desktop_pointer_boot.
+neo-test-desktop-drag-perf-boot = ["neo-test-desktop-pointer"]
+neo-test-desktop-drag-perf-control-boot = ["neo-test-desktop-pointer"]
+# PR #58 re-check: the drag with the probe app in the window, captured.
+neo-test-desktop-drag-cross-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-drag-cross-control-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # OT-88 A1a: the DS-1 session with the probe app as a second WM client, and
 # with it faulting; kernel-identical to desktop_pointer_boot (the WM's polling
 # loop needs SYS_TRY_RECV and the SAK), only the userland build differs.
@@ -1225,6 +1242,14 @@ neo-test-admission-park-kill-sink-held-control = ["neo-test-admission-park-kill-
 # control restores both frame-owned shapes (must FAIL: the counts leak).
 neo-test-ipc-park-kill = ["neo-test"]
 neo-test-ipc-park-kill-control = ["neo-test-ipc-park-kill"]
+# L1a.1 step 2a: the pipe's syscalls, wait item and teardown (pipe_core; its
+# CP-14 control drops the pipe's guard between the empty check and the park),
+# and a reader and a writer killed while parked in a pipe (pipe_park_kill; its
+# control owns the pipe in the syscall frame across the park, CP-67).
+neo-test-pipe-core = ["neo-test", "pipe"]
+neo-test-pipe-core-cp14-control = ["neo-test-pipe-core"]
+neo-test-pipe-park-kill = ["neo-test", "pipe"]
+neo-test-pipe-park-kill-control = ["neo-test-pipe-park-kill"]
 # OT-98 (CP-98): a kill that races a natural exit, or finds its target parked
 # in sys_wait, completes or returns ESRCH and never panics. Control: claims the
 # natural exit at the reap and skips the sys_wait extraction, as before OT-98
@@ -2229,6 +2254,9 @@ neo-test-ot90-stop-wedged = ["neo-test", "power-stop-cpus"]
 neo-test-ot90-quiesce = ["neo-test", "power-quiesce"]
 # OT-90 P4: SYS_POWER's refusals, then a power-off through it.
 neo-test-ot90-cap = ["neo-test", "power-cap"]
+# OT-90 P5: the intro desktop with `power-cap`; `shut down` typed at Home,
+# confirmed, powers off (neo-init `power-menu`).
+neo-test-ot90-power-menu = ["neo-test-desktop-intro-boot", "power-cap"]
 # Janus's #7 review, items 1 and 3: the same power-off, but the highest AP
 # ignores STOP and, in its NMI handler, takes the heap allocator's lock and
 # parks holding it; one bus master's Bus Master Enable reads back set. K6 must

@@ -64,6 +64,12 @@ mod protocol;
 mod atrium_wm;
 #[cfg(test)]
 mod shared_pixels_kats;
+// F7: `Rect::minus`, which a moved frame's repaint uses.
+#[cfg(test)]
+mod rect_minus_kats;
+// PR #58 re-check: `Rect::uncovered_px`, the drag frames' over-present count.
+#[cfg(test)]
+mod rect_uncovered_kats;
 // A9-D: the busy emblem composed over a client, as the WM layers it.
 #[cfg(test)]
 mod busy_emblem_kats;
@@ -111,7 +117,9 @@ mod wait_any_logic;
 
 #[cfg(test)]
 mod wait_abi_kats {
-    use super::wait_abi::{WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_SAK, WaitItem};
+    use super::wait_abi::{
+        WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WAIT_KIND_PIPE, WAIT_KIND_SAK, WaitItem,
+    };
     use super::wait_any_logic as kernel;
 
     /// The byte oracle: `WaitItem { handle: 0x04030201, kind: 2 }` is these
@@ -137,6 +145,8 @@ mod wait_abi_kats {
         assert_eq!(WAIT_KIND_CHANNEL, kernel::WAIT_KIND_CHANNEL);
         assert_eq!(WAIT_KIND_INPUT, kernel::WAIT_KIND_INPUT);
         assert_eq!(WAIT_KIND_SAK, kernel::WAIT_KIND_SAK);
+        assert_eq!(WAIT_KIND_PIPE, kernel::WAIT_KIND_PIPE);
+        assert_eq!(WAIT_KIND_PIPE, 4);
     }
 }
 

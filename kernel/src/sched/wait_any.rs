@@ -369,15 +369,15 @@ pub fn debug_entries(pid: Option<ProcessId>) -> usize {
 /// Rebind leg (Jarvis rung-1 F1): a waiter of this pid stops between its
 /// first scan and its registration until a sibling has closed its handle
 /// and reused the slot for another channel. Test-only.
-#[cfg(feature = "neo-test-wait-any-core")]
+#[cfg(any(feature = "neo-test-wait-any-core", feature = "neo-test-pipe-core"))]
 pub static REBIND_PID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
-#[cfg(feature = "neo-test-wait-any-core")]
+#[cfg(any(feature = "neo-test-wait-any-core", feature = "neo-test-pipe-core"))]
 pub static REBIND_IN_WINDOW: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-#[cfg(feature = "neo-test-wait-any-core")]
+#[cfg(any(feature = "neo-test-wait-any-core", feature = "neo-test-pipe-core"))]
 pub static REBIND_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
-#[cfg(feature = "neo-test-wait-any-core")]
+#[cfg(any(feature = "neo-test-wait-any-core", feature = "neo-test-pipe-core"))]
 pub fn rebind_window_hook(pid: ProcessId) {
     if REBIND_PID
         .compare_exchange(pid.0, u32::MAX, Ordering::AcqRel, Ordering::Acquire)
