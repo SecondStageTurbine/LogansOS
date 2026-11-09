@@ -153,6 +153,13 @@ run there too (trap B1).
    - `xtask ot61-closure-build --mozjs` builds and links the smoke on the host;
    - xtask's list of the build scripts that ran holds only the allowed ones (§2);
    - push CI passes.
+
+   It also needs #81: #81's patched `libc` gives our target `off_t`, `size_t` and an opaque `FILE` (the frozen
+   bindings name `::libc::FILE`), and its `libz-sys` 1.1.31, `pkg-config` and `vcpkg` are reused. The first link
+   found one duplicate symbol, `abort` (neo-crt's, and mozalloc's Unix override), so patch 0005 leaves the override
+   out on our target. On a try branch (`claude/ot61-c3c1-mozjs-try`: the product crates with #88 and #81's crates
+   merged in), the gate's first two items passed in closure run 42547284444, and the generator run with patch 0005
+   (42547284389) passed its drift, cbindgen and patched-crate checks.
 4. **The smoke on target.** Gate: a quick tier with `mozjs_smoke`, then the full four shards before merge. It's
    kernel-touching only through the scenario.
 
