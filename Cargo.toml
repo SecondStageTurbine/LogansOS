@@ -80,6 +80,7 @@ members = [
     "tools/slab-magazine-tests",
     "tools/neomc",
     "tools/virtio-accel-host",
+    "tools/quant-drift-tests",
     "tools/xtask",
 ]
 exclude = [
