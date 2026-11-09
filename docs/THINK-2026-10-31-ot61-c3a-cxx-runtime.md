@@ -92,7 +92,7 @@ moves with the toolchain's clang (§7, decision 1).
   - **C**, each against an independent oracle: printf conversions written out by hand from C11 7.21.6.1; `strtod`
     bit patterns from CPython's correctly rounded parser; libm exact where IEEE 754 requires it and within one ulp
     of glibc elsewhere; the POSIX `rand48` recurrence computed in the test; allocator sizes, alignment, zeroing and
-    overflow; the monotonic clock, with `CLOCK_REALTIME` refused.
+    overflow; the monotonic clock, and `CLOCK_REALTIME` counted from 1970 (C3c-1, below).
   - **C++:** a global constructor ran; containers; `to_chars` shortest round-trip strings; smart pointers;
     `function`, `optional`, `variant`, virtual dispatch; `new(nothrow)` failure; `steady_clock`.
   - **Threads:** six at once for `errno` (must be per thread), malloc (contents intact), and one function-local
@@ -125,8 +125,10 @@ No kernel concurrency code changes.
 1. **No C++ threads, no pthreads** in C3a. **Closed by C3b (§9).**
 2. **`atexit`/`__cxa_atexit` handlers never run.** Bundle processes end by `exit` or by being killed; SWGL and
    SpiderMonkey shut down explicitly.
-3. **No wall clock.** `clock_gettime(CLOCK_REALTIME)` is `EINVAL`, so `std::chrono::system_clock::now()` aborts (a
-   `system_error` with exceptions off). This is the same gap as std's `SystemTime`, and it closes with `rtc-epoch`.
+3. **No wall clock.** `clock_gettime(CLOCK_REALTIME)` answers with the same process-relative count as the monotonic
+   clock, read from 1970-01-01 (C3c-1, the C3c THINK's trap T1: SpiderMonkey's `PRMJ_Now` aborts if the call fails).
+   So `std::chrono::system_clock::now()` runs and advances, but every date reads as 1970. It is never the real date.
+   That is still the same gap as std's `SystemTime` (unsupported), and it closes when the bundle can trust `rtc-epoch`.
 4. **`errno` after a failed allocation, as clang sees it.** LLVM models `malloc`/`calloc` as writing no other memory,
    and musl's `__errno_location` is `const`. So a plain read of `errno` right after a failed allocation can fold to
    its old value (this bit the smoke's own check, now a volatile read). The runtime does set it. This is a compiler
@@ -237,3 +239,76 @@ gets the signal to the waiter it was for, and a control with the old order loses
 - `pthread_getattr_np`/stack bounds (SpiderMonkey's stack limit; comes with C3 proper);
 - C++ `thread_local` stays unusable on this target: it compiles to `%fs` accesses. SpiderMonkey must take its
   pthread-key path (`MOZ_THREAD_LOCAL` without compiler TLS).
+
+## 10. C3c-1 amendment: localization and iostreams on (2026-11-08)
+
+§3 configured libc++ with no localization or iostreams. SpiderMonkey needs them:
+- `mfbt/Maybe.h`, `Array.h`, `ToString.h`, `mozglue/misc/TimeStamp.h` and `js/public/RegExpFlags.h` include
+  `<ostream>`/`<sstream>`, and `Maybe.h` writes to the stream in non-dependent code;
+- irregexp's imported V8 printers use `<iostream>`/`<iomanip>`.
+
+Upstream's WASI build never meets this, because wasi-sdk's libc++ has localization. The other route was patching
+about 15 SpiderMonkey files, irregexp's V8 imports included, and re-doing that on every `mozjs` move. The PM was told
+on #87.
+
+**What changes:**
+- **`cxx/__config_site`:** drops `_LIBCPP_HAS_NO_LOCALIZATION`. Filesystem, `random_device` and the tz database stay off.
+- **libc++ sources added:** `ios.cpp`, `ios.instantiations.cpp`, `iostream.cpp`, `locale.cpp`, `ostream.cpp`,
+  `regex.cpp` and `strstream.cpp`. `fstream.cpp` stays out, because there is no filesystem.
+- **musl files added, all from the same tag:**
+  - locale: `locale_map`, `__mo_lookup`, `newlocale`, `freelocale`, `duplocale`, `uselocale`, `setlocale`,
+    `strcoll`, `strxfrm`, `wcscoll`, `wcsxfrm`, `strtod_l`;
+  - stdio: `getc`, `ungetc`, `fgetwc`, `getwc`, `ungetwc`, `fputwc`, `vasprintf`;
+  - time: `strftime` and its three date helpers. `src/time/` is newly vendored whole; the rest of it isn't compiled.
+- **neo-crt's own:**
+  - `c/stdin.c`: musl's `stdin`, locked always, and every read is end-of-file, because the bundle has no input.
+  - `neo_bottom.c`: `__tm_to_tzname` returns `"UTC"`, because there are no time zones. `__map_file` returns NULL; it
+    is never reached, since `getenv` returns NULL and musl therefore never looks for locale files.
+- **Locales:** still only `"C"` and C.UTF-8 in practice.
+- **`_GNU_SOURCE`:** code that includes the locale or stream headers must define it, because musl declares
+  `strto*_l` and `vasprintf` only then. libc++'s own build and the smoke define it.
+
+**Smoke item 30** covers the following, each expected value worked by hand:
+- `ostringstream` formatting (`"42 1.5 ff ****7"`);
+- `istringstream` extraction and its failbit;
+- `std::locale().name() == "C"`;
+- `put_time` over `strftime` (`"2026-11-08 09:05 UTC"`);
+- `regex_match`;
+- `std::cin` at end-of-file.
+
+**Cost:** about 7 more libc++ objects and 23 musl objects in every C++-using bundle. A Rust-only bundle doesn't link
+neo-crt.
+
+**Kill-switch:** none at run time. This is a build configuration: reverting `__config_site` and the source lists gives
+back §3's runtime bit for bit. Everything §3 already compiled is unchanged. Items 1-29 still pass and keep their
+expected values.
+
+**Also for C3c-1: the POSIX calls SpiderMonkey links against** (`c/neo_posix.c`, the musl files named in `build.rs`).
+The generator's link probe (#87) listed every symbol SpiderMonkey's 213 objects need that neo-crt didn't define.
+Apart from the Rust crates the product link supplies (`encoding_c_mem`, `normalizer_glue`, zlib, `mozjs-sys`'s own
+hooks), these are now here:
+- **Time.**
+  - musl's `gmtime`, `gmtime_r` and `timegm`.
+  - `localtime`/`localtime_r` and `mktime` are UTC, because the bundle has no time zones.
+  - `time()` reads `CLOCK_REALTIME`. That gives a time once C1.3's clock is in (#86) and returns -1 until then.
+- **Files.**
+  - `fopen` and `remove` refuse with `ENOENT`; `fstat`, `fcntl` and `close` refuse with `EBADF`; `memfd_create`
+    refuses with `ENOSYS`.
+  - `fclose` flushes the standard stream it's given; there is no other kind.
+  - musl's `ferror`, `fileno`, `setvbuf`, `perror` and `fread` work on the standard streams.
+- **`getpid`** is std's `process::id`.
+- **`pthread_setname_np`** stores the name in the thread's record, cut to 15 bytes and a NUL as Linux's comm
+  field is, and returns 0. `pthread_getname_np` returns it, or `ERANGE` if the buffer is too small.
+  - **PM decision (#88, relay 351):** a name is an advisory label, so a long one is truncated, not refused.
+    SpiderMonkey release-asserts that naming succeeds (`PosixThread.cpp`), so an error return would abort it.
+  - Smoke items 108–110 cover the round trip, the cut and the `ERANGE`.
+- **The stack protector.** SpiderMonkey's configure turns on `-fstack-protector-strong`.
+  - `neo_crt::seed_stack_canary()` randomises `__stack_chk_guard`, with the low byte zero. A program with
+    stack-protected code calls it first, before `init()` and before any C runs.
+  - It draws from the kernel CSPRNG. `init()` doesn't call it, so a bundle with no stack-protected code (SWGL)
+    needs no entropy to start.
+  - The first quick-tier run had seeded it inside `init()`. That aborted `swgl_smoke`, whose test kernel has no
+    `kernel-rng`, by std's no-weaker-fallback rule.
+  - `__stack_chk_fail` reports and aborts.
+
+Smoke item 31 checks these with hand-worked values (1971-01-01 is 31,536,000 s and a Friday), and the thread names.

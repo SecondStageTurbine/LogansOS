@@ -66,6 +66,8 @@ unsafe extern "C" {
     fn cxx_check_threads() -> i32;
     fn cxx_check_condition_variable() -> i32;
     fn cxx_check_sync() -> i32;
+    fn cxx_check_streams() -> i32;
+    fn crt_check_posix() -> i32;
     fn pthread_key_create(key: *mut u32, dtor: Option<unsafe extern "C" fn(*mut c_void)>) -> i32;
     fn pthread_key_delete(key: u32) -> i32;
     fn pthread_setspecific(key: u32, value: *const c_void) -> i32;
@@ -200,6 +202,7 @@ fn write_errors_keep_their_errno() -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // The C and C++ static constructors, before any C or C++ runs.
+    neo_crt::seed_stack_canary();
     neo_crt::init();
     println!("{TAG} start: musl 1.2.5 + libc++ 18.1.8 over neo-crt's std bottom half");
     c_check(1, "printf family == hand-written strings", crt_check_format);
@@ -225,7 +228,7 @@ pub extern "C" fn _start() -> ! {
     );
     c_check(
         6,
-        "clock_gettime: monotonic yes, realtime EINVAL",
+        "clock_gettime: monotonic, and realtime counted from 1970",
         crt_check_clock,
     );
     c_check(7, "stdout through musl's FILE", crt_check_stdout);
@@ -320,6 +323,16 @@ pub extern "C" fn _start() -> ! {
         29,
         "pthread: a std::thread's key destructor runs at its exit",
         std_thread_runs_key_destructors(),
+    );
+    c_check(
+        30,
+        "C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
+        cxx_check_streams,
+    );
+    c_check(
+        31,
+        "POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary, thread names",
+        crt_check_posix,
     );
     println!("{TAG} PASS");
     std::process::exit(0)

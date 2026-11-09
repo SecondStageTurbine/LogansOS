@@ -90,6 +90,23 @@ the compositor from its RO+NX mapping.
   overwrite" item; it belongs to this context, not to SWGL.
 - QEMU proves the pixels and the client direct-present refusal (`scanout_authorized()` → `EPERM`).
 
+**S3 widens the PAL surface, so it is an A4 change** (`tools/ot61-pal-manifest.toml`).
+- Today a bundle process reaches the kernel only through std's trampolines. The Atrium buffer calls live in
+  no_std `libneo`, whose raw syscall stubs the A4 backstop would reject in a std ELF.
+- S3 needs these calls from std:
+  - `SYS_BUFFER_CREATE`, `SYS_BUFFER_MAP`, `SYS_BUFFER_QUERY`, `SYS_BUFFER_COMMIT_DAMAGE` and `SYS_BUFFER_UNMAP`;
+  - the channel send/grant that hands the compositor its read-only view: `MAP_READ | QUERY | PRESENT`, the
+    `neo-worker` pattern.
+- Each one gets, in the same change:
+  - a `[gate.provenance]` line saying which capability authorises it (the buffer handle the process created; the
+    channel the launcher handed it);
+  - its G1/G2 negative test in `tools/xtask/src/ot61_c05_tests.rs`;
+  - a `std::os::neoplutarch` surface in the overlay, next to C2.1b's `handle_info`, rather than a raw call in the
+    browser.
+- `SYS_FB_PRESENT` is **not** on the list: the client never presents. The scenario proves the refusal anyway, by
+  asking.
+- This is a governed change, so it waits until S1 and S2 are green on CI.
+
 ## 4. Kill-switch and the default build
 
 Every piece is opt-in: standalone crates built only for their scenarios (`swgl_smoke`, later `webrender_smoke`), and

@@ -158,6 +158,22 @@ static void *use_key(void *arg)
 	return pthread_getspecific(key) == (void *)((intptr_t)arg + 1) ? 0 : (void *)1;
 }
 
+static pthread_key_t rearm_key;
+static int rearm_runs;
+
+static void rearm_dtor(void *v)
+{
+	rearm_runs++;
+	pthread_setspecific(rearm_key, v);
+}
+
+static void *set_rearm(void *arg)
+{
+	(void)arg;
+	pthread_setspecific(rearm_key, (void *)1);
+	return 0;
+}
+
 int pt_check_keys(void)
 {
 	CHECK(30, "key_create", pthread_key_create(&key, key_dtor) == 0);
@@ -175,6 +191,16 @@ int pt_check_keys(void)
 		CHECK(32, "each thread's destructor ran once at exit", destroyed[i] == 1);
 	CHECK(33, "the main thread's value is untouched", pthread_getspecific(key) == 0);
 	CHECK(34, "key_delete", pthread_key_delete(key) == 0 && pthread_setspecific(key, (void *)1) == EINVAL);
+
+	/* A destructor that sets its value again every time runs
+	 * PTHREAD_DESTRUCTOR_ITERATIONS (4) times in all, across neo-crt's
+	 * pthread_create exit pass and std's TLS teardown (#67 re-check). */
+	CHECK(35, "key_create (re-arming)", pthread_key_create(&rearm_key, rearm_dtor) == 0);
+	pthread_t r;
+	pthread_create(&r, 0, set_rearm, 0);
+	pthread_join(r, 0);
+	CHECK(36, "a destructor that always re-arms runs exactly 4 times", rearm_runs == 4);
+	pthread_key_delete(rearm_key);
 	return 0;
 }
 

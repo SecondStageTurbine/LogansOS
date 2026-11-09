@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# L7.2 size budgets: subtraction as a gate.
+#
+# `cargo xtask size-budget` (CI product-build) measures image A and fails when
+# a measured size is over its ceiling. The ceilings are the measured value at
+# the commit that introduced this file plus a small margin; the margin is the
+# noise allowance, not a second budget.
+#
+# Raising a ceiling is allowed, in the SAME PR that grows the image, and the
+# `reason` must say what grew and why it pays for itself.
+
+[kernel_text]
+# Image A's kernel ELF `.text` section (the shipped code, opt-level 3,
+# ub-checks off). Grows when a feature adds code; the budget makes that growth
+# visible and deliberate rather than a silent drift.
+ceiling_bytes = 1616127
+reason = "image A kernel .text: 1,583,359 B measured by CI 2026-11-09 (#82 landing run 42548102839, main 1b0b9097 + #82) + 32 KiB for codegen/toolchain noise. Raised from 1,549,279 by #82 (NeoFS cache index): the index itself is about 2-3 KB (push_block, BlockIndex::removed, write_bytes_at), but the product kernel's .text moves by about 64 KB on almost any kernel change (an unrelated 6-line black_box probe on main 92677895 measured 1,580,895 B against 1,516,511, +64,384; branch claude/l1a1-stdio-late-control-run measured 1,580,511 in run 42555777440): the dev-profile opt-level-3 build with many codegen units redistributes inlining across the whole kernel (net::tcp::tick, ai::model, drop glue), and 1,516,511 is a low point. Before: 1,516,511 B measured by CI 2026-11-08 (PR #3 run 42492570192, main 018ddef0) + 32 KiB for codegen/toolchain noise. Raised from 1,516,687 (1,483,919 B on 2026-10-31): #14 put power-cap (SYS_POWER and the OT-90 shutdown path) in image A's kernel, +67,152 B over main 0ecb5b11's 1,449,359 B; that left 176 B of the noise margin."
+
+[iso]
+# The model-less image A ISO: the product kernel plus the shipped desktop
+# userland, licences and the Limine boot payload. The pinned Qwen2.5-0.5B model
+# (485,489,152 B) and vocab (7,990,862 B) are staged from out-of-git files whose
+# sizes the kernel pins at boot, so they cannot drift and are not in this
+# budget. Grows when the kernel, userland or staged licences grow.
+ceiling_bytes = 157540352
+reason = "image A ISO (model-less): 156,491,776 B measured by CI 2026-11-09 (#82 landing run 42548102839) + 1 MiB for ISO metadata/alignment. Raised from 155,756,544 by #82: about 1 MB over main's 155,492,352, almost all kernel debug info (.debug_info +490 KB, .debug_loc +248 KB, .debug_line +87 KB, .debug_ranges +69 KB measured locally) from the same inlining shift as kernel .text; the ISO ships the kernel ELF unstripped. Before: 154,707,968 B measured by CI 2026-11-08 (PR #3 run 42492570192, main 018ddef0) + 1 MiB for ISO metadata/alignment. Raised from 154,572,800 (153,524,224 B on 2026-10-31): #14's power menu (neo-init power-menu) and power-cap kernel, +1,751,040 B over main 0ecb5b11's 152,956,928 B."

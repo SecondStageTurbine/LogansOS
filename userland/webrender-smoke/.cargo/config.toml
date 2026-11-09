@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 rung 4 (SWGL S2, WebRender): the same real-std build as userland/std-real-smoke (std from the
+# overlaid rust-src copy xtask prepares; static; panic=abort). neo-crt and
+# swgl compile their C/C++ with clang (xtask sets swgl's cc flags).
+[build]
+target = "../x86_64-unknown-neoplutarch.json"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-neoplutarch]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+    # The closure is reached through [patch] path entries, which Cargo treats
+    # as local code: it doesn't cap their lints the way it caps registry
+    # dependencies, so upstream `#![deny(...)]`s become hard errors on a
+    # target they never built for (serde_core's unused `OsStr` re-export).
+    # Cap them at warn, as for any published dependency.
+    "--cap-lints", "warn",
+]

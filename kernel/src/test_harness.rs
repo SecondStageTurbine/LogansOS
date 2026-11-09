@@ -173,6 +173,8 @@ const SCENARIO: &str = "servo_closure_smoke_avx";
 const SCENARIO: &str = "cxx_runtime_smoke";
 #[cfg(feature = "neo-test-swgl-smoke")]
 const SCENARIO: &str = "swgl_smoke";
+#[cfg(feature = "neo-test-webrender-smoke")]
+const SCENARIO: &str = "webrender_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -560,6 +562,14 @@ const SCENARIO: &str = "desktop_lens_fault_boot";
 /// end view; the sprite is hidden whenever Home is shown).
 #[cfg(feature = "neo-test-desktop-pointer-boot")]
 const SCENARIO: &str = "desktop_pointer_boot";
+#[cfg(feature = "neo-test-desktop-drag-perf-boot")]
+const SCENARIO: &str = "desktop_drag_perf_boot";
+#[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
+const SCENARIO: &str = "desktop_drag_perf_control_boot";
+#[cfg(feature = "neo-test-desktop-drag-cross-boot")]
+const SCENARIO: &str = "desktop_drag_cross_boot";
+#[cfg(feature = "neo-test-desktop-drag-cross-control-boot")]
+const SCENARIO: &str = "desktop_drag_cross_control_boot";
 /// OT-88 A1a: the pointer session with the probe app as a second client.
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const SCENARIO: &str = "desktop_apps_boot";
@@ -633,6 +643,15 @@ const DESKTOP_PASS: &str = "desktop_icons_boot=ok view=home scene=independent_or
 const DESKTOP_PASS: &str = "desktop_home_cycle=ok view=home scene=independent_oracle_digest labels=ink arthur_rounds_past_pin_cap=ok";
 #[cfg(feature = "neo-test-desktop-arthur-scope")]
 const DESKTOP_PASS: &str = "desktop_arthur_scope=ok view=home scene=independent_oracle_digest labels=ink arthur_scopes_only=ok";
+#[cfg(feature = "neo-test-desktop-drag-perf-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_perf_boot=ok view=home drag=measured damage=edges";
+#[cfg(feature = "neo-test-desktop-drag-perf-control-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_perf_control_boot=ok view=home drag=measured damage=union";
+#[cfg(feature = "neo-test-desktop-drag-cross-boot")]
+const DESKTOP_PASS: &str = "desktop_drag_cross_boot=ok view=home drag=probe_app damage=edges";
+#[cfg(feature = "neo-test-desktop-drag-cross-control-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_drag_cross_control_boot=ok view=home drag=probe_app damage=union";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]
@@ -1347,6 +1366,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-stylo-smoke",
     feature = "neo-test-cxx-runtime-smoke",
     feature = "neo-test-swgl-smoke",
+    feature = "neo-test-webrender-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -3081,6 +3101,55 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "swgl_smoke=ran exit=0 swgl=0.70.0 pattern=exact stride=padded canaries=intact frames_returned=1",
+        );
+    }
+
+    // OT-61 rung 4 (SWGL S2): webrender-smoke renders a display list through
+    // WebRender on SWGL and compares the pixels with a hand-derived scene; it
+    // exits 0 only on a match, and every frame must come back.
+    #[cfg(feature = "neo-test-webrender-smoke")]
+    {
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 256 * 256; // 256 MiB
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=webrender_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let handles = [process::InheritedHandle {
+            handle: process::root_browser_runtime_cap(),
+            parent: None,
+        }];
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        let smoke = process::spawn_user_by_name_budgeted("webrender-smoke", &handles, SMOKE_FRAMES)
+            .unwrap_or_else(|_| fail_with("spawn", 0, 0));
+        serial_println!("[ kernel ] proc: webrender-smoke pid={} (256 MiB)", smoke.0);
+        while process::any_user_process() {
+            sched::yield_now();
+            sched::reap();
+        }
+        let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        serial_println!(
+            "[ kernel ] proc: webrender-smoke exit {}, root used {} (baseline {})",
+            code,
+            used,
+            baseline
+        );
+        if code != 0 {
+            fail_with("exit", code as i64, 0);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        pass(
+            "webrender_smoke=ran exit=0 webrender=0.70.0 swgl=0.70.0 scene=exact gradient=monotone frames_returned=1",
         );
     }
 

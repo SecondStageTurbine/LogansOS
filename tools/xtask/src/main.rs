@@ -115,6 +115,9 @@ const ARTHUR_BIN: &str = "neo-arthur";
 
 const ISO_OUTPUT_REL: &str = "boot/neoplutarch.iso";
 const ISO_STAGING_REL: &str = "target/iso-root";
+/// L7.2: the committed size ceilings for image A's kernel `.text` and its
+/// (model-less) ISO. See `cmd_size_budget`.
+const SIZE_BUDGET_REL: &str = "tools/size-budget.toml";
 /// Licence texts staged into every boot image's `/licenses/` (OFL §2 for the
 /// fonts compiled into neo-arthur): (repository path, staged name).
 const LICENSE_FILES: [(&str, &str); 3] = [
@@ -191,6 +194,17 @@ const DESKTOP_SESSION_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_session_
 const DESKTOP_GLASS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_boot.ppm";
 const DESKTOP_GLASS_RT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_glass_rt_boot.ppm";
 const DESKTOP_HOME_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_home_boot.ppm";
+const DESKTOP_DRAG_PERF_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_drag_perf_boot.ppm";
+const DESKTOP_DRAG_PERF_CONTROL_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_drag_perf_control_boot.ppm";
+/// PR #58 re-check: the drag over the probe app, captured at the WM's witness
+/// line (mid) and at the session's end.
+const DESKTOP_DRAG_CROSS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_drag_cross_boot.ppm";
+const DESKTOP_DRAG_CROSS_BOOT_MID_REL: &str = "target/neo-test/desktop_drag_cross_boot_mid.ppm";
+const DESKTOP_DRAG_CROSS_CONTROL_BOOT_CAPTURE_REL: &str =
+    "target/neo-test/desktop_drag_cross_control_boot.ppm";
+const DESKTOP_DRAG_CROSS_CONTROL_BOOT_MID_REL: &str =
+    "target/neo-test/desktop_drag_cross_control_boot_mid.ppm";
 const DESKTOP_ICONS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_icons_boot.ppm";
 const DESKTOP_BUSY_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_busy_boot.ppm";
 const DESKTOP_SCROLL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_scroll_boot.ppm";
@@ -208,6 +222,12 @@ const DESKTOP_MOTION_RM_BOOT_MID_REL: &str = "target/neo-test/desktop_motion_rm_
 /// (mid capture, at session start).
 const DESKTOP_INTRO_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_intro_boot.ppm";
 const DESKTOP_INTRO_BOOT_MID_REL: &str = "target/neo-test/desktop_intro_boot_mid.ppm";
+/// F11 S1: the walk's end Home and its Try page; the skip control's end.
+const SETUP_MENU_WALK_CAPTURE_REL: &str = "target/neo-test/setup_menu_walk.ppm";
+const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
+const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
+const SETUP_MENU_SKIP_WELCOME_REL: &str = "target/neo-test/setup_menu_skip_welcome.ppm";
+const SETUP_MENU_STORE_TRY_CAPTURE_REL: &str = "target/neo-test/setup_menu_store_try.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -366,6 +386,15 @@ const SPINE_CLICK: SerialScriptStep =
 const REFOCUS_CLICK: SerialScriptStep = step(
     b"DESKTOP pointer focus client=arthur via=click",
     b"\x03\x04",
+);
+/// F7 (drag smoothness): onto the title band as `TITLE_DRAG` does, press,
+/// then 16 moves (8 × `mouse_move 30 15`, 8 × `mouse_move -30 15`: the frame
+/// goes right and back while it goes down, 674,337 → 674,577) and release.
+/// Each HMP move is its own monitor command, so most reach the guest as their
+/// own report: a drag frame each.
+const LONG_TITLE_DRAG: SerialScriptStep = step(
+    b"DESKTOP arthur pointer buttons=0 phase=3",
+    b"\x1c\x1c\x1c\x16\x03\x13\x13\x13\x13\x13\x13\x13\x13\x1d\x1d\x1d\x1d\x1d\x1d\x1d\x1d\x04",
 );
 const TITLE_DRAG: SerialScriptStep = step(
     b"DESKTOP arthur pointer buttons=0 phase=3",
@@ -569,6 +598,45 @@ const DESKTOP_POINTER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     CHIP1_TAB,
     CHIP0_AGAIN,
     AGAIN_ENTER,
+];
+/// F7: desktop_pointer_boot's script up to the refocus, then
+/// [`LONG_TITLE_DRAG`]; once the move is presented, Esc and DS-1's ending.
+const DESKTOP_DRAG_PERF_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    PROOF_SAK,
+    SPINE_ENTER,
+    ROUND1_SAK,
+    SPINE_CLICK,
+    REFOCUS_CLICK,
+    LONG_TITLE_DRAG,
+    step(b"DESKTOP pointer move from=", b"\x1b"),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+];
+/// PR #58 re-check: the WM's digest of the whole screen recomposed after the
+/// drag's move (`drag_perf::witness`); the mid capture is taken at it.
+const DESKTOP_DRAG_CROSS_WITNESS_PROMPT: &[u8] = b"DESKTOP drag cross witness w=";
+/// PR #58 re-check (Jarvis, relay 312): a drag over a second client's
+/// pixels. `open probe app` puts the probe app (A1a) in the window; the
+/// window is then dragged by [`LONG_TITLE_DRAG`] over the probe app's own
+/// client area and released. At the WM's witness line the screen is captured;
+/// Super+Tab gives the front back to Arthur, and `again` ends the session.
+const DESKTOP_DRAG_CROSS_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open probe app\n",
+    ),
+    step(
+        b"DESKTOP apps front client=1 via=launch",
+        LONG_TITLE_DRAG.command,
+    ),
+    step(DESKTOP_DRAG_CROSS_WITNESS_PROMPT, &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
 ];
 /// OT-88 A1a: the probe app as a second client. After Arthur's first answer
 /// the line `open probe app` launches it through his LaunchCap and the WM
@@ -868,7 +936,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 43] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -966,6 +1034,45 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
         DESKTOP_HOME_BOOT_CAPTURE_REL,
         b"\n",
     ),
+    // F7: the drag measured, with the fix and with the control.
+    desktop(
+        "desktop_drag_perf_boot",
+        DESKTOP_DRAG_PERF_BOOT_HID_STEPS,
+        DESKTOP_DRAG_PERF_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    desktop(
+        "desktop_drag_perf_control_boot",
+        DESKTOP_DRAG_PERF_BOOT_HID_STEPS,
+        DESKTOP_DRAG_PERF_CONTROL_BOOT_CAPTURE_REL,
+        b"\n",
+    ),
+    // PR #58 re-check: the drag over the probe app, with the fix and the
+    // control; the mid capture is the screen after the move.
+    DesktopScenario {
+        mid: Some((
+            DESKTOP_DRAG_CROSS_WITNESS_PROMPT,
+            DESKTOP_DRAG_CROSS_BOOT_MID_REL,
+        )),
+        ..desktop(
+            "desktop_drag_cross_boot",
+            DESKTOP_DRAG_CROSS_BOOT_HID_STEPS,
+            DESKTOP_DRAG_CROSS_BOOT_CAPTURE_REL,
+            b"again\n",
+        )
+    },
+    DesktopScenario {
+        mid: Some((
+            DESKTOP_DRAG_CROSS_WITNESS_PROMPT,
+            DESKTOP_DRAG_CROSS_CONTROL_BOOT_MID_REL,
+        )),
+        ..desktop(
+            "desktop_drag_cross_control_boot",
+            DESKTOP_DRAG_CROSS_BOOT_HID_STEPS,
+            DESKTOP_DRAG_CROSS_CONTROL_BOOT_CAPTURE_REL,
+            b"again\n",
+        )
+    },
     // OT-88 A1a: the probe app as a second client, and its fault.
     desktop(
         "desktop_apps_boot",
@@ -1125,6 +1232,41 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 36] = [
             "desktop_intro_boot",
             DESKTOP_INTRO_BOOT_HID_STEPS,
             DESKTOP_INTRO_BOOT_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    // F11 S1: the setup menu before the intro session; the Try page is
+    // captured as it shows (step 3's oracle reads it).
+    DesktopScenario {
+        mid: Some((b"DESKTOP setup page=try rows=5", SETUP_MENU_WALK_TRY_REL)),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_walk",
+            SETUP_MENU_WALK_STEPS,
+            SETUP_MENU_WALK_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        mid: Some((
+            b"DESKTOP setup page=welcome rows=5",
+            SETUP_MENU_SKIP_WELCOME_REL,
+        )),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_skip",
+            SETUP_MENU_SKIP_STEPS,
+            SETUP_MENU_SKIP_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    // F11 S2: the walk on the volatile overlay, then the intro session.
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_store_try",
+            SETUP_MENU_STORE_TRY_STEPS,
+            SETUP_MENU_STORE_TRY_CAPTURE_REL,
             b"\r",
         )
     },
@@ -1323,6 +1465,80 @@ const INSTALL_ATRIUM_HID_STEPS: &[SerialScriptStep] = &[
     // With the Install chip shown, Tab from Arthur's chip goes to it (no
     // Lens in this build), and one more Tab to the field.
     step(b"DESKTOP home chip selected=3", b"\t"),
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S1 (`setup_menu_walk`): the walk the gate names (setup-menu THINK
+/// §5 S1): Begin, Time zone (UTC, Continue), Comfort (both on), Try, then
+/// the intro session as `desktop_intro_boot` runs it. Each key waits for the
+/// line the previous one produced (the matcher starts afresh after a step).
+const SETUP_MENU_WALK_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    // UTC is chosen already; Enter keeps it, then Up wraps to Continue.
+    step(b"DESKTOP setup page=timezone rows=8", b"\n"),
+    step(b"DESKTOP setup redraw page=timezone focus=0", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    // Space toggles too; Tab moves like Down.
+    step(b"DESKTOP setup page=comfort rows=6", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=0", b"\t"),
+    step(b"DESKTOP setup redraw page=comfort focus=1", b"\n"),
+    step(b"DESKTOP setup redraw page=comfort focus=1", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S2 (`setup_menu_store_try`): the walk with Reduce motion only (the
+/// intro's glass end frame stays), then the intro session.
+const SETUP_MENU_STORE_TRY_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=0", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S1's control (`setup_menu_skip`): Esc on Welcome asks, Enter skips,
+/// and the session is the intro's.
+const SETUP_MENU_SKIP_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=skip rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
     CHIP0_AGAIN,
     AGAIN_ENTER,
     step(b"DESKTOP arthur answer composited serial=", b"q"),
@@ -2318,6 +2534,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // The same with xsave-fpu: AVX advertised and saved, memchr on AVX2.
         name: "servo_closure_smoke_avx",
         feature: "neo-test-servo-closure-smoke-avx",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 4 (SWGL S2): upstream WebRender renders a display list
+        // through SWGL; pixels compared with a hand-derived scene.
+        name: "webrender_smoke",
+        feature: "neo-test-webrender-smoke",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -3403,6 +3628,17 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // F11 S2: the setup menu over two boots. Boot 1 walks it (both
+        // Comfort options on), each choice written to the store and read
+        // back by digest, then makes the account; boot 2 finds the record,
+        // skips the menu and builds from it.
+        name: login_scenarios::LOGIN_SETUP_STORE_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("setup-store-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-88 S1: the settings store over two boots. A test client sets
         // three settings (each applied live, its store write read back by
         // digest) and two the WM refuses; the idle lock fires at the chosen
@@ -3464,6 +3700,43 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_pointer_boot",
         feature: "neo-test-desktop-pointer-boot",
         user_feature: Some("desktop-pointer-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F7 (drag smoothness): a 16-report title-band drag; the WM logs each
+        // drag frame's time and recomposed pixels, and the release's move.
+        name: "desktop_drag_perf_boot",
+        feature: "neo-test-desktop-drag-perf-boot",
+        user_feature: Some("desktop-drag-perf-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F7 control: the same drag with the old bounding-box damage.
+        name: "desktop_drag_perf_control_boot",
+        feature: "neo-test-desktop-drag-perf-control-boot",
+        user_feature: Some("desktop-drag-perf-control-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // PR #58 re-check: the window, showing the probe app, dragged over
+        // that client's pixels and released; the screen is captured and held
+        // to the WM's recomposed digest, and the drag frames present nothing
+        // outside the sprite and the two outlines' edges.
+        name: "desktop_drag_cross_boot",
+        feature: "neo-test-desktop-drag-cross-boot",
+        user_feature: Some("desktop-drag-cross-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Its control: the old bounding-box damage, which the over-present
+        // count must catch.
+        name: "desktop_drag_cross_control_boot",
+        feature: "neo-test-desktop-drag-cross-control-boot",
+        user_feature: Some("desktop-drag-cross-control-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -3673,6 +3946,34 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_intro_boot",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("desktop-intro-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S1: the first-boot setup menu walked by keys (Begin, Time zone,
+        // Comfort, Try), then the intro session; the kernel's end check is
+        // the intro's (the menu leaves Home as it found it).
+        name: "setup_menu_walk",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S1's control: Esc on Welcome, Skip, then the intro session.
+        name: "setup_menu_skip",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S2: the walk with Reduce motion on, on a store with no
+        // `.system/` (the intro kernel mounts no NeoFS): the volatile
+        // overlay. The choices apply live and nothing is written.
+        name: "setup_menu_store_try",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-store-try-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -6645,6 +6946,7 @@ fn main() -> ExitCode {
         "tzdata" => tzdata::cmd_tzdata(&args[1..], &workspace_root()),
         "product-elf-check" => cmd_product_elf_check(&args[1..]),
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
+        "size-budget" => cmd_size_budget(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
@@ -6812,6 +7114,9 @@ fn print_help() {
         "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
     );
     println!("    image-kernel-build  build exactly the product image's kernel (CI)");
+    println!(
+        "    size-budget   measure image A's kernel .text and ISO against {SIZE_BUDGET_REL} (CI)"
+    );
     println!("    run           build the ISO and launch QEMU with a local GTK window");
     println!("    run-headless  build the ISO and launch QEMU with serial-only output");
     println!("    run-vnc       build the ISO and launch QEMU with VNC server on :5901");
@@ -6843,7 +7148,7 @@ fn print_help() {
         "    ot61-crt-build      build the OT-61 C3a C/C++ runtime smoke (overlay std, clang, A4 checks)"
     );
     println!(
-        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke (overlay std, clang, A4 checks)"
+        "    ot61-swgl-build     build the OT-61 rung-4 SWGL S1 smoke, or with --webrender S2 (overlay std, clang, A4 checks)"
     );
     println!("    shard-coverage prove an N-way neo-test shard partition is complete + disjoint");
     println!(
@@ -7106,6 +7411,246 @@ fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     build_product_image_kernel()
 }
 
+/// One measurement (measured vs. ceiling) from `tools/size-budget.toml`.
+struct SizeBudgetEntry {
+    ceiling_bytes: u64,
+    reason: String,
+}
+
+/// `cargo xtask size-budget`: L7.2, subtraction as a gate.
+///
+/// Builds exactly image A (the same userland and kernel `xtask iso
+/// --with-model` ships, minus the out-of-git model/vocab modules) and measures
+/// two numbers against `tools/size-budget.toml`:
+///
+///   1. the kernel ELF's `.text` section (the code that ships), and
+///   2. the assembled ISO's size (the whole payload a user downloads).
+///
+/// A ceiling exists so a feature pays its way: crossing one fails CI with the
+/// instruction to raise the ceiling in the same PR and say why. The ceilings
+/// are the measured values plus a small margin; that margin is the noise
+/// allowance, not a second budget.
+///
+/// `--no-build` measures what is already on disk (a fast re-check after an
+/// edit to the budget file); it still requires the ISO from a previous run.
+fn cmd_size_budget(args: &[String]) -> Result<(), String> {
+    let mut build = true;
+    for arg in args {
+        match arg.as_str() {
+            "--no-build" => build = false,
+            other => return Err(format!("size-budget: unknown option `{other}`")),
+        }
+    }
+    let root = workspace_root();
+    let budget_path = root.join(SIZE_BUDGET_REL);
+    let (kernel_budget, iso_budget) = read_size_budget(&budget_path)?;
+
+    if build {
+        // The shipped userland and kernel, exactly as the product image builds
+        // them. `build_user` variants never stage the model (not in git).
+        build_product_image_user()?;
+        build_product_image_kernel()?;
+    }
+
+    let kernel_elf = kernel_path();
+    let kernel_text = elf_text_size(&kernel_elf)?;
+    let iso_path = root.join(ISO_OUTPUT_REL);
+    if build {
+        // The ISO is assembled from the kernel just built plus the userland
+        // ELFs; no model stage is set, so this is the model-less image A ISO.
+        // The desktop resolution is what xtask iso --with-model pins for
+        // image A (Desktop S1), so the measurement matches the shipped image.
+        set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
+        let assembled = assemble_iso();
+        set_desktop_resolution(None);
+        assembled?;
+    }
+    let iso_bytes = fs::metadata(&iso_path)
+        .map_err(|e| {
+            format!(
+                "size-budget: {} ({e}); run without --no-build to assemble it",
+                iso_path.display()
+            )
+        })?
+        .len();
+
+    let mut exceeded = Vec::new();
+    for (label, measured, entry) in [
+        ("kernel .text", kernel_text, &kernel_budget),
+        ("ISO", iso_bytes, &iso_budget),
+    ] {
+        let delta = measured as i128 - entry.ceiling_bytes as i128;
+        println!(
+            "[xtask] size-budget {label}: measured {measured} bytes, ceiling {} bytes ({})",
+            entry.ceiling_bytes,
+            if delta > 0 {
+                format!("OVER by {delta}")
+            } else {
+                format!("headroom {} bytes", -delta)
+            }
+        );
+        println!("[xtask] size-budget {label} reason: {}", entry.reason);
+        if delta > 0 {
+            exceeded.push(label);
+        }
+    }
+
+    if exceeded.is_empty() {
+        println!("[xtask] size-budget PASS");
+        Ok(())
+    } else {
+        Err(format!(
+            "size budget exceeded for {}.\n\
+             Raise the ceiling in {SIZE_BUDGET_REL} in the SAME PR and write the reason there: a bigger \
+             image must pay for itself (L7.2). If the growth is a one-off (a new driver, a new \
+             font), name the measured size and the headroom you are granting.",
+            exceeded.join(", ")
+        ))
+    }
+}
+
+/// Parse the small TOML subset `tools/size-budget.toml` uses: `[section]`
+/// headers plus `key = value` lines (strings quoted, byte counts bare). A
+/// separate dependency would be out of proportion to five keys, and a silent
+/// fallback to a default ceiling would defeat the gate.
+fn read_size_budget(path: &Path) -> Result<(SizeBudgetEntry, SizeBudgetEntry), String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let mut kernel = None;
+    let mut iso = None;
+    let mut section = String::new();
+    let mut ceiling: Option<u64> = None;
+    let mut reason: Option<String> = None;
+    let flush = |section: &str,
+                 ceiling: &mut Option<u64>,
+                 reason: &mut Option<String>,
+                 kernel: &mut Option<SizeBudgetEntry>,
+                 iso: &mut Option<SizeBudgetEntry>|
+     -> Result<(), String> {
+        if ceiling.is_none() && reason.is_none() {
+            return Ok(());
+        }
+        let entry = SizeBudgetEntry {
+            ceiling_bytes: ceiling.take().ok_or_else(|| {
+                format!("{SIZE_BUDGET_REL}: [{section}] is missing ceiling_bytes")
+            })?,
+            reason: reason
+                .take()
+                .ok_or_else(|| format!("{SIZE_BUDGET_REL}: [{section}] is missing reason"))?,
+        };
+        match section {
+            "kernel_text" => *kernel = Some(entry),
+            "iso" => *iso = Some(entry),
+            other => return Err(format!("{SIZE_BUDGET_REL}: unknown section [{other}]")),
+        }
+        Ok(())
+    };
+    for (lineno, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(inner) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            flush(&section, &mut ceiling, &mut reason, &mut kernel, &mut iso)?;
+            section = inner.trim().to_string();
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("{SIZE_BUDGET_REL}:{}: expected `key = value`", lineno + 1))?;
+        let key = key.trim();
+        let value = value.trim();
+        match (section.as_str(), key) {
+            (_, "ceiling_bytes") => {
+                ceiling =
+                    Some(value.parse::<u64>().map_err(|e| {
+                        format!("{SIZE_BUDGET_REL}:{}: ceiling_bytes: {e}", lineno + 1)
+                    })?)
+            }
+            (_, "reason") => {
+                let unquoted = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .ok_or_else(|| {
+                        format!(
+                            "{SIZE_BUDGET_REL}:{}: reason must be a quoted string",
+                            lineno + 1
+                        )
+                    })?;
+                reason = Some(unquoted.to_string());
+            }
+            _ => {
+                return Err(format!(
+                    "{SIZE_BUDGET_REL}:{}: unknown key `{key}` in [{section}]",
+                    lineno + 1
+                ));
+            }
+        }
+    }
+    flush(&section, &mut ceiling, &mut reason, &mut kernel, &mut iso)?;
+    let kernel = kernel.ok_or_else(|| format!("{SIZE_BUDGET_REL}: missing [kernel_text]"))?;
+    let iso = iso.ok_or_else(|| format!("{SIZE_BUDGET_REL}: missing [iso]"))?;
+    Ok((kernel, iso))
+}
+
+/// The `.text` section's `sh_size` from a little-endian ELF64 file. Parsing
+/// the section table directly keeps the budget dependency-free and identical
+/// on every host (no `llvm-size`/`readelf` version to pin).
+fn elf_text_size(path: &Path) -> Result<u64, String> {
+    let bytes = fs::read(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let at = |off: usize, len: usize| -> Result<&[u8], String> {
+        bytes
+            .get(off..off.saturating_add(len))
+            .ok_or_else(|| format!("size-budget: {} is truncated at {off}", path.display()))
+    };
+    let u16_at = |off: usize| -> Result<usize, String> {
+        Ok(u16::from_le_bytes(at(off, 2)?.try_into().unwrap()) as usize)
+    };
+    let u32_at = |off: usize| -> Result<usize, String> {
+        Ok(u32::from_le_bytes(at(off, 4)?.try_into().unwrap()) as usize)
+    };
+    let u64_at = |off: usize| -> Result<usize, String> {
+        Ok(u64::from_le_bytes(at(off, 8)?.try_into().unwrap()) as usize)
+    };
+    if at(0, 4)? != b"\x7fELF" {
+        return Err(format!(
+            "size-budget: {} is not an ELF file",
+            path.display()
+        ));
+    }
+    if at(4, 1)?[0] != 2 {
+        return Err(format!("size-budget: {} is not ELF64", path.display()));
+    }
+    let shoff = u64_at(0x28)?;
+    let shentsize = u16_at(0x3a)?;
+    let shnum = u16_at(0x3c)?;
+    let shstrndx = u16_at(0x3e)?;
+    if shentsize < 64 || shnum == 0 || shstrndx >= shnum {
+        return Err(format!(
+            "size-budget: {} has no usable section table",
+            path.display()
+        ));
+    }
+    let str_header = shoff + shstrndx * shentsize;
+    let str_off = u64_at(str_header + 0x18)?;
+    let str_len = u64_at(str_header + 0x20)?;
+    let strtab = at(str_off, str_len)?;
+    let mut text = None;
+    for i in 0..shnum {
+        let header = shoff + i * shentsize;
+        let name_off = u32_at(header)?;
+        let size = u64_at(header + 0x20)? as u64;
+        let name = strtab
+            .get(name_off..)
+            .and_then(|rest| rest.split(|b| *b == 0).next())
+            .unwrap_or(&[]);
+        if name == b".text" {
+            text = Some(size);
+        }
+    }
+    text.ok_or_else(|| format!("size-budget: {} has no .text section", path.display()))
+}
+
 /// L7.1: `--boot-time` builds image A with the boot-time numbers: the
 /// kernel's `boot-time`, the sign-in card's row (neo-init `boot-time`) and
 /// Arthur's summary line (`arthur-boot-time`), for a Zenbook run's evidence
@@ -7297,6 +7842,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "swgl_smoke" => &[SWGL_BIN],
+        "webrender_smoke" => &[WEBRENDER_BIN],
         _ => &[],
     }
 }
@@ -7652,6 +8198,25 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "atrium-settings-store",
         ],
         Some("desktop-busy-boot-test") => vec!["desktop-busy-boot-test", "desktop-home-boot-test"],
+        // F7: the pointer session, with the fix or the control's old damage.
+        Some("desktop-drag-perf-boot-test") => vec!["desktop-pointer-boot-test"],
+        Some("desktop-drag-perf-control-boot-test") => {
+            vec!["desktop-pointer-boot-test", "drag-union-damage-control"]
+        }
+        // PR #58 re-check: A1a's WM (the probe app), with the witness.
+        Some("desktop-drag-cross-boot-test") => {
+            vec![
+                "atrium-apps",
+                "desktop-home-boot-test",
+                "drag-cross-witness",
+            ]
+        }
+        Some("desktop-drag-cross-control-boot-test") => vec![
+            "atrium-apps",
+            "desktop-home-boot-test",
+            "drag-cross-witness",
+            "drag-union-damage-control",
+        ],
         // OT-66 L2: the lock's WM serves Arthur's OP_BUSY (its emblem must
         // stay off the locked screen).
         Some("lock-spawn-test") => vec!["lock-spawn-test", "desktop-busy"],
@@ -7802,6 +8367,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-busy-boot-test")
         // OT-66 L1: sign-in is neo-init's; the worker plays no part.
         | Some("login-boot-test")
+        | Some("setup-store-boot-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -7823,6 +8389,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-wheel-boot-test")
         | Some("desktop-pointer")
         | Some("desktop-pointer-boot-test")
+        | Some("desktop-drag-perf-boot-test")
+        | Some("desktop-drag-perf-control-boot-test")
         | Some("desktop-resize")
         | Some("desktop-resize-boot-test")
         | Some("desktop-park")
@@ -7831,7 +8399,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | None => Vec::new(),
         // OT-88 A1a: the worker is the probe app (with no handles, DS-1b's
         // probe, as the Lens is).
-        Some("desktop-apps-boot-test") => vec!["probe-app"],
+        Some("desktop-apps-boot-test")
+        | Some("desktop-drag-cross-boot-test")
+        | Some("desktop-drag-cross-control-boot-test") => vec!["probe-app"],
         Some("desktop-apps-fault-boot-test") => vec!["probe-app-exit-after-key"],
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
@@ -7857,6 +8427,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("install-atrium-boot-test")
         | Some("power-menu-boot-test")
         | Some("desktop-clock-boot-test")
+        | Some("setup-menu-boot-test")
+        | Some("setup-store-try-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -7989,7 +8561,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-drop-boot-test")
         | Some("desktop-apps-handoff-death-boot-test")
         | Some("desktop-apps-reuse-boot-test")
-        | Some("desktop-apps-grab-boot-test") => vec![
+        | Some("desktop-apps-grab-boot-test")
+        | Some("desktop-drag-cross-boot-test")
+        | Some("desktop-drag-cross-control-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-probe",
@@ -8011,6 +8585,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         ],
         // OT-66 L1: the session after sign-in is DS-1's Home Arthur.
         Some("login-boot-test")
+        | Some("setup-store-boot-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -8095,7 +8670,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-scrollback",
             "arthur-scroll-seed-test",
         ],
-        Some("desktop-pointer-boot-test") => vec![
+        Some("desktop-pointer-boot-test")
+        | Some("desktop-drag-perf-boot-test")
+        | Some("desktop-drag-perf-control-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-pointer-probe",
@@ -8148,7 +8725,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
         Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
-        | Some("power-menu-boot-test") => vec![
+        | Some("power-menu-boot-test")
+        | Some("setup-menu-boot-test")
+        | Some("setup-store-try-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -8366,6 +8945,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SWGL_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
         }
+        if std_real_staged_bins().contains(&WEBRENDER_BIN) {
+            build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
+        }
     }
     Ok(())
 }
@@ -8389,6 +8971,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
+const WEBRENDER_BIN: &str = "webrender-smoke";
+const WEBRENDER_DIR: &str = "userland/webrender-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -8399,6 +8984,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
         SWGL_BIN => Some(SWGL_DIR),
+        WEBRENDER_BIN => Some(WEBRENDER_DIR),
         _ => None,
     }
 }
@@ -8408,6 +8994,7 @@ fn is_standalone_std_dir(subdir: &str) -> bool {
         || subdir == STYLO_SMOKE_DIR
         || subdir == CXX_RUNTIME_DIR
         || subdir == SWGL_DIR
+        || subdir == WEBRENDER_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -8475,13 +9062,16 @@ fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
 /// smoke, with its A4 checks, without a QEMU run (the CI job that runs SWGL's
 /// build script and shader translator first, per J.c.'s C2.3b ruling).
 fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
-    if !args.is_empty() {
-        return Err("usage: cargo xtask ot61-swgl-build".to_string());
-    }
+    // `--webrender`: the S2 smoke (WebRender on SWGL) instead of S1.
+    let (bin, dir) = match args {
+        [] => (SWGL_BIN, SWGL_DIR),
+        [a] if a == "--webrender" => (WEBRENDER_BIN, WEBRENDER_DIR),
+        _ => return Err("usage: cargo xtask ot61-swgl-build [--webrender]".to_string()),
+    };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(SWGL_BIN, &[SWGL_BIN], SWGL_DIR)?;
-    let elf = std_real_bin_path(SWGL_BIN);
+    build_standalone_std_smoke(bin, &[bin], dir)?;
+    let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
         .len();
@@ -8545,14 +9135,20 @@ fn cmd_ot61_crt_build(args: &[String]) -> Result<(), String> {
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
     // Python, allowed by J.c. 2026-10-31 with no network fetch).
-    let (bin, dir) = match args {
-        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
-        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
-        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo]".to_string()),
+    // `--crt`: neo-crt's own smoke and its hardening twin (C3a).
+    let (bin, bins, dir): (&str, &[&str], &str) = match args {
+        [] => (SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR),
+        [a] if a == "--crt" => (
+            CXX_RUNTIME_BIN,
+            &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+            CXX_RUNTIME_DIR,
+        ),
+        _ => return Err("usage: cargo xtask ot61-closure-build [--stylo | --crt]".to_string()),
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(bin, &[bin], dir)?;
+    build_standalone_std_smoke(bin, bins, dir)?;
     let elf = std_real_bin_path(bin);
     let len = fs::metadata(&elf)
         .map_err(|e| format!("stat {}: {e}", elf.display()))?
@@ -9063,7 +9659,7 @@ fn build_member_at_opt_level(
         // Compile std from the overlaid per-build copy, not the toolchain.
         cmd.env("__CARGO_TESTS_ONLY_SRC_ROOT", std_overlay_library());
     }
-    if subdir == SWGL_DIR {
+    if subdir == SWGL_DIR || subdir == WEBRENDER_DIR {
         swgl_cc_env(&mut cmd)?;
     }
     if is_standalone_std_dir(subdir) {
@@ -9271,7 +9867,8 @@ fn cmd_iso_product_kernel(options: &ProductKernelIso) -> Result<(), String> {
 }
 
 /// The product image's userland (its WM and Arthur): one build, shared by
-/// `iso --with-model` and `iso --product-kernel`.
+/// `iso --with-model`, `iso --product-kernel` and `size-budget`, so the
+/// measured image and the shipped image cannot drift to different WM builds.
 fn build_product_image_user() -> Result<(), String> {
     build_user_with_feature(Some("desktop-with-model"))?;
     Ok(())
@@ -14580,6 +15177,8 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "thread_entry_clean_state"
             // OT-61 C2.0: std's fill_bytes reads the kernel CSPRNG (RDRAND seed).
             | "std_entropy"
+            // OT-61 rung 4 S2: WebRender's HashMaps seed from the same CSPRNG.
+            | "webrender_smoke"
             // OT-61 C2.3b: a CPU with AVX2, so the plain scenario proves the
             // kernel hides it (no xsave-fpu) and the twin that memchr uses it.
             | "servo_closure_smoke"
@@ -18955,6 +19554,10 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         INSTALL_ATRIUM_SCENARIO
         | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
         | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
+        // F11 S1: the intro session's kernel, after the setup menu.
+        "setup_menu_walk" | "setup_menu_skip" | "setup_menu_store_try" => "desktop_intro_boot",
+        // F11 S2: the plain sign-in kernel, with the setup menu before it.
+        login_scenarios::LOGIN_SETUP_STORE_SCENARIO => "login_two_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }
@@ -19051,6 +19654,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    if scenario.name == "webrender_smoke" {
+        for needle in [
+            "[ wr-smoke ] ok(4) solid, clipped, transformed and image pixels == the hand-derived scene",
+            "[ wr-smoke ] ok(5) gradient: black to white, non-decreasing, same on every row",
+            "[ wr-smoke ] ok(6) the font backend maps 'H' and 'i' to the cmap's glyphs 63 and 255",
+            "[ wr-smoke ] ok(7) text: dark pixels inside the run's box, white all around it",
+            "[ wr-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "WebRender on SWGL must render the hand-derived scene",
+            )?;
+        }
+    }
     if scenario.name == "swgl_smoke" {
         for needle in [
             "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
@@ -19081,6 +19700,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
             "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
             "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
+            "[ crt-smoke ] ok(30) C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
+            "[ crt-smoke ] ok(31) POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary, thread names",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
@@ -19429,6 +20050,139 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     }
     if scenario.name == "desktop_idle_parks" || scenario.name == "desktop_idle_spins" {
         require_desktop_idle_window(scenario, observed)?;
+    }
+    // F7 (drag smoothness): the drag was measured, with the damage the
+    // build says, and it was a real drag (several frames, one move).
+    if scenario.name == "desktop_drag_perf_boot"
+        || scenario.name == "desktop_drag_perf_control_boot"
+    {
+        let damage = if scenario.name == "desktop_drag_perf_boot" {
+            " damage=edges\n"
+        } else {
+            " damage=union\n"
+        };
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP pointer focus client=arthur via=click",
+                "DESKTOP drag perf frames=",
+                damage,
+                "DESKTOP pointer move from=",
+                "DESKTOP home return client=arthur exit=0",
+            ],
+            "F7: the title-band drag is measured and the window moves once",
+        )?;
+        let serial = read_serial(observed)?;
+        let line = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag perf frames="))
+            .unwrap_or_default();
+        let field = |name: &str| {
+            line.split(name)
+                .nth(1)
+                .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        let frames = field("frames=");
+        // Non-vacuity: most of the 16 reports were their own drag frame.
+        if frames < 4 {
+            return Err(format!(
+                "`{}`: the drag presented only {frames} frames (want >= 4): {line}",
+                scenario.name
+            ));
+        }
+        eprintln!("[xtask] {}: {line}", scenario.name);
+        require_drag_outside(scenario, line, scenario.name == "desktop_drag_perf_boot")?;
+        // The budget (TCG, GitHub-hosted runners). With the fixes, gates
+        // 41480459303 and 41498408639 measured frames 30-44 ms mean, 40-60 ms
+        // max, and the release's move 1.40 s and 3.08 s on the same code (the
+        // runners differ by about 2.2x). Before any fix: 122 ms mean / 160 ms
+        // max, the move 2.3-5.7 s. The frame budget keeps about 2x over the
+        // worst fixed run; the move's catches a return of the old blur and
+        // repaint on a fast runner without failing the slow one.
+        if scenario.name == "desktop_drag_perf_boot" {
+            const FRAME_US_MAX: u64 = 100_000;
+            const RELEASE_MOVE_US_MAX: u64 = 6_000_000;
+            let (frame_max, release) = (field("frame_us_max="), field("release_move_us="));
+            if frame_max > FRAME_US_MAX || release > RELEASE_MOVE_US_MAX {
+                return Err(format!(
+                    "`{}`: over the drag budget (frame max {frame_max} us <= {FRAME_US_MAX}, \
+                     release move {release} us <= {RELEASE_MOVE_US_MAX}): {line}",
+                    scenario.name
+                ));
+            }
+        }
+    }
+    // PR #58 re-check (Jarvis, relay 312): the window, showing the probe
+    // app, dragged over that client's pixels and released.
+    if scenario.name == "desktop_drag_cross_boot"
+        || scenario.name == "desktop_drag_cross_control_boot"
+    {
+        let fix = scenario.name == "desktop_drag_cross_boot";
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP apps client connected client=1 value=1",
+                "DESKTOP apps front client=1 via=launch",
+                "DESKTOP drag perf frames=",
+                if fix {
+                    " damage=edges\n"
+                } else {
+                    " damage=union\n"
+                },
+                "DESKTOP pointer move from=",
+                // The existing witness: the base where the frame was and is.
+                " residue_pixels=0",
+                "DESKTOP drag cross witness w=",
+                "DESKTOP apps front client=0 via=sak-tab",
+                "DESKTOP arthur line=again\n",
+            ],
+            "PR #58 re-check: the probe app's window is dragged, moved once and captured",
+        )?;
+        let serial = read_serial(observed)?;
+        let perf = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag perf frames="))
+            .unwrap_or_default();
+        let frames = perf
+            .split("frames=")
+            .nth(1)
+            .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0);
+        if frames < 4 {
+            return Err(format!(
+                "`{}`: the drag presented only {frames} frames (want >= 4): {perf}",
+                scenario.name
+            ));
+        }
+        eprintln!("[xtask] {}: {perf}", scenario.name);
+        require_drag_outside(scenario, perf, fix)?;
+        let witness = serial
+            .lines()
+            .find(|l| l.contains("DESKTOP drag cross witness w="))
+            .unwrap_or_default();
+        let (_, mid) = desktop_scenario(scenario.name)
+            .and_then(|d| d.mid)
+            .ok_or_else(|| format!("`{}` has no mid capture", scenario.name))?;
+        let (capture, raster) = load_capture(
+            scenario,
+            mid,
+            ("drag capture", "drag capture", ", not 1920x1080"),
+        )?;
+        check_drag_witness(witness, &raster)
+            .map_err(|e| format!("`{}` {e}; capture={}", scenario.name, capture.display()))?;
+        eprintln!(
+            "[xtask] {}: the capture after the move matches the WM's recomposed screen in every band",
+            scenario.name
+        );
+        require_framebuffer_capture(
+            scenario,
+            desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
+        )?;
     }
     if scenario.name == "desktop_pointer_boot" || scenario.name == "desktop_resize_boot" {
         require_serial_sequence(
@@ -20266,6 +21020,153 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         require_motion(scenario, observed, MotionProfile::Full, &MOTION_KIND_NAMES)?;
         require_dock_capture(scenario, DESKTOP_FULL_BOOT_CAPTURE_REL)?;
+    }
+    // F11 S1 (setup-menu THINK §5 S1): the walk, page by page, then the
+    // intro session; no Network page (it doesn't exist until S4).
+    if scenario.name == "setup_menu_walk" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup redraw page=timezone focus=0",
+                "DESKTOP setup redraw page=timezone focus=4",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup redraw page=comfort focus=0",
+                "DESKTOP setup redraw page=comfort focus=1",
+                "DESKTOP setup redraw page=comfort focus=1",
+                "DESKTOP setup redraw page=comfort focus=2",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=1 reduce_transparency=1",
+                // The menu leaves Home as it found it: then Home is ready.
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the setup menu's walk (Begin, Time zone, Comfort, Try), then the intro session",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=network",
+            "S1 has no Network page, and the walk never skips",
+        )?;
+        // The Language and Keyboard stubs are hidden in this build (Janus,
+        // #70 item 5).
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=language",
+            "the default build hides the Language stub",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=keyboard",
+            "the default build hides the Keyboard stub",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=skip",
+            "S1 has no Network page, and the walk never skips",
+        )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_WALK_TRY_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_WALK_TRY_REL, true)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_WALK_CAPTURE_REL)?;
+    }
+    // F11 S2: no `.system/` (the intro kernel mounts no NeoFS), so the
+    // store is the volatile overlay: the menu still runs, each choice
+    // applies live, and nothing reaches a disk.
+    if scenario.name == "setup_menu_store_try" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=1 reduce_transparency=0",
+                "SETTING applied key=1 value=0 status=0",
+                "SETTINGS volatile writes=0 rt=0 rm=1 idle=10 lang=0 kb=0",
+                "SETTING applied key=2 value=1 status=0",
+                "SETTING applied key=6 value=0 status=0",
+                "SETTING applied key=7 value=0 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the walk on the volatile overlay: Reduce motion applied in memory, the other three keys already in force, nothing written",
+        )?;
+        for (needle, why) in [
+            ("SETTINGS written", "the volatile overlay writes no record"),
+            ("SETTINGS loaded", "no record exists to load"),
+            ("SETTINGS migrated", "the volatile overlay migrates nothing"),
+            (
+                "DESKTOP setup skipped",
+                "a volatile store always runs the menu",
+            ),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_framebuffer_capture(scenario, SETUP_MENU_STORE_TRY_CAPTURE_REL)?;
+    }
+    // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
+    // defaults and no other page, and the session is the intro's.
+    if scenario.name == "setup_menu_skip" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=skip rows=5",
+                "DESKTOP setup done action=skip",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "Esc on Welcome, Skip, then the intro session",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=timezone",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=comfort",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=try",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=network",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=language",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=keyboard",
+            "a skipped menu shows no other page",
+        )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL, false)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_SKIP_CAPTURE_REL)?;
     }
     if scenario.name == "desktop_intro_boot" {
         require_serial_sequence(
@@ -22036,6 +22937,101 @@ const CAPTURE_H: usize = 1080;
 /// A desktop screendump (`rel`): its path and its 1920x1080 RGB raster. The
 /// errors name it as each caller always has: `what` on a read failure, `tag`
 /// for the format and size, `size_note` after the size.
+/// PR #58 re-check: a drag frame presents the sprite's rect and the old and
+/// the new outline's edges, nothing else (`outside_px=0`, summed over the
+/// drag's frames). The control's bounding box presents the pixels between the
+/// outlines too, so with the control this oracle must fail (`outside_px` > 0).
+fn require_drag_outside(scenario: TestScenario, line: &str, fix: bool) -> Result<(), String> {
+    let outside = line
+        .split(" outside_px=")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse::<u64>().ok())
+        .ok_or_else(|| {
+            format!(
+                "`{}`: no outside_px in the drag line: {line}",
+                scenario.name
+            )
+        })?;
+    if fix && outside != 0 {
+        return Err(format!(
+            "`{}`: the drag presented {outside} px outside the sprite and the outlines' edges: {line}",
+            scenario.name
+        ));
+    }
+    if !fix && outside == 0 {
+        return Err(format!(
+            "`{}`: the control's box damage presented nothing outside the edges, so the \
+             over-present oracle has no teeth: {line}",
+            scenario.name
+        ));
+    }
+    Ok(())
+}
+
+/// PR #58 re-check, the capture oracle: the WM's `DESKTOP drag cross witness
+/// w=W h=H bands=B fnv=H0,..` (the whole screen recomposed from the scene
+/// after the move, `drag_perf::witness`) against the capture taken at that
+/// line. Per band of rows (each `h / B` rows, the last to the bottom),
+/// FNV-1a over each pixel's `0x00RRGGBB` as four little-endian bytes.
+fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
+    let field = |name: &str| {
+        line.split(name)
+            .nth(1)
+            .and_then(|rest| rest.split(' ').next())
+            .ok_or_else(|| format!("no `{name}` in the witness line: {line:?}"))
+    };
+    let parse = |name: &str| {
+        field(name)?
+            .parse::<usize>()
+            .map_err(|e| format!("bad `{name}` in the witness line ({e}): {line:?}"))
+    };
+    let (w, h, bands) = (parse(" w=")?, parse(" h=")?, parse(" bands=")?);
+    if (w, h) != (CAPTURE_W, CAPTURE_H) || raster.len() != w * h * 3 {
+        return Err(format!(
+            "the witness is {w}x{h}, the capture {CAPTURE_W}x{CAPTURE_H}"
+        ));
+    }
+    let want: Vec<&str> = field(" fnv=")?.trim_end().split(',').collect();
+    if bands == 0 || want.len() != bands {
+        return Err(format!(
+            "the witness has {} digests for {bands} bands: {line:?}",
+            want.len()
+        ));
+    }
+    let mut differ = Vec::new();
+    for (band, want) in want.iter().enumerate() {
+        let y0 = band * (h / bands);
+        let y1 = if band + 1 == bands {
+            h
+        } else {
+            (band + 1) * (h / bands)
+        };
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for y in y0..y1 {
+            for x in 0..w {
+                for b in rgb(raster, x, y).to_le_bytes() {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                }
+            }
+        }
+        if format!("{hash:016x}") != *want {
+            differ.push(format!(
+                "band {band} (rows {y0}..{y1}) 0x{hash:016x} != 0x{want}"
+            ));
+        }
+    }
+    if differ.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "the capture after the drag's move differs from the recomposed screen (stale pixels): {}",
+            differ.join("; ")
+        ))
+    }
+}
+
 fn load_capture(
     scenario: TestScenario,
     rel: &str,
@@ -22768,10 +23764,6 @@ fn require_intro_capture(
     card: IntroCard,
 ) -> Result<(), String> {
     #[allow(dead_code)]
-    mod home {
-        include!("../../../fixtures/desktop-ds1/home_digests.rs");
-    }
-    #[allow(dead_code)]
     mod intro {
         include!("../../../fixtures/desktop-intro/intro.rs");
     }
@@ -22789,11 +23781,29 @@ fn require_intro_capture(
             "help",
         ),
     };
-    let (capture, raster) = load_capture(
-        scenario,
-        capture_rel,
-        ("intro capture", "intro capture", ""),
-    )?;
+    check_card_capture(scenario, capture_rel, want, text_box, patterns, name)
+}
+
+/// A card row's oracle: its band (x, y, w, h), green threshold, pattern.
+type CardRow = ((usize, usize, usize, usize), u8, &'static str);
+
+/// A capture of Home with a WM card (the intro's, the setup menu's) against
+/// its oracle: the digest with the Home label boxes and the card's text box
+/// masked, then each row's column pattern.
+fn check_card_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    want: u64,
+    text_box: (usize, usize, usize, usize),
+    patterns: &[CardRow],
+    name: &str,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod home {
+        include!("../../../fixtures/desktop-ds1/home_digests.rs");
+    }
+    let (capture, raster) =
+        load_capture(scenario, capture_rel, ("card capture", "card capture", ""))?;
     let b = home::DS1_HOME_LABEL_BOXES_1920X1080;
     let hash = masked_fnv(&raster, &[b[0], b[1], b[2], text_box]);
     if hash != want {
@@ -22818,6 +23828,37 @@ fn require_intro_capture(
         }
     }
     Ok(())
+}
+
+/// F11 S1: a setup menu page's capture against `setup_oracle.py fixture`.
+fn require_setup_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    try_page: bool,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod setup {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    if try_page {
+        check_card_capture(
+            scenario,
+            capture_rel,
+            setup::TRY_GLASS_1920X1080,
+            setup::TRY_TEXT_BOX,
+            &setup::TRY_PATTERNS[..],
+            "setup try",
+        )
+    } else {
+        check_card_capture(
+            scenario,
+            capture_rel,
+            setup::WELCOME_GLASS_1920X1080,
+            setup::WELCOME_TEXT_BOX,
+            &setup::WELCOME_PATTERNS[..],
+            "setup welcome",
+        )
+    }
 }
 
 /// DL-1 (desktop_full_boot): the capture with the Lens docked to the moved
@@ -24337,6 +25378,71 @@ fn check_arthur_boot_module_serial(
 
 #[cfg(test)]
 mod tests {
+    /// PR #58 re-check: the witness line for a raster, digested as the WM's
+    /// `drag_perf::witness` does (over `0x00RRGGBB` words).
+    fn drag_witness_line(raster: &[u8], bands: usize) -> String {
+        let (w, h) = (CAPTURE_W, CAPTURE_H);
+        let digests: Vec<String> = (0..bands)
+            .map(|band| {
+                let y0 = band * (h / bands);
+                let y1 = if band + 1 == bands {
+                    h
+                } else {
+                    (band + 1) * (h / bands)
+                };
+                let mut hash = 0xcbf2_9ce4_8422_2325u64;
+                for p in raster[y0 * w * 3..y1 * w * 3].chunks(3) {
+                    let word = (u32::from(p[0]) << 16) | (u32::from(p[1]) << 8) | u32::from(p[2]);
+                    for b in word.to_le_bytes() {
+                        hash ^= u64::from(b);
+                        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+                    }
+                }
+                format!("{hash:016x}")
+            })
+            .collect();
+        format!(
+            "[t] DESKTOP drag cross witness w={w} h={h} bands={bands} fnv={}",
+            digests.join(",")
+        )
+    }
+
+    #[test]
+    fn drag_witness_matches_its_capture_and_names_a_stale_band() {
+        let mut raster: Vec<u8> = (0..CAPTURE_W * CAPTURE_H * 3)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect();
+        let line = drag_witness_line(&raster, 8);
+        check_drag_witness(&line, &raster).unwrap();
+        // One stale pixel, in band 5 (rows 675..810): only that band differs.
+        raster[(700 * CAPTURE_W + 1000) * 3 + 1] ^= 0x40;
+        let err = check_drag_witness(&line, &raster).unwrap_err();
+        assert!(err.contains("band 5 (rows 675..810)"), "{err}");
+        assert!(!err.contains("band 4") && !err.contains("band 6"), "{err}");
+        // A malformed or mis-sized witness is an error, never a pass.
+        assert!(check_drag_witness("DESKTOP drag cross witness w=1920", &raster).is_err());
+        let short = line.replace("bands=8", "bands=9");
+        assert!(check_drag_witness(&short, &raster).is_err());
+    }
+
+    #[test]
+    fn drag_outside_oracle_passes_the_fix_and_fails_the_control() {
+        let scenario = *TEST_SCENARIOS
+            .iter()
+            .find(|s| s.name == "desktop_drag_cross_boot")
+            .unwrap();
+        let fix = "DESKTOP drag perf frames=12 frame_us_mean=1 frame_us_max=2 frame_px_mean=3 release_move_us=4 outside_px=0 damage=edges";
+        let boxed = "DESKTOP drag perf frames=12 frame_us_mean=1 frame_us_max=2 frame_px_mean=3 release_move_us=4 outside_px=3900000 damage=union";
+        require_drag_outside(scenario, fix, true).unwrap();
+        // The fix's oracle fails on the control's box damage...
+        assert!(require_drag_outside(scenario, boxed, true).is_err());
+        // ...which is what the control scenario requires; a control showing
+        // no over-present would mean the oracle can't tell them apart.
+        require_drag_outside(scenario, boxed, false).unwrap();
+        assert!(require_drag_outside(scenario, fix, false).is_err());
+        assert!(require_drag_outside(scenario, "DESKTOP drag perf frames=12", true).is_err());
+    }
+
     /// F7: xtask's module ceiling is the kernel's early-boot extent capacity.
     /// R1-4: the provisioning header goes only to a regular file.
     #[test]
@@ -25352,8 +26458,8 @@ mod tests {
     }
 
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A
-    /// builds too (`build_user_with_feature(Some("desktop-with-model"))`),
-    /// draws the Spine chips' icons.
+    /// builds too (through `build_product_image_user`), draws the Spine
+    /// chips' icons.
     #[test]
     fn product_image_draws_the_app_icons() {
         let src = include_str!("main.rs");
@@ -25365,6 +26471,8 @@ mod tests {
             .unwrap();
         assert!(init.contains("\"atrium-app-icons\""), "{init}");
         // Image A and the product share that one WM build: the only call.
+        // The call lives in `build_product_image_user`, which the product
+        // ISO and the size-budget measurement both use.
         assert_eq!(
             src.matches("build_user_with_feature(Some(\"desktop-with-model\"))?")
                 .count(),
@@ -25592,8 +26700,13 @@ mod tests {
         let mut gate: Vec<&str> = TEST_SCENARIOS
             .iter()
             .map(|s| s.name)
-            // OT-87 R4.4: the Atrium installer is a desktop session too.
-            .filter(|n| n.starts_with("desktop_") || n.starts_with("install_atrium"))
+            // OT-87 R4.4: the Atrium installer is a desktop session too, and
+            // so is F11's setup menu.
+            .filter(|n| {
+                n.starts_with("desktop_")
+                    || n.starts_with("install_atrium")
+                    || n.starts_with("setup_menu_")
+            })
             .collect();
         let mut table: Vec<&str> = DESKTOP_SCENARIOS.iter().map(|d| d.name).collect();
         gate.sort_unstable();
@@ -26150,6 +27263,30 @@ mod tests {
         assert_eq!(
             script_command_for_seen(ARTHUR_REAL_BRAIN_BOOT_SERIAL_STEPS, 1, ARTHUR_PROMPT),
             Some(b"hello world\n".as_slice())
+        );
+    }
+
+    /// A rejected batch says why: the plan step writes `batch-plan.sh`'s
+    /// stdout to a file and the failed exit stops it before that file is
+    /// printed, so every `::error::` line must go to stderr, which reaches
+    /// the log.
+    #[test]
+    fn batch_plan_errors_reach_the_log() {
+        let script = fs::read_to_string(workspace_root().join("scripts/batch-plan.sh"))
+            .expect("read batch-plan.sh");
+        let errors: Vec<&str> = script
+            .lines()
+            .filter(|l| l.contains("\"::error::") || l.contains("\"::warning::"))
+            .collect();
+        assert!(!errors.is_empty(), "batch-plan.sh has no ::error:: lines");
+        for line in errors {
+            assert!(line.trim_end().ends_with(">&2"), "not on stderr: {line}");
+        }
+        let workflow = fs::read_to_string(workspace_root().join(".github/workflows/ci.yml"))
+            .expect("read CI workflow");
+        assert!(
+            workflow.contains("scripts/batch-plan.sh > \"$RUNNER_TEMP/batch-plan.out\"\n"),
+            "the plan step's redirection changed; recheck where batch-plan.sh's errors go"
         );
     }
 

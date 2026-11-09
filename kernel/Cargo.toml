@@ -494,6 +494,11 @@ neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota", "kerne
 # OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]
+# OT-61 rung 4 (SWGL S2): WebRender 0.70 on SWGL, a display list rendered
+# into a caller buffer and compared with a hand-derived scene.
+# kernel-rng: WebRender's HashMaps seed from std's RandomState
+# (SYS_GETRANDOM); the scenario runs on -cpu max like std_entropy.
+neo-test-webrender-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-83: a ring-3 CPU exception kills only the faulting process (exit 128 +
 # signal), the kernel stays up, and a second process runs. One scenario per
 # reachable vector. Deliberately WITHOUT browser-runtime: the containment is
@@ -1157,6 +1162,14 @@ neo-test-desktop-wheel-boot = ["neo-test-desktop-pointer", "atrium-pointer-wheel
 # DI-1a: the DS-1 session with the B-ref pointer (WM-forwarded clicks, the
 # SAK escape, click-to-focus) over a real usb-mouse.
 neo-test-desktop-pointer-boot = ["neo-test-desktop-pointer"]
+# F7 (drag smoothness): a long title-band drag measured per frame, with the fix
+# and with the old bounding-box damage (the control). Kernel-identical to
+# desktop_pointer_boot.
+neo-test-desktop-drag-perf-boot = ["neo-test-desktop-pointer"]
+neo-test-desktop-drag-perf-control-boot = ["neo-test-desktop-pointer"]
+# PR #58 re-check: the drag with the probe app in the window, captured.
+neo-test-desktop-drag-cross-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-drag-cross-control-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # OT-88 A1a: the DS-1 session with the probe app as a second WM client, and
 # with it faulting; kernel-identical to desktop_pointer_boot (the WM's polling
 # loop needs SYS_TRY_RECV and the SAK), only the userland build differs.

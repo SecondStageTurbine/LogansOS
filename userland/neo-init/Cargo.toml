@@ -22,6 +22,7 @@ vault-core = { path = "../vault-core", optional = true }
 login-core = { path = "../login-core", optional = true }
 # OT-88 S1 (feature `atrium-settings-store`): the NEOSET1 settings record.
 settings-core = { path = "../settings-core", optional = true }
+setup-core = { path = "../setup-core", optional = true }
 # L2.1 (feature `arthur-action-log`): the NAL1 action-log record and chain.
 action-log-core = { path = "../action-log-core", optional = true }
 # Desktop S3 (feature `desktop-glass`): the glass chrome scene.
@@ -90,6 +91,13 @@ desktop-pointer = ["desktop-home"]
 # today's Arthur-only WM.
 atrium-apps = ["desktop-pointer"]
 desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
+# F7 (drag smoothness) control: a drag frame recomposes the bounding box of
+# the old and new outlines (the behaviour before the fix), for the
+# before/after numbers of `desktop_drag_perf_*`.
+drag-union-damage-control = ["desktop-pointer"]
+# PR #58 re-check (`desktop_drag_cross_*`): after a drag's move, the WM
+# recomposes the whole screen and logs its digest for the harness's capture.
+drag-cross-witness = ["desktop-pointer", "desktop-session-boot-test"]
 # DS-1c: Arthur's `list /` blooms the Lens — a second client (neo-worker
 # `desktop-lens`) lent `/` read-only — beside the window; its Spine chip
 # switches to it (keyboard via Home; a click with `desktop-pointer`).
@@ -194,6 +202,25 @@ power-menu-boot-test = ["power-menu", "desktop-intro-boot-test"]
 # WM its only writer: Reduce Transparency, Reduce Motion and the idle-lock
 # time come from it and are set live by OP_SETTING. Off => the presence
 # files, as today.
+# F11 S1 (docs/THINK-2026-11-02-setup-menu.md): the first-boot setup menu
+# on Home's card, before sign-in. Off: no hook, no frames, today's boot.
+setup-menu = ["desktop-intro", "desktop-home", "dep:setup-core"]
+# The Language and Keyboard pages, stubs until a second of each exists.
+setup-stub-pages = ["setup-menu"]
+# F11 S2: the menu's choices go to the settings store (keys 6/7 and the
+# Comfort pair), and a store that can't be written is the volatile overlay.
+# Off: the menu writes nothing and the record is today's.
+setup-store = ["setup-menu", "atrium-settings-store", "settings-core/setup-keys"]
+# `setup_menu_store`: the menu's writes on a writable volume, over two boots
+# (login's VM layout), the second with no menu.
+setup-store-boot-test = ["setup-store", "login-boot-test"]
+# `setup_menu_store_try`: the menu's writes on the volatile overlay (the
+# intro session; QEMU's desktop has no NeoFS).
+setup-store-try-boot-test = ["setup-store", "setup-menu-boot-test"]
+# Test: force the volatile overlay (the Try session's store).
+setup-store-volatile-test = ["setup-store"]
+# The setup menu's boot test (`setup_menu_walk`).
+setup-menu-boot-test = ["setup-menu", "desktop-intro-boot-test"]
 atrium-settings-store = ["login", "desktop-home", "dep:settings-core", "libneo/atrium-settings"]
 # L1.3a (THINK-2026-10-30-l1.3): Arthur's actions behind the WM's permission
 # prompt. The WM is the grant authority: the record is .system/arthur-grants.json
