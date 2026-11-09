@@ -107,6 +107,9 @@ exclude = [
     "userland/webrender-smoke",
     # OT-61 rung 6: the browser app, standalone for the target only.
     "userland/browser-app",
+    # OT-61 C3c-1: the SpiderMonkey smoke (patched mozjs crates in
+    # third_party/ot61-mozjs); built standalone for the target only.
+    "userland/mozjs-smoke",
     # OT-86 Fix 1: vendored rust-osdev `acpi` 6.1.1 (upstream MIT/Apache-2.0
     # licence and formatting). A path dependency of tools/acpi-aml-grade only;
     # kept out of the workspace so first-party lints and fmt don't apply to it.

@@ -9571,6 +9571,10 @@ const WEBRENDER_DIR: &str = "userland/webrender-smoke";
 const BROWSER_APP_DIR: &str = "userland/browser-app";
 const BROWSER_IO_BIN: &str = "browser-io-smoke";
 const BROWSER_IO_PEER_BIN: &str = "browser-io-peer";
+/// OT-61 C3c-1: SpiderMonkey (interpreter, one thread) over neo-crt, from the
+/// patched mozjs crates (`third_party/ot61-mozjs/patched/`).
+const MOZJS_BIN: &str = "mozjs-smoke";
+const MOZJS_DIR: &str = "userland/mozjs-smoke";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -9586,6 +9590,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         LAYOUT_SMOKE_BIN | BROWSER_BIN => Some(LAYOUT_SMOKE_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
+        MOZJS_BIN => Some(MOZJS_DIR),
         _ => None,
     }
 }
@@ -9598,6 +9603,7 @@ fn is_standalone_std_dir(subdir: &str) -> bool {
         || subdir == LAYOUT_SMOKE_DIR
         || subdir == WEBRENDER_DIR
         || subdir == BROWSER_APP_DIR
+        || subdir == MOZJS_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -9685,6 +9691,109 @@ fn neo_crt_cc_env(cmd: &mut Command, cxx_extra: &[&str], with_cflags: bool) -> R
         .env(format!("CXXSTDLIB_{t}"), "");
     if with_cflags {
         cmd.env(format!("CFLAGS_{t}"), &flags);
+    }
+    Ok(())
+}
+
+/// The SpiderMonkey smoke's C: libz-sys compiles its bundled zlib with the
+/// `cc` crate, and mozjs-sys's build script runs the generator's frozen
+/// command lines. Both go through `generator/neo-cc`, the wrapper the
+/// generator itself used (neo-crt's compile line for our target), with the
+/// pinned clang (`NEO_CRT_CLANG`, the CI image's major). `LIBZ_SYS_STATIC`
+/// takes libz-sys straight to its bundled zlib instead of probing
+/// pkg-config and linking a test program for a system zlib we don't have.
+fn mozjs_cc_env(cmd: &mut Command) {
+    let root = workspace_root();
+    let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
+    let t = "x86_64_unknown_neoplutarch";
+    cmd.env("NEO_REPO", &root)
+        .env("NEO_CLANG", &clang)
+        .env("LIBZ_SYS_STATIC", "1")
+        .env("CRATE_CC_NO_DEFAULTS", "1")
+        .env(
+            format!("CC_{t}"),
+            root.join("third_party/ot61-mozjs/generator/neo-cc"),
+        )
+        .env(
+            format!("CFLAGS_{t}"),
+            "-O2 -ffunction-sections -fdata-sections",
+        )
+        .env(format!("CXXSTDLIB_{t}"), "");
+}
+
+/// The build scripts the SpiderMonkey closure may run. mozjs-sys and libz-sys
+/// compile C/C++ (the frozen command lines; the bundled zlib), as does our
+/// own neo-crt (musl and libc++); neo-std-pal's is ours too. The rest only
+/// print cfgs or metadata (rustc version probes, include directories).
+/// Anything else, a new build script that might run Python, configure,
+/// bindgen or the network, fails the build (THINK 2026-11-08 §2).
+const MOZJS_BUILD_SCRIPTS: &[&str] = &[
+    "neo-crt",
+    "neo-std-pal",
+    "mozjs_sys",
+    "libz-sys",
+    "encoding_c",
+    "encoding_c_mem",
+    "encoding_rs",
+    "libc",
+    "mozjs_icu_normalizer_data",
+    "num-traits",
+    "proc-macro2",
+    "quote",
+    "rustversion",
+];
+
+/// Lists the packages whose build script ran for the smoke (each run leaves
+/// `build/<package>-<hash>/output` under the target dir) and fails on any
+/// not in `MOZJS_BUILD_SCRIPTS`. Only the smoke's own packages (its
+/// `Cargo.lock`) count: build-std's (std, compiler_builtins) share the dir.
+fn verify_mozjs_build_scripts() -> Result<(), String> {
+    let dir = workspace_root().join(MOZJS_DIR);
+    let lock = fs::read_to_string(dir.join("Cargo.lock"))
+        .map_err(|e| format!("read {MOZJS_DIR}/Cargo.lock: {e}"))?;
+    let packages: std::collections::BTreeSet<&str> = lock
+        .lines()
+        .filter_map(|l| l.strip_prefix("name = \""))
+        .map(|n| n.trim_end_matches('"'))
+        .collect();
+    let target = dir.join("target");
+    let mut ran = std::collections::BTreeSet::new();
+    let mut stack = vec![target.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if dir.file_name().is_some_and(|n| n == "build") && p.join("output").is_file() {
+                let name = p.file_name().unwrap().to_string_lossy().to_string();
+                let package = name.rsplit_once('-').map_or(name.as_str(), |(n, _)| n);
+                if packages.contains(package) {
+                    ran.insert(package.to_string());
+                }
+            } else {
+                stack.push(p);
+            }
+        }
+    }
+    let unexpected: Vec<&String> = ran
+        .iter()
+        .filter(|p| !MOZJS_BUILD_SCRIPTS.contains(&p.as_str()))
+        .collect();
+    println!(
+        "ot61-closure-build --mozjs: build scripts that ran: {}",
+        ran.iter().cloned().collect::<Vec<_>>().join(", ")
+    );
+    if !ran.contains("mozjs_sys") {
+        return Err("mozjs-sys's build script didn't run (stale target dir?)".to_string());
+    }
+    if !unexpected.is_empty() {
+        return Err(format!(
+            "build scripts outside the allowed list ran: {unexpected:?}"
+        ));
     }
     Ok(())
 }
@@ -9781,6 +9890,8 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
     // Python, allowed by J.c. 2026-10-31 with no network fetch).
     // `--crt`: neo-crt's own smoke and its hardening twin (C3a).
+    // `--mozjs`: the C3c-1 SpiderMonkey smoke (patched mozjs crates; no
+    // Python, configure, bindgen or network in its build).
     let (bin, bins, dir): (&str, &[&str], &str) = match args {
         [] => (SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR),
         [a] if a == "--stylo" => (STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR),
@@ -9796,15 +9907,20 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
             &[LAYOUT_SMOKE_BIN, BROWSER_BIN],
             LAYOUT_SMOKE_DIR,
         ),
+        [a] if a == "--mozjs" => (MOZJS_BIN, &[MOZJS_BIN], MOZJS_DIR),
         _ => {
             return Err(
-                "usage: cargo xtask ot61-closure-build [--stylo | --crt | --layout]".to_string(),
+                "usage: cargo xtask ot61-closure-build [--stylo | --crt | --layout | --mozjs]"
+                    .to_string(),
             );
         }
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
     build_standalone_std_smoke(bin, bins, dir)?;
+    if bin == MOZJS_BIN {
+        verify_mozjs_build_scripts()?;
+    }
     for b in bins {
         let elf = std_real_bin_path(b);
         let len = fs::metadata(&elf)
@@ -10322,6 +10438,9 @@ fn build_member_at_opt_level(
     }
     if subdir == LAYOUT_SMOKE_DIR {
         layout_cc_env(&mut cmd)?;
+    }
+    if subdir == MOZJS_DIR {
+        mozjs_cc_env(&mut cmd);
     }
     if is_standalone_std_dir(subdir) {
         // std's build script marks std `restricted_std` on an OS it doesn't
