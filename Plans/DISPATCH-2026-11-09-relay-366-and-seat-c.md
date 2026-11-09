@@ -91,3 +91,14 @@ Check:
 - [ ] `NEO_SMP=4` covers the multi-CPU requirement your F1 asked for with `NEO_SMP=2`. Pass/fail.
 - [ ] The normal `pipe_stdio` passes at `70fa3e7e`. Pass/fail plus the run's timing line.
 RETURN: `Plans/RETURN-2026-11-09-pr72-recheck2-janus.md` on `codex/pr72-recheck2-janus`.
+
+## Section 372: Jarvis, #94 (quant drift on Arthur's Q8_0). **MODEL** GPT-6-Luna, medium: a host-only addition to the harness you reviewed (relays 334/364). Head `907cc447`, stacked on #84.
+- [ ] The Q8 run uses the same prompts, IDs, window and llama.cpp commit as the Q4 KAT, and `ref/run-q8.sh` refuses
+  inputs that aren't the pinned ones. Pass/fail plus line.
+- [ ] Splitting our run into four processes gives the same rows as one run: the boot prompt's two copies are identical,
+  and the merge preserves order. Pass/fail.
+- [ ] Bars A and B are computed unchanged, and the "distinct prefix" figure (96.09%) is reported beside the bar, not
+  in place of it. Pass/fail plus line.
+- [ ] The THINK addendum corrects the Q8 row: 99.4% on clear positions was llama.cpp's Q8_0, not ours. Pass/fail.
+- [ ] The speed note (9.1 vs 3.7 s/token, host scalar) is labelled as a host measurement, not the Zenbook. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr94-review-jarvis.md` on `codex/pr94-review-jarvis`.
