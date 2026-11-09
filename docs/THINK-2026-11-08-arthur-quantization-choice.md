@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # THINK: which quantization Arthur ships (a decision for J.c.)
 
-**Date:** 2026-11-08. **Decision owner:** J.c. **Evidence:** PR #84 (`tools/quant-drift-tests/`), the RETURNs for
+**Date:** 2026-11-08. **Decision owner:** J.c. **Decided: Q8_0** (J.c., 2026-11-08: "Q8, always go for the better option to make it a better experience"). Build: `Plans/DISPATCH-2026-11-08-arthur-q8.md`. **Evidence:** PR #84 (`tools/quant-drift-tests/`), the RETURNs for
 relays 323, 333 and 342 on `dexter/quant-drift`, and the KATs under `tools/quant-drift-tests/fixtures/`.
 
 ## What was asked

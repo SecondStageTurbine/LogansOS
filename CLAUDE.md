@@ -913,7 +913,8 @@ feature new to this codebase**: an app (editor, file manager, terminal), a forma
    plus anything that marks it as alive or abandoned: open issues, releases, archived status.
 4. **Decide what to borrow, and how:**
    - **Code may be vendored only under a license compatible with our MPL-2.0 tree:** MIT, Apache-2.0, BSD,
-     zlib, ISC, MPL-2.0, Unicode-3.0 (the Unicode data license, e.g. the ICU4X data crates; PL, 2026-10-31) or
+     zlib, ISC, MPL-2.0, Unicode-3.0 (the Unicode data license, e.g. the ICU4X data crates; PL, 2026-10-31), the
+     dtoa / Lucent permissive notice (David M. Gay's `dtoa.c`, as SpiderMonkey links it; PL, 2026-11-08) or
      Unlicense/CC0. Keep the upstream license file and copyright, record the upstream URL and
      commit, and vendor under `third_party/<name>/` (the `third_party/acpi-loganfy` precedent).
    - **Build-time Python is allowed (PL, 2026-10-31):** a vendored crate's `build.rs` may run the host's `python3`

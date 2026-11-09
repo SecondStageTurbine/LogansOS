@@ -70,3 +70,65 @@ The PM picked option (i) of THINK #10 §6.1 (2026-11-08).
 - [ ] `crt_checks.c` would fail on the old code (realtime aborting or not advancing). Pass/fail plus line.
 - [ ] std's `SystemTime::now()` is untouched. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-08-pr86-review-dexter.md` on `dexter/pr86-review`.
+
+## Section 348: Dexter, #78 (SWGL rasters into a kernel Atrium surface). Head `7fd9eaf5`, stacked on #77. Rerouted from Codex relay 329 (its #78 part).
+Run the **#78** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#78 only: `git diff refs/pr/77...refs/pr/78`.
+RETURN: `Plans/RETURN-2026-11-08-pr78-review-dexter.md` on `dexter/pr78-review`.
+
+## Section 349: Dexter, #10 (THINK: SpiderMonkey on neo-crt, interpreter-only). Head `c2d5f3cc`. A design read.
+The PM decided §6.1 option (i) and §3.3 option (c) (comment on #10, 2026-11-08).
+- [ ] §2.2's licence table holds at the pin `servo/mozjs` @ `138c9470`: every linked part is on the allowed list, and
+  nothing GPL/LGPL is linked. Check each against the files in a clone. Pass/fail per row.
+- [ ] §3.3 option (c) is written so the product build fetches nothing, and the CI generator job fails if its output
+  differs from the committed files. Pass/fail plus line.
+- [ ] §6.1 option (i) is stated as decided, and C1.3's std behaviour is unchanged. Pass/fail plus line.
+- [ ] The trap list (T1 …) each has a discriminator, and the CP table covers the threads the interpreter can start
+  (single-threaded must be enforced, not assumed). Pass/fail plus line.
+- [ ] The next steps name a gate for each rung. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr10-design-dexter.md` on `dexter/pr10-design`.
+
+## Section 350: Dexter, #79 (the client grants a separate capability). Head `67525f8d`, stacked on #78. Rerouted from Codex relay 329 (its #79 part).
+Run the **#79** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#79 only: `git diff refs/pr/78...refs/pr/79`.
+RETURN: `Plans/RETURN-2026-11-08-pr79-review-dexter.md` on `dexter/pr79-review`.
+
+## Section 351: Dexter, #88 (neo-crt for SpiderMonkey: libc++ localization, the POSIX gap, stack protector). Head `1d77e6cb`.
+Design: C3a THINK §10 (`docs/THINK-2026-10-31-ot61-c3a-cxx-runtime.md`). 41 of its 54 files are under `third_party/ot61-crt`.
+- [ ] Every newly vendored file under `third_party/ot61-crt` has its licence recorded, and each licence is on
+  CLAUDE.md's allowed list. libc++'s `Apache-2.0 WITH LLVM-exception` is fine. Pass/fail per source.
+- [ ] Each of the 47 POSIX symbols the link probe listed is either implemented in `neo-crt` or a documented stub that
+  fails safely (an error return, never silent success). Name any stub that returns success without doing the work.
+- [ ] The stack protector: `__stack_chk_guard` is seeded from the kernel's RNG before any protected function runs,
+  and `__stack_chk_fail` stops the process. Pass/fail plus line.
+- [ ] Localization stays in the "C" locale: no locale files are read, and nothing fetches. Pass/fail plus line.
+- [ ] The smoke checks would fail on the old code for each new piece. Pass/fail plus line.
+- [ ] Off by default; other `neo-crt` users build unchanged. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr88-review-dexter.md` on `dexter/pr88-review`.
+
+## Section 352: Dexter, #80 (the browser app's I/O surface). Head `80eb3087`, stacked on #79. Rerouted from Codex relay 329 (its #80 part).
+Run the **#80** items and the **All four** items of Section 329 in `Plans/DISPATCH-2026-11-08-relays-329-332.md`, for
+#80 only: `git diff refs/pr/79...refs/pr/80`.
+RETURN: `Plans/RETURN-2026-11-08-pr80-review-dexter.md` on `dexter/pr80-review`.
+
+## Section 353: Dexter, #89 (THINK: the C3c-1 product build, SpiderMonkey with cc only). Head `103d9122`. Docs only.
+- [ ] The product build runs `cc` only, over the frozen sources and `generated/`: no Python, configure, make, bindgen
+  or network. Pass/fail plus the THINK line.
+- [ ] The drift check covers the bindgen output and the patched files, as well as configure's output. Pass/fail.
+- [ ] Every crate in the Rust closure is named with its licence, and each licence is allowed. `dtoa.c` is pending
+  J.c.'s licence decision; note it, don't fail on it. Pass/fail per crate.
+- [ ] Each step names its gate. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr89-design-dexter.md` on `dexter/pr89-design`.
+
+## Section 354: Dexter, #87 (vendor SpiderMonkey 153.6.0, the network-off generator, the frozen outputs). Head `fd1ec760`.
+About 10,000 vendored files: check the records and our own pieces, not upstream's contents. Our pieces are
+`.github/workflows/ot61-mozjs-generate.yml`, the generator script, the patches and the vendor cut-list.
+- [ ] The vendor tree matches `servo/mozjs` @ `138c9470` except for the recorded cut-list and patches: give the hash
+  or diff you checked. The GPL-only files are cut (`third_party/python/yamllint`, `js/src/util/make_unicode.py`,
+  `js/src/devtools/rootAnalysis/run_complete`). Pass/fail.
+- [ ] The generator job runs with the network off, and fails when its output differs from the committed frozen files.
+  Pass/fail plus the workflow line.
+- [ ] The workflow takes no secrets, writes nothing to `main`, and runs on a pinned toolchain. Pass/fail plus line.
+- [ ] Licence records cover every linked part; `dtoa.c` is flagged as pending J.c. Pass/fail.
+- [ ] Nothing in the default product image changes. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-08-pr87-review-dexter.md` on `dexter/pr87-review`.

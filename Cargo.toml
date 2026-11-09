@@ -16,6 +16,7 @@ members = [
     "userland/login-core",
     "userland/fetch-proto",
     "userland/settings-core",
+    "userland/setup-core",
     "userland/action-log-core",
     "userland/template-app",
     "userland/fault-probe",

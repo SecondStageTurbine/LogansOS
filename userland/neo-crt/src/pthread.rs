@@ -20,7 +20,7 @@
 //! default refused, there being no wall clock); keys with destructors; once;
 //! rwlocks; and the attribute calls they make.
 
-use core::ffi::{c_int, c_void};
+use core::ffi::{c_char, c_int, c_void};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -100,7 +100,14 @@ fn deadline(ts: &Timespec) -> Option<Instant> {
 pub struct PThread {
     handle: Mutex<Option<JoinHandle<usize>>>,
     id: ThreadId,
+    /// `pthread_setname_np`'s name: at most 15 bytes and a NUL, as Linux.
+    name: Mutex<[u8; NAME_LEN]>,
 }
+
+/// A thread name's buffer: 15 bytes and the terminating NUL (Linux's
+/// `TASK_COMM_LEN`).
+const NAME_LEN: usize = 16;
+const ERANGE: c_int = 34;
 
 std::thread_local! {
     static SELF: RefCell<Option<Arc<PThread>>> = const { RefCell::new(None) };
@@ -158,6 +165,7 @@ pub unsafe extern "C" fn pthread_create(
     let rec = Arc::new(PThread {
         id: handle.thread().id(),
         handle: Mutex::new(Some(handle)),
+        name: Mutex::new([0; NAME_LEN]),
     });
     *lock(&slot) = Some(rec.clone());
     {
@@ -219,10 +227,49 @@ pub extern "C" fn pthread_self() -> *const PThread {
             Arc::new(PThread {
                 handle: Mutex::new(None),
                 id: thread::current().id(),
+                name: Mutex::new([0; NAME_LEN]),
             })
         });
         Arc::as_ptr(rec)
     })
+}
+
+/// `pthread_setname_np`: stores the name in the thread's record, cut to 15
+/// bytes as Linux's comm field is, and returns 0. A name is an advisory label
+/// (nothing here shows it yet), and SpiderMonkey release-asserts that naming
+/// succeeds (PosixThread.cpp), so a long name is truncated, not refused (PM
+/// decision on #88, relay 351).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_setname_np(t: *const PThread, name: *const c_char) -> c_int {
+    if t.is_null() || name.is_null() {
+        return EINVAL;
+    }
+    let bytes = unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes();
+    let n = bytes.len().min(NAME_LEN - 1);
+    let rec = unsafe { &*t };
+    let mut stored = lock(&rec.name);
+    *stored = [0; NAME_LEN];
+    stored[..n].copy_from_slice(&bytes[..n]);
+    0
+}
+
+/// `pthread_getname_np`: the stored name, NUL-terminated, or `ERANGE` if
+/// `len` can't hold it (Linux's behaviour). A thread never named reads "".
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_getname_np(t: *const PThread, buf: *mut c_char, len: usize) -> c_int {
+    if t.is_null() || buf.is_null() {
+        return EINVAL;
+    }
+    let stored = *lock(&unsafe { &*t }.name);
+    let n = stored.iter().position(|&b| b == 0).unwrap_or(NAME_LEN - 1);
+    if len < n + 1 {
+        return ERANGE;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(stored.as_ptr(), buf.cast::<u8>(), n);
+        *buf.add(n) = 0;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]

@@ -14,6 +14,8 @@
 #include "locale_impl.h"
 #include "pthread_impl.h"
 #include "libc.h"
+#include <sys/mman.h>
+#include <time.h>
 
 /* Rust (src/lib.rs). */
 long __neo_crt_write(int fd, const unsigned char *buf, size_t len);
@@ -108,6 +110,44 @@ void __wake(volatile void *addr, int cnt, int priv)
 	static const char msg[] = "neo-crt: musl's futex wake was reached (nothing should use it)\n";
 	__neo_crt_write(2, (const unsigned char *)msg, sizeof msg - 1);
 	abort();
+}
+
+/* musl's locale code allocates through these internal names so a program's
+ * own malloc can't interpose; here there is only neo-crt's (src/lib.rs). */
+void *__libc_malloc(size_t n)
+{
+	return malloc(n);
+}
+
+void __libc_free(void *p)
+{
+	free(p);
+}
+
+/* locale_map.c unmaps a locale file it rejected; __map_file never maps one,
+ * so this is never called. */
+int __munmap(void *addr, size_t len)
+{
+	(void)addr; (void)len;
+	return 0;
+}
+
+/* locale_map.c maps a locale file only when MUSL_LOCPATH is set, and getenv
+ * always returns NULL here, so this is never called. It exists so the
+ * reference links; if it were reached, no file is mapped. */
+const unsigned char *__map_file(const char *path, size_t *size)
+{
+	(void)path; (void)size;
+	return 0;
+}
+
+/* strftime's %Z. The bundle has no time zones (no tz database, no TZ), so
+ * every struct tm is UTC. musl's own (src/time/__tz.c) reads TZ and
+ * /etc/localtime. */
+const char *__tm_to_tzname(const struct tm *tm)
+{
+	(void)tm;
+	return "UTC";
 }
 
 _Noreturn void exit(int code)

@@ -17,7 +17,8 @@ licence).
 `COPYRIGHT`, `README`, `VERSION`, `include/`, `arch/x86_64/`, `arch/generic/`,
 and from `src/`: `include/`, `internal/`, `string/`, `ctype/`, `math/`, `fenv/`,
 `stdlib/`, `stdio/`, `multibyte/`, `locale/`, `errno/`, `prng/`, `exit/` (for `assert.c` only; the rest of
-`exit/` reaches Linux and isn't compiled). Directories, not
+`exit/` reaches Linux and isn't compiled), and `time/` (added for C3c-1, from the same tag: `strftime` and its three
+date helpers are compiled; the rest of `time/` reaches Linux or reads time zones, and isn't). Directories, not
 files, so the copy is easy to re-check against the tag. Which files are
 *compiled* is a narrower list in `userland/neo-crt/build.rs`; nothing that makes
 a Linux syscall is on it.

@@ -115,6 +115,9 @@ const ARTHUR_BIN: &str = "neo-arthur";
 
 const ISO_OUTPUT_REL: &str = "boot/neoplutarch.iso";
 const ISO_STAGING_REL: &str = "target/iso-root";
+/// L7.2: the committed size ceilings for image A's kernel `.text` and its
+/// (model-less) ISO. See `cmd_size_budget`.
+const SIZE_BUDGET_REL: &str = "tools/size-budget.toml";
 /// Licence texts staged into every boot image's `/licenses/` (OFL §2 for the
 /// fonts compiled into neo-arthur): (repository path, staged name).
 const LICENSE_FILES: [(&str, &str); 3] = [
@@ -219,6 +222,11 @@ const DESKTOP_MOTION_RM_BOOT_MID_REL: &str = "target/neo-test/desktop_motion_rm_
 /// (mid capture, at session start).
 const DESKTOP_INTRO_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_intro_boot.ppm";
 const DESKTOP_INTRO_BOOT_MID_REL: &str = "target/neo-test/desktop_intro_boot_mid.ppm";
+/// F11 S1: the walk's end Home and its Try page; the skip control's end.
+const SETUP_MENU_WALK_CAPTURE_REL: &str = "target/neo-test/setup_menu_walk.ppm";
+const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
+const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
+const SETUP_MENU_SKIP_WELCOME_REL: &str = "target/neo-test/setup_menu_skip_welcome.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -927,7 +935,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 40] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 42] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1226,6 +1234,31 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 40] = [
             b"\r",
         )
     },
+    // F11 S1: the setup menu before the intro session; the Try page is
+    // captured as it shows (step 3's oracle reads it).
+    DesktopScenario {
+        mid: Some((b"DESKTOP setup page=try rows=5", SETUP_MENU_WALK_TRY_REL)),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_walk",
+            SETUP_MENU_WALK_STEPS,
+            SETUP_MENU_WALK_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        mid: Some((
+            b"DESKTOP setup page=welcome rows=5",
+            SETUP_MENU_SKIP_WELCOME_REL,
+        )),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_skip",
+            SETUP_MENU_SKIP_STEPS,
+            SETUP_MENU_SKIP_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // OT-87 R4.4: the Atrium installer in the intro session, booted as an
     // install scenario (`run_install_scenario`): the list captured as it
     // shows, the confirmation after Enter (`\r`).
@@ -1421,6 +1454,56 @@ const INSTALL_ATRIUM_HID_STEPS: &[SerialScriptStep] = &[
     // With the Install chip shown, Tab from Arthur's chip goes to it (no
     // Lens in this build), and one more Tab to the field.
     step(b"DESKTOP home chip selected=3", b"\t"),
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S1 (`setup_menu_walk`): the walk the gate names (setup-menu THINK
+/// §5 S1): Begin, Time zone (UTC, Continue), Comfort (both on), Try, then
+/// the intro session as `desktop_intro_boot` runs it. Each key waits for the
+/// line the previous one produced (the matcher starts afresh after a step).
+const SETUP_MENU_WALK_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    // UTC is chosen already; Enter keeps it, then Up wraps to Continue.
+    step(b"DESKTOP setup page=timezone rows=8", b"\n"),
+    step(b"DESKTOP setup redraw page=timezone focus=0", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    // Space toggles too; Tab moves like Down.
+    step(b"DESKTOP setup page=comfort rows=6", b" "),
+    step(b"DESKTOP setup redraw page=comfort focus=0", b"\t"),
+    step(b"DESKTOP setup redraw page=comfort focus=1", b"\n"),
+    step(b"DESKTOP setup redraw page=comfort focus=1", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S1's control (`setup_menu_skip`): Esc on Welcome asks, Enter skips,
+/// and the session is the intro's.
+const SETUP_MENU_SKIP_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=skip rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
     CHIP0_AGAIN,
     AGAIN_ENTER,
     step(b"DESKTOP arthur answer composited serial=", b"q"),
@@ -3808,6 +3891,24 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_intro_boot",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("desktop-intro-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S1: the first-boot setup menu walked by keys (Begin, Time zone,
+        // Comfort, Try), then the intro session; the kernel's end check is
+        // the intro's (the menu leaves Home as it found it).
+        name: "setup_menu_walk",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S1's control: Esc on Welcome, Skip, then the intro session.
+        name: "setup_menu_skip",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-menu-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -6754,6 +6855,7 @@ fn main() -> ExitCode {
         "tzdata" => tzdata::cmd_tzdata(&args[1..], &workspace_root()),
         "product-elf-check" => cmd_product_elf_check(&args[1..]),
         "image-kernel-build" => cmd_image_kernel_build(&args[1..]),
+        "size-budget" => cmd_size_budget(&args[1..]),
         "neo-test-build" => cmd_neo_test_build(&args[1..]),
         "ot61-closure-build" => cmd_ot61_closure_build(&args[1..]),
         "ot61-crt-build" => cmd_ot61_crt_build(&args[1..]),
@@ -6921,6 +7023,9 @@ fn print_help() {
         "                  (--with-model <neom>: the product image; kernel at opt-level {PRODUCT_IMAGE_KERNEL_OPT_LEVEL})"
     );
     println!("    image-kernel-build  build exactly the product image's kernel (CI)");
+    println!(
+        "    size-budget   measure image A's kernel .text and ISO against {SIZE_BUDGET_REL} (CI)"
+    );
     println!("    run           build the ISO and launch QEMU with a local GTK window");
     println!("    run-headless  build the ISO and launch QEMU with serial-only output");
     println!("    run-vnc       build the ISO and launch QEMU with VNC server on :5901");
@@ -7213,6 +7318,246 @@ fn build_product_image_kernel_with(extra: &[String]) -> Result<(), String> {
 fn cmd_image_kernel_build(args: &[String]) -> Result<(), String> {
     parse_image_flags(args, "image-kernel-build")?;
     build_product_image_kernel()
+}
+
+/// One measurement (measured vs. ceiling) from `tools/size-budget.toml`.
+struct SizeBudgetEntry {
+    ceiling_bytes: u64,
+    reason: String,
+}
+
+/// `cargo xtask size-budget`: L7.2, subtraction as a gate.
+///
+/// Builds exactly image A (the same userland and kernel `xtask iso
+/// --with-model` ships, minus the out-of-git model/vocab modules) and measures
+/// two numbers against `tools/size-budget.toml`:
+///
+///   1. the kernel ELF's `.text` section (the code that ships), and
+///   2. the assembled ISO's size (the whole payload a user downloads).
+///
+/// A ceiling exists so a feature pays its way: crossing one fails CI with the
+/// instruction to raise the ceiling in the same PR and say why. The ceilings
+/// are the measured values plus a small margin; that margin is the noise
+/// allowance, not a second budget.
+///
+/// `--no-build` measures what is already on disk (a fast re-check after an
+/// edit to the budget file); it still requires the ISO from a previous run.
+fn cmd_size_budget(args: &[String]) -> Result<(), String> {
+    let mut build = true;
+    for arg in args {
+        match arg.as_str() {
+            "--no-build" => build = false,
+            other => return Err(format!("size-budget: unknown option `{other}`")),
+        }
+    }
+    let root = workspace_root();
+    let budget_path = root.join(SIZE_BUDGET_REL);
+    let (kernel_budget, iso_budget) = read_size_budget(&budget_path)?;
+
+    if build {
+        // The shipped userland and kernel, exactly as the product image builds
+        // them. `build_user` variants never stage the model (not in git).
+        build_product_image_user()?;
+        build_product_image_kernel()?;
+    }
+
+    let kernel_elf = kernel_path();
+    let kernel_text = elf_text_size(&kernel_elf)?;
+    let iso_path = root.join(ISO_OUTPUT_REL);
+    if build {
+        // The ISO is assembled from the kernel just built plus the userland
+        // ELFs; no model stage is set, so this is the model-less image A ISO.
+        // The desktop resolution is what xtask iso --with-model pins for
+        // image A (Desktop S1), so the measurement matches the shipped image.
+        set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
+        let assembled = assemble_iso();
+        set_desktop_resolution(None);
+        assembled?;
+    }
+    let iso_bytes = fs::metadata(&iso_path)
+        .map_err(|e| {
+            format!(
+                "size-budget: {} ({e}); run without --no-build to assemble it",
+                iso_path.display()
+            )
+        })?
+        .len();
+
+    let mut exceeded = Vec::new();
+    for (label, measured, entry) in [
+        ("kernel .text", kernel_text, &kernel_budget),
+        ("ISO", iso_bytes, &iso_budget),
+    ] {
+        let delta = measured as i128 - entry.ceiling_bytes as i128;
+        println!(
+            "[xtask] size-budget {label}: measured {measured} bytes, ceiling {} bytes ({})",
+            entry.ceiling_bytes,
+            if delta > 0 {
+                format!("OVER by {delta}")
+            } else {
+                format!("headroom {} bytes", -delta)
+            }
+        );
+        println!("[xtask] size-budget {label} reason: {}", entry.reason);
+        if delta > 0 {
+            exceeded.push(label);
+        }
+    }
+
+    if exceeded.is_empty() {
+        println!("[xtask] size-budget PASS");
+        Ok(())
+    } else {
+        Err(format!(
+            "size budget exceeded for {}.\n\
+             Raise the ceiling in {SIZE_BUDGET_REL} in the SAME PR and write the reason there: a bigger \
+             image must pay for itself (L7.2). If the growth is a one-off (a new driver, a new \
+             font), name the measured size and the headroom you are granting.",
+            exceeded.join(", ")
+        ))
+    }
+}
+
+/// Parse the small TOML subset `tools/size-budget.toml` uses: `[section]`
+/// headers plus `key = value` lines (strings quoted, byte counts bare). A
+/// separate dependency would be out of proportion to five keys, and a silent
+/// fallback to a default ceiling would defeat the gate.
+fn read_size_budget(path: &Path) -> Result<(SizeBudgetEntry, SizeBudgetEntry), String> {
+    let text =
+        fs::read_to_string(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let mut kernel = None;
+    let mut iso = None;
+    let mut section = String::new();
+    let mut ceiling: Option<u64> = None;
+    let mut reason: Option<String> = None;
+    let flush = |section: &str,
+                 ceiling: &mut Option<u64>,
+                 reason: &mut Option<String>,
+                 kernel: &mut Option<SizeBudgetEntry>,
+                 iso: &mut Option<SizeBudgetEntry>|
+     -> Result<(), String> {
+        if ceiling.is_none() && reason.is_none() {
+            return Ok(());
+        }
+        let entry = SizeBudgetEntry {
+            ceiling_bytes: ceiling.take().ok_or_else(|| {
+                format!("{SIZE_BUDGET_REL}: [{section}] is missing ceiling_bytes")
+            })?,
+            reason: reason
+                .take()
+                .ok_or_else(|| format!("{SIZE_BUDGET_REL}: [{section}] is missing reason"))?,
+        };
+        match section {
+            "kernel_text" => *kernel = Some(entry),
+            "iso" => *iso = Some(entry),
+            other => return Err(format!("{SIZE_BUDGET_REL}: unknown section [{other}]")),
+        }
+        Ok(())
+    };
+    for (lineno, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(inner) = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+            flush(&section, &mut ceiling, &mut reason, &mut kernel, &mut iso)?;
+            section = inner.trim().to_string();
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("{SIZE_BUDGET_REL}:{}: expected `key = value`", lineno + 1))?;
+        let key = key.trim();
+        let value = value.trim();
+        match (section.as_str(), key) {
+            (_, "ceiling_bytes") => {
+                ceiling =
+                    Some(value.parse::<u64>().map_err(|e| {
+                        format!("{SIZE_BUDGET_REL}:{}: ceiling_bytes: {e}", lineno + 1)
+                    })?)
+            }
+            (_, "reason") => {
+                let unquoted = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .ok_or_else(|| {
+                        format!(
+                            "{SIZE_BUDGET_REL}:{}: reason must be a quoted string",
+                            lineno + 1
+                        )
+                    })?;
+                reason = Some(unquoted.to_string());
+            }
+            _ => {
+                return Err(format!(
+                    "{SIZE_BUDGET_REL}:{}: unknown key `{key}` in [{section}]",
+                    lineno + 1
+                ));
+            }
+        }
+    }
+    flush(&section, &mut ceiling, &mut reason, &mut kernel, &mut iso)?;
+    let kernel = kernel.ok_or_else(|| format!("{SIZE_BUDGET_REL}: missing [kernel_text]"))?;
+    let iso = iso.ok_or_else(|| format!("{SIZE_BUDGET_REL}: missing [iso]"))?;
+    Ok((kernel, iso))
+}
+
+/// The `.text` section's `sh_size` from a little-endian ELF64 file. Parsing
+/// the section table directly keeps the budget dependency-free and identical
+/// on every host (no `llvm-size`/`readelf` version to pin).
+fn elf_text_size(path: &Path) -> Result<u64, String> {
+    let bytes = fs::read(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let at = |off: usize, len: usize| -> Result<&[u8], String> {
+        bytes
+            .get(off..off.saturating_add(len))
+            .ok_or_else(|| format!("size-budget: {} is truncated at {off}", path.display()))
+    };
+    let u16_at = |off: usize| -> Result<usize, String> {
+        Ok(u16::from_le_bytes(at(off, 2)?.try_into().unwrap()) as usize)
+    };
+    let u32_at = |off: usize| -> Result<usize, String> {
+        Ok(u32::from_le_bytes(at(off, 4)?.try_into().unwrap()) as usize)
+    };
+    let u64_at = |off: usize| -> Result<usize, String> {
+        Ok(u64::from_le_bytes(at(off, 8)?.try_into().unwrap()) as usize)
+    };
+    if at(0, 4)? != b"\x7fELF" {
+        return Err(format!(
+            "size-budget: {} is not an ELF file",
+            path.display()
+        ));
+    }
+    if at(4, 1)?[0] != 2 {
+        return Err(format!("size-budget: {} is not ELF64", path.display()));
+    }
+    let shoff = u64_at(0x28)?;
+    let shentsize = u16_at(0x3a)?;
+    let shnum = u16_at(0x3c)?;
+    let shstrndx = u16_at(0x3e)?;
+    if shentsize < 64 || shnum == 0 || shstrndx >= shnum {
+        return Err(format!(
+            "size-budget: {} has no usable section table",
+            path.display()
+        ));
+    }
+    let str_header = shoff + shstrndx * shentsize;
+    let str_off = u64_at(str_header + 0x18)?;
+    let str_len = u64_at(str_header + 0x20)?;
+    let strtab = at(str_off, str_len)?;
+    let mut text = None;
+    for i in 0..shnum {
+        let header = shoff + i * shentsize;
+        let name_off = u32_at(header)?;
+        let size = u64_at(header + 0x20)? as u64;
+        let name = strtab
+            .get(name_off..)
+            .and_then(|rest| rest.split(|b| *b == 0).next())
+            .unwrap_or(&[]);
+        if name == b".text" {
+            text = Some(size);
+        }
+    }
+    text.ok_or_else(|| format!("size-budget: {} has no .text section", path.display()))
 }
 
 /// L7.1: `--boot-time` builds image A with the boot-time numbers: the
@@ -7984,6 +8329,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("install-atrium-boot-test")
         | Some("power-menu-boot-test")
         | Some("desktop-clock-boot-test")
+        | Some("setup-menu-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -8279,7 +8625,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-85: the clock is the WM's alone; Arthur is the intro's.
         Some("desktop-intro-boot-test")
         | Some("install-atrium-boot-test")
-        | Some("power-menu-boot-test") => vec![
+        | Some("power-menu-boot-test")
+        | Some("setup-menu-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -8785,19 +9132,27 @@ fn cmd_ot61_crt_build(args: &[String]) -> Result<(), String> {
 fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     // `--stylo`: the C2.4 smoke (upstream Stylo; its build script runs
     // Python, allowed by J.c. 2026-10-31 with no network fetch).
-    let (bin, dir) = match args {
-        [] => (SERVO_CLOSURE_BIN, SERVO_CLOSURE_DIR),
-        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, STYLO_SMOKE_DIR),
-        // `--mozjs`: the C3c-1 SpiderMonkey smoke (patched mozjs crates; no
-        // Python, configure, bindgen or network in its build).
-        [a] if a == "--mozjs" => (MOZJS_BIN, MOZJS_DIR),
+    // `--crt`: neo-crt's own smoke and its hardening twin (C3a).
+    // `--mozjs`: the C3c-1 SpiderMonkey smoke (patched mozjs crates; no
+    // Python, configure, bindgen or network in its build).
+    let (bin, bins, dir): (&str, &[&str], &str) = match args {
+        [] => (SERVO_CLOSURE_BIN, &[SERVO_CLOSURE_BIN], SERVO_CLOSURE_DIR),
+        [a] if a == "--stylo" => (STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR),
+        [a] if a == "--crt" => (
+            CXX_RUNTIME_BIN,
+            &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+            CXX_RUNTIME_DIR,
+        ),
+        [a] if a == "--mozjs" => (MOZJS_BIN, &[MOZJS_BIN], MOZJS_DIR),
         _ => {
-            return Err("usage: cargo xtask ot61-closure-build [--stylo | --mozjs]".to_string());
+            return Err(
+                "usage: cargo xtask ot61-closure-build [--stylo | --crt | --mozjs]".to_string(),
+            );
         }
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(bin, &[bin], dir)?;
+    build_standalone_std_smoke(bin, bins, dir)?;
     if bin == MOZJS_BIN {
         verify_mozjs_build_scripts()?;
     }
@@ -9522,7 +9877,8 @@ fn cmd_iso_product_kernel(options: &ProductKernelIso) -> Result<(), String> {
 }
 
 /// The product image's userland (its WM and Arthur): one build, shared by
-/// `iso --with-model` and `iso --product-kernel`.
+/// `iso --with-model`, `iso --product-kernel` and `size-budget`, so the
+/// measured image and the shipped image cannot drift to different WM builds.
 fn build_product_image_user() -> Result<(), String> {
     build_user_with_feature(Some("desktop-with-model"))?;
     Ok(())
@@ -19202,6 +19558,8 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         INSTALL_ATRIUM_SCENARIO
         | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
         | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
+        // F11 S1: the intro session's kernel, after the setup menu.
+        "setup_menu_walk" | "setup_menu_skip" => "desktop_intro_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }
@@ -19328,6 +19686,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "[ crt-smoke ] ok(23) pthread: keys per thread, destructors at exit",
             "[ crt-smoke ] ok(28) C++: call_once, shared_mutex, atomic wait/notify",
             "[ crt-smoke ] ok(29) pthread: a std::thread's key destructor runs at its exit",
+            "[ crt-smoke ] ok(30) C++: ostringstream/istringstream, the C locale, put_time, regex, cin at EOF",
+            "[ crt-smoke ] ok(31) POSIX for SpiderMonkey: UTC time, no files, fileno/ferror, getpid, stack canary, thread names",
             "[ crt-smoke ] PASS",
             "[ crt-trap ] reading std::vector<int>(4)[4]",
         ] {
@@ -20646,6 +21006,117 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )?;
         require_motion(scenario, observed, MotionProfile::Full, &MOTION_KIND_NAMES)?;
         require_dock_capture(scenario, DESKTOP_FULL_BOOT_CAPTURE_REL)?;
+    }
+    // F11 S1 (setup-menu THINK §5 S1): the walk, page by page, then the
+    // intro session; no Network page (it doesn't exist until S4).
+    if scenario.name == "setup_menu_walk" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup redraw page=timezone focus=0",
+                "DESKTOP setup redraw page=timezone focus=4",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup redraw page=comfort focus=0",
+                "DESKTOP setup redraw page=comfort focus=1",
+                "DESKTOP setup redraw page=comfort focus=1",
+                "DESKTOP setup redraw page=comfort focus=2",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=1 reduce_transparency=1",
+                // The menu leaves Home as it found it: then Home is ready.
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the setup menu's walk (Begin, Time zone, Comfort, Try), then the intro session",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=network",
+            "S1 has no Network page, and the walk never skips",
+        )?;
+        // The Language and Keyboard stubs are hidden in this build (Janus,
+        // #70 item 5).
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=language",
+            "the default build hides the Language stub",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=keyboard",
+            "the default build hides the Keyboard stub",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=skip",
+            "S1 has no Network page, and the walk never skips",
+        )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_WALK_TRY_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_WALK_TRY_REL, true)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_WALK_CAPTURE_REL)?;
+    }
+    // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
+    // defaults and no other page, and the session is the intro's.
+    if scenario.name == "setup_menu_skip" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=skip rows=5",
+                "DESKTOP setup done action=skip",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "Esc on Welcome, Skip, then the intro session",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=timezone",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=comfort",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=try",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=network",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=language",
+            "a skipped menu shows no other page",
+        )?;
+        require_serial_absent(
+            scenario,
+            observed,
+            "DESKTOP setup page=keyboard",
+            "a skipped menu shows no other page",
+        )?;
+        require_framebuffer_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL)?;
+        require_setup_capture(scenario, SETUP_MENU_SKIP_WELCOME_REL, false)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_SKIP_CAPTURE_REL)?;
     }
     if scenario.name == "desktop_intro_boot" {
         require_serial_sequence(
@@ -23243,10 +23714,6 @@ fn require_intro_capture(
     card: IntroCard,
 ) -> Result<(), String> {
     #[allow(dead_code)]
-    mod home {
-        include!("../../../fixtures/desktop-ds1/home_digests.rs");
-    }
-    #[allow(dead_code)]
     mod intro {
         include!("../../../fixtures/desktop-intro/intro.rs");
     }
@@ -23264,11 +23731,29 @@ fn require_intro_capture(
             "help",
         ),
     };
-    let (capture, raster) = load_capture(
-        scenario,
-        capture_rel,
-        ("intro capture", "intro capture", ""),
-    )?;
+    check_card_capture(scenario, capture_rel, want, text_box, patterns, name)
+}
+
+/// A card row's oracle: its band (x, y, w, h), green threshold, pattern.
+type CardRow = ((usize, usize, usize, usize), u8, &'static str);
+
+/// A capture of Home with a WM card (the intro's, the setup menu's) against
+/// its oracle: the digest with the Home label boxes and the card's text box
+/// masked, then each row's column pattern.
+fn check_card_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    want: u64,
+    text_box: (usize, usize, usize, usize),
+    patterns: &[CardRow],
+    name: &str,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod home {
+        include!("../../../fixtures/desktop-ds1/home_digests.rs");
+    }
+    let (capture, raster) =
+        load_capture(scenario, capture_rel, ("card capture", "card capture", ""))?;
     let b = home::DS1_HOME_LABEL_BOXES_1920X1080;
     let hash = masked_fnv(&raster, &[b[0], b[1], b[2], text_box]);
     if hash != want {
@@ -23293,6 +23778,37 @@ fn require_intro_capture(
         }
     }
     Ok(())
+}
+
+/// F11 S1: a setup menu page's capture against `setup_oracle.py fixture`.
+fn require_setup_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+    try_page: bool,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod setup {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    if try_page {
+        check_card_capture(
+            scenario,
+            capture_rel,
+            setup::TRY_GLASS_1920X1080,
+            setup::TRY_TEXT_BOX,
+            &setup::TRY_PATTERNS[..],
+            "setup try",
+        )
+    } else {
+        check_card_capture(
+            scenario,
+            capture_rel,
+            setup::WELCOME_GLASS_1920X1080,
+            setup::WELCOME_TEXT_BOX,
+            &setup::WELCOME_PATTERNS[..],
+            "setup welcome",
+        )
+    }
 }
 
 /// DL-1 (desktop_full_boot): the capture with the Lens docked to the moved
@@ -25892,8 +26408,8 @@ mod tests {
     }
 
     /// App icons (J.c., 2026-10-29): the product image's WM, which image A
-    /// builds too (`build_user_with_feature(Some("desktop-with-model"))`),
-    /// draws the Spine chips' icons.
+    /// builds too (through `build_product_image_user`), draws the Spine
+    /// chips' icons.
     #[test]
     fn product_image_draws_the_app_icons() {
         let src = include_str!("main.rs");
@@ -25905,6 +26421,8 @@ mod tests {
             .unwrap();
         assert!(init.contains("\"atrium-app-icons\""), "{init}");
         // Image A and the product share that one WM build: the only call.
+        // The call lives in `build_product_image_user`, which the product
+        // ISO and the size-budget measurement both use.
         assert_eq!(
             src.matches("build_user_with_feature(Some(\"desktop-with-model\"))?")
                 .count(),
@@ -26132,8 +26650,13 @@ mod tests {
         let mut gate: Vec<&str> = TEST_SCENARIOS
             .iter()
             .map(|s| s.name)
-            // OT-87 R4.4: the Atrium installer is a desktop session too.
-            .filter(|n| n.starts_with("desktop_") || n.starts_with("install_atrium"))
+            // OT-87 R4.4: the Atrium installer is a desktop session too, and
+            // so is F11's setup menu.
+            .filter(|n| {
+                n.starts_with("desktop_")
+                    || n.starts_with("install_atrium")
+                    || n.starts_with("setup_menu_")
+            })
             .collect();
         let mut table: Vec<&str> = DESKTOP_SCENARIOS.iter().map(|d| d.name).collect();
         gate.sort_unstable();

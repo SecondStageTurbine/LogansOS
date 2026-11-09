@@ -21,10 +21,15 @@
 // they'd convert to CLOCK_REALTIME, which the bundle doesn't have.
 #define _LIBCPP_HAS_COND_CLOCKWAIT
 // No ambient filesystem, no random_device (entropy is a capability), no
-// locales beyond "C", no time-zone database, no std modules.
+// time-zone database, no std modules.
+//
+// Localization is on (OT-61 C3c-1): SpiderMonkey and the V8-derived irregexp
+// use <ostream>/<sstream>/<iomanip>. It still means only musl's "C"/C.UTF-8
+// locale: neo-crt has no locale files (getenv returns NULL, so musl never
+// maps one). Code that includes those headers must define _GNU_SOURCE, which
+// is what makes musl declare the strto*_l and vasprintf that libc++ calls.
 #define _LIBCPP_HAS_NO_FILESYSTEM
 #define _LIBCPP_HAS_NO_RANDOM_DEVICE
-#define _LIBCPP_HAS_NO_LOCALIZATION
 #define _LIBCPP_HAS_NO_TIME_ZONE_DATABASE
 #define _LIBCPP_HAS_NO_STD_MODULES
 #define _LIBCPP_HAS_NO_VENDOR_AVAILABILITY_ANNOTATIONS

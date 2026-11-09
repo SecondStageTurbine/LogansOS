@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# L7.2 size budgets: subtraction as a gate.
+#
+# `cargo xtask size-budget` (CI product-build) measures image A and fails when
+# a measured size is over its ceiling. The ceilings are the measured value at
+# the commit that introduced this file plus a small margin; the margin is the
+# noise allowance, not a second budget.
+#
+# Raising a ceiling is allowed, in the SAME PR that grows the image, and the
+# `reason` must say what grew and why it pays for itself.
+
+[kernel_text]
+# Image A's kernel ELF `.text` section (the shipped code, opt-level 3,
+# ub-checks off). Grows when a feature adds code; the budget makes that growth
+# visible and deliberate rather than a silent drift.
+ceiling_bytes = 1549279
+reason = "image A kernel .text: 1,516,511 B measured by CI 2026-11-08 (PR #3 run 42492570192, main 018ddef0) + 32 KiB for codegen/toolchain noise. Raised from 1,516,687 (1,483,919 B on 2026-10-31): #14 put power-cap (SYS_POWER and the OT-90 shutdown path) in image A's kernel, +67,152 B over main 0ecb5b11's 1,449,359 B; that left 176 B of the noise margin."
+
+[iso]
+# The model-less image A ISO: the product kernel plus the shipped desktop
+# userland, licences and the Limine boot payload. The pinned Qwen2.5-0.5B model
+# (485,489,152 B) and vocab (7,990,862 B) are staged from out-of-git files whose
+# sizes the kernel pins at boot, so they cannot drift and are not in this
+# budget. Grows when the kernel, userland or staged licences grow.
+ceiling_bytes = 155756544
+reason = "image A ISO (model-less): 154,707,968 B measured by CI 2026-11-08 (PR #3 run 42492570192, main 018ddef0) + 1 MiB for ISO metadata/alignment. Raised from 154,572,800 (153,524,224 B on 2026-10-31): #14's power menu (neo-init power-menu) and power-cap kernel, +1,751,040 B over main 0ecb5b11's 152,956,928 B."
