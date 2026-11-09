@@ -181,6 +181,20 @@ pub fn note_sak(bits: u8) {
     }
 }
 
+/// L1a.3: an unlock gave the route back to a client (not Home).
+#[cfg(feature = "atrium-terminal")]
+static RESUMED: AtomicBool = AtomicBool::new(false);
+
+/// L1a.3: whether an unlock gave the route back to a client since the last
+/// call. A client's focus receive fails while the session is locked (the
+/// kernel's lock route), so a client in front parks for its next turn's `K`;
+/// unlock restores the route to it but, unlike a switch, sends no `K`. The
+/// client table runs the turn's discard step for the client in front.
+#[cfg(feature = "atrium-terminal")]
+pub fn take_resumed() -> bool {
+    RESUMED.swap(false, Ordering::AcqRel)
+}
+
 /// `home::swap_to` succeeded: `activator` is the route.
 pub fn note_route(activator: Handle) {
     ROUTE.store(activator.0, Ordering::Release);
@@ -502,6 +516,11 @@ fn unlock(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
         },
         &HANDOFF,
     )?;
+    // L1a.3: the route went back to a client, which parked for its turn's
+    // `K` when its receive started failing at the lock. The client table runs
+    // that client's discard step on its next turn ([`take_resumed`]).
+    #[cfg(feature = "atrium-terminal")]
+    RESUMED.store(!to_home, Ordering::Release);
     Line::new()
         .s(b"LOCK unlocked failures=")
         .n(u64::from(failures))

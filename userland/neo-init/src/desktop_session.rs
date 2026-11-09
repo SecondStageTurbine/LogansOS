@@ -3572,6 +3572,9 @@ mod apps {
     fn index_of(module: u32) -> Option<usize> {
         match module {
             MODULE_PROBE_APP => Some(1),
+            // L1a.3: the terminal (THINK-2026-10-31-l1a §2).
+            #[cfg(feature = "atrium-terminal")]
+            libneo::atrium_launch::MODULE_TERMINAL => Some(2),
             _ => None,
         }
     }
@@ -3582,16 +3585,47 @@ mod apps {
             .map_err(|_| 61)
     }
 
-    /// Launch (or, if it is running, bring forward) the probe app. Returns
-    /// the status for the launching client's reply: a failed spawn or
-    /// handshake ends the new client only.
+    /// A module's surface ids and its spawn: the probe app's, or (L1a.3) the
+    /// terminal's. The terminal is the same `neo-worker` binary built with
+    /// `terminal-app`, spawned with its session channel only, as the probe
+    /// app is; it makes its child's pipes and term page itself.
+    fn module_client(
+        module: u32,
+    ) -> (
+        super::ClientIds,
+        fn(Handle) -> Result<libneo::ProcessHandle, i32>,
+    ) {
+        #[cfg(feature = "atrium-terminal")]
+        if module == libneo::atrium_launch::MODULE_TERMINAL {
+            return (
+                super::ClientIds {
+                    namespace: libneo::atrium_launch::TERMINAL_NAMESPACE,
+                    buffer_provenance: libneo::atrium_launch::TERMINAL_BUFFER_PROVENANCE,
+                },
+                spawn_probe_app,
+            );
+        }
+        let _ = module;
+        (
+            super::ClientIds {
+                namespace: libneo::atrium_launch::PROBE_APP_NAMESPACE,
+                buffer_provenance: libneo::atrium_launch::PROBE_APP_BUFFER_PROVENANCE,
+            },
+            spawn_probe_app,
+        )
+    }
+
+    /// Launch (or, if it is running, bring forward) an app: the probe app or
+    /// (L1a.3) the terminal. Returns the status for the launching client's
+    /// reply: a failed spawn or handshake ends the new client only.
     pub fn open(
         scene: &mut Scene,
         apps: &mut Apps,
+        module: u32,
         arthur_activator: Handle,
         arthur_pixels: &SharedPixels,
     ) -> Result<u32, i32> {
-        let index = index_of(MODULE_PROBE_APP).ok_or(140)?;
+        let index = index_of(module).ok_or(140)?;
         if apps.others[index - 1].is_some() || apps.dying[index - 1].is_some() {
             if apps.others[index - 1].is_none() {
                 // Still being reaped: one instance per app.
@@ -3607,16 +3641,13 @@ mod apps {
             )?;
             return Ok(0);
         }
-        let ids = super::ClientIds {
-            namespace: libneo::atrium_launch::PROBE_APP_NAMESPACE,
-            buffer_provenance: libneo::atrium_launch::PROBE_APP_BUFFER_PROVENANCE,
-        };
+        let (ids, spawn) = module_client(module);
         let mut spawned = None;
         match connect(
             scene,
             apps.output,
             ids,
-            spawn_probe_app,
+            spawn,
             false,
             Link::within(HANDSHAKE_NS),
             &mut spawned,
@@ -3669,6 +3700,10 @@ mod apps {
         arthur_activator: Handle,
         arthur_pixels: &SharedPixels,
     ) -> Result<(), i32> {
+        #[cfg(all(feature = "atrium-terminal", feature = "login"))]
+        if super::lock::take_resumed() && apps.front != ARTHUR {
+            resume_front(scene, apps, arthur_activator, arthur_pixels)?;
+        }
         let n = apps.others.len();
         apps.start = (apps.start + 1) % n.max(1);
         for k in 0..n {
@@ -3913,6 +3948,44 @@ mod apps {
         Ok(())
     }
 
+    /// L1a.3: an unlock gave the route back to the client in front
+    /// ([`super::lock::take_resumed`]). Its receive failed while locked, so it
+    /// parked for a turn's `K`; this is that turn's discard step, without the
+    /// swap (the unlock made it the route). What its queue held is discarded
+    /// by the client, as on any turn: nothing typed while locked reaches it
+    /// (THINK-2026-10-31-l1a §6). A client that doesn't answer is ended, as a
+    /// failed switch is.
+    #[cfg(all(feature = "atrium-terminal", feature = "login"))]
+    fn resume_front(
+        scene: &mut Scene,
+        apps: &mut Apps,
+        arthur_activator: Handle,
+        arthur_pixels: &SharedPixels,
+    ) -> Result<(), i32> {
+        let index = apps.front;
+        let Some(client) = apps
+            .others
+            .get(index.wrapping_sub(1))
+            .and_then(Option::as_ref)
+        else {
+            return Ok(());
+        };
+        let link = Link::within(DISCARD_NS);
+        if link.send(client.session, b"K") && link.recv_control(client.session, b'D') {
+            log_client(b"resumed", index, 0);
+            return Ok(());
+        }
+        log_client(b"discard-failed", index, 0);
+        end(scene, apps, index, arthur_activator, arthur_pixels)?;
+        fall_back(
+            scene,
+            apps,
+            arthur_activator,
+            arthur_pixels,
+            b"resume-failed",
+        )
+    }
+
     /// [`switch`]'s discard step failed: the client's fault, not the WM's.
     const DISCARD_FAILED: i32 = 144;
 
@@ -4137,6 +4210,9 @@ mod launch {
         // OT-88 A1a: and to the probe app.
         #[cfg(feature = "atrium-apps")]
         let allowed = allowed | allow(libneo::atrium_launch::MODULE_PROBE_APP);
+        // L1a.3: and to the terminal (off, its id is never allowed: §7).
+        #[cfg(feature = "atrium-terminal")]
+        let allowed = allowed | allow(libneo::atrium_launch::MODULE_TERMINAL);
         if !broker.mint(surface_cap, allowed) {
             return Err(81);
         }
@@ -4204,7 +4280,24 @@ mod launch {
         // slot of the table and brought to the front before Arthur's reply.
         #[cfg(feature = "atrium-apps")]
         if judged.is_ok() && request.module_id == libneo::atrium_launch::MODULE_PROBE_APP {
-            return super::apps::open(scene, apps, arthur_activator, arthur_pixels);
+            return super::apps::open(
+                scene,
+                apps,
+                request.module_id,
+                arthur_activator,
+                arthur_pixels,
+            );
+        }
+        // L1a.3: the terminal is a client of its own in the same way.
+        #[cfg(feature = "atrium-terminal")]
+        if judged.is_ok() && request.module_id == libneo::atrium_launch::MODULE_TERMINAL {
+            return super::apps::open(
+                scene,
+                apps,
+                request.module_id,
+                arthur_activator,
+                arthur_pixels,
+            );
         }
         // DS-1c: the Lens is served here, inside Arthur's request (Arthur
         // is blocked on the reply): one Lens per session, and (Chad DS-1c
