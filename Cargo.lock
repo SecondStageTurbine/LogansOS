@@ -1281,6 +1281,8 @@ name = "neo-worker"
 version = "0.0.1"
 dependencies = [
  "libneo",
+ "neo-term-core",
+ "neo-terminal",
  "neo-text",
  "vault-core",
  "zeroize",

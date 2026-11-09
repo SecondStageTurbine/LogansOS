@@ -93,6 +93,12 @@ atrium-apps = ["desktop-pointer"]
 # OT-61 L5: the browser takes slot 2 of the client table (MODULE_BROWSER,
 # /modules/neo-browser), connected like the probe app.
 atrium-apps-browser = ["atrium-apps"]
+# L1a.3: the terminal window in the client table (module 4), launched from
+# Arthur's `open terminal` line; an unlock that gives the route back to the
+# client in front runs that client's discard step
+# (docs/THINK-2026-10-31-l1a-terminal-window.md §2, §6). Off, none of it is
+# compiled (§7).
+atrium-terminal = ["atrium-apps", "libneo/atrium-terminal"]
 desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
 # F7 (drag smoothness) control: a drag frame recomposes the bounding box of
 # the old and new outlines (the behaviour before the fix), for the
