@@ -150,6 +150,7 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-109 | **A fatal trap that prints before it panics** (found 2026-11-02, #52 review). The kernel-mode #GP/#PF/… handlers printed their diagnostics through `serial_println!` (a blocking `SERIAL` lock) and only then reached the panic handler, whose console takeover is the part that never waits. A CPU that faults while holding `SERIAL` (mid-print) spins on its own lock forever: no panic screen, on a target with no serial port | Exception entry / panic path (`idt::fatal_kernel_trap`) | **Was EXPOSED → fixed:** every fatal kernel-mode exception panics first, its diagnostics (name, err, cr2 for #PF, rip, `link_rip`, rsp, cs, ss, rflags) in the panic message; the test harness keeps print-then-fail-by-name | **Yes (`fb_gp_holding_serial`: a kernel #GP while holding `SERIAL` must paint the panic on screen and report over raw UART; control `neo-test-fb-gp-holding-serial-control` (print first) times out; the product witness `product-xsave-boot.sh control` ends in the panic screen with the #GP line)** |
 | CP-110 | **Inline asm that saves a register around an instruction and lets the allocator pick it for an output** (found 2026-11-02, the product-kernel witness). `push rbx; cpuid; mov {out:e}, ebx; pop rbx` with `out = lateout(reg)`: at opt-level 3 the allocator chose rbx for `out`, so `pop rbx` threw CPUID's EBX away and the caller read whatever rbx held (a stack address). An AP then computed a 2 GiB XSAVE need. Three copies (`fpu`, `cpuid_leaf7_ebx` (SMEP/SMAP), `tlb_shootdown`) | Any CPUID read | **Was EXPOSED → fixed:** `core::arch::x86_64::__cpuid_count` everywhere; no hand-written CPUID asm with an EBX output remains | **Yes (`product-xsave-boot.sh witness`: the opt-level-3 product kernel must admit the AP; the defective asm left it offline)** |
 | CP-111 | **A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O** (standing rule, 2026-11-08, from J.c.'s architecture read). The general form of CP-91 and CP-92, and CP-56's `Drop` blind spot at a global lock: cleanup that waits on another CPU (a shootdown), takes another lock, or does I/O, run inside the locked (often IF-off) section, can wait on what a CPU spinning for that lock must provide | Any global lock (`CAP_GRAPH` today; the tensor and model object paths next) | **Guard: the last reference is detached and released at a deferral point outside the locked section (the reaper, a post-unlock tail in the caller, or a work queue). A `Drop` that only decrements a count and returns is fine anywhere** | **Yes for its instances (CP-91, CP-92, CP-98 discriminators); every new object with drop-time teardown adds its own** |
+| CP-112 | **Per-process state a child must see from its first instruction, published after it can run** (L1a.1 step 2b, 2026-11-08). A field set on a `Process` after `spawn_user` returns (or after `try_push_ready`) races the child's first syscall: the child can act on the old value (stdio on the console instead of its pipe) | Spawn (`spawn_user_body!`): `Process.stdio` today; any future spawn-time attribute (a cwd, an environment, a budget the child reads) | **Guard: store it on the `Process` before `register` and `try_push_ready`, inside the spawn transaction (not afterwards, as `obj_spawn`'s parent-side charge may be)** | **Yes: `pipe_stdio` leg 1 plus `neo-test-pipe-stdio-late-control` (must fail: `pipe_stdio_prompt_not_in_pipe`, or `pipe_stdio_late_window_not_hit`)** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
 prevents it and there is (or should be) a discriminator; *N-A* = the construct doesn't exist in our kernel
@@ -4842,3 +4843,23 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   or an equivalent global lock.
 - **Source.** J.c.'s architecture read of the README (2026-11-08), drafted from the 10-27/28 review finds (Janus F1
   and F2 on #166).
+
+### CP-112 — Per-process state a child must see from its first instruction, published after it can run
+
+- **Trap.** Spawn makes the child's first thread runnable (`try_push_ready`) inside `spawn_user_body!`. Anything set
+  on the child's `Process` after that point, including after `spawn_user` returns to the syscall, can be read by
+  the child before it is set. The child then acts on the default: for stdio, its first prompt goes to the boot
+  console instead of its terminal's pipe, and nothing reports an error.
+- **Where it applies.** Any attribute the child reads on its own: `Process.stdio` (L1a.1 step 2b) today; a working
+  directory, an environment or a child-readable budget later. A parent-side record the child never reads (the
+  `obj_spawn` charge, which only the `Process`'s drop uses) is fine to set after the spawn returns.
+- **Guard.** Store the attribute on the `Process` before `register(process)` and `try_push_ready`, in the spawn
+  transaction. Stdio's store sits after the install block, so the child's `handles` lock is not held with its
+  `stdio` lock (`docs/THINK-2026-11-08-l1a1-stdio-selection.md` §2.2).
+- **Discriminator.** `pipe_stdio` leg 1: the shell's first prompt arrives in its stdout pipe, and xtask finds no
+  prompt on serial before the unselected leg's marker. Control: `neo-test-pipe-stdio-late-control` stores the stdio
+  after the spawn returns and waits for the child's first syscall first. It must fail, either with
+  `pipe_stdio_prompt_not_in_pipe` (the window was hit) or with `pipe_stdio_late_window_not_hit` (it never opened,
+  so the run proves nothing).
+- **Source.** L1a.1 step 2b's design (#72, Dexter relay 322 item 2: "the selection is set on the child before it can
+  run").

@@ -42,6 +42,7 @@
         feature = "mem-quota-test",
         feature = "kill-ready-in-kernel-test",
         feature = "obj-quota-test",
+        feature = "pipe-stdio-test",
         feature = "user-copy-bounds-test",
         feature = "socket-teardown-test",
         feature = "exit-codes-test",
@@ -226,6 +227,14 @@ fn run_selected_scenario() -> i32 {
 fn run_selected_scenario() -> i32 {
     obj_quota_tests::run()
 }
+
+#[cfg(feature = "pipe-stdio-test")]
+fn run_selected_scenario() -> i32 {
+    pipe_stdio_test::run()
+}
+
+#[cfg(feature = "pipe-stdio-test")]
+mod pipe_stdio_test;
 
 #[cfg(feature = "user-copy-bounds-test")]
 fn run_selected_scenario() -> i32 {
@@ -2161,6 +2170,7 @@ mod gpu_glass_slice6_tests {
     feature = "mem-quota-test",
     feature = "kill-ready-in-kernel-test",
     feature = "obj-quota-test",
+    feature = "pipe-stdio-test",
     feature = "user-copy-bounds-test",
     feature = "socket-teardown-test",
     feature = "exit-codes-test",

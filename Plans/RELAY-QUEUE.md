@@ -196,3 +196,4 @@ RELAY 375 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-09-relay-366-and-s
 RELAY 376 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 376 (#96 stable size measurement; RETURN `Plans/RETURN-2026-11-09-pr96-review-chad.md`)
 RELAY 377 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 377 (#92 all-or-nothing confirm at `5dd0e4e9`; RETURN `Plans/RETURN-2026-11-09-pr92-recheck2-chad.md`)
 RELAY 378 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 378 (#96 ceilings re-baselined at `0eea4614`; RETURN `Plans/RETURN-2026-11-09-pr96-recheck-chad.md`)
+RELAY 379 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 379 (#92 reconcile-from-store at `1609c752`; RETURN `Plans/RETURN-2026-11-09-pr92-recheck3-chad.md`)

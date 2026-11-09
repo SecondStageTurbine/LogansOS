@@ -329,6 +329,12 @@ pub const SYS_BUFFER_UNMAP: u64 = 0x1B6;
 pub use pipe_abi::{
     PIPE_NONBLOCK, SYS_PIPE_CREATE, SYS_PIPE_READ, SYS_PIPE_WRITE, pipe_split_ends,
 };
+/// L1a.1 step 2b (kernel `pipe`; ENOSYS elsewhere): stdio chosen at spawn.
+/// See [`sys_spawn_stdio`], [`sys_stdio_info`], [`sys_stdio_term_map`].
+pub use pipe_abi::{
+    PIPE_RIGHT_READ, PIPE_RIGHT_WRITE, STDIO_NO_INDEX, SYS_SPAWN_STDIO, SYS_STDIO_INFO,
+    SYS_STDIO_TERM_MAP, StdioInfo, decode_stdio_info, stdio_word,
+};
 /// Pipe sizes the terminal uses (THINK L1a §3.3), and the largest allowed.
 pub const PIPE_STDIN_CAPACITY: u64 = 4 * 1024;
 pub const PIPE_STDOUT_CAPACITY: u64 = 64 * 1024;
@@ -3216,6 +3222,85 @@ pub fn sys_pipe_write(h: Handle, buf: &[u8], flags: u64) -> i64 {
             buf.len() as u64,
             flags,
         )
+    }
+}
+
+/// L1a.1 step 2b: [`sys_spawn`] whose child's stdin, stdout and term page are
+/// `handles[stdin]`, `handles[stdout]` and `handles[term]` (each optional).
+/// stdin must be a pipe read end, stdout a pipe write end, the term page a
+/// 4096-byte buffer the child may map read and write; anything else is
+/// `EINVAL`, with no child made.
+#[inline]
+pub fn sys_spawn_stdio(
+    name: &str,
+    handles: &[Handle],
+    stdin: Option<u8>,
+    stdout: Option<u8>,
+    term: Option<u8>,
+) -> Result<(u32, ProcessHandle), i64> {
+    sys_spawn_stdio_word(name, handles, stdio_word(stdin, stdout, term))
+}
+
+/// [`sys_spawn_stdio`] with the raw stdio word (the refusal tests use it).
+#[inline]
+pub fn sys_spawn_stdio_word(
+    name: &str,
+    handles: &[Handle],
+    word: u64,
+) -> Result<(u32, ProcessHandle), i64> {
+    // SAFETY: name + handles are valid slices; the kernel validates them.
+    let r = unsafe {
+        raw6(
+            SYS_SPAWN_STDIO,
+            name.as_ptr() as u64,
+            name.len() as u64,
+            handles.as_ptr() as u64,
+            handles.len() as u64,
+            word,
+            0,
+        )
+    };
+    if r < 0 {
+        return Err(r);
+    }
+    let packed = r as u64;
+    Ok((
+        (packed & 0xFFFF_FFFF) as u32,
+        ProcessHandle((packed >> 32) as u32),
+    ))
+}
+
+/// L1a.1 step 2b: this process's stdio slots, as chosen at spawn (a slot
+/// that no longer holds the chosen handle reads as `None`). `ENOSYS` on a
+/// kernel without `pipe`.
+#[inline]
+pub fn sys_stdio_info() -> Result<StdioInfo, i64> {
+    let mut raw = [0u8; 8];
+    let r = sys_stdio_info_raw(raw.as_mut_ptr() as u64, raw.len());
+    if r < 0 {
+        Err(r)
+    } else {
+        Ok(decode_stdio_info(raw))
+    }
+}
+
+/// `SYS_STDIO_INFO` with a raw buffer (the error tests use it).
+#[inline]
+pub fn sys_stdio_info_raw(out: u64, len: usize) -> i64 {
+    // SAFETY: the kernel validates `out .. out + len`.
+    unsafe { raw3(SYS_STDIO_INFO, out, len as u64, 0) }
+}
+
+/// L1a.1 step 2b: map the term page chosen at spawn (`role` as
+/// [`sys_buffer_map`]'s). `EBADF` if it was never chosen or has gone.
+#[inline]
+pub fn sys_stdio_term_map(role: u32) -> Result<*mut u8, i64> {
+    // SAFETY: scalar args only.
+    let r = unsafe { raw3(SYS_STDIO_TERM_MAP, role as u64, 0, 0) };
+    if r < 0 {
+        Err(r)
+    } else {
+        Ok(r as u64 as *mut u8)
     }
 }
 

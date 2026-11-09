@@ -2539,6 +2539,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 4 (SWGL S3a): the S1 pattern rendered into a kernel
+        // Atrium buffer, byte-compared through the compositor's RO view.
+        name: "swgl_atrium_smoke",
+        feature: "neo-test-swgl-atrium-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 rung 4 (SWGL S2): upstream WebRender renders a display list
         // through SWGL; pixels compared with a hand-derived scene.
         name: "webrender_smoke",
@@ -5761,6 +5770,22 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // L1a.1 step 2b: stdio chosen at spawn. neo-init plays the terminal
+        // (`pipe-stdio-test`), spawning neo-shell and neo-worker's probe with
+        // SYS_SPAWN_STDIO: a round trip, EOF, a kill while parked on fd 0, a
+        // stale stdout slot (EBADF however reused), the refusals,
+        // SYS_STDIO_INFO against its oracle, the shell naming its pipes for its
+        // child, the term page, and (last) a spawn with no selection, whose
+        // prompt is the first to reach serial. Control:
+        // NEO_TEST_EXTRA_FEATURES=neo-test-pipe-stdio-late-control (must FAIL:
+        // pipe_stdio_prompt_not_in_pipe, or pipe_stdio_late_window_not_hit).
+        name: "pipe_stdio",
+        feature: "neo-test-pipe-stdio",
+        user_feature: Some("pipe-stdio-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-98 (CP-98): a kill that races a natural exit (the child's thread
         // waits unreaped in a zombie ring, or runs inside SYS_EXIT on another
         // CPU) returns ESRCH or defers to the reap; a kill of a process parked
@@ -7915,6 +7940,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "swgl_smoke" => &[SWGL_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
+        "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
         _ => &[],
     }
 }
@@ -9032,6 +9058,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&WEBRENDER_BIN) {
             build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
         }
+        if std_real_staged_bins().contains(&SWGL_ATRIUM_BIN) {
+            build_standalone_std_smoke(SWGL_BIN, &[SWGL_ATRIUM_BIN], SWGL_DIR)?;
+        }
     }
     Ok(())
 }
@@ -9055,6 +9084,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
+/// the same crate (`src/atrium.rs`).
+const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
 /// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
 const WEBRENDER_BIN: &str = "webrender-smoke";
 const WEBRENDER_DIR: &str = "userland/webrender-smoke";
@@ -9067,7 +9099,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
-        SWGL_BIN => Some(SWGL_DIR),
+        SWGL_BIN | SWGL_ATRIUM_BIN => Some(SWGL_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         _ => None,
     }
@@ -9154,15 +9186,24 @@ fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    build_standalone_std_smoke(bin, &[bin], dir)?;
-    let elf = std_real_bin_path(bin);
-    let len = fs::metadata(&elf)
-        .map_err(|e| format!("stat {}: {e}", elf.display()))?
-        .len();
-    println!(
-        "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
-        elf.display()
-    );
+    // S1's crate also holds the S3a Atrium smoke, whose std surface is the
+    // A4 change, so both are built and checked.
+    let bins: &[&str] = if bin == SWGL_BIN {
+        &[SWGL_BIN, SWGL_ATRIUM_BIN]
+    } else {
+        &[bin]
+    };
+    build_standalone_std_smoke(bin, bins, dir)?;
+    for bin in bins {
+        let elf = std_real_bin_path(bin);
+        let len = fs::metadata(&elf)
+            .map_err(|e| format!("stat {}: {e}", elf.display()))?
+            .len();
+        println!(
+            "ot61-swgl-build: {} ({len} bytes), A4 checks passed",
+            elf.display()
+        );
+    }
     Ok(())
 }
 
@@ -19774,6 +19815,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
+    if scenario.name == "swgl_atrium_smoke" {
+        for needle in [
+            "[ swgl-atrium-smoke ] ok(7) the compositor handle cannot map the client view (EPERM)",
+            "[ swgl-atrium-smoke ] ok(8) the compositor handle cannot commit (EPERM)",
+            "[ swgl-atrium-smoke ] ok(10) get_color_buffer is the Atrium client view, 7x5, stride 36",
+            "[ swgl-atrium-smoke ] ok(13) the compositor view == the hand-laid pattern (BGRA, no flip, padding and the rest of the page untouched)",
+            "[ swgl-atrium-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SWGL must raster into the Atrium buffer the compositor reads",
+            )?;
+        }
+    }
     if scenario.name == "swgl_smoke" {
         for needle in [
             "[ swgl-smoke ] ok(2) get_color_buffer is the caller's buffer, 7x5, stride 36",
@@ -19978,6 +20035,28 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             ],
             "a thread killed while parked in a pipe must leave no pipe count behind (CP-67), its stale token must not hurt the next reader, and a full waiter list must drop dead tokens before refusing a live one",
         )?;
+    }
+    if scenario.name == "pipe_stdio" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "PIPE_STDIO round prompt=true reply=true",
+                "PIPE_STDIO eof exit=2 out_eof=true",
+                "PIPE_STDIO kill parked=true kill=0 reaped=true out_eof=true in_epipe=true",
+                "PIPE_STDIO stale exit=0",
+                "PIPE_STDIO refusals cases=16 not_einval=0",
+                "PIPE_STDIO probe_unselected info=ffffffffffff0000",
+                "PIPE_STDIO info probe=true self=true len7=-22 out1=-14 allnone=true",
+                "PIPE_STDIO shell_child line=true relay=true",
+                "PIPE_STDIO term map=true stale=-9",
+                "PIPE_STDIO unselected begin",
+                "PIPE_STDIO unselected exit=2",
+                "PIPE_STDIO pass legs=round,eof,kill,stale,refusals,info,shell_child,term,unselected",
+            ],
+            "a child spawned with SYS_SPAWN_STDIO must use its pipes for fd 0 and fd 1 from its first instruction, see EBADF once a selected slot is gone or reused, and a spawn with no selection must be today's",
+        )?;
+        require_pipe_stdio_prefix_quiet(scenario, observed)?;
     }
     if scenario.name == "wait_any_core" {
         require_serial_sequence(
@@ -22912,6 +22991,35 @@ fn require_serial_contains(
             observed.serial_log.display()
         ))
     }
+}
+
+/// L1a.1 step 2b: before the unselected leg's marker, nothing a pipe-backed
+/// child wrote may reach serial: not the shell's banner or prompt, not the
+/// echo's reply, not the probe's line (the shell's child, leg 8).
+fn require_pipe_stdio_prefix_quiet(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let marker = "PIPE_STDIO unselected begin";
+    let Some(at) = serial.find(marker) else {
+        return Err(format!(
+            "`{}` serial has no `{marker}`; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
+    };
+    let prefix = &serial[..at];
+    for needle in ["neo> ", "[ neo-shell ] ready", "pipe-ok", "probe-line"] {
+        if prefix.contains(needle) {
+            return Err(format!(
+                "`{}` serial showed `{needle}` before `{marker}`: a pipe-backed child's output reached the console; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn require_serial_absent(
