@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "neo-terminal"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "L1a.3: the terminal window's session and renderer (no_std + alloc); neo-worker's terminal-app runs it"
+
+[lib]
+name = "neo_terminal"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+neo-term-core = { path = "../neo-term-core" }
+# The cells to draw (the same vendored copy neo-term-core parses with).
+vt100 = { path = "../../third_party/vt100", default-features = false }
+neo-text = { path = "../neo-text", features = ["plex-mono"] }

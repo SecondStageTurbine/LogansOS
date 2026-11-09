@@ -1517,6 +1517,29 @@ mod tests {
         let _ = b;
     }
 
+    /// L1a.3: the terminal's module id is 4, names `worker` with
+    /// `atrium-terminal`, and is launched only when its bit is allowed.
+    #[test]
+    fn launch_terminal_module_is_allowlisted_worker() {
+        use super::atrium_launch::*;
+        assert_eq!(MODULE_TERMINAL, 4);
+        assert_eq!(module_name(MODULE_TERMINAL), Some("worker"));
+        assert_eq!(allow(MODULE_TERMINAL), 0b1_0000);
+        let a = identity();
+        let surface = a.surface_cap_provenance;
+        let req = protocol::LaunchRequest {
+            identity: a,
+            module_id: MODULE_TERMINAL,
+            launch_token: 9,
+        };
+        let mut broker = LaunchBroker::new();
+        assert!(broker.mint(surface, allow(MODULE_PROBE)));
+        assert!(broker.judge(req, surface, Some(9)).is_err());
+        let mut broker = LaunchBroker::new();
+        assert!(broker.mint(surface, allow(MODULE_PROBE) | allow(MODULE_TERMINAL)));
+        assert_eq!(broker.judge(req, surface, Some(9)), Ok("worker"));
+    }
+
     /// The broker's LaunchCap rules: bound to one surface, possession proven
     /// by the token sent on the cap, allowlisted, revoked with its client.
     #[test]
