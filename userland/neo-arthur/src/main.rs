@@ -1178,7 +1178,14 @@ fn run_desktop_session(
                     #[cfg(feature = "desktop-park")]
                     surface.park();
                     #[cfg(not(feature = "desktop-park"))]
-                    core::hint::spin_loop();
+                    {
+                        // L1a.3: yield beside the terminal (#98), whose
+                        // preempted bursts otherwise waited ~20 s.
+                        #[cfg(feature = "atrium-terminal")]
+                        libneo::sys_sched_yield();
+                        #[cfg(not(feature = "atrium-terminal"))]
+                        core::hint::spin_loop();
+                    }
                     continue;
                 }
                 Err(code) => return code,
@@ -1392,7 +1399,12 @@ fn run_desktop_session(
                                 #[cfg(feature = "desktop-park")]
                                 surface.park();
                                 #[cfg(not(feature = "desktop-park"))]
-                                core::hint::spin_loop();
+                                {
+                                    #[cfg(feature = "atrium-terminal")]
+                                    libneo::sys_sched_yield();
+                                    #[cfg(not(feature = "atrium-terminal"))]
+                                    core::hint::spin_loop();
+                                }
                             }
                             Err(code) => return code,
                         }
@@ -1489,7 +1501,7 @@ fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Ha
 /// the front before it answers, so the next keys are the terminal's.
 #[cfg(feature = "atrium-terminal")]
 fn open_terminal(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Handle) {
-    const TOKEN: u64 = 0x5445_524D_4f50_4e54;
+    const TOKEN: u64 = 0x5445_524D_4F50_4E54;
     let module = libneo::atrium_launch::MODULE_TERMINAL;
     match surface.launch(cap, module, TOKEN, Some(TOKEN)) {
         Ok(()) => {

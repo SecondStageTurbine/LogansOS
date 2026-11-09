@@ -2103,7 +2103,15 @@ fn arthur_session_turns(
                 scene.park(&items[..if escaped { 2 } else { 1 }], deadline);
             }
             #[cfg(not(feature = "desktop-park"))]
-            core::hint::spin_loop();
+            {
+                // L1a.3: with the terminal in the table, the loop yields:
+                // beside a WM and an Arthur that spin, the terminal (whose
+                // bursts are long) waited ~20 s to run again (#98).
+                #[cfg(feature = "atrium-terminal")]
+                libneo::sys_sched_yield();
+                #[cfg(not(feature = "atrium-terminal"))]
+                core::hint::spin_loop();
+            }
         };
         #[cfg(feature = "desktop-idle-boot-test")]
         idle_window.note_request();
@@ -3558,16 +3566,14 @@ mod apps {
             .map_err(|_| 61)
     }
 
+    /// How the client table spawns a module's process (its session channel in).
+    type Spawn = fn(Handle) -> Result<libneo::ProcessHandle, i32>;
+
     /// A module's surface ids and its spawn: the probe app's, or (L1a.3) the
     /// terminal's. The terminal is the same `neo-worker` binary built with
     /// `terminal-app`, spawned with its session channel only, as the probe
     /// app is; it makes its child's pipes and term page itself.
-    fn module_client(
-        module: u32,
-    ) -> (
-        super::ClientIds,
-        fn(Handle) -> Result<libneo::ProcessHandle, i32>,
-    ) {
+    fn module_client(module: u32) -> (super::ClientIds, Spawn) {
         #[cfg(feature = "atrium-terminal")]
         if module == libneo::atrium_launch::MODULE_TERMINAL {
             return (
