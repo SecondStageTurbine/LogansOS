@@ -272,7 +272,8 @@ fn clang() -> PathBuf {
 
 /// An `llvm-ar` for the archives: `NEO_LLVM_AR` if set; else the pinned
 /// clang's own (`-print-prog-name`, when it gives a path); else
-/// `llvm-ar-<clang's major>`; else `llvm-ar`. Distribution clang packages
+/// `llvm-ar-<clang's major>`; else `llvm-ar`; else rustup's llvm-tools
+/// `llvm-ar`. Distribution clang packages
 /// often ship clang without llvm-ar, and any llvm-ar writes the same GNU
 /// archive format for these ELF objects.
 fn llvm_ar(clang: &Path) -> PathBuf {
@@ -298,8 +299,18 @@ fn llvm_ar(clang: &Path) -> PathBuf {
             return PathBuf::from(name);
         }
     }
+    // rustup's llvm-tools component (the CI image installs it for build-std).
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    if let Ok(o) = Command::new(rustc).args(["--print", "sysroot"]).output() {
+        let host = env::var("HOST").unwrap_or_default();
+        let p =
+            PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()).join(format!("lib/rustlib/{host}/bin/llvm-ar"));
+        if runs(&p) {
+            return p;
+        }
+    }
     panic!(
-        "mozjs-sys: no llvm-ar (tried NEO_LLVM_AR, {}'s, llvm-ar-{major}, llvm-ar)",
+        "mozjs-sys: no llvm-ar (tried NEO_LLVM_AR, {}'s, llvm-ar-{major}, llvm-ar, rustup's llvm-tools)",
         clang.display()
     )
 }

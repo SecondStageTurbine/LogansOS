@@ -90,3 +90,9 @@ zerofrom-derive = { path = "../../third_party/ot61-browser/vendor/zerofrom-deriv
 zerotrie = { path = "../../third_party/ot61-browser/vendor/zerotrie-0.2.5" }
 zerovec = { path = "../../third_party/ot61-browser/vendor/zerovec-0.11.9" }
 zerovec-derive = { path = "../../third_party/ot61-browser/vendor/zerovec-derive-0.11.7" }
+
+# The frozen C++ flags carry -gdwarf-4, so an unstripped debug build is about
+# 165 MB, too big to stage as a boot module in the scenario's guest. Strip
+# debuginfo only: the symbol table stays, and the A4 TCB check reads it.
+[profile.dev]
+strip = "debuginfo"
