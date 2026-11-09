@@ -289,8 +289,11 @@ pub fn log_boot_modules(hhdm_offset: u64) {
 /// hermetic fixture; it still holds the real 0.5B to the real digest.
 #[cfg(feature = "neo-test")]
 pub(crate) const PINS: &[ModelPin] = boot_model_logic::TEST_PINS;
-#[cfg(not(feature = "neo-test"))]
+#[cfg(all(not(feature = "neo-test"), not(feature = "arthur-quant-timing")))]
 pub(crate) const PINS: &[ModelPin] = boot_model_logic::PRODUCT_PINS;
+/// The Zenbook timing image: the shipped Q4_K_M and the Q8_0 beside it.
+#[cfg(all(not(feature = "neo-test"), feature = "arthur-quant-timing"))]
+pub(crate) const PINS: &[ModelPin] = boot_model_logic::TIMING_PINS;
 
 /// B1c: the vocabularies this kernel serves from `/boot/vocab/`.
 #[cfg(feature = "neo-test")]

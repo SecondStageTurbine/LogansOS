@@ -44,6 +44,12 @@ mod intel_gen9_4a;
 mod intel_gen9_execlist;
 #[path = "../../../kernel/src/drivers/accel/intel_gen9_ppgtt.rs"]
 mod intel_gen9_ppgtt;
+#[path = "../../../kernel/src/ai/quant_timing_logic.rs"]
+mod quant_timing_logic;
+#[path = "../../../kernel/src/ai/quant_timing_prompts.rs"]
+mod quant_timing_prompts;
+#[cfg(test)]
+mod quant_timing_tests;
 // The Intel accel device-ID allowlist. QEMU has no Intel iGPU, so the 4-shard
 // QEMU gate structurally cannot exercise an allowlist — every scenario reports
 // `candidates=0` regardless of the table. That gap escaped to bare metal (the

@@ -37,6 +37,21 @@ pub const QWEN25_05B: ModelPin = ModelPin {
 /// The models a product kernel will load from a boot module.
 pub const PRODUCT_PINS: &[ModelPin] = &[QWEN25_05B];
 
+/// The Zenbook timing image's second model (`Plans/DISPATCH-2026-11-09-seat-f-arthur-q8-zenbook-timing.md`):
+/// Qwen2.5-0.5B-Instruct **Q8_0**, the import #90 pins (669,799,936 bytes;
+/// `qwen2.5-0.5b-instruct-q8_0.gguf` @ `9217f5db`, SHA-256 `ca59ca7f…`,
+/// measured by `.github/workflows/model-pin.yml`). Its own module name, beside
+/// the shipped Q4_K_M, and no vocab of its own (the two vocabs are
+/// byte-identical, and the timing mode feeds token ids).
+pub const QWEN25_05B_Q8_TIMING: ModelPin = ModelPin {
+    module: "/models/model-qwen2.5-0.5b-q8.neom",
+    blake3: hex32(b"1cfd06dc7fe42710f8fab7d337a681ac5527a46e5b2ba6204e929f210055cd4d"),
+};
+
+/// The timing image's pins (`arthur-quant-timing`, never the product image):
+/// the shipped model and the Q8_0 beside it.
+pub const TIMING_PINS: &[ModelPin] = &[QWEN25_05B, QWEN25_05B_Q8_TIMING];
+
 /// The hermetic CI fixture (`neomc fixtures` → `valid_embedding.neom`, 4,144
 /// bytes, deterministic), staged under the 0.5B module name by the
 /// `arthur_boot_module_*` scenarios. Only test kernels accept it, and they
@@ -55,8 +70,16 @@ pub const KAT_INVENTORY: ModelPin = ModelPin {
     blake3: hex32(b"6f14b933789cf24683579d030f31d737360ba890b7f3a65899f63759c1f1029c"),
 };
 
+/// The timing scenario's second slot (`arthur_quant_timing_format`): the same
+/// KAT inventory LM under a second module name, so the format check runs two
+/// models through the timing mode without either being real.
+pub const KAT_INVENTORY_B: ModelPin = ModelPin {
+    module: "/models/kv-persist-kat-b.neom",
+    blake3: KAT_INVENTORY.blake3,
+};
+
 /// The models a test kernel will load from a boot module.
-pub const TEST_PINS: &[ModelPin] = &[QWEN25_05B, FIXTURE_05B, KAT_INVENTORY];
+pub const TEST_PINS: &[ModelPin] = &[QWEN25_05B, FIXTURE_05B, KAT_INVENTORY, KAT_INVENTORY_B];
 
 /// B1c: the 0.5B tokenizer vocabulary, imported from the same pinned GGUF:
 /// 7,990,862 bytes. Reproduced byte-for-byte by two independent imports
