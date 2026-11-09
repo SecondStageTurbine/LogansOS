@@ -190,3 +190,4 @@ RELAY 369 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-09-relay-366-and-s
 RELAY 370 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 370 (#93 SpiderMonkey on target, docs; RETURN `Plans/RETURN-2026-11-09-pr93-design-dexter.md`)
 RELAY 371 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 371 (#72 F1 only at `70fa3e7e`; RETURN `Plans/RETURN-2026-11-09-pr72-recheck2-janus.md`)
 RELAY 372 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 372 (#94 quant drift on Q8_0; RETURN `Plans/RETURN-2026-11-09-pr94-review-jarvis.md`)
+RELAY 373 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 373 (#92 confirm re-check at `60c1e1e5`; RETURN `Plans/RETURN-2026-11-09-pr92-recheck-chad.md`)

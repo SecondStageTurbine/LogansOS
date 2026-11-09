@@ -102,3 +102,11 @@ RETURN: `Plans/RETURN-2026-11-09-pr72-recheck2-janus.md` on `codex/pr72-recheck2
 - [ ] The THINK addendum corrects the Q8 row: 99.4% on clear positions was llama.cpp's Q8_0, not ours. Pass/fail.
 - [ ] The speed note (9.1 vs 3.7 s/token, host scalar) is labelled as a host measurement, not the Zenbook. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-09-pr94-review-jarvis.md` on `codex/pr94-review-jarvis`.
+
+## Section 373: Chad, #92 re-check of the confirm (your relay 369). **MODEL** GPT-6.1-Sol, medium. Head `60c1e1e5`.
+The fix is `21272805` ("the confirm is transactional").
+- [ ] Declining the confirm, or a refused or failed write, leaves the old zone and RTC mode in place, and the clock
+  shows the old zone. Pass/fail plus line.
+- [ ] A scenario leg declines and checks that the stored id and the clock are unchanged. Pass/fail plus the xtask line.
+- [ ] Your other five items still hold. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr92-recheck-chad.md` on `codex/pr92-recheck-chad`.
