@@ -228,6 +228,10 @@ const SETUP_MENU_WALK_TRY_REL: &str = "target/neo-test/setup_menu_walk_try.ppm";
 const SETUP_MENU_SKIP_CAPTURE_REL: &str = "target/neo-test/setup_menu_skip.ppm";
 const SETUP_MENU_SKIP_WELCOME_REL: &str = "target/neo-test/setup_menu_skip_welcome.ppm";
 const SETUP_MENU_STORE_TRY_CAPTURE_REL: &str = "target/neo-test/setup_menu_store_try.ppm";
+const SETUP_MENU_NET_CAPTURE_REL: &str = "target/neo-test/setup_menu_net.ppm";
+const SETUP_MENU_NET_PAGE_REL: &str = "target/neo-test/setup_menu_net_page.ppm";
+const SETUP_MENU_NET_NONIC_CAPTURE_REL: &str = "target/neo-test/setup_menu_net_nonic.ppm";
+const SETUP_MENU_NET_OFF_CAPTURE_REL: &str = "target/neo-test/setup_menu_net_off.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -936,7 +940,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 43] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 46] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1260,6 +1264,39 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 43] = [
             b"\r",
         )
     },
+    // F11 S4: the Network page over QEMU's usb-net on slirp (the CDC-ECM
+    // product path), captured as it shows; then its two controls.
+    DesktopScenario {
+        mid: Some((
+            b"DESKTOP setup page=network rows=6",
+            SETUP_MENU_NET_PAGE_REL,
+        )),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_net",
+            SETUP_MENU_NET_STEPS,
+            SETUP_MENU_NET_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_net_nonic",
+            SETUP_MENU_NET_DOWN_STEPS,
+            SETUP_MENU_NET_NONIC_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_net_off",
+            SETUP_MENU_NET_DOWN_STEPS,
+            SETUP_MENU_NET_OFF_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // F11 S2: the walk on the volatile overlay, then the intro session.
     DesktopScenario {
         long_timeout: true,
@@ -1509,6 +1546,56 @@ const SETUP_MENU_STORE_TRY_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
     step(b"DESKTOP setup page=comfort rows=6", b" "),
     step(b"DESKTOP setup redraw page=comfort focus=0", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S4 (`setup_menu_net`): Begin, the Network page (connected: six rows),
+/// Continue, then S1's Time zone (UTC kept), Comfort's Continue, Try, and the
+/// intro session.
+const SETUP_MENU_NET_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=network rows=6", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=5", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S4's controls (`setup_menu_net_nonic`, `setup_menu_net_off`): the
+/// same walk, the Network page with five rows (no link, or the status
+/// unavailable) and Continue without a network.
+const SETUP_MENU_NET_DOWN_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=network rows=5", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
     step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
     step(b"DESKTOP setup page=try rows=5", b"\n"),
     step(DESKTOP_INTRO_SHOWN_PROMPT, b"help"),
@@ -4045,6 +4132,35 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "setup_menu_skip",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("setup-menu-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S4: the Network page, connected: QEMU's usb-net on slirp (the
+        // CDC-ECM product path) leases 10.0.2.15 at boot, and the page shows
+        // it, read through SYS_NET_IF_STATUS.
+        name: "setup_menu_net",
+        feature: "neo-test-setup-net-boot",
+        user_feature: Some("setup-net-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // Its control: no NIC. The page says no link, Continue without a
+        // network goes on, and the session is the intro's.
+        name: "setup_menu_net_nonic",
+        feature: "neo-test-setup-net-boot",
+        user_feature: Some("setup-net-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // The kill-switch control: the intro kernel, without `net-info`. The
+        // call is ENOSYS, the page says the status is unavailable, and the
+        // boot is otherwise the same.
+        name: "setup_menu_net_off",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("setup-net-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8646,6 +8762,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-clock-boot-test")
         | Some("setup-menu-boot-test")
         | Some("setup-store-try-boot-test")
+        | Some("setup-net-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -8950,7 +9067,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("install-atrium-boot-test")
         | Some("power-menu-boot-test")
         | Some("setup-menu-boot-test")
-        | Some("setup-store-try-boot-test") => vec![
+        | Some("setup-store-try-boot-test")
+        | Some("setup-net-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
@@ -15736,6 +15854,16 @@ fn run_qemu_test_invocation(
         }
     }
 
+    if scenario.name == "setup_menu_net" {
+        // F11 S4: a usb-net (CDC-ECM) on the desktop's xHCI, on a slirp user
+        // netdev: slirp's DHCP server (10.0.2.2) leases 10.0.2.15 to the
+        // boot's bring-up (boot-eth0), as in `usb_ethernet`. Hermetic: slirp
+        // is built in, nothing leaves the runner.
+        qemu.args(["-netdev", "user,id=usbnet0"]);
+        qemu.arg("-device")
+            .arg("usb-net,netdev=usbnet0,bus=xhci0.0");
+    }
+
     if scenario.name == "di1_forward" {
         qemu.arg("-device").arg("qemu-xhci,id=xhci0");
         qemu.arg("-device").arg("usb-mouse,bus=xhci0.0");
@@ -19816,7 +19944,12 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         | INSTALL_ATRIUM_NO_BUNDLE_SCENARIO
         | INSTALL_ATRIUM_BAD_PIN_SCENARIO => "desktop_intro_boot",
         // F11 S1: the intro session's kernel, after the setup menu.
-        "setup_menu_walk" | "setup_menu_skip" | "setup_menu_store_try" => "desktop_intro_boot",
+        "setup_menu_walk"
+        | "setup_menu_skip"
+        | "setup_menu_store_try"
+        | "setup_menu_net"
+        | "setup_menu_net_nonic"
+        | "setup_menu_net_off" => "desktop_intro_boot",
         // F11 S2: the plain sign-in kernel, with the setup menu before it.
         login_scenarios::LOGIN_SETUP_STORE_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SCENARIO
@@ -21418,6 +21551,104 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             require_serial_absent(scenario, observed, needle, why)?;
         }
         require_framebuffer_capture(scenario, SETUP_MENU_STORE_TRY_CAPTURE_REL)?;
+    }
+    // F11 S4 (setup-menu THINK §3.3, §5 S4): the Network page and its two
+    // controls. Each walks Begin, Network, Time zone, Comfort, Try, then the
+    // intro session; only the Network page differs.
+    if let Some((kernel, net, rows, continue_why)) = match scenario.name {
+        "setup_menu_net" => Some((
+            // The boot's bring-up holds slirp's lease before neo-init runs.
+            "[ kernel ] eth0: link up ip=10.0.2.15",
+            "DESKTOP setup net link=up driver=cdc-ecm ipv4=10.0.2.15 lease_s=",
+            "DESKTOP setup page=network rows=6",
+            "the Network page reads the CDC-ECM lease (link up, 10.0.2.15) from SYS_NET_IF_STATUS, then the walk and the intro session",
+        )),
+        "setup_menu_net_nonic" => Some((
+            "[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues",
+            "DESKTOP setup net link=down driver=none",
+            "DESKTOP setup page=network rows=5",
+            "no NIC: the page says no link, Continue without a network goes on, and Home follows",
+        )),
+        "setup_menu_net_off" => Some((
+            "[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues",
+            // ENOSYS (38): the intro kernel has no `net-info`.
+            "DESKTOP setup net status=unavailable errno=38",
+            "DESKTOP setup page=network rows=5",
+            "the kill-switch: without net-info the call is ENOSYS, the page says the status is unavailable, and the boot is otherwise the same",
+        )),
+        _ => None,
+    } {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                kernel,
+                "DESKTOP setup page=welcome rows=5",
+                net,
+                rows,
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup redraw page=timezone focus=4",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup redraw page=comfort focus=2",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0",
+                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            continue_why,
+        )?;
+        // Exactly one status line: the page reads the kernel once.
+        let serial = read_serial(observed)?;
+        let lines: Vec<&str> = serial
+            .lines()
+            .filter(|l| l.contains("DESKTOP setup net "))
+            .collect();
+        if lines.len() != 1 {
+            return Err(format!(
+                "`{}`: one `DESKTOP setup net` line expected, saw {}: {lines:?}",
+                scenario.name,
+                lines.len()
+            ));
+        }
+        if scenario.name == "setup_menu_net" {
+            // The lease's time left, on the DHCP clock: slirp leases a day,
+            // and the clock only ran during the boot's exchange.
+            let left = lines[0]
+                .split("lease_s=")
+                .nth(1)
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .ok_or_else(|| {
+                    format!(
+                        "`{}`: the Network line carries no lease time: {}",
+                        scenario.name, lines[0]
+                    )
+                })?;
+            if !(1..=86_400).contains(&left) {
+                return Err(format!(
+                    "`{}`: lease_s={left} is not a day's lease with time left",
+                    scenario.name
+                ));
+            }
+            require_framebuffer_capture(scenario, SETUP_MENU_NET_PAGE_REL)?;
+        }
+        for (needle, why) in [
+            (
+                "DESKTOP setup page=skip",
+                "the walk never skips: Continue is always there",
+            ),
+            ("DESKTOP setup page=language", "the stubs are hidden"),
+            ("SETTINGS written", "the Network page stores nothing"),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        let capture = match scenario.name {
+            "setup_menu_net" => SETUP_MENU_NET_CAPTURE_REL,
+            "setup_menu_net_nonic" => SETUP_MENU_NET_NONIC_CAPTURE_REL,
+            _ => SETUP_MENU_NET_OFF_CAPTURE_REL,
+        };
+        require_framebuffer_capture(scenario, capture)?;
     }
     // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
     // defaults and no other page, and the session is the intro's.

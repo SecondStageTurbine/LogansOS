@@ -15,13 +15,13 @@ pub mod identity;
 /// Phase 7.5 CB-3: the kernel-free interface-identity kill-switch + selection logic
 /// (ISC-3/ISC-5), host-KAT'd against the disabled-equivalence baseline.
 pub mod identity_logic;
+#[cfg(feature = "net-info")]
+pub mod if_status;
 /// F11 S4: `SYS_NET_IF_STATUS`, the record and its rules (kernel-free; the host
 /// byte oracle includes this file) and the snapshot. Off ⇒ not compiled, and the
 /// number is `ENOSYS`.
 #[cfg(feature = "net-info")]
 pub mod if_status_logic;
-#[cfg(feature = "net-info")]
-pub mod if_status;
 pub mod interface;
 pub mod ipv4;
 pub mod ipv6;

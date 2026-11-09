@@ -1865,7 +1865,14 @@ pub fn sys_net_stats(handle: SocketHandle) -> Result<NetStatsV1, i64> {
 /// `Err(ENOSYS)` when the kernel has no `net-info`.
 pub fn sys_net_if_status() -> Result<net_if_status::NetIfStatus, i64> {
     let mut rec = [0u8; net_if_status::RECORD_LEN];
-    let r = unsafe { raw3(SYS_NET_IF_STATUS, rec.as_mut_ptr() as u64, rec.len() as u64, 0) };
+    let r = unsafe {
+        raw3(
+            SYS_NET_IF_STATUS,
+            rec.as_mut_ptr() as u64,
+            rec.len() as u64,
+            0,
+        )
+    };
     if r < 0 {
         return Err(r);
     }

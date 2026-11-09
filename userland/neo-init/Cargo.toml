@@ -244,6 +244,12 @@ setup-tz-rollback-fail-test = ["setup-tz-refuse-test"]
 setup-tz-reread-fail-test = ["setup-tz-fsync-fail-test"]
 # The setup menu's boot test (`setup_menu_walk`).
 setup-menu-boot-test = ["setup-menu", "desktop-intro-boot-test"]
+# F11 S4 (setup-menu THINK §3.3): the Network page, from the kernel's
+# SYS_NET_IF_STATUS (`net-info`; ENOSYS without it: "unavailable").
+setup-net = ["setup-menu"]
+# Its gates: `setup_menu_net` (usb-net on slirp), the no-NIC control and the
+# kill-switch control (a kernel without `net-info`).
+setup-net-boot-test = ["setup-net", "setup-menu-boot-test"]
 atrium-settings-store = ["login", "desktop-home", "dep:settings-core", "libneo/atrium-settings"]
 # L1.3a (THINK-2026-10-30-l1.3): Arthur's actions behind the WM's permission
 # prompt. The WM is the grant authority: the record is .system/arthur-grants.json

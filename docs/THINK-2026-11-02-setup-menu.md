@@ -700,6 +700,34 @@ the `EINVAL` on a short buffer.
 **Kill-switch `net-info`:** off ⇒ the syscall is `ENOSYS`, the page shows "Network status is unavailable" and
 Continue, and the rest of the boot is unchanged.
 
+**As built (Seat I, 2026-11-09).** Where the build settles what §3.3 left open:
+- **The number is `0x191`**, after `SYS_GETRANDOM` (the network block 0x180–0x18F was full).
+- **`NetIfStatusV1` is 56 bytes, version 1**, little-endian: `version`, `flags`, `ifindex` (u32 each), `driver`
+  [12], `mac` [6], `ipv4` [4], `prefix` u8, a zero pad byte, `router` [4], `dns` [4], a zero pad u32, and
+  `lease_secs_left` u64 (`u64::MAX` without a lease). The hand-laid oracle is `tools/net-if-status-abi-tests`; it
+  holds the kernel's struct and libneo's independent byte decoder to the same records.
+- **One flag more than §3.3 named: bit 3, `PRESENT`** (a network device exists). It tells "no NIC" from "a NIC with
+  no link" without a sentinel `ifindex`.
+- **The default interface**: the DHCP client's when it holds a lease, else the first with link up, else the first
+  registered. A lease is reported only on its own interface.
+- **The lease's time left is on the DHCP client's clock**, whose ticks are the lease's seconds. It advances only
+  while something calls `net::tick` (the boot's bring-up; `net-tick` where present), so on image A it is the
+  lease's length less the bring-up's ticks. The renewal gap above stands.
+- **Each source is read under its own lock, and no lock is held while another is taken**: the DHCP client (one
+  hold, so the lease, its interface and the clock agree), the identity registry, the device registry, then the
+  IPv4 table. The syscall body runs IF=0, like every other net-lock taker (`net-tick` runs its step IF-off), so it
+  adds no new taker class (CP-37). None of them is an AI-governance lock (I-14). Two sources read at different
+  instants can disagree for one call (a lease bound just after the first read); the page then says no address, and
+  it reads once.
+- **`net-info` is not in `desktop` yet**: the setup menu isn't in the product image. Its gate kernel is
+  `neo-test-setup-net-boot` (the intro kernel plus `net-info`). That makes the kill-switch a QEMU control:
+  `setup_menu_net_off` boots the plain intro kernel, where the number is `ENOSYS` and the page says the status is
+  unavailable. `setup_menu_net_nonic` is the no-NIC control on the `net-info` kernel.
+- **The page's words**: "Wired: connected, 10.0.2.15" (or "no address yet"), "Device: cdc-ecm. Lease: 23 h 53 min
+  left.", "Wired: no link.", "Network status is unavailable.", and "Wi-Fi: coming in a later version." Continue
+  reads "Continue" with an address and "Continue without a network" otherwise. The Try summary doesn't name the
+  network: it isn't a choice.
+
 ### S5 — keyboard layouts: a second table and a selector
 
 `keymap_layout_logic.rs` with US + UK, the WM's decoder selecting by id, the id passed to Arthur at spawn (and to

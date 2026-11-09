@@ -135,7 +135,11 @@ pub fn prefix_len(mask: [u8; 4]) -> u8 {
 /// The record for `iface` (`None`: no interface), with `lease` if it is bound
 /// on that interface, and `address` (the interface's preferred IPv4 address)
 /// when there is no lease.
-pub fn build(iface: Option<Iface<'_>>, lease: Option<Lease>, address: Option<[u8; 4]>) -> NetIfStatusV1 {
+pub fn build(
+    iface: Option<Iface<'_>>,
+    lease: Option<Lease>,
+    address: Option<[u8; 4]>,
+) -> NetIfStatusV1 {
     let mut out = NetIfStatusV1::none();
     let Some(iface) = iface else {
         return out;
