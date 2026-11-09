@@ -7,7 +7,8 @@
 # probe lists what SpiderMonkey's objects need beyond them. Taken with llvm-nm
 # (defined, extern) from neo-crt at claude/ot61-c3a-localization 1d77e6cb
 # (main 537aa9bb plus localization and the POSIX gap) and its compiler_builtins, Rust
-# symbols left out. Regenerate when neo-crt changes.
+# symbols left out; brought to main's neo-crt (#88 landed, 491a24f2), whose only
+# new C export since 1d77e6cb is pthread_getname_np. Regenerate when neo-crt changes.
 _Exit
 _IO_ferror_unlocked
 _IO_getc
@@ -2924,6 +2925,7 @@ pthread_condattr_setclock
 pthread_create
 pthread_detach
 pthread_equal
+pthread_getname_np
 pthread_getspecific
 pthread_join
 pthread_key_create

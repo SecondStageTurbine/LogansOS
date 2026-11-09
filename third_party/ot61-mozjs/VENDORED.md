@@ -83,8 +83,8 @@ hand from the crate's `lib.rs` and `cbindgen.toml` until the generator produces 
 ## libc++ with localization
 
 SpiderMonkey's headers and irregexp use `<ostream>`/`<sstream>`/`<iomanip>`, so it needs neo-crt's libc++ with
-localization. That change is its own PR (`claude/ot61-c3a-localization`; C3a THINK §10). Until it lands, the
-generator's compile probe points `neo-cc` (`NEO_CXX_CONFIG`) at a copy of `__config_site` with localization on.
+localization. That came with #88 (C3a THINK §10, on main at `491a24f2`), so `neo-cc` uses neo-crt's own
+`__config_site`; the generator's temporary copy with localization turned on is gone.
 
 ## The frozen outputs: `generated/`
 

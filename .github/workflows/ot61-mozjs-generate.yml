@@ -190,15 +190,10 @@ jobs:
           set +e -u
           obj="$RUNNER_TEMP/obj-neo"
           [ -f "$obj/config.status" ] || { echo "no configured tree"; exit 1; }
-          # Until neo-crt's libc++ has localization on main (C3a THINK §10),
-          # compile against a copy of its __config_site with it on.
-          cfg="$RUNNER_TEMP/cxx-config"
-          rm -rf "$cfg" && cp -a "$GITHUB_WORKSPACE/userland/neo-crt/cxx" "$cfg"
-          sed -i '/_LIBCPP_HAS_NO_LOCALIZATION/d' "$cfg/__config_site"
           gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" MOZBUILD_STATE_PATH="$RUNNER_TEMP/mozbuild" \
-            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" \
             make -C "$obj" -k -j"$(nproc)" compile > "$RUNNER_TEMP/compile-neo.log" 2>&1
           rc=$?
           echo "compile (neoplutarch) exit: $rc"
@@ -233,7 +228,6 @@ jobs:
           set -euo pipefail
           obj="$RUNNER_TEMP/obj-neo"
           gen="$GITHUB_WORKSPACE/third_party/ot61-mozjs/generator"
-          cfg="$RUNNER_TEMP/cxx-config"
           export NEO_MOZJS_SYS="$MOZJS_SRC/mozjs-sys"
           cargo build -q --release --manifest-path "$gen/bindings/Cargo.toml" \
             --target-dir "$RUNNER_TEMP/bindgen-target"
@@ -242,13 +236,13 @@ jobs:
           # names (a newer libclang rejects older intrinsic headers).
           libclang=$(cd "$("$NEO_CLANG" -print-resource-dir)/../.." && pwd)
           echo "libclang from $libclang ($("$NEO_CLANG" --version | head -1))"
-          extra=$(NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
+          extra=$(NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" \
             "$gen/neo-c++" --neo-print-flags | tr '\n' ' ')
           rm -f "$obj/glue-cc.log"
           cd "$MOZJS_SRC/mozjs-sys"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" NEO_OBJ="$obj" LIBCLANG_PATH="$libclang" \
-            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
+            NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" \
             TARGET=x86_64-unknown-neoplutarch HOST=x86_64-unknown-linux-gnu \
             OPT_LEVEL=2 DEBUG=false PROFILE=release OUT_DIR="$obj" \
             CARGO_CFG_TARGET_OS=neoplutarch CARGO_CFG_TARGET_ARCH=x86_64 \
