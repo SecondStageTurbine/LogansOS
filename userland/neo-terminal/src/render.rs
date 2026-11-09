@@ -110,6 +110,17 @@ impl Renderer {
     /// Redraw the rows that changed. Returns the damaged band `(y, height)`
     /// in pixels, or `None` when nothing changed.
     pub fn draw(&mut self, screen: &vt100::Screen, pixels: &mut [u32]) -> Option<(u16, u16)> {
+        self.draw_with(screen, pixels, || {})
+    }
+
+    /// [`Renderer::draw`], calling `between` after each row it redraws (the
+    /// app yields there, so a long redraw is many short bursts).
+    pub fn draw_with(
+        &mut self,
+        screen: &vt100::Screen,
+        pixels: &mut [u32],
+        mut between: impl FnMut(),
+    ) -> Option<(u16, u16)> {
         let mut canvas = Canvas::new(pixels, self.width, self.height, self.width)?;
         let (rows, cols) = screen.size();
         let rows = rows.get().min(self.geo.rows);
@@ -139,6 +150,7 @@ impl Renderer {
                 None => (row, row),
                 Some((first, _)) => (first, row),
             });
+            between();
         }
         band.map(|(first, last)| self.geo.band(first, last))
     }
@@ -301,6 +313,17 @@ mod tests {
         let band = r.draw(t.screen(), &mut px).expect("cursor row");
         assert_eq!(band, g.band(0, 0));
         assert_eq!(inked(&px, &g, 0, 1), g.cell_w * g.cell_h);
+    }
+
+    /// `draw_with` calls back once per redrawn row, and damages the same.
+    #[test]
+    fn draw_with_calls_back_per_row() {
+        let (mut r, mut t, mut px) = setup();
+        let _ = t.process(b"\x1b[?25la\r\nb\r\nc");
+        let mut calls = 0;
+        let band = r.draw_with(t.screen(), &mut px, || calls += 1);
+        assert_eq!(calls, 3);
+        assert_eq!(band, Some(r.geometry().band(0, 2)));
     }
 
     /// Only the changed rows are redrawn and damaged.

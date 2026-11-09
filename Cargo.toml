@@ -205,6 +205,16 @@ opt-level = 3
 # cargo notes that the last three match no package there.)
 [profile.dev.package.neo-arthur]
 opt-level = 3
+# L1a.3: the terminal's parser, session and renderer. Unoptimised under TCG
+# a one-row redraw took about 0.4 s (#98); only terminal builds link them.
+[profile.dev.package.neo-terminal]
+opt-level = 3
+[profile.dev.package.neo-term-core]
+opt-level = 3
+[profile.dev.package.vt100]
+opt-level = 3
+[profile.dev.package.vte]
+opt-level = 3
 [profile.dev.package.core]
 opt-level = 3
 [profile.dev.package.alloc]
