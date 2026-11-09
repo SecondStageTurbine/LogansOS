@@ -7,8 +7,11 @@
 //! quant-drift-tests run --neom M.neom --prompts prompts.tsv --corpus corpus.u32 \
 //!     --label ours --sha256 HEX --source TEXT --tool TEXT --out ours.tsv
 //! quant-drift-tests compare --ours ours.tsv --q4 q4.tsv --fp32 fp32.tsv \
-//!     --meta meta.tsv --kat-out KAT.json --markdown-out REPORT.md
+//!     --meta meta.tsv --kat-out KAT.json --markdown-out REPORT.md [--quant Q8_0]
 //! ```
+//!
+//! `--q4` is the llama.cpp run on the SAME file as `--ours` (bar A), whatever
+//! its quantization; `--quant` names it in the report (default `Q4_K_M`).
 
 use std::collections::BTreeMap;
 use std::io::{BufWriter, Write};
@@ -489,6 +492,10 @@ fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {
     let fp32 = read_run(required(options, "fp32")?)?;
     let meta = read_meta(required(options, "meta")?)?;
 
+    // The shipped file's quantization, for the report's headings and the KAT's
+    // `inputs.quantization`. `--q4` names the llama.cpp run on the SAME file
+    // (bar A) whatever its quantization; the flag kept its first name.
+    let quant = options.get("quant").map(String::as_str).unwrap_or("Q4_K_M");
     let ours_vs_q4 = report::compare(&ours, &q4)?;
     let q4_vs_fp32 = report::compare(&q4, &fp32)?;
     let ours_vs_fp32 = report::compare(&ours, &fp32)?;
@@ -534,6 +541,7 @@ fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {
     };
 
     let report_md = report::markdown(
+        quant,
         &ours,
         &q4,
         &fp32,
@@ -548,6 +556,7 @@ fn cmd_compare(options: &BTreeMap<String, String>) -> Result<(), String> {
     if let Some(path) = options.get("kat-out") {
         let kat = report::kat_json(
             &kat_meta,
+            quant,
             &ours,
             &q4,
             &fp32,
