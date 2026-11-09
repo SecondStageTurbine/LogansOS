@@ -1,6 +1,10 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # DISPATCH: Seat E, setup menu S5 — keyboard layouts (2026-11-09)
 
+**Scope change (J.c., 2026-11-09 ~21:00 UTC): two layouts only, US and Spanish (Spain, ISO), not UK.** The details are in
+the PM comment on #99: Spanish dead keys for the acute accent and the diaeresis, and the gate types `ñ ¿ ¡ ç á`. Every
+mention of UK below now means Spanish.
+
 **Seat:** Seat E (cloud). **Branch:** `claude/setup-s5-keyboard-layouts` off `origin/main`.
 **Design:** `docs/THINK-2026-11-02-setup-menu.md`: §3.2 (keyboard layout), §4.2 (keyboard-only, and the key map),
 §5 (rungs and gates) and the **S5** section, plus the S2 store for keys 6/7.
