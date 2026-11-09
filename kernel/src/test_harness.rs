@@ -1216,10 +1216,25 @@ const SCENARIO: &str = "phase3_neofs_mount_rejects_bad_superblock";
 const SCENARIO: &str = "phase3_neofs_create_small_file";
 #[cfg(feature = "neo-test-phase3-neofs-write-readback-same-boot")]
 const SCENARIO: &str = "phase3_neofs_write_readback_same_boot";
-#[cfg(feature = "neo-test-phase3-neofs-cache-evict")]
+#[cfg(all(
+    feature = "neo-test-phase3-neofs-cache-evict",
+    not(feature = "neo-test-neofs-cache-index-crosscheck"),
+    not(feature = "neo-test-neofs-cache-index-off")
+))]
 const SCENARIO: &str = "phase3_neofs_cache_evict";
-#[cfg(feature = "neo-test-phase3-neofs-cache-evict-off")]
+#[cfg(all(
+    feature = "neo-test-phase3-neofs-cache-evict-off",
+    not(feature = "neo-test-neofs-cache-index-crosscheck-noevict")
+))]
 const SCENARIO: &str = "phase3_neofs_cache_evict_off";
+// neofs-cache-index: the same legs, with the index checked against the scan,
+// or (`-off`) with every lookup by scan.
+#[cfg(feature = "neo-test-neofs-cache-index-crosscheck")]
+const SCENARIO: &str = "phase3_neofs_cache_index_crosscheck";
+#[cfg(feature = "neo-test-neofs-cache-index-crosscheck-noevict")]
+const SCENARIO: &str = "phase3_neofs_cache_index_crosscheck_noevict";
+#[cfg(feature = "neo-test-neofs-cache-index-off")]
+const SCENARIO: &str = "phase3_neofs_cache_index_off";
 #[cfg(feature = "neo-test-boot-time")]
 const SCENARIO: &str = "boot_time";
 #[cfg(feature = "neo-test-phase3-neofs-allocator-reuse-guard")]

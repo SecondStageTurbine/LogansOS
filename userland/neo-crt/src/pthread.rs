@@ -20,7 +20,7 @@
 //! default refused, there being no wall clock); keys with destructors; once;
 //! rwlocks; and the attribute calls they make.
 
-use core::ffi::{c_int, c_void};
+use core::ffi::{c_char, c_int, c_void};
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -100,7 +100,14 @@ fn deadline(ts: &Timespec) -> Option<Instant> {
 pub struct PThread {
     handle: Mutex<Option<JoinHandle<usize>>>,
     id: ThreadId,
+    /// `pthread_setname_np`'s name: at most 15 bytes and a NUL, as Linux.
+    name: Mutex<[u8; NAME_LEN]>,
 }
+
+/// A thread name's buffer: 15 bytes and the terminating NUL (Linux's
+/// `TASK_COMM_LEN`).
+const NAME_LEN: usize = 16;
+const ERANGE: c_int = 34;
 
 std::thread_local! {
     static SELF: RefCell<Option<Arc<PThread>>> = const { RefCell::new(None) };
@@ -158,6 +165,7 @@ pub unsafe extern "C" fn pthread_create(
     let rec = Arc::new(PThread {
         id: handle.thread().id(),
         handle: Mutex::new(Some(handle)),
+        name: Mutex::new([0; NAME_LEN]),
     });
     *lock(&slot) = Some(rec.clone());
     {
@@ -219,10 +227,49 @@ pub extern "C" fn pthread_self() -> *const PThread {
             Arc::new(PThread {
                 handle: Mutex::new(None),
                 id: thread::current().id(),
+                name: Mutex::new([0; NAME_LEN]),
             })
         });
         Arc::as_ptr(rec)
     })
+}
+
+/// `pthread_setname_np`: stores the name in the thread's record, cut to 15
+/// bytes as Linux's comm field is, and returns 0. A name is an advisory label
+/// (nothing here shows it yet), and SpiderMonkey release-asserts that naming
+/// succeeds (PosixThread.cpp), so a long name is truncated, not refused (PM
+/// decision on #88, relay 351).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_setname_np(t: *const PThread, name: *const c_char) -> c_int {
+    if t.is_null() || name.is_null() {
+        return EINVAL;
+    }
+    let bytes = unsafe { core::ffi::CStr::from_ptr(name) }.to_bytes();
+    let n = bytes.len().min(NAME_LEN - 1);
+    let rec = unsafe { &*t };
+    let mut stored = lock(&rec.name);
+    *stored = [0; NAME_LEN];
+    stored[..n].copy_from_slice(&bytes[..n]);
+    0
+}
+
+/// `pthread_getname_np`: the stored name, NUL-terminated, or `ERANGE` if
+/// `len` can't hold it (Linux's behaviour). A thread never named reads "".
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pthread_getname_np(t: *const PThread, buf: *mut c_char, len: usize) -> c_int {
+    if t.is_null() || buf.is_null() {
+        return EINVAL;
+    }
+    let stored = *lock(&unsafe { &*t }.name);
+    let n = stored.iter().position(|&b| b == 0).unwrap_or(NAME_LEN - 1);
+    if len < n + 1 {
+        return ERANGE;
+    }
+    unsafe {
+        core::ptr::copy_nonoverlapping(stored.as_ptr(), buf.cast::<u8>(), n);
+        *buf.add(n) = 0;
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -628,6 +675,21 @@ static KEYS: Mutex<Keys> = Mutex::new(Keys {
 
 struct Slots {
     values: [(u32, usize); KEYS_MAX],
+    /// Destructor rounds this thread has had, counted across both paths
+    /// (`run_key_destructors` and this `Drop`), so together they run at most
+    /// `PTHREAD_DESTRUCTOR_ITERATIONS` (#67 re-check, Chad).
+    rounds: usize,
+}
+
+/// Count one more destructor round in `rounds`; false once the thread has had
+/// them all.
+fn next_round(rounds: &mut usize) -> bool {
+    if *rounds < DESTRUCTOR_ITERATIONS {
+        *rounds += 1;
+        true
+    } else {
+        false
+    }
 }
 
 /// Any thread that touched a key, however it was made (a `std::thread`, or
@@ -636,13 +698,18 @@ struct Slots {
 /// Threads made by `pthread_create` have already run them
 /// (`run_key_destructors`, with every slot still reachable), so this finds
 /// nothing left there. Here the slots are being destroyed, so a destructor
-/// that sets a value again gets `ENOMEM` and there is one round, not
-/// `PTHREAD_DESTRUCTOR_ITERATIONS`. The main thread returning from `main`
-/// runs none, as POSIX has it for `exit`.
+/// that sets a value again gets `ENOMEM` and there is one round, and none
+/// if `run_key_destructors` already used all
+/// `PTHREAD_DESTRUCTOR_ITERATIONS` (a destructor that always re-arms runs 4
+/// times in all, not 5). The main thread returning from `main` runs none, as
+/// POSIX has it for `exit`.
 impl Drop for Slots {
     fn drop(&mut self) {
-        let values = &mut self.values;
-        destructor_rounds(|i, g| take_value(&mut values[i], g));
+        let Slots { values, rounds } = self;
+        destructor_rounds(
+            || next_round(rounds),
+            |i, g| take_value(&mut values[i], g),
+        );
     }
 }
 
@@ -659,7 +726,9 @@ fn take_value(slot: &mut (u32, usize), g: u32) -> usize {
 }
 
 std::thread_local! {
-    static SLOTS: RefCell<Slots> = const { RefCell::new(Slots { values: [(0, 0); KEYS_MAX] }) };
+    static SLOTS: RefCell<Slots> = const {
+        RefCell::new(Slots { values: [(0, 0); KEYS_MAX], rounds: 0 })
+    };
 }
 
 #[unsafe(no_mangle)]
@@ -733,18 +802,29 @@ pub extern "C" fn pthread_setspecific(key: u32, value: *const c_void) -> c_int {
 /// passing it to its key's destructor (POSIX). Called when a thread made by
 /// `pthread_create` returns from its start routine.
 pub fn run_key_destructors() {
-    destructor_rounds(|i, g| {
-        SLOTS
-            .try_with(|s| take_value(&mut s.borrow_mut().values[i], g))
-            .unwrap_or(0)
-    });
+    destructor_rounds(
+        || {
+            SLOTS
+                .try_with(|s| next_round(&mut s.borrow_mut().rounds))
+                .unwrap_or(false)
+        },
+        |i, g| {
+            SLOTS
+                .try_with(|s| take_value(&mut s.borrow_mut().values[i], g))
+                .unwrap_or(0)
+        },
+    );
 }
 
-/// Up to `PTHREAD_DESTRUCTOR_ITERATIONS` rounds: each takes every live key's
-/// non-null value through `take(index, generation)` (which clears it) and
-/// passes it to the key's destructor; stop after a round that ran none.
-fn destructor_rounds(mut take: impl FnMut(usize, u32) -> usize) {
-    for _ in 0..DESTRUCTOR_ITERATIONS {
+/// Rounds while `next_round()` allows (it counts the thread's rounds, at most
+/// `PTHREAD_DESTRUCTOR_ITERATIONS`): each takes every live key's non-null
+/// value through `take(index, generation)` (which clears it) and passes it to
+/// the key's destructor; stop after a round that ran none.
+fn destructor_rounds(
+    mut next_round: impl FnMut() -> bool,
+    mut take: impl FnMut(usize, u32) -> usize,
+) {
+    while next_round() {
         let mut ran = false;
         for i in 0..KEYS_MAX {
             let (g, dtor) = {
