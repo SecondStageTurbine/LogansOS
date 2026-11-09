@@ -185,7 +185,16 @@ fn leg_kill() -> bool {
         return bail(b"leg_kill:1");
     };
     let mut acc = Vec::new();
-    let parked = read_until(c.out_rd, b"neo> ", &mut acc);
+    // The prompt alone isn't a park: the shell writes it before it reads fd 0
+    // (Janus #72 F2). Wait until the kernel has the shell token-parked on its
+    // stdin pipe (the pipe's only reader) before the kill.
+    if !read_until(c.out_rd, b"neo> ", &mut acc) {
+        return bail(b"leg_kill:prompt");
+    }
+    let parked = wait_parked(c.in_wr);
+    if !parked {
+        return bail(b"leg_kill:park_not_seen");
+    }
     let kill = sys_kill(c.process);
     // Gone either way: a wait that caught the exit has its code; once the kill
     // has finished, a killed process keeps no code and the wait is ESRCH.
@@ -256,6 +265,26 @@ fn buffer(bytes: u32) -> Option<Handle> {
         u64::from(bytes),
     );
     libneo::sys_buffer_create(&desc).ok()
+}
+
+/// `SYS_TEST_PIPE_PARKED` (0xF0B, `pipe_stdio` kernels only): the readers
+/// token-parked on the pipe `h` is an end of.
+const SYS_TEST_PIPE_PARKED: u64 = 0xF0B;
+
+/// Poll (TSC-bounded) until exactly one reader is parked on `h`'s pipe.
+fn wait_parked(h: Handle) -> bool {
+    let start = tsc();
+    loop {
+        // SAFETY: one integer argument; the kernel resolves the handle.
+        let n = unsafe { libneo::raw3(SYS_TEST_PIPE_PARKED, u64::from(h.0), 0, 0) };
+        if n == 1 {
+            return true;
+        }
+        if n < 0 || tsc().wrapping_sub(start) > WAIT_CYCLES {
+            return false;
+        }
+        core::hint::spin_loop();
+    }
 }
 
 /// A leg's setup step failed: name it on serial, so the run says which.
