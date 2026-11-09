@@ -34,3 +34,26 @@ Use the same pinned window and IDs. Report the numbers in a short THINK addendum
 keeping the Q4 KAT as the historical record. Don't change the bars.
 
 Gate: host only. Run the close-gate, scan, and open a PR stacked on #84. The PM routes its review.
+
+## Section 368: Janus, #72 narrow re-check of F1 and F2 (your relay 366). **MODEL** GPT-6.1-Sol, medium. Head `fc964d65`.
+New commits: `40f23912` (the kill leg accepts ESRCH; buffers closed), `30f5cfb6` (every setup step names itself on failure),
+`fc964d65` (leg 3 waits for an observed fd-0 park before the kill).
+- [ ] **F1:** the late control was run at runtime (`neo-test-pipe-stdio-late-control`, with `NEO_SMP=2` too), failed for
+  the designed reason, and the normal `pipe_stdio` passed. Cite the runs and the serial lines. Pass/fail.
+- [ ] **F2:** leg 3 issues the kill only after an observed park of the target pid on its selected stdin, with a bounded,
+  named failure if the park never comes. Pass/fail plus line.
+- [ ] Accepting `ESRCH` in the kill leg doesn't hide a real failure (say when `ESRCH` is legitimate here). Pass/fail plus line.
+RETURN: `Plans/RETURN-2026-11-09-pr72-recheck-janus.md` on `codex/pr72-recheck-janus`.
+
+## Seat E, next lane: make the size budget stable
+#82 showed that image A's kernel `.text` swings by about 64 KB on almost any kernel change (codegen-unit partitioning),
+and the ISO by about 1 MB (unstripped debug info). A gate that moves 4% by itself will keep failing innocent PRs. Fix
+the measurement, not the ceilings:
+1. Measure a `.text` that doesn't depend on codegen-unit layout. Either build the measured kernel with
+   `codegen-units=1`, or thin LTO, matching or recording what the product build uses. Show by running both builds that a
+   behaviour-free change moves it by less than 1 KB.
+2. Measure the ISO with the kernel's debug sections excluded, or stripped as shipped, so debug info doesn't swing it.
+3. Re-baseline both ceilings from the new, stable numbers with the file's margins, and keep the reasons.
+4. Add a KAT or self-test showing the measurement is stable: build twice with a no-op change and compare.
+
+Gate: full-alone (`tools/xtask`, `.github/workflows`). Close-gate, scan, PR, then post PM:.

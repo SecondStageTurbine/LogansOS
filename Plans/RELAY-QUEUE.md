@@ -185,3 +185,4 @@ RELAY 364 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-359
 RELAY 365 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 365 (#87 generator commits after 361, at `3b85ae50`; RETURN `Plans/RETURN-2026-11-08-pr87-recheck2-dexter.md`)
 RELAY 366 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 366 (#72 stdio-at-spawn code review at `576cd862`; RETURN `Plans/RETURN-2026-11-09-pr72-review-janus.md`)
 RELAY 367 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 367 (#91 THINK follow-up at `c0be27dd`; RETURN `Plans/RETURN-2026-11-09-pr91-design-dexter.md`)
+RELAY 368 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 368 (#72 F1/F2 re-check at `fc964d65`; RETURN `Plans/RETURN-2026-11-09-pr72-recheck-janus.md`)
