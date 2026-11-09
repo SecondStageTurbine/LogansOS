@@ -495,6 +495,9 @@ neo-test-stylo-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"
 # a real-std process: libc checks against independent oracles, per-thread
 # errno, malloc from several threads.
 neo-test-cxx-runtime-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+# OT-61 C3c-1: SpiderMonkey (interpreter, one thread) over neo-crt. kernel-rng:
+# the smoke seeds its stack canary from the CSPRNG.
+neo-test-mozjs-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]

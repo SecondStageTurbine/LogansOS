@@ -2575,6 +2575,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C3c-1: SpiderMonkey (interpreter, one thread) over neo-crt:
+        // eval, a closure, irregexp, normalize, Date in UTC and a forced GC,
+        // each checked against a hand-written value on-target.
+        name: "mozjs_smoke",
+        feature: "neo-test-mozjs-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
         // musl's portable C over a std bottom half) in a real-std process.
         name: "cxx_runtime_smoke",
@@ -8060,6 +8070,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "servo_closure_smoke" | "servo_closure_smoke_avx" => &[SERVO_CLOSURE_BIN],
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
+        "mozjs_smoke" => &[MOZJS_BIN],
         "swgl_smoke" => &[SWGL_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
@@ -9171,6 +9182,10 @@ fn build_user_members(
         }
         if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
             build_standalone_std_smoke(STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR)?;
+        }
+        if std_real_staged_bins().contains(&MOZJS_BIN) {
+            build_standalone_std_smoke(MOZJS_BIN, &[MOZJS_BIN], MOZJS_DIR)?;
+            verify_mozjs_build_scripts()?;
         }
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
             build_cxx_runtime_smoke()?;
@@ -15586,6 +15601,9 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             | "stylo_smoke"
             // OT-61 C3c-1: neo-crt's arc4random_buf reads the kernel CSPRNG.
             | "cxx_runtime_smoke"
+            // OT-61 C3c-1: the smoke seeds its stack canary from the CSPRNG
+            // (SpiderMonkey is built with the stack protector).
+            | "mozjs_smoke"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -16118,6 +16136,9 @@ fn qemu_memory_for_scenario(name: &str) -> &'static str {
         // recurrent state are resident; 6 GiB preserves the proven 1.5B tier's
         // runner-capacity envelope and leaves a contiguous high-memory region.
         "arthur_real_brain_boot_qwen35" => "6144M",
+        // OT-61 C3c-1: SpiderMonkey's image (tens of MiB) as a boot module,
+        // its copy in the process, and the process's 256 MiB budget.
+        "mozjs_smoke" => "1024M",
         _ => "512M",
     }
 }
@@ -20135,6 +20156,27 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "SWGL must raster the hand-laid pattern into the caller's buffer",
+            )?;
+        }
+    }
+    if scenario.name == "mozjs_smoke" {
+        for needle in [
+            "[ mozjs-smoke ] ok(11) a runtime, a context and a global in one realm",
+            "[ mozjs-smoke ] ok(1) 1 + 1 == 2",
+            "[ mozjs-smoke ] ok(2) a closure keeps its counter across three calls",
+            "[ mozjs-smoke ] ok(3) irregexp: /a(b+)c/ on 'xabbbcy' captures 3 b's at index 1",
+            "[ mozjs-smoke ] ok(4) normalize: NFC('A\\u030A') is U+00C5, NFD splits it into 2 code units",
+            "[ mozjs-smoke ] ok(5) Date(1700000000000) in UTC is 2023-11-14 22:13:20",
+            "[ mozjs-smoke ] ok(6) UTC time of day is 22:13:20",
+            "[ mozjs-smoke ] ok(7) about 4 MiB allocated (past one chunk), 2500 kept",
+            "[ mozjs-smoke ] ok(8) after a forced GC every survivor is intact",
+            "[ mozjs-smoke ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "SpiderMonkey must evaluate, normalize, date and collect with every hand-written value",
             )?;
         }
     }
