@@ -22,8 +22,14 @@
 # The scalar host forward pass runs about 9 s/token on Q8_0 on a 4-core cloud
 # host (2026-11-09), so the window alone is several hours. Every prompt and the
 # window are independent, so they may be run as separate `run` processes and
-# their TSVs merged; the committed KAT was produced that way (see the THINK
-# addendum). The GGUFs, .neom and corpus text are never committed.
+# their TSVs merged with ref/merge-split.py; the committed KAT was produced
+# that way, and its four pre-merge runs are committed in
+# fixtures/quant-drift-kat-2026-11-09-q8-split/. The GGUFs, .neom and corpus
+# text are never committed.
+#
+# Refuses: a .neom, Q8_0 GGUF or window that isn't the pin, a llama.cpp
+# checkout other than a2b30183, and prompts whose text or token IDs differ from
+# the pinned Q4_K_M KAT's.
 
 set -euo pipefail
 
@@ -36,7 +42,13 @@ NEOM="${QUANT_DRIFT_NEOM_Q8:?set QUANT_DRIFT_NEOM_Q8}"
 GGUF_Q8="${QUANT_DRIFT_GGUF_Q8:?set QUANT_DRIFT_GGUF_Q8}"
 GGUF_F16_UP="${QUANT_DRIFT_GGUF_F16_UP:?set QUANT_DRIFT_GGUF_F16_UP}"
 CORPUS_TEXT="${QUANT_DRIFT_CORPUS_TEXT:?set QUANT_DRIFT_CORPUS_TEXT}"
-LLAMA_COMMIT="${QUANT_DRIFT_LLAMA_COMMIT:-$(git -C "$LLAMA_DIR" rev-parse HEAD)}"
+# The llama.cpp commit is pinned, not taken from whatever is checked out.
+LLAMA_PIN=a2b301831d05b07860de508d229d430207127802
+LLAMA_COMMIT="$(git -C "$LLAMA_DIR" rev-parse HEAD)"
+if [ "$LLAMA_COMMIT" != "$LLAMA_PIN" ]; then
+    echo "refusing: llama.cpp checkout is $LLAMA_COMMIT, not the pinned $LLAMA_PIN" >&2
+    exit 1
+fi
 GGUF_REV="${QUANT_DRIFT_GGUF_REV:-9217f5db79a29953eb74d5343926648285ec7e67}"
 DATE="${QUANT_DRIFT_DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 WINDOW=(--corpus-offset 6144 --corpus-tokens 2048 --eval-start 1024)
@@ -55,6 +67,24 @@ python3 - "$WORK/corpus.u32" "$WORK/corpus-window.u32" <<'PY'
 import sys
 raw = open(sys.argv[1], "rb").read()
 open(sys.argv[2], "wb").write(raw[6144 * 4:])
+PY
+# The prompts must be the SAME ones, with the SAME token IDs, as the pinned
+# Q4_K_M run: compare every prompt's text and IDs with that KAT's, and refuse
+# any difference (a changed prompts.rs or a different .vocab).
+python3 - "$WORK/prompts.tsv" "$CRATE_DIR/fixtures/quant-drift-kat-2026-11-08-control.ours.tsv" <<'PY'
+import sys
+def prompts(path):
+    rows = {}
+    for line in open(path):
+        f = line.rstrip("\n").split("\t")
+        if f[0] in ("prompt", "prompt_ids"):
+            rows.setdefault(f[1], {})[f[0]] = f[2]
+    return rows
+got, pinned = prompts(sys.argv[1]), prompts(sys.argv[2])
+if got != pinned:
+    diff = sorted(k for k in set(got) | set(pinned) if got.get(k) != pinned.get(k))
+    sys.exit(f"refusing: prompts differ from the pinned Q4_K_M KAT: {diff}")
+print(f"prompts: {len(got)} match the pinned KAT (text and token IDs)")
 PY
 
 echo "== build llama.cpp reference runner"

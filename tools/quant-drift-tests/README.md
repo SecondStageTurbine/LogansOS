@@ -218,3 +218,10 @@ in the 2026-11-09 addendum to `docs/THINK-2026-11-08-arthur-quantization-choice.
   pass takes about 9 s/token on Q8_0, so one process would take 9–10 hours. A prompt and the window don't depend on
   each other. The merged file has the same rows and order as a single run. The boot prompt, computed in two separate
   processes, came out identical in all ten of its rows.
+- **The split is reproducible:** the four pre-merge runs are committed in
+  `fixtures/quant-drift-kat-2026-11-09-q8-split/` (`part0..2.tsv`, `window.tsv`).
+  `python3 ref/merge-split.py fixtures/quant-drift-kat-2026-11-09-q8-split out.tsv` re-runs the merge and its checks
+  (no prompt twice, the pinned prompt set, matching headers, and the boot prompt identical across processes). Its
+  output is byte-identical to `fixtures/quant-drift-kat-2026-11-09-q8.ours.tsv`.
+- **`ref/run-q8.sh` refuses unpinned inputs:** a `.neom`, Q8_0 GGUF or window that isn't the pinned one, a llama.cpp
+  checkout other than `a2b30183`, or prompts whose text or token IDs differ from the Q4_K_M KAT's.
