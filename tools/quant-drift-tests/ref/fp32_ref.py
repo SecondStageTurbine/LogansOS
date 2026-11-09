@@ -8,7 +8,8 @@ transformers and consumes the SAME token IDs as the other two runners
 
 Usage:
   fp32_ref.py MODEL_DIR PROMPTS_TSV CORPUS_U32 OUT_TSV \
-      [--eval-start 4096] [--corpus-tokens 8192] [--corpus-blake3 HASH]
+      [--eval-start 4096] [--corpus-tokens 8192] [--corpus-offset 0] \
+      [--corpus-blake3 HASH]
 """
 
 import argparse
@@ -53,6 +54,7 @@ def main():
     parser.add_argument("--tool", default="transformers float32; ref/fp32_ref.py")
     parser.add_argument("--eval-start", type=int, default=4096)
     parser.add_argument("--corpus-tokens", type=int, default=8192)
+    parser.add_argument("--corpus-offset", type=int, default=0)
     parser.add_argument("--corpus-blake3", default="")
     parser.add_argument("--no-generate", action="store_true", help="skip greedy decode (use another runner's generated IDs)")
     args = parser.parse_args()
@@ -65,8 +67,9 @@ def main():
     vocab = model.config.vocab_size
 
     prompts = read_prompts(args.prompts)
-    corpus = read_u32(args.corpus)[: args.corpus_tokens]
-    assert len(corpus) >= args.corpus_tokens, "corpus is too short"
+    corpus = read_u32(args.corpus)
+    assert len(corpus) >= args.corpus_offset + args.corpus_tokens, "corpus is too short"
+    corpus = corpus[args.corpus_offset : args.corpus_offset + args.corpus_tokens]
 
     out = []
     out.append("schema\tquant-drift-ref-v2")
@@ -76,6 +79,7 @@ def main():
     out.append(f"tool\t{args.tool}")
     out.append(f"corpus_tokens\t{args.corpus_tokens}")
     out.append(f"corpus_eval_start\t{args.eval_start}")
+    out.append(f"corpus_window_offset\t{args.corpus_offset}")
     out.append(f"corpus_slice_blake3\t{args.corpus_blake3}")
     out.append(f"prompts\t{len(prompts)}")
 

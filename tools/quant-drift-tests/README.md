@@ -52,7 +52,7 @@ Each is framed as one user turn with Arthur's chat template (system:
 
 The perplexity corpus is the **first 8,192 tokens** of WikiText-2 (raw) `test`,
 pinned by source revision and hashes. The text is downloaded, never committed
-(CC-BY-SA).
+(CC-BY-SA-3.0 and GFDL; see §Prior art / licences).
 
 **PPL window.** NLL is summed on the last **2,048-token window** of that slice
 (tokens 6,144..8,191, BLAKE3 `1782216d…`), evaluating positions 1,024..2,046
@@ -60,7 +60,9 @@ with 1,024 tokens of context. The 8,192-token slice is still the pinned parent
 (the KAT records both), but the full 8,192-token sequential pass is ~0.5 s/token
 in the scalar harness (≈70 min) and did not finish in this relay; the window is
 the honest measurement that did. All three models consume the same window, so
-the ΔPPL comparison is exact.
+the ΔPPL comparison is exact: `ref/run-control.sh` gives every runner the full
+pinned corpus plus `--corpus-offset 6144`, and `src/report.rs` refuses a
+comparison whose runs record different offsets, token counts or eval starts.
 
 ## Bars
 
@@ -119,8 +121,12 @@ perplexity, the per-prompt divergences, and the bar verdicts.
   differently (e.g. `" ="` is `[220, 28]` vs the GGUF's `[284]`). Every model in
   this KAT therefore consumes the SAME IDs produced by Arthur's `.vocab`: that
   is the production path and keeps the three-way comparison exact.
-- **WikiText-2** — CC-BY-SA-3.0; only its source URL, revision, slice offsets
-  and hashes are committed, never the text.
+- **WikiText-2** — the pinned Salesforce/wikitext repository
+  (`b08601e04326c79dfdd32d625aee71d232d685c3`) declares **both `cc-by-sa-3.0`
+  and `gfdl`** in its dataset-card metadata. One prose paragraph in the same
+  card says "CC BY-SA 4.0"; we record both metadata licences rather than
+  treating the version-specific wording as definitive. Only its source URL,
+  revision, slice offsets and hashes are committed, never the text.
 
 ## Relay 333 — Control C and the model-identity check
 

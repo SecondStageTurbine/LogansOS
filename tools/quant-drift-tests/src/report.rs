@@ -366,6 +366,40 @@ impl Comparison {
 }
 
 pub fn compare(left: &RefRun, right: &RefRun) -> Result<Comparison, String> {
+    // A perplexity delta across different corpus slices is meaningless, so
+    // refuse before comparing either number. Every run records the offset and
+    // length of the exact window it consumed (run-control.sh: 2,048 tokens at
+    // offset 6,144, the last window of the pinned 8,192-token slice).
+    if left.corpus_window_offset != right.corpus_window_offset
+        || left.corpus_tokens != right.corpus_tokens
+        || left.corpus_eval_start != right.corpus_eval_start
+        || left.corpus_nll_count != right.corpus_nll_count
+    {
+        return Err(format!(
+            "corpus window differs between {} (offset {}, {} tokens, eval start {}, {} targets) \
+             and {} (offset {}, {} tokens, eval start {}, {} targets); refusing to compare \
+             different corpus slices",
+            left.model,
+            left.corpus_window_offset,
+            left.corpus_tokens,
+            left.corpus_eval_start,
+            left.corpus_nll_count,
+            right.model,
+            right.corpus_window_offset,
+            right.corpus_tokens,
+            right.corpus_eval_start,
+            right.corpus_nll_count
+        ));
+    }
+    if !left.corpus_slice_blake3.is_empty()
+        && !right.corpus_slice_blake3.is_empty()
+        && left.corpus_slice_blake3 != right.corpus_slice_blake3
+    {
+        return Err(format!(
+            "corpus slice BLAKE3 differs between {} ({}) and {} ({})",
+            left.model, left.corpus_slice_blake3, right.model, right.corpus_slice_blake3
+        ));
+    }
     let mut prompts = Vec::new();
     for left_prompt in &left.prompts {
         let right_prompt = right
@@ -1093,4 +1127,34 @@ pub fn control_json(comparison: &Comparison) -> String {
     );
     out.push_str("}\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(model: &str, offset: usize, tokens: usize, eval_start: usize) -> RefRun {
+        RefRun {
+            model: model.to_string(),
+            corpus_window_offset: offset,
+            corpus_tokens: tokens,
+            corpus_eval_start: eval_start,
+            corpus_nll_count: tokens.saturating_sub(eval_start),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn compare_rejects_a_different_corpus_offset() {
+        let err = compare(&run("a", 6144, 2048, 1024), &run("b", 0, 2048, 1024))
+            .expect_err("offset mismatch must be rejected");
+        assert!(err.contains("corpus window differs"), "{err}");
+    }
+
+    #[test]
+    fn compare_rejects_a_different_corpus_length() {
+        let err = compare(&run("a", 6144, 2048, 1024), &run("b", 6144, 1024, 512))
+            .expect_err("length mismatch must be rejected");
+        assert!(err.contains("corpus window differs"), "{err}");
+    }
 }

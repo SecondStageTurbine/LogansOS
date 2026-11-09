@@ -207,7 +207,7 @@ int main(int argc, char ** argv) {
     if (argc < 7) {
         fprintf(stderr,
             "usage: %s MODEL PROMPTS_TSV CORPUS_U32 OUT_TSV LABEL SOURCE [SHA256] [TOOL]\n"
-            "       [--eval-start N] [--corpus-tokens N] [--corpus-blake3 HASH]\n"
+            "       [--eval-start N] [--corpus-tokens N] [--corpus-offset N] [--corpus-blake3 HASH]\n"
             "       [--verify-final N] [--no-generate 1]\n", argv[0]);
         return 2;
     }
@@ -221,6 +221,7 @@ int main(int argc, char ** argv) {
     std::string tool = argc > 8 ? argv[8] : "";
     int eval_start = 4096;
     int corpus_tokens = 8192;
+    int corpus_offset = 0;
     int verify_final = 0;
     bool generate = true;
     std::string corpus_blake3;
@@ -231,6 +232,7 @@ int main(int argc, char ** argv) {
     for (int i = 9; i + 1 < argc; i += 2) {
         if (std::strcmp(argv[i], "--eval-start") == 0) eval_start = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--corpus-tokens") == 0) corpus_tokens = std::atoi(argv[i + 1]);
+        else if (std::strcmp(argv[i], "--corpus-offset") == 0) corpus_offset = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--corpus-blake3") == 0) corpus_blake3 = argv[i + 1];
         else if (std::strcmp(argv[i], "--verify-final") == 0) verify_final = std::atoi(argv[i + 1]);
         else if (std::strcmp(argv[i], "--no-generate") == 0) generate = std::atoi(argv[i + 1]) == 0;
@@ -296,11 +298,13 @@ int main(int argc, char ** argv) {
 
     std::vector<Prompt> prompts = read_prompts(prompts_path);
     std::vector<llama_token> corpus = read_u32(corpus_path);
-    if (static_cast<int>(corpus.size()) < corpus_tokens) {
-        fprintf(stderr, "corpus has %zu tokens, need %d\n", corpus.size(), corpus_tokens);
+    if (static_cast<int>(corpus.size()) < corpus_offset + corpus_tokens) {
+        fprintf(stderr, "corpus has %zu tokens, need offset %d + %d\n",
+                corpus.size(), corpus_offset, corpus_tokens);
         return 1;
     }
-    corpus.resize(corpus_tokens);
+    corpus = std::vector<llama_token>(corpus.begin() + corpus_offset,
+                                      corpus.begin() + corpus_offset + corpus_tokens);
 
     std::ostringstream out;
     out << "schema\tquant-drift-ref-v2\n";
@@ -310,6 +314,7 @@ int main(int argc, char ** argv) {
     out << "tool\t" << tool << "\n";
     out << "corpus_tokens\t" << corpus_tokens << "\n";
     out << "corpus_eval_start\t" << eval_start << "\n";
+    out << "corpus_window_offset\t" << corpus_offset << "\n";
     out << "corpus_slice_blake3\t" << corpus_blake3 << "\n";
     out << "prompts\t" << prompts.size() << "\n";
 
