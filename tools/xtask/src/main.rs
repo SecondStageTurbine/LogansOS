@@ -1559,8 +1559,9 @@ const SETUP_MENU_STORE_TRY_STEPS: &[SerialScriptStep] = &[
 /// the keys a Spanish keyboard labels `ñ` `¿` `¡` `ç`, then its acute dead key
 /// and `a` (`sendkey semicolon`, `shift-equal`, `equal`, `backslash`,
 /// `apostrophe`, `a`), giving `ñ¿¡çá`; then Continue, Time zone, Comfort and
-/// Try. In the intro session, Shift+2 in Home and in Arthur types `"` (then
-/// Backspace), and the intro's walk runs as usual.
+/// Try. In the intro session, `ñ` (not ASCII) then Shift+2 in Home and in
+/// Arthur: `ñ` is dropped, Shift+2 types `"` (then Backspace), and the
+/// intro's walk runs as usual, Arthur's session included.
 const SETUP_MENU_KEYS_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP setup page=welcome rows=5", b"\n"),
     step(b"DESKTOP setup page=keyboard rows=7", &[HMP_DOWN]),
@@ -1576,14 +1577,17 @@ const SETUP_MENU_KEYS_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
     step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
     step(b"DESKTOP setup page=try rows=6", b"\n"),
-    step(DESKTOP_INTRO_SHOWN_PROMPT, b"@"),
+    // ñ (semicolon) is not ASCII: Home drops it, then Shift+2 types `"`.
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b";@"),
     step(b"DESKTOP home keystroke ascii=34\n", b"\x08help"),
     step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
     step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
     step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
     step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
     HOME_TYPED_ENTER,
-    step(b"DESKTOP arthur answer composited round=1", b"@"),
+    // ñ in Arthur: dropped before his line (his intent path is ASCII), then
+    // Shift+2 types `"` and his session goes on.
+    step(b"DESKTOP arthur answer composited round=1", b";@"),
     step(b"DESKTOP arthur keystroke ascii=34\n", b"\x08"),
     step(b"DESKTOP arthur keystroke ascii=8\n", b"\x1b"),
     HOLD_TAB,
@@ -21581,6 +21585,9 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP home keystroke ascii=34\n",
                 "DESKTOP arthur line=hello desktop",
                 "DESKTOP arthur keystroke ascii=34\n",
+                // After the dropped ñ his session goes on: the next round
+                // is answered and he exits cleanly.
+                "DESKTOP arthur answer composited serial=",
                 "DESKTOP session end client=arthur exit=0",
             ],
             "Spanish on the Keyboard page: the field types ñ¿¡ç and composes the acute dead key with a, Home and Arthur type Spanish, and key 7 holds Spanish",
@@ -21593,6 +21600,14 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             (
                 "field=ñ¿¡ç´",
                 "the acute dead key composes with a: no bare accent",
+            ),
+            (
+                "DESKTOP home keystroke ascii=59\n",
+                "ñ is not ASCII: Home drops it (59 is US `;`)",
+            ),
+            (
+                "DESKTOP arthur keystroke ascii=59\n",
+                "ñ is not ASCII: Arthur's line never gets it",
             ),
             ("SETTINGS written", "the volatile overlay writes no record"),
             (
