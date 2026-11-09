@@ -8480,40 +8480,56 @@ mod clock {
         Ok(())
     }
 
-    /// F11 S3 (Chad, #92 relays 369 and 373): the setup menu's one confirm,
-    /// **all or nothing**. The kernel's confirm is write-once and can't be
-    /// undone, so the store goes first:
-    /// 1. the zone and RTC mode are written together, in one record, read
-    ///    back (`settings::store_zone`); a failed write stores nothing and
-    ///    the kernel is never asked;
-    /// 2. the kernel confirms; a refusal puts the previous record back
-    ///    (`settings::restore`);
-    /// 3. only then are the zone and mode made the clock's and shown.
-    ///
-    /// Any other failure (no epoch, a reading the zone can't place, the clock
-    /// already confirmed) changes nothing. `true`: confirmed now, with `zone`.
+    /// F11 S3: what [`confirm_zone`] left in force.
     #[cfg(feature = "setup-tz")]
-    pub fn confirm_zone(scene: &mut Scene, zone: ZoneId, rtc_local: bool) -> Result<bool, i32> {
-        if scene.clock.shown.is_none() {
-            return Ok(false);
-        }
-        let Some((r, _)) = sample() else {
-            return Ok(false);
+    pub enum Confirmed {
+        /// The kernel accepted, and the zone is stored and shown.
+        Yes,
+        /// It didn't: the zone and RTC mode in force are what the store
+        /// holds (re-read), and the clock is resolved from them as a boot
+        /// would resolve it. `confirmed`: the clock is now confirmed UTC.
+        Reconciled { zone: ZoneId, confirmed: bool },
+    }
+
+    /// F11 S3 (Chad, #92 relays 369, 373 and 377): the setup menu's one
+    /// confirm. The kernel's confirm is write-once and can't be undone, so the
+    /// store goes first:
+    /// 1. the zone and RTC mode are written together, in one record, read
+    ///    back (`settings::store_zone`); if that fails the kernel isn't asked;
+    /// 2. the kernel confirms; a refusal writes the previous record back
+    ///    (`settings::restore`);
+    /// 3. on success the zone and mode are made the clock's and shown.
+    ///
+    /// **On any failure the durable record is the truth** (the PM's rule): the
+    /// store is re-read and exactly what it holds is put in force for the
+    /// zone, the RTC mode and the clock, resolved as a boot would ([`resolve`]
+    /// confirms if that record places the reading). The live state then
+    /// always matches what the next boot builds, whatever landed: a write
+    /// that reported failure after its bytes landed, or a rollback that
+    /// failed after a refusal.
+    #[cfg(feature = "setup-tz")]
+    pub fn confirm_zone(
+        scene: &mut Scene,
+        zone: ZoneId,
+        rtc_local: bool,
+    ) -> Result<Confirmed, i32> {
+        let Some((r, _)) = sample().filter(|_| scene.clock.shown.is_some()) else {
+            return reconcile(scene);
         };
         scene.clock.basis = Basis::of(libneo::sys_clock_realtime_status());
         if scene.clock.basis != Basis::Rtc {
-            return Ok(false);
+            return reconcile(scene);
         }
         let wall_s = (r / civil::NS_PER_SECOND) as i64;
         let Some(offset) = tz::confirm_offset(wall_s, zone, rtc_local) else {
-            return Ok(false);
+            return reconcile(scene);
         };
         #[cfg(feature = "atrium-settings-store")]
         let Ok(previous) = super::settings::store_zone(zone, rtc_local) else {
             Line::new()
                 .s(b"DESKTOP clock confirm skipped reason=store\n")
                 .emit();
-            return Ok(false);
+            return reconcile(scene);
         };
         // The refused-confirm control: the kernel's answer when another
         // confirm already won.
@@ -8530,8 +8546,7 @@ mod clock {
                 .emit();
             #[cfg(feature = "atrium-settings-store")]
             super::settings::restore(&previous);
-            scene.clock.basis = Basis::of(libneo::sys_clock_realtime_status());
-            return Ok(false);
+            return reconcile(scene);
         }
         scene.clock.zone = zone;
         scene.clock.rtc_local = rtc_local;
@@ -8544,7 +8559,49 @@ mod clock {
         scene.repaint_chrome(b);
         scene.present(false, b).map_err(|c| 140 + c)?;
         log_shown(scene, b"zone", r);
-        Ok(true)
+        Ok(Confirmed::Yes)
+    }
+
+    /// The store's record put in force for the clock (see [`confirm_zone`]):
+    /// its zone and RTC mode, then the clock resolved from them as at boot,
+    /// and the readout redrawn.
+    #[cfg(feature = "setup-tz")]
+    fn reconcile(scene: &mut Scene) -> Result<Confirmed, i32> {
+        #[cfg(feature = "atrium-settings-store")]
+        {
+            let s = super::settings::reread();
+            scene.clock.zone = s.time_zone;
+            scene.clock.rtc_local = s.rtc_local;
+        }
+        if let Some((r, m)) = sample() {
+            if Basis::of(libneo::sys_clock_realtime_status()) == Basis::Rtc {
+                resolve(&mut scene.clock, r);
+            } else {
+                scene.clock.basis = Basis::of(libneo::sys_clock_realtime_status());
+            }
+            if scene.clock.shown.is_some() {
+                let (r, m) = sample().unwrap_or((r, m));
+                set(scene, r, m);
+                let b = wm_rect(scene.chrome.layout.clock_slot());
+                scene.repaint_chrome(b);
+                scene.present(false, b).map_err(|c| 140 + c)?;
+                log_shown(scene, b"reconciled", r);
+            }
+        }
+        let confirmed = scene.clock.basis == Basis::Utc;
+        log_mode(
+            &scene.clock,
+            if confirmed {
+                b"reconciled-utc"
+            } else {
+                b"reconciled-rtc"
+            },
+            None,
+        );
+        Ok(Confirmed::Reconciled {
+            zone: scene.clock.zone,
+            confirmed,
+        })
     }
 
     /// Home is being shown again (`show_home` repaints the box): the text

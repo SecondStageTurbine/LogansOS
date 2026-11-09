@@ -75,13 +75,12 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
             // S3: leaving the Time zone page with a zone chosen.
             Outcome::Confirm(zone) => {
                 #[cfg(feature = "setup-tz")]
-                let ok = tz_page::confirm(scene, zone)?;
+                tz_page::confirm(scene, &mut wizard, zone)?;
                 #[cfg(not(feature = "setup-tz"))]
-                let ok = {
+                {
                     let _ = zone;
-                    false
-                };
-                wizard.confirmed(ok);
+                    wizard.confirmed(false);
+                }
                 #[cfg(feature = "setup-journal")]
                 journal.left(&wizard, page_before);
                 show(scene, &wizard)?;
@@ -355,24 +354,43 @@ mod tz_page {
         wizard.with_zones(Box::new(zones), confirmed)
     }
 
-    /// The one confirm, transactional (`clock::confirm_zone`): the kernel
-    /// is asked first, and only an accepted confirm stores the zone and shows
-    /// it; a refusal leaves the store, the zone and the clock as they were
-    /// (Chad, #92). `true`: the clock is now confirmed UTC with `zone`. UTC
-    /// itself goes with an RTC that holds UTC: the same reading, and the only
-    /// way UTC can be confirmed (an RTC holding local time with zone 0 means
-    /// "no zone", `tz::rtc_reading_utc`).
-    pub fn confirm(scene: &mut Scene, zone: ZoneId) -> Result<bool, i32> {
+    /// The one confirm (`clock::confirm_zone`: store, then kernel, then
+    /// show), and the wizard's next page. On a failure the store's record is
+    /// in force (the PM's rule, #92): the wizard takes its zone, the page is
+    /// review-only if the clock is now confirmed with it, and the next page
+    /// says the zone couldn't be saved. UTC goes with an RTC that holds UTC:
+    /// the same reading, and the only way UTC can be confirmed (an RTC holding
+    /// local time with zone 0 means "no zone", `tz::rtc_reading_utc`).
+    pub fn confirm(scene: &mut Scene, wizard: &mut Wizard, zone: ZoneId) -> Result<(), i32> {
         let before = scene.clock.mode();
-        if before.basis == Basis::Utc {
-            // Confirmed meanwhile (write-once): no second call, no change.
-            log(zone, b"already");
-            return Ok(false);
-        }
         let rtc_local = before.rtc_local && zone != tz::UTC;
-        let ok = clock::confirm_zone(scene, zone, rtc_local)?;
-        log(zone, if ok { b"1" } else { b"0" });
-        Ok(ok)
+        match clock::confirm_zone(scene, zone, rtc_local)? {
+            clock::Confirmed::Yes => {
+                log(zone, b"1");
+                wizard.confirmed(true);
+            }
+            clock::Confirmed::Reconciled {
+                zone: in_force,
+                confirmed,
+            } => {
+                log(zone, b"0");
+                // Zone 0 with an RTC holding local time is no zone at all.
+                let mode = scene.clock.mode();
+                let held = (in_force != tz::UTC || !mode.rtc_local).then_some(in_force);
+                let name = held.and_then(tz::zone).map_or("not set", |z| z.name);
+                Line::new()
+                    .s(b"DESKTOP setup tz reconciled zone=")
+                    .s(name.as_bytes())
+                    .s(b" confirmed=")
+                    .n(u64::from(confirmed))
+                    .s(b"\n")
+                    .emit();
+                wizard.confirmed(false);
+                wizard.reconciled(held, confirmed);
+                wizard.notice(format!("Couldn't save the time zone. In use: {name}."));
+            }
+        }
+        Ok(())
     }
 
     fn log(zone: ZoneId, confirmed: &[u8]) {

@@ -43,10 +43,30 @@ static VOLATILE: AtomicU8 = AtomicU8::new(0);
 /// Whether `load` found a valid record on disk (F11 S2: an installed
 /// system's setup menu runs only until one exists, setup-menu THINK §2.4).
 static FOUND: AtomicU8 = AtomicU8::new(0);
-/// F11 S3's write-failure control (`setup-tz-write-fail-test`): the next
-/// [`commit`] fails its write, through the real failed-write path.
-#[cfg(feature = "setup-tz-write-fail-test")]
+/// F11 S3's write-failure controls: the next [`commit`]'s write fails, through
+/// the real failed-write path. [`FAIL_WRITE`]: nothing is written
+/// (`setup-tz-write-fail-test`, and the rollback of
+/// `setup-tz-rollback-fail-test`); [`FAIL_AFTER_WRITE`]: the bytes land but
+/// the write reports failure, as when the flush fails
+/// (`setup-tz-fsync-fail-test`).
+#[cfg(any(
+    feature = "setup-tz-write-fail-test",
+    feature = "setup-tz-fsync-fail-test",
+    feature = "setup-tz-rollback-fail-test"
+))]
 static FAIL_NEXT_WRITE: AtomicU8 = AtomicU8::new(0);
+#[cfg(any(
+    feature = "setup-tz-write-fail-test",
+    feature = "setup-tz-fsync-fail-test",
+    feature = "setup-tz-rollback-fail-test"
+))]
+const FAIL_WRITE: u8 = 1;
+#[cfg(any(
+    feature = "setup-tz-write-fail-test",
+    feature = "setup-tz-fsync-fail-test",
+    feature = "setup-tz-rollback-fail-test"
+))]
+const FAIL_AFTER_WRITE: u8 = 2;
 
 /// Whether the first-boot setup menu should run: on a Try session (the
 /// volatile overlay: nothing persists, so every boot), or on an installed
@@ -314,11 +334,19 @@ fn commit(next: &Settings) -> bool {
     let Some((file, bytes)) = sc::plan(current.as_ref(), next) else {
         return false;
     };
-    #[cfg(feature = "setup-tz-write-fail-test")]
-    let injected = FAIL_NEXT_WRITE.swap(0, Ordering::AcqRel) == 1;
-    #[cfg(not(feature = "setup-tz-write-fail-test"))]
-    let injected = false;
-    let written = !injected && login::write_whole(file.path(), &bytes);
+    #[cfg(any(
+        feature = "setup-tz-write-fail-test",
+        feature = "setup-tz-fsync-fail-test",
+        feature = "setup-tz-rollback-fail-test"
+    ))]
+    let injected = FAIL_NEXT_WRITE.swap(0, Ordering::AcqRel);
+    #[cfg(not(any(
+        feature = "setup-tz-write-fail-test",
+        feature = "setup-tz-fsync-fail-test",
+        feature = "setup-tz-rollback-fail-test"
+    )))]
+    let injected = 0u8;
+    let written = injected != 1 && login::write_whole(file.path(), &bytes) && injected != 2;
     let landed = written && login::read_small(file.path()).is_some_and(|back| back == bytes);
     if !landed {
         Line::new()
@@ -374,7 +402,9 @@ pub fn store_zone(zone: u16, rtc_local: bool) -> Result<Settings, ()> {
         .map_err(|_| ())?;
     if next != before {
         #[cfg(feature = "setup-tz-write-fail-test")]
-        FAIL_NEXT_WRITE.store(1, Ordering::Release);
+        FAIL_NEXT_WRITE.store(FAIL_WRITE, Ordering::Release);
+        #[cfg(feature = "setup-tz-fsync-fail-test")]
+        FAIL_NEXT_WRITE.store(FAIL_AFTER_WRITE, Ordering::Release);
         if !commit(&next) {
             Line::new().s(b"SETTINGS zone store=failed\n").emit();
             return Err(());
@@ -391,10 +421,12 @@ pub fn store_zone(zone: u16, rtc_local: bool) -> Result<Settings, ()> {
 }
 
 /// Put `previous` back in force after [`store_zone`], when the kernel
-/// refused the confirm. `false`: the write failed (logged); the zone stored
-/// stays, and the next boot confirms with it.
+/// refused the confirm. `false`: the write failed (logged); whatever the
+/// store then holds is put in force by [`reread`].
 #[cfg(feature = "setup-tz")]
 pub fn restore(previous: &Settings) -> bool {
+    #[cfg(feature = "setup-tz-rollback-fail-test")]
+    FAIL_NEXT_WRITE.store(FAIL_WRITE, Ordering::Release);
     let ok = current() == *previous || commit(previous);
     Line::new()
         .s(if ok {
@@ -404,6 +436,37 @@ pub fn restore(previous: &Settings) -> bool {
         })
         .emit();
     ok
+}
+
+/// F11 S3 (the PM's rule, #92): the durable record is the truth. Read both
+/// copies again and put the record they select (the valid one with the higher
+/// generation) in force, as the next boot would; log what it holds. With no
+/// valid record (or on the volatile overlay) the settings in force stay.
+#[cfg(feature = "setup-tz")]
+pub fn reread() -> Settings {
+    if volatile() {
+        return current();
+    }
+    let a = login::read_small(sc::SETTINGS_A);
+    let b = login::read_small(sc::SETTINGS_B);
+    let Some(c) = sc::select(a.as_deref(), b.as_deref()) else {
+        Line::new().s(b"SETTINGS reread none\n").emit();
+        return current();
+    };
+    store(Some(c), &c.record.settings);
+    let s = c.record.settings;
+    Line::new()
+        .s(b"SETTINGS reread generation=")
+        .n(c.record.generation)
+        .s(b" file=")
+        .s(file_name(c.file))
+        .s(b" zone=")
+        .n(u64::from(s.time_zone))
+        .s(b" rtc=")
+        .n(u64::from(s.rtc_local))
+        .s(b"\n")
+        .emit();
+    s
 }
 
 /// After a write whose read-back failed: read both copies again and put

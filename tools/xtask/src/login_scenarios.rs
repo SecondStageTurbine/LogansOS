@@ -55,6 +55,8 @@ pub const LOGIN_SETUP_TZ_SCENARIO: &str = "login_setup_tz";
 pub const LOGIN_SETUP_TZ_SKIP_SCENARIO: &str = "login_setup_tz_skip";
 pub const LOGIN_SETUP_TZ_REFUSED_SCENARIO: &str = "login_setup_tz_refused";
 pub const LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO: &str = "login_setup_tz_write_fail";
+pub const LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO: &str = "login_setup_tz_fsync_fail";
+pub const LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO: &str = "login_setup_tz_rollback_fail";
 
 /// F11 S3's RTC (`-rtc base=`): 01:57 local time in New York on the
 /// fall-back day, inside the repeated hour (01:00-01:59 happens twice), three
@@ -90,6 +92,8 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | LOGIN_SETUP_TZ_SKIP_SCENARIO
             | LOGIN_SETUP_TZ_REFUSED_SCENARIO
             | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO
+            | LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO
+            | LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO
     )
 }
 
@@ -455,10 +459,9 @@ const SETUP_TZ1: &[SerialScriptStep] = &[
         b"DESKTOP setup redraw page=timezone focus=0",
         &[PAUSE, b'\n', PAUSE, HMP_UP, PAUSE, b'\n'],
     ),
-    step(
-        b"DESKTOP setup page=comfort rows=6",
-        &[HMP_UP, PAUSE, b'\n'],
-    ),
+    // Comfort has one more row (the notice) after a failed confirm; the
+    // checks pin which.
+    step(b"DESKTOP setup page=comfort rows=", &[HMP_UP, PAUSE, b'\n']),
     step(b"DESKTOP setup page=try rows=5", b"\n"),
     step(b"LOGIN prompt=name", b"ada\n"),
     step(b"LOGIN prompt=choose", P1),
@@ -685,7 +688,9 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         LOGIN_SETUP_TZ_SCENARIO
         | LOGIN_SETUP_TZ_SKIP_SCENARIO
         | LOGIN_SETUP_TZ_REFUSED_SCENARIO
-        | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO => {
+        | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO
+        | LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO
+        | LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO => {
             setup_tz(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
         }
         _ => cut_steps(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?,
@@ -2065,8 +2070,12 @@ fn setup_tz(
                 "DESKTOP clock confirm refused errno=114",
                 &w3,
                 "SETTINGS zone restored",
+                // The PM's rule: the record re-read is what is in force.
+                "SETTINGS reread generation=3 file=a zone=0 rtc=1",
+                "DESKTOP clock utc=reconciled-rtc zone=",
                 "DESKTOP setup tz=America/New_York confirmed=0",
-                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup tz reconciled zone=not set confirmed=0",
+                "DESKTOP setup page=comfort rows=7",
                 "DESKTOP setup page=try rows=5",
                 "DESKTOP setup done action=try zone=America/New_York",
                 "DESKTOP setup journal records=4 appended=4",
@@ -2091,8 +2100,12 @@ fn setup_tz(
                 "SETTINGS write=failed file=b",
                 "SETTINGS zone store=failed",
                 "DESKTOP clock confirm skipped reason=store",
+                "SETTINGS reread generation=1 file=a zone=0 rtc=1",
+                "DESKTOP clock utc=reconciled-rtc zone=",
                 "DESKTOP setup tz=America/New_York confirmed=0",
-                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup tz reconciled zone=not set confirmed=0",
+                // The notice row: Comfort shows one more.
+                "DESKTOP setup page=comfort rows=7",
                 "DESKTOP setup page=try rows=5",
                 "DESKTOP setup journal records=4 appended=4",
                 "ACTIONLOG verify records=4 broken=none head=",
@@ -2111,6 +2124,92 @@ fn setup_tz(
         }
         unchanged(&first, &["welcome", "timezone", "comfort", "done"], 1)?;
         return reboot_unchanged(1, "a");
+    }
+    // Chad's relay-377 cases: the store ends up holding New York (generation
+    // 2, file b) though the confirm failed. The PM's rule: the record re-read
+    // is put in force, so the clock is confirmed with New York now, exactly
+    // as the next boot builds it.
+    let reconciled_to_new_york = |first: &ObservedTest,
+                                  how: &[&str],
+                                  why: &str|
+     -> Result<(), String> {
+        let mut want: Vec<&str> = vec![
+            "SETTINGS migrated rt=0 rm=0 idle=10 lang=0 kb=0",
+            "zone=\"zone not set\"",
+            "DESKTOP setup tz page=search rtc=local",
+            "DESKTOP setup page=timezone rows=8",
+        ];
+        want.extend_from_slice(how);
+        want.extend_from_slice(&[
+            "SETTINGS reread generation=2 file=b zone=105 rtc=1",
+            "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+            " zone=\"EDT\" realtime_s=",
+            "DESKTOP clock utc=reconciled-utc zone=America/New_York",
+            "DESKTOP setup tz=America/New_York confirmed=0",
+            "DESKTOP setup tz reconciled zone=America/New_York confirmed=1",
+            "DESKTOP setup page=comfort rows=7",
+            "DESKTOP setup page=try rows=5",
+            "DESKTOP setup done action=try zone=America/New_York",
+            "DESKTOP setup journal records=4 appended=4",
+            "ACTIONLOG verify records=4 broken=none head=",
+            "LOGIN account created generation=1",
+        ]);
+        require_serial_sequence(scenario, first, &want, why)?;
+        // The clock is confirmed now, so every record carries UTC.
+        for page in ["welcome", "timezone", "comfort", "done"] {
+            let (t, utc, ok) = journal_line(scenario, first, page)?;
+            if utc != 1 || ok != 1 || !(SETUP_TZ_UTC_S..SETUP_TZ_UTC_S + 600).contains(&t) {
+                return Err(format!(
+                    "`{}`: the `{page}` record must carry the confirmed UTC time (from {SETUP_TZ_UTC_S}): time_s={t} utc={utc} ok={ok}",
+                    scenario.name
+                ));
+            }
+        }
+        let second = run("boot2", SETUP_STORE2)?;
+        require_serial_sequence(
+            scenario,
+            &second,
+            &[
+                "SETTINGS loaded generation=2 file=b rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+                "DESKTOP setup skipped reason=stored",
+                "LOGIN signed in",
+            ],
+            "boot 2 builds what boot 1 had in force after the failure: New York, confirmed",
+        )
+    };
+    if scenario.name == LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO {
+        let first = run("boot1", SETUP_TZ1)?;
+        reconciled_to_new_york(
+            &first,
+            &[
+                "SETTINGS write=failed file=b",
+                "SETTINGS zone store=failed",
+                "DESKTOP clock confirm skipped reason=store",
+            ],
+            "the write that lands but reports failure (Chad, relay 377 case 1): the store holds New York, so New York is put in force and the clock confirmed with it",
+        )?;
+        return absent(
+            scenario,
+            &first,
+            "DESKTOP clock confirm refused",
+            "the kernel's own confirm is never asked after a failed store",
+        );
+    }
+    if scenario.name == LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO {
+        let w2 = settings7_written(&ny, 2, "b");
+        let first = run("boot1", SETUP_TZ1)?;
+        return reconciled_to_new_york(
+            &first,
+            &[
+                &w2,
+                "SETTINGS zone stored zone=105 rtc=1",
+                "DESKTOP clock confirm refused errno=114",
+                "SETTINGS write=failed file=a",
+                "SETTINGS zone restore=failed",
+            ],
+            "the refused confirm whose rollback fails (Chad, relay 377 case 2): the store still holds New York, so New York is put in force and the clock confirmed with it",
+        );
     }
     let w1 = settings7_written(&defaults, 1, "a");
     let w2 = settings7_written(&ny, 2, "b");

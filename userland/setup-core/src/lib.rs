@@ -171,6 +171,9 @@ struct TzPage {
 /// The wizard: the page shown, the focused option, the choices.
 pub struct Wizard {
     stub_pages: bool,
+    /// A one-time row under the next page's title (S3: the store couldn't
+    /// save the zone); cleared when another page is shown.
+    notice: Option<String>,
     /// The Time zone page is shown (off: the `rtc-offset` kill-switch).
     time_zone: bool,
     tz: Option<TzPage>,
@@ -185,6 +188,7 @@ impl Wizard {
     pub fn new(stub_pages: bool) -> Self {
         Self {
             stub_pages,
+            notice: None,
             time_zone: true,
             tz: None,
             page: Page::Welcome,
@@ -237,6 +241,23 @@ impl Wizard {
             t.review = ok;
         }
         self.show(self.next(Page::TimeZone))
+    }
+
+    /// S3: what the settings store holds after a failed confirm (the PM's
+    /// rule, #92: the durable record is the truth). `zone`: its zone (`None`:
+    /// not set); `confirmed`: the clock is confirmed with it. The page is
+    /// review-only if confirmed, editable otherwise.
+    pub fn reconciled(&mut self, zone: Option<u16>, confirmed: bool) {
+        self.choices.tz = zone;
+        if let Some(t) = self.tz.as_mut() {
+            t.review = confirmed;
+        }
+    }
+
+    /// A one-time row under the title of the page shown next (S3's
+    /// "Couldn't save the time zone"). Cleared when another page is shown.
+    pub fn notice(&mut self, text: String) {
+        self.notice = Some(text);
     }
 
     /// The zone's name, for the log and the Try summary (S3).
@@ -327,6 +348,9 @@ impl Wizard {
     pub fn rows(&self) -> Vec<String> {
         let mut rows = Vec::new();
         rows.push(self.title());
+        if let Some(n) = &self.notice {
+            rows.push(n.clone());
+        }
         for line in self.body() {
             rows.push(line);
         }
@@ -532,6 +556,7 @@ impl Wizard {
     }
 
     fn show(&mut self, page: Page) -> Outcome {
+        self.notice = None;
         self.page = page;
         self.focus = 0;
         Outcome::Page(page)

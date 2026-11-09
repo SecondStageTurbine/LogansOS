@@ -249,3 +249,49 @@ fn characters_outside_the_search() {
     assert_eq!(s1.on(Input::Char(b'n')), Outcome::Nothing);
     assert_eq!(s1.on(Input::Char(b' ')), Outcome::Redraw);
 }
+
+/// The PM's rule (#92): after a failed confirm the wizard takes what the
+/// store holds, and the next page says the zone couldn't be saved, once.
+#[test]
+fn a_failed_confirm_takes_the_stores_zone_and_says_so() {
+    let mut w = wizard(None);
+    w.on(Input::Choose);
+    type_str(&mut w, "new y");
+    w.on(Input::Choose);
+    w.on(Input::Up);
+    assert_eq!(w.on(Input::Choose), Outcome::Confirm(105));
+    // The store kept New York and the clock confirmed with it.
+    assert_eq!(w.confirmed(false), Outcome::Page(Page::Comfort));
+    w.reconciled(Some(105), true);
+    w.notice(String::from(
+        "Couldn't save the time zone. In use: America/New_York.",
+    ));
+    assert_eq!(
+        rows(&w)[..3],
+        [
+            "Comfort (2 of 3)",
+            "Couldn't save the time zone. In use: America/New_York.",
+            "Make the screen calmer, if you like.",
+        ]
+    );
+    assert!(w.rows().len() <= MAX_ROWS);
+    assert!(w.reviewed());
+    // Shown once: gone on the next page.
+    w.on(Input::Back);
+    assert_eq!(
+        rows(&w)[1],
+        "Time zone: America/New_York. The clock is set."
+    );
+    // The store held nothing: not set, editable.
+    let mut w = wizard(None);
+    w.on(Input::Choose);
+    w.on(Input::Down);
+    w.on(Input::Choose);
+    w.on(Input::Up);
+    w.on(Input::Up);
+    assert_eq!(w.on(Input::Choose), Outcome::Confirm(105));
+    w.confirmed(false);
+    w.reconciled(None, false);
+    assert_eq!(w.zone_name(), None);
+    assert!(!w.reviewed());
+}
