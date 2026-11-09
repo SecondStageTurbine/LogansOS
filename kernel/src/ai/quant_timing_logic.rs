@@ -11,14 +11,18 @@
 use core::fmt::{self, Write};
 
 /// The reply cap (the dispatch: greedy, 32 tokens).
+#[allow(dead_code)] // the timing image's; the format scenario runs 8
 pub const MAX_NEW: usize = 32;
 
 /// What the image's two models need in buddy blocks, measured by
 /// `.github/workflows/model-pin.yml` (`neomc inspect`, run 42525785126), and
 /// the Q8_0 module's size: the "need" half of the memory discriminator (the
-/// census prints the "have").
+/// census prints the "have"). The timing image's only.
+#[allow(dead_code)]
 pub const Q4_TENSOR_BYTES: u64 = 761_761_792;
+#[allow(dead_code)]
 pub const Q8_TENSOR_BYTES: u64 = 1_197_969_408;
+#[allow(dead_code)]
 pub const Q8_MODULE_BYTES: u64 = 669_799_936;
 
 /// The two models' slots in run order for prompt `prompt` (0-based): Q4, Q8

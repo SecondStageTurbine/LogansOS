@@ -30,6 +30,13 @@
     feature = "framebuffer-console"
 ))]
 compile_error!("integrated Arthur must render through its G1 surface, not framebuffer-console");
+// The Zenbook timing image (`arthur-quant-timing`) is image A's kernel plus
+// the timing mode; xtask keeps it out of the product image itself
+// (`PRODUCT_IMAGE_KERNEL_FEATURES`, and the product ELF check).
+#[cfg(all(feature = "arthur-quant-timing", feature = "neo-test"))]
+compile_error!(
+    "arthur-quant-timing is an image feature; the scenario is neo-test-arthur-quant-timing"
+);
 
 extern crate alloc;
 
@@ -968,7 +975,22 @@ extern "C" fn _kernel_start() -> ! {
         not(feature = "neo-test-boot-model-ticks")
     ))]
     {
+        // The Zenbook timing image: what the two models need, and what is
+        // free before they are built (the memory discriminator).
+        #[cfg(feature = "arthur-quant-timing")]
+        {
+            serial_println!(
+                "TIMING need q4_tensor_bytes={} q8_tensor_bytes={} q8_module_bytes={}",
+                crate::ai::quant_timing_logic::Q4_TENSOR_BYTES,
+                crate::ai::quant_timing_logic::Q8_TENSOR_BYTES,
+                crate::ai::quant_timing_logic::Q8_MODULE_BYTES
+            );
+            crate::mm::boot_census("timing_before_preload");
+        }
         boot_modules::preload();
+        // The timing image times both models and holds the screen.
+        #[cfg(all(feature = "arthur-quant-timing", not(feature = "neo-test")))]
+        crate::ai::quant_timing::run_image();
         // L7.1: the model Arthur answers with is built (an image without
         // one, or whose build failed, has no model-ready time).
         #[cfg(feature = "boot-time")]

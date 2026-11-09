@@ -723,6 +723,8 @@ const SCENARIO: &str = "buddy_max_order";
 const SCENARIO: &str = "boot_module_reclaim";
 #[cfg(feature = "neo-test-real-lm-generate")]
 const SCENARIO: &str = "real_lm_generate_boot";
+#[cfg(feature = "neo-test-arthur-quant-timing")]
+const SCENARIO: &str = "arthur_quant_timing_format";
 #[cfg(feature = "neo-test-real-lm-generate-guard")]
 const SCENARIO: &str = "real_lm_generate_guard";
 #[cfg(feature = "neo-test-inference-stack-overflow")]
@@ -1495,6 +1497,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-buddy-max-order",
     feature = "neo-test-boot-module-reclaim",
     feature = "neo-test-real-lm-generate",
+    feature = "neo-test-arthur-quant-timing",
     feature = "neo-test-real-lm-generate-guard",
     feature = "neo-test-real-lm-peak",
     feature = "neo-test-inference-stack-overflow",
@@ -1881,6 +1884,7 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-buddy-max-order",
         feature = "neo-test-boot-module-reclaim",
         feature = "neo-test-real-lm-generate",
+        feature = "neo-test-arthur-quant-timing",
         feature = "neo-test-real-lm-generate-guard",
         feature = "neo-test-real-lm-peak",
         feature = "neo-test-inference-stack-overflow",
@@ -4862,6 +4866,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-real-lm-generate")]
     run_real_lm_generate_boot();
+
+    #[cfg(feature = "neo-test-arthur-quant-timing")]
+    run_arthur_quant_timing_format();
 
     #[cfg(feature = "neo-test-real-lm-generate-guard")]
     run_real_lm_generate_guard();
@@ -44017,6 +44024,100 @@ fn run_real_lm_generate_guard() -> ! {
         tokens.len(),
         max_new
     ));
+}
+
+/// The Zenbook timing mode's format check
+/// (`Plans/DISPATCH-2026-11-09-seat-f-arthur-q8-zenbook-timing.md`): the same
+/// driver the timing image runs (`ai::quant_timing::run`), on two copies of
+/// the KAT inventory LM as the "q4" and "q8" slots. It checks the lines and
+/// the order (the harness parses them), and that the timing calls are the
+/// product generate core's: the oracle prompt and its control give the
+/// Python oracle's tokens on both slots. Speed is not checked.
+#[cfg(feature = "neo-test-arthur-quant-timing")]
+fn run_arthur_quant_timing_format() -> ! {
+    use crate::ai::quant_timing::{Prompt, Slot, run};
+
+    // tools/real-lm-oracle/expected_tokens.txt (the B1c KAT oracle).
+    const ORACLE_PROMPT: [u32; 4] = [1, 5, 9, 2];
+    const ORACLE_TOKENS: [u32; 8] = [11, 0, 3, 3, 3, 3, 3, 3];
+    const CONTROL_PROMPT: [u32; 4] = [1, 5, 9, 3];
+    const CONTROL_TOKENS: [u32; 8] = [4, 11, 3, 3, 3, 3, 3, 3];
+    const MAX_NEW: usize = 8;
+    let owner = crate::sched::current_pid();
+    let load = |path: &str| match crate::boot_modules::load_model(path, owner) {
+        Ok(model) => model,
+        Err(errno) => {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=boot_module_load_failed path={} errno={}",
+                SCENARIO,
+                path,
+                errno
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    };
+    let a = load("/boot/models/kv-persist-kat.neom");
+    let b = load("/boot/models/kv-persist-kat-b.neom");
+    let slots = [
+        Slot {
+            label: "q4",
+            model: Some(&a),
+            check: true,
+        },
+        Slot {
+            label: "q8",
+            model: Some(&b),
+            check: true,
+        },
+    ];
+    let prompts = [
+        Prompt {
+            id: "oracle",
+            ids: &ORACLE_PROMPT,
+            expect: Some(&ORACLE_TOKENS),
+        },
+        Prompt {
+            id: "control",
+            ids: &CONTROL_PROMPT,
+            expect: Some(&CONTROL_TOKENS),
+        },
+        Prompt {
+            id: "short",
+            ids: &[1, 5, 9],
+            expect: None,
+        },
+        Prompt {
+            id: "reversed",
+            ids: &[2, 9, 5, 1],
+            expect: None,
+        },
+        Prompt {
+            id: "pair",
+            ids: &[5, 9],
+            expect: None,
+        },
+    ];
+    let out = run(&slots, &prompts, MAX_NEW);
+    serial_println!(
+        "TIMING done runs={} mismatches={} failures={}",
+        out.runs,
+        out.mismatches,
+        out.failures
+    );
+    if out.runs != 10 || out.failures != 0 {
+        fail("reason=timing_runs_incomplete");
+    }
+    if out.mismatches != 0 {
+        fail("reason=timing_tokens_differ_from_python_oracle");
+    }
+    // The two slots hold the same weights: every prompt's tokens agree.
+    if out.tokens[0] != out.tokens[1] {
+        fail("reason=slots_disagree_on_identical_weights");
+    }
+    if out.tokens[0].iter().any(|t| t.len() != MAX_NEW) {
+        fail("reason=timing_token_count");
+    }
+    pass("arthur_quant_timing_format=ok runs=10 order=alternating oracle=both_slots");
 }
 
 #[cfg(feature = "neo-test-real-lm-generate")]

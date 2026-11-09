@@ -122,6 +122,20 @@ pub mod predictor;
 pub mod prefill_perf;
 #[cfg(feature = "prefill-perf")]
 pub mod prefill_perf_logic;
+/// The Zenbook Q4_K_M-vs-Q8_0 timing mode (the timing image and its format
+/// scenario only).
+#[cfg(any(
+    feature = "arthur-quant-timing",
+    feature = "neo-test-arthur-quant-timing"
+))]
+pub mod quant_timing;
+#[cfg(any(
+    feature = "arthur-quant-timing",
+    feature = "neo-test-arthur-quant-timing"
+))]
+pub mod quant_timing_logic;
+#[cfg(feature = "arthur-quant-timing")]
+pub mod quant_timing_prompts;
 pub mod reservation;
 pub mod residency_daemon;
 pub mod sharing;

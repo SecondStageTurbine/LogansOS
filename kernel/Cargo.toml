@@ -1445,6 +1445,13 @@ inference-stack = ["xsave-fpu"]
 # `sys_model_load` of `/boot/models/` hands out a handle to it. Off: the model
 # loads inside the syscall, at IF=0 on the caller's 32 KiB stack, as before.
 boot-model-preload = ["model-boot-module", "inference-stack"]
+# The Zenbook timing image (Plans/DISPATCH-2026-11-09-seat-f-arthur-q8-zenbook-timing.md):
+# the shipped Q4_K_M and the Q8_0 beside it (`TIMING_PINS`), both built at
+# boot, then five prompts on each in alternating order through the product
+# generate core, one TIMING line per run on the boot console, and the screen
+# held (no desktop). `xtask iso --quant-timing` only: never in the product
+# image, and a product build refuses it. Off: none of it is compiled.
+arthur-quant-timing = ["boot-model-preload", "real-lm", "lapic-timer", "forward-perf"]
 # OT-87 R2 (docs/THINK-2026-10-27-ot87-installer.md §5): Arthur's model from the
 # installed NeoFS volume. A pinned name under /neofs/ is held to its pin through
 # NeoFS's verified content hash (EBADMSG on a mismatch), and the boot preload
@@ -1546,6 +1553,10 @@ neo-test-inference-kill-control = ["neo-test-inference-kill"]
 # the census records the heap and inference-stack high-water and the TSC time.
 neo-test-real-lm-peak = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "kernel-observability", "threaded-matmul"]
 neo-test-real-lm-generate = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "kernel-observability", "neo-test-instrumentation"]
+# The timing mode's format scenario (`arthur_quant_timing_format`): the same
+# driver on two copies of the KAT inventory LM; checks the lines and the
+# order, not the speed.
+neo-test-arthur-quant-timing = ["neo-test", "real-lm", "model-boot-module", "phase9-data-driven-config", "forward-perf"]
 # A9-B: the product core under the repetition guard, at a test penalty of
 # 1.3, on the KAT inventory LM; its tokens must equal the guarded Python
 # oracle (tools/real-lm-oracle/expected_guard_tokens.txt).
