@@ -17,6 +17,12 @@ pub type ssize_t = isize;
 pub type off_t = i64;
 pub type wchar_t = i32; // musl x86_64: `int` (arch/x86_64/bits/alltypes.h.in)
 
+extern_ty! {
+    /// C's `FILE` (musl's `struct _IO_FILE`), opaque as on unix. Only the
+    /// type: mozjs-sys's bindings name it (`pub type FILE = ::libc::FILE;`).
+    pub type FILE;
+}
+
 #[deprecated(since = "0.2.190", note = "Use `c_int::MIN` instead.")]
 pub const INT_MIN: c_int = c_int::MIN;
 #[deprecated(since = "0.2.190", note = "Use `c_int::MAX` instead.")]
