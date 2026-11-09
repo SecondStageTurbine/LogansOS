@@ -4550,6 +4550,17 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // The Zenbook timing mode's format check
+    // (Plans/DISPATCH-2026-11-09-seat-f-arthur-q8-zenbook-timing.md): the
+    // timing image's driver on two copies of the KAT inventory LM. Lines and
+    // order, not speed.
+    TestScenario {
+        name: "arthur_quant_timing_format",
+        feature: "neo-test-arthur-quant-timing",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // A9-B: the same core under the repetition guard (test penalty 1.3); its
     // tokens must equal the guarded Python oracle, cut short by the loop stop.
     TestScenario {
@@ -8089,6 +8100,34 @@ static STAGE_KAT_MODEL: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 const KAT_MODEL_SRC: &str = "kernel/src/ai/fixtures/kv_persist_kat.neom";
 const KAT_MODEL_NEOM: &str = "kv-persist-kat.neom";
 
+/// The timing scenario's second KAT slot, `/models/kv-persist-kat-b.neom`
+/// (the same file under a second pinned name; `arthur_quant_timing_format`).
+static STAGE_KAT_MODEL_B: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const KAT_MODEL_B_NEOM: &str = "kv-persist-kat-b.neom";
+
+fn stage_kat_model_b() -> bool {
+    STAGE_KAT_MODEL_B.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The Zenbook timing image's Q8_0 `.neom` (`iso --with-model <q4>
+/// --quant-timing <q8>`), staged as `/models/model-qwen2.5-0.5b-q8.neom`.
+static QUANT_TIMING_MODEL: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+const QUANT_TIMING_FLAG: &str = "--quant-timing";
+const QUANT_TIMING_NEOM: &str = "model-qwen2.5-0.5b-q8.neom";
+/// The Q8_0 import's size (`boot_model_logic::QWEN25_05B_Q8_TIMING`, #90).
+const QUANT_TIMING_NEOM_BYTES: u64 = 669_799_936;
+/// The timing image's ISO: its own name, so it is never mistaken for image A.
+const QUANT_TIMING_ISO_REL: &str = "boot/neoplutarch-quant-timing.iso";
+/// The kernel feature only the timing image builds.
+const QUANT_TIMING_FEATURE: &str = "arthur-quant-timing";
+
+fn quant_timing_model() -> Option<PathBuf> {
+    QUANT_TIMING_MODEL
+        .lock()
+        .expect("quant timing model")
+        .clone()
+}
+
 fn set_stage_kat_model(on: bool) {
     STAGE_KAT_MODEL.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -8277,6 +8316,7 @@ fn build_user() -> Result<(), String> {
     set_fault_probe_stage(None);
     set_stage_reclaim_probe(false);
     set_stage_kat_model(false);
+    STAGE_KAT_MODEL_B.store(false, std::sync::atomic::Ordering::Relaxed);
     set_boot_model_stage(None);
     build_user_with_feature(None)
 }
@@ -8295,9 +8335,14 @@ fn build_user_for_scenario(scenario: TestScenario) -> Result<(), String> {
         std::sync::atomic::Ordering::SeqCst,
     );
     set_stage_reclaim_probe(scenario.name == "boot_module_reclaim");
+    STAGE_KAT_MODEL_B.store(
+        scenario.name == "arthur_quant_timing_format",
+        std::sync::atomic::Ordering::Relaxed,
+    );
     set_stage_kat_model(matches!(
         scenario.name,
         "real_lm_generate_boot"
+            | "arthur_quant_timing_format"
             | "real_lm_generate_guard"
             | "boot_model_load_ticks"
             | "boot_model_load_ticks_control"
@@ -10130,6 +10175,9 @@ const ELF_EXPECTATIONS: &[ElfExpectation] = &[
             "kv_persist",
             "Reprefill",
             "NEO_TEST/1",
+            // The Zenbook timing mode (`arthur-quant-timing`): the timing image's only.
+            "TIMING header",
+            "quant_timing",
         ],
         // Positive controls: the scan finds what the product does contain.
         present: &[
@@ -10269,9 +10317,21 @@ fn check_pinned_digest(path: &Path, expected: &[u8; 32]) -> Result<(), String> {
 /// (product pins only), the glass desktop with Arthur reading the model from
 /// its boot module, the model and vocab staged as modules, and the licences.
 fn cmd_iso_with_model(neom: &Path, rest: &[String]) -> Result<(), String> {
-    parse_image_flags(rest, "iso --with-model")?;
+    let (q8, rest) = split_quant_timing(rest)?;
+    parse_image_flags(&rest, "iso --with-model")?;
     let vocab = neom.with_extension("vocab");
     check_product_model_files(neom, &vocab)?;
+    if let Some(q8) = &q8 {
+        check_quant_timing_model(q8)?;
+        eprintln!(
+            "[xtask] iso --with-model {QUANT_TIMING_FLAG}: the Zenbook timing image (not image A): \
+             {} beside {}, kernel +{QUANT_TIMING_FEATURE}, written to {QUANT_TIMING_ISO_REL}",
+            q8.display(),
+            neom.display()
+        );
+    }
+    *QUANT_TIMING_MODEL.lock().expect("quant timing model") = q8.clone();
+    STAGE_KAT_MODEL_B.store(false, std::sync::atomic::Ordering::Relaxed);
     set_stage_std_real_smoke(&[]);
     set_fault_probe_stage(None);
     set_stage_reclaim_probe(false);
@@ -10286,13 +10346,60 @@ fn cmd_iso_with_model(neom: &Path, rest: &[String]) -> Result<(), String> {
     }));
     let result = (|| {
         build_product_image_user()?;
-        build_product_image_kernel()?;
+        if q8.is_some() {
+            build_product_image_kernel_with(&[QUANT_TIMING_FEATURE.to_string()])?;
+        } else {
+            build_product_image_kernel()?;
+        }
         set_desktop_resolution(Some(DESKTOP_DEFAULT_RESOLUTION));
-        assemble_iso()
+        assemble_iso()?;
+        if q8.is_some() {
+            // Never leave a timing kernel under image A's name.
+            let root = workspace_root();
+            fs::rename(root.join(ISO_OUTPUT_REL), root.join(QUANT_TIMING_ISO_REL))
+                .map_err(|e| format!("move the timing image to {QUANT_TIMING_ISO_REL}: {e}"))?;
+            println!("[xtask] the Zenbook timing image: {QUANT_TIMING_ISO_REL}");
+        }
+        Ok(())
     })();
     set_desktop_resolution(None);
     set_boot_model_stage(None);
+    *QUANT_TIMING_MODEL.lock().expect("quant timing model") = None;
     result
+}
+
+/// `--quant-timing <q8.neom>` out of `iso --with-model`'s flags.
+fn split_quant_timing(rest: &[String]) -> Result<(Option<PathBuf>, Vec<String>), String> {
+    let mut q8 = None;
+    let mut out = Vec::new();
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        if arg == QUANT_TIMING_FLAG {
+            let path = it
+                .next()
+                .ok_or_else(|| format!("{QUANT_TIMING_FLAG} takes the Q8_0 .neom's path"))?;
+            if q8.replace(PathBuf::from(path)).is_some() {
+                return Err(format!("{QUANT_TIMING_FLAG} given twice"));
+            }
+        } else {
+            out.push(arg.clone());
+        }
+    }
+    Ok((q8, out))
+}
+
+/// The timing image's Q8_0 must be #90's import: its size, then its pin.
+fn check_quant_timing_model(q8: &Path) -> Result<(), String> {
+    let len = fs::metadata(q8)
+        .map(|m| m.len())
+        .map_err(|e| format!("{QUANT_TIMING_FLAG}: {} ({e})", q8.display()))?;
+    if len != QUANT_TIMING_NEOM_BYTES {
+        return Err(format!(
+            "{QUANT_TIMING_FLAG}: {} is {len} bytes; the pinned Q8_0 .neom is {QUANT_TIMING_NEOM_BYTES}",
+            q8.display()
+        ));
+    }
+    check_pinned_digest(q8, &boot_model_logic::QWEN25_05B_Q8_TIMING.blake3)
 }
 
 fn assemble_iso() -> Result<(), String> {
@@ -10447,6 +10554,19 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
                 &root.join(KAT_MODEL_SRC),
                 &staging_models.join(KAT_MODEL_NEOM),
             )?;
+        }
+        if stage_kat_model_b() {
+            copy_into(
+                &root.join(KAT_MODEL_SRC),
+                &staging_models.join(KAT_MODEL_B_NEOM),
+            )?;
+        }
+        if let Some(q8) = quant_timing_model() {
+            copy_into(&q8, &staging_models.join(QUANT_TIMING_NEOM))?;
+            eprintln!(
+                "[xtask] staged {} as boot module /models/{QUANT_TIMING_NEOM} (the timing image)",
+                q8.display()
+            );
         }
         if let Some(stage) = boot_model_stage().filter(|s| s.stage_model) {
             stage_boot_model_file(&stage, &staging_models.join(BOOT_MODEL_NEOM))?;
@@ -15837,6 +15957,7 @@ fn qemu_memory_for_scenario(name: &str) -> &'static str {
         // B1c (F4): the 305 MiB heap tier plus a 256 MiB-aligned order-16
         // block must fit beside each other.
         | "real_lm_generate_boot"
+        | "arthur_quant_timing_format"
         | "real_lm_generate_guard"
         | "real_lm_peak_baremetal"
         | "boot_model_load_stack"
@@ -21974,6 +22095,22 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "A9-B: the guarded core must match the independent Python oracle, cut by the loop stop",
         )?;
     }
+    if scenario.name == "arthur_quant_timing_format" {
+        let serial = read_serial(observed)?;
+        check_quant_timing_lines(&serial, 5, 8).map_err(|e| {
+            format!(
+                "`{}` {e}; serial={}",
+                scenario.name,
+                observed.serial_log.display()
+            )
+        })?;
+        require_serial_contains(
+            scenario,
+            observed,
+            "arthur_quant_timing_format=ok runs=10 order=alternating oracle=both_slots",
+            "the timing mode's format scenario passes",
+        )?;
+    }
     if scenario.name == "real_lm_generate_boot" {
         for needle in [
             "BOOTMODEL take path=/models/kv-persist-kat.neom bytes=382464",
@@ -23263,6 +23400,82 @@ fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
     }
 }
 
+/// The Zenbook timing mode's lines (`kernel/src/ai/quant_timing.rs`): the
+/// header, one line per run in the alternating order (Q4, Q8, Q8, Q4, ...)
+/// with every field and `tokens=<max_new>`, a summary per model, and a done
+/// line with no failures. The oracle and control prompts (the format
+/// scenario's first two) must say `host_match=yes` on both slots.
+fn check_quant_timing_lines(serial: &str, prompts: usize, max_new: usize) -> Result<(), String> {
+    let lines: Vec<&str> = serial
+        .lines()
+        .filter(|l| l.starts_with("TIMING "))
+        .collect();
+    let header = lines
+        .iter()
+        .find(|l| l.starts_with("TIMING header "))
+        .ok_or("no `TIMING header` line")?;
+    for field in [
+        "tsc_mhz=",
+        "pit_check_mhz=",
+        "cpus=",
+        "avx2=",
+        &format!("prompts={prompts} "),
+        &format!("max_new={max_new} "),
+        "order=alternating",
+    ] {
+        if !header.contains(field) {
+            return Err(format!("the header has no `{field}`: {header}"));
+        }
+    }
+    let runs: Vec<&str> = lines
+        .iter()
+        .copied()
+        .filter(|l| l.starts_with("TIMING model=") && l.contains(" prefill_ms="))
+        .collect();
+    if runs.len() != 2 * prompts {
+        return Err(format!("{} run lines, want {}", runs.len(), 2 * prompts));
+    }
+    for (i, line) in runs.iter().enumerate() {
+        let prompt = i / 2;
+        let first = if prompt % 2 == 0 { "q4" } else { "q8" };
+        let other = if first == "q4" { "q8" } else { "q4" };
+        let model = if i % 2 == 0 { first } else { other };
+        let want = format!("TIMING model={model} prompt={} prefill_ms=", prompt + 1);
+        if !line.starts_with(&want) {
+            return Err(format!(
+                "run {i} out of order: want `{want}…`, got `{line}`"
+            ));
+        }
+        for field in [
+            &format!(" tokens={max_new} ") as &str,
+            " decode_ms=",
+            " ms_per_token=",
+            " id=",
+            " ids_fnv=",
+        ] {
+            if !line.contains(field) {
+                return Err(format!("run {i} has no `{}`: {line}", field.trim()));
+            }
+        }
+        if prompt < 2 && !line.ends_with(" host_match=yes") {
+            return Err(format!(
+                "run {i} (oracle/control) does not match the oracle: {line}"
+            ));
+        }
+    }
+    for model in ["q4", "q8"] {
+        let want = format!("TIMING summary model={model} prompts={prompts} median_ms_per_token=");
+        if !lines.iter().any(|l| l.starts_with(&want)) {
+            return Err(format!("no `{want}…` line"));
+        }
+    }
+    let done = format!("TIMING done runs={} mismatches=0 failures=0", 2 * prompts);
+    if !lines.contains(&done.as_str()) {
+        return Err(format!("no `{done}` line"));
+    }
+    Ok(())
+}
+
 fn load_capture(
     scenario: TestScenario,
     rel: &str,
@@ -24369,6 +24582,12 @@ fn staged_model_modules() -> Vec<&'static str> {
     }
     if stage_kat_model() {
         names.push(KAT_MODEL_NEOM);
+    }
+    if stage_kat_model_b() {
+        names.push(KAT_MODEL_B_NEOM);
+    }
+    if quant_timing_model().is_some() {
+        names.push(QUANT_TIMING_NEOM);
     }
     names
 }
@@ -25609,6 +25828,84 @@ fn check_arthur_boot_module_serial(
 
 #[cfg(test)]
 mod tests {
+    /// The format scenario's log, as the kernel prints it (`quant_timing.rs`).
+    fn quant_timing_log(swap: bool) -> String {
+        let mut log = String::from(
+            "TIMING header tsc_mhz=2400 pit_check_mhz=2399 cpus=4 avx2=Yes prompts=5 max_new=8 order=alternating\n",
+        );
+        for p in 0..5 {
+            let mut order = if p % 2 == 0 {
+                ["q4", "q8"]
+            } else {
+                ["q8", "q4"]
+            };
+            if swap && p == 3 {
+                order.reverse();
+            }
+            for m in order {
+                let tail = if p < 2 { " host_match=yes" } else { "" };
+                log.push_str(&format!(
+                    "TIMING model={m} prompt={} prefill_ms=12.3 tokens=8 decode_ms=45.6 ms_per_token=6.5 id=x ids_fnv=0000abcd{tail}\n",
+                    p + 1
+                ));
+            }
+        }
+        log.push_str("TIMING summary model=q4 prompts=5 median_ms_per_token=6.5 median_ttft_ms=12.3 first_ms_per_token=6.5 last_ms_per_token=6.5\n");
+        log.push_str("TIMING summary model=q8 prompts=5 median_ms_per_token=6.5 median_ttft_ms=12.3 first_ms_per_token=6.5 last_ms_per_token=6.5\n");
+        log.push_str("TIMING done runs=10 mismatches=0 failures=0\n");
+        log
+    }
+
+    #[test]
+    fn quant_timing_lines_check_the_order_and_fields() {
+        check_quant_timing_lines(&quant_timing_log(false), 5, 8).unwrap();
+        let err = check_quant_timing_lines(&quant_timing_log(true), 5, 8).unwrap_err();
+        assert!(err.contains("out of order"), "{err}");
+        let err = check_quant_timing_lines(
+            &quant_timing_log(false).replace(" host_match=yes", ""),
+            5,
+            8,
+        )
+        .unwrap_err();
+        assert!(err.contains("does not match the oracle"), "{err}");
+        let err = check_quant_timing_lines(
+            &quant_timing_log(false).replace("tokens=8", "tokens=7"),
+            5,
+            8,
+        )
+        .unwrap_err();
+        assert!(err.contains("no `tokens=8`"), "{err}");
+        let err = check_quant_timing_lines(
+            &quant_timing_log(false).replace("failures=0", "failures=1"),
+            5,
+            8,
+        )
+        .unwrap_err();
+        assert!(err.contains("TIMING done"), "{err}");
+    }
+
+    /// The timing feature is never in the product image's kernel, and the
+    /// timing flag takes its path.
+    #[test]
+    fn quant_timing_is_never_in_the_product_image() {
+        assert!(!PRODUCT_IMAGE_KERNEL_FEATURES.contains(&QUANT_TIMING_FEATURE));
+        let args: Vec<String> = ["--boot-time", "--quant-timing", "/m/q8.neom"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (q8, rest) = split_quant_timing(&args).unwrap();
+        assert_eq!(q8, Some(PathBuf::from("/m/q8.neom")));
+        assert_eq!(rest, vec!["--boot-time".to_string()]);
+        assert!(split_quant_timing(&["--quant-timing".to_string()]).is_err());
+        let twice: Vec<String> = ["--quant-timing", "a", "--quant-timing", "b"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert!(split_quant_timing(&twice).is_err());
+        assert_eq!(split_quant_timing(&[]).unwrap(), (None, Vec::new()));
+        assert_ne!(QUANT_TIMING_ISO_REL, ISO_OUTPUT_REL);
+    }
+
     /// PR #58 re-check: the witness line for a raster, digested as the WM's
     /// `drag_perf::witness` does (over `0x00RRGGBB` words).
     fn drag_witness_line(raster: &[u8], bands: usize) -> String {

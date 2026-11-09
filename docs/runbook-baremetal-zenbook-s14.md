@@ -153,6 +153,45 @@ findings `docs/RESEARCH-2026-10-23-zenbook-i2c-hid-touchpad-FINDINGS.md`). At bo
 A machine that is not this Zenbook prints only `i2c-hid: no match (...)` and the touchpad lane touches
 nothing.
 
+## Q4_K_M vs Q8_0 reply speed (the timing image)
+
+J.c.'s question before Arthur moves to Q8_0 (#90, held): how fast is each model on this machine
+(`Plans/DISPATCH-2026-11-09-seat-f-arthur-q8-zenbook-timing.md`). The timing image answers it in one boot.
+
+**Build** (on the build box): image A's command with the Q8_0 `.neom` beside the shipped model:
+`cargo xtask iso --with-model <q4_k_m.neom> --quant-timing <q8_0.neom>`. It writes
+`boot/neoplutarch-quant-timing.iso`, never `boot/neoplutarch.iso`. The Q8_0 file must be #90's import:
+669,799,936 bytes, BLAKE3 `1cfd06dc…`, or xtask refuses it. Make it with the model-pin workflow's
+command (`neomc import qwen2.5-0.5b-instruct-q8_0.gguf -o <q8_0.neom>`). The image has no log sink and
+writes nothing to any disk.
+
+**What it does.** It boots like image A and builds both models before userland. Then, instead of the
+desktop, it runs five short commands (`help`, `list /`, `read /hello.txt`, `what time is it?`,
+`what's 2+2?`) on each model, through the generate path Arthur uses. The order alternates (Q4, Q8, Q8,
+Q4, ...), and each reply is capped at 32 tokens. The screen then stays as it is; nothing draws over it.
+
+**What to photograph.** When the last line reads `TIMING done runs=10 ...`, take a straight-on photo of
+the whole panel, and a closer one of the `TIMING` lines if the text is small. The lines, from the top:
+- `TIMING need …` and a `CENSUS label=timing_before_preload …` line: what the two models need and what
+  was free;
+- `BOOTMODEL … path=/models/model-qwen2.5-0.5b.neom` and `…-q8.neom`: each model's digest check and
+  build;
+- `TIMING header tsc_mhz=… pit_check_mhz=… cpus=… avx2=…`: the clock (two calibrations, which should
+  agree), the CPU count and whether the AVX2 matmul is in use;
+- `TIMING prompt=N id=… text=…`: what each prompt number is;
+- ten `TIMING model=q4|q8 prompt=N prefill_ms=… tokens=… decode_ms=… ms_per_token=…` lines, one per run.
+  `prefill_ms` is the time to the first token. The Q4 lines end in `host_match=yes` when the reply equals
+  the host's reply for that prompt;
+- two `TIMING summary model=… median_ms_per_token=… median_ttft_ms=…` lines: the two numbers per model
+  for J.c.;
+- `TIMING done runs=10 q4_host_mismatches=… failures=…`.
+
+Reading it: if both models' ms/token climb from prompt 1 to prompt 5, that's heat, not the weights
+(`first_ms_per_token` vs `last_ms_per_token` in each summary). A `loaded=no` slot line, or no `q8` runs,
+means the second model didn't build; the `BOOTMODEL` and `CENSUS` lines above it say why.
+
+Power off and remove the stick afterwards, as for any run.
+
 ## Boot time (L7.1)
 
 A run that measures boot time uses image A built with **`--boot-time`**:
