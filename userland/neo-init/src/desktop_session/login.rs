@@ -227,6 +227,38 @@ pub(super) fn read_small_up_to(path: &str, max: usize) -> Option<Vec<u8>> {
     Some(buf)
 }
 
+/// F11 S3 (Chad, #92 relay 379): a small file's bytes, telling a file that
+/// isn't there (`Ok(None)`) from one that couldn't be read (`Err`: the open
+/// failed for another reason, or a read failed).
+#[cfg(feature = "setup-tz")]
+#[cfg_attr(feature = "setup-tz-reread-fail-test", allow(dead_code))]
+pub(super) fn read_small_checked(path: &str) -> Result<Option<Vec<u8>>, ()> {
+    let handle = match sys_open(path, OPEN_ROOT_TEMPORARY, FileRights::READ) {
+        Ok(h) => h,
+        Err(libneo::ENOENT) => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    let mut buf = alloc::vec![0u8; 512];
+    let mut len = 0;
+    let mut failed = false;
+    while len < buf.len() {
+        let n = sys_read(handle, &mut buf[len..]);
+        if n < 0 {
+            failed = true;
+        }
+        if n <= 0 {
+            break;
+        }
+        len += n as usize;
+    }
+    let _ = sys_close(handle);
+    if failed {
+        return Err(());
+    }
+    buf.truncate(len);
+    Ok(Some(buf))
+}
+
 /// Write `bytes` as the whole of `path` (created if absent) and `fsync`.
 pub(super) fn write_whole(path: &str, bytes: &[u8]) -> bool {
     let Ok(handle) = open_rw(path) else {

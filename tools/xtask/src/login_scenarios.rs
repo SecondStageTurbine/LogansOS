@@ -57,6 +57,7 @@ pub const LOGIN_SETUP_TZ_REFUSED_SCENARIO: &str = "login_setup_tz_refused";
 pub const LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO: &str = "login_setup_tz_write_fail";
 pub const LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO: &str = "login_setup_tz_fsync_fail";
 pub const LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO: &str = "login_setup_tz_rollback_fail";
+pub const LOGIN_SETUP_TZ_REREAD_FAIL_SCENARIO: &str = "login_setup_tz_reread_fail";
 
 /// F11 S3's RTC (`-rtc base=`): 01:57 local time in New York on the
 /// fall-back day, inside the repeated hour (01:00-01:59 happens twice), three
@@ -94,6 +95,7 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO
             | LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO
             | LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO
+            | LOGIN_SETUP_TZ_REREAD_FAIL_SCENARIO
     )
 }
 
@@ -487,6 +489,25 @@ const SETUP_TZ_SKIP: &[SerialScriptStep] = &[
     step(b"LOGIN prompt=code", b"\n"),
 ];
 
+/// `login_setup_tz_reread_fail` (Chad, relay 379), boot 1: the walk to the
+/// confirm; it fails and the store can't be re-read, so the page stays with
+/// the notice (one more row: 6); then Esc back to Welcome, Esc and skip.
+const SETUP_TZ_REREAD: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", b"new y"),
+    step(
+        b"DESKTOP setup redraw page=timezone focus=0",
+        &[PAUSE, b'\n', PAUSE, HMP_UP, PAUSE, b'\n'],
+    ),
+    step(b"DESKTOP setup page=timezone rows=6", &[PAUSE, 0x1b]),
+    step(b"DESKTOP setup page=welcome rows=5", b"\x1b"),
+    step(b"DESKTOP setup page=skip rows=5", b"\n"),
+    step(b"LOGIN prompt=name", b"ada\n"),
+    step(b"LOGIN prompt=choose", P1),
+    step(b"LOGIN prompt=again", P1),
+    step(b"LOGIN prompt=code", b"\n"),
+];
+
 /// One boot of the VM layout with `steps` typed (none: no keyboard).
 #[allow(clippy::too_many_arguments)]
 fn boot(
@@ -690,7 +711,8 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         | LOGIN_SETUP_TZ_REFUSED_SCENARIO
         | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO
         | LOGIN_SETUP_TZ_FSYNC_FAIL_SCENARIO
-        | LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO => {
+        | LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO
+        | LOGIN_SETUP_TZ_REREAD_FAIL_SCENARIO => {
             setup_tz(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
         }
         _ => cut_steps(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?,
@@ -2194,6 +2216,70 @@ fn setup_tz(
             &first,
             "DESKTOP clock confirm refused",
             "the kernel's own confirm is never asked after a failed store",
+        );
+    }
+    if scenario.name == LOGIN_SETUP_TZ_REREAD_FAIL_SCENARIO {
+        // The New York record lands but reports failure, and then neither
+        // copy can be read: what the next boot selects is unknown, so nothing
+        // is put in force and no stored zone is claimed.
+        let first = run("boot1", SETUP_TZ_REREAD)?;
+        require_serial_sequence(
+            scenario,
+            &first,
+            &[
+                "SETTINGS migrated rt=0 rm=0 idle=10 lang=0 kb=0",
+                "zone=\"zone not set\"",
+                "DESKTOP setup tz page=search rtc=local",
+                "DESKTOP setup page=timezone rows=8",
+                "SETTINGS write=failed file=b",
+                "SETTINGS zone store=failed",
+                "DESKTOP clock confirm skipped reason=store",
+                "SETTINGS reread unresolved",
+                "DESKTOP clock utc=unresolved zone=",
+                "DESKTOP setup tz=America/New_York confirmed=0",
+                "DESKTOP setup tz unresolved notice=\"Couldn't save the time zone. Restart to check it.\"",
+                // The page stays, with the notice row.
+                "DESKTOP setup page=timezone rows=6",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=skip rows=5",
+                "DESKTOP setup done action=skip",
+                "DESKTOP setup journal records=2 appended=2",
+                "ACTIONLOG verify records=2 broken=none head=",
+                "LOGIN account created generation=1",
+            ],
+            "the unreadable re-read (Chad, relay 379): the confirm is unresolved, the clock stays as it was, and the page stays with a notice that names no stored zone",
+        )?;
+        for (needle, why) in [
+            (
+                "SETTINGS reread generation=",
+                "neither copy could be read, so no record is claimed",
+            ),
+            (
+                "DESKTOP setup tz reconciled",
+                "an unresolved confirm reconciles nothing",
+            ),
+            ("In use:", "the notice names no stored zone"),
+            (
+                "DESKTOP clock confirm refused",
+                "the kernel's own confirm is never asked after a failed store",
+            ),
+        ] {
+            absent(scenario, &first, needle, why)?;
+        }
+        unchanged(&first, &["welcome", "done"], 1)?;
+        // Boot 2 selects what the store holds: New York, generation 2 in b
+        // (the bytes landed), and confirms the clock with it.
+        let second = run("boot2", SETUP_STORE2)?;
+        return require_serial_sequence(
+            scenario,
+            &second,
+            &[
+                "SETTINGS loaded generation=2 file=b rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
+                "DESKTOP setup skipped reason=stored",
+                "LOGIN signed in",
+            ],
+            "boot 2 selects the record the store holds: New York, generation 2",
         );
     }
     if scenario.name == LOGIN_SETUP_TZ_ROLLBACK_FAIL_SCENARIO {

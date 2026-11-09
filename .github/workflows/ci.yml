@@ -1369,6 +1369,7 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-write-fail-test -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-fsync-fail-test -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-rollback-fail-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features setup-tz-reread-fail-test -- -D warnings)
           # OT-87 R4.4b: the intro Home with the installer (the Install chip).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)

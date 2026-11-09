@@ -295,3 +295,56 @@ fn a_failed_confirm_takes_the_stores_zone_and_says_so() {
     assert_eq!(w.zone_name(), None);
     assert!(!w.reviewed());
 }
+
+/// Chad, #92 relay 379: a failed confirm whose store couldn't be re-read. The
+/// page stays, editable, still holding the chosen zone; the notice names no
+/// stored zone; leaving again confirms again.
+#[test]
+fn an_unresolved_confirm_stays_on_the_page() {
+    let mut w = wizard(None);
+    w.on(Input::Choose);
+    type_str(&mut w, "new y");
+    w.on(Input::Choose);
+    w.on(Input::Up);
+    assert_eq!(w.on(Input::Choose), Outcome::Confirm(105));
+    let before = rows(&w);
+    assert_eq!(w.unresolved(), Outcome::Page(Page::TimeZone));
+    w.notice(String::from(
+        "Couldn't save the time zone. Restart to check it.",
+    ));
+    let after = rows(&w);
+    assert_eq!(after[0], before[0]);
+    assert_eq!(
+        after[1],
+        "Couldn't save the time zone. Restart to check it."
+    );
+    assert_eq!(after.len(), before.len() + 1);
+    // Shown afresh: the focus is on the first row (the chosen zone).
+    assert_eq!(
+        after[after.len() - 4..],
+        [
+            "Search: new y",
+            "> [x] America/New_York (EDT, UTC-4)",
+            "  Continue",
+            "Type to search. Up/Down, Enter to choose.",
+        ]
+    );
+    assert!(w.rows().len() <= MAX_ROWS);
+    assert!(!w.reviewed());
+    assert_eq!(w.zone_name(), Some("America/New_York"));
+    assert_eq!(after.len(), 6);
+    // Leaving forward asks for the confirm again.
+    w.on(Input::Down);
+    assert_eq!(w.on(Input::Choose), Outcome::Confirm(105));
+    // Back from it leaves for Welcome, and the notice is gone.
+    let mut w = wizard(None);
+    w.on(Input::Choose);
+    type_str(&mut w, "new y");
+    w.on(Input::Choose);
+    w.on(Input::Up);
+    w.on(Input::Choose);
+    w.unresolved();
+    w.notice(String::from("x"));
+    assert_eq!(w.on(Input::Back), Outcome::Page(Page::Welcome));
+    assert!(!rows(&w).contains(&"x"));
+}

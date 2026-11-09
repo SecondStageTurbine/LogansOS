@@ -209,7 +209,16 @@ corrected afterwards. The confirm therefore moves to the moment the zone becomes
   fails), the WM re-reads the store, puts exactly the record it selects (the valid one with the higher generation)
   in force for the zone, the RTC mode and the clock, and resolves the clock from it as a boot would (confirming if
   that record places the RTC reading). The next page says "Couldn't save the time zone. In use: <zone>." The live
-  state therefore always equals what the next boot builds; it is never "unchanged" by assumption;
+  state therefore always equals what the next boot builds; it is never "unchanged" by assumption.
+
+  If the re-read itself fails (a copy can't be read), what the next boot selects is unknown, so the confirm is
+  **unresolved** (Chad's relay 379): nothing is put in force, the clock stays exactly as it was, the wizard stays
+  on the Time zone page, and its notice names no stored zone: "Couldn't save the time zone. Restart to check it."
+  If both copies are read and neither is a valid record, the re-read takes the boot path's rule (migrate the
+  presence files and write that as the first record), so the confirm and the next boot agree.
+
+  Reconciliation covers the confirm's own failures. A display failure (`Scene::present` returning an error) is
+  not one of them: it ends the session, and the next boot reads the store, which is already the truth by then;
 - **no action-log record is written before the confirm.** The wizard holds its page choices in a small in-memory
   queue and appends them, in order, once the confirm succeeds; each record's `time_s` is the event's monotonic
   instant mapped onto the confirmed clock (`confirmed_utc − (m_confirm − m_event)`), not the RTC reading. Nothing

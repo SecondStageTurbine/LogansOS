@@ -254,6 +254,16 @@ impl Wizard {
         }
     }
 
+    /// S3: a failed confirm whose store couldn't be re-read (Chad, #92 relay
+    /// 379). The page stays, editable, with the zone that was chosen; nothing
+    /// is claimed as stored.
+    pub fn unresolved(&mut self) -> Outcome {
+        if let Some(t) = self.tz.as_mut() {
+            t.review = false;
+        }
+        self.show(Page::TimeZone)
+    }
+
     /// A one-time row under the title of the page shown next (S3's
     /// "Couldn't save the time zone"). Cleared when another page is shown.
     pub fn notice(&mut self, text: String) {

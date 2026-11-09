@@ -389,6 +389,19 @@ mod tz_page {
                 wizard.reconciled(held, confirmed);
                 wizard.notice(format!("Couldn't save the time zone. In use: {name}."));
             }
+            // The store couldn't be re-read: the clock is as it was, and the
+            // page stays, claiming no stored zone (Chad, relay 379).
+            clock::Confirmed::Unresolved => {
+                const NOTICE: &str = "Couldn't save the time zone. Restart to check it.";
+                log(zone, b"0");
+                Line::new()
+                    .s(b"DESKTOP setup tz unresolved notice=\"")
+                    .s(NOTICE.as_bytes())
+                    .s(b"\"\n")
+                    .emit();
+                wizard.unresolved();
+                wizard.notice(String::from(NOTICE));
+            }
         }
         Ok(())
     }

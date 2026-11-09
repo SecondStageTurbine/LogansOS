@@ -438,20 +438,51 @@ pub fn restore(previous: &Settings) -> bool {
     ok
 }
 
+/// What [`reread`] found.
+#[cfg(feature = "setup-tz")]
+pub enum Reread {
+    /// The settings now in force: the record the two copies select, or, with
+    /// no valid record, what the boot path puts in force ([`load`]'s
+    /// migration). The next boot selects the same.
+    Held(Settings),
+    /// A copy couldn't be read, so what the next boot selects is unknown.
+    /// Nothing is put in force (the cache is not the store's record).
+    Unresolved,
+}
+
 /// F11 S3 (the PM's rule, #92): the durable record is the truth. Read both
 /// copies again and put the record they select (the valid one with the higher
-/// generation) in force, as the next boot would; log what it holds. With no
-/// valid record (or on the volatile overlay) the settings in force stay.
+/// generation) in force, as the next boot would; log what it holds. With both
+/// copies read and no valid record, take the boot path's rule ([`load`]):
+/// migrate the presence files and write that as the first record. A copy that
+/// can't be read is [`Reread::Unresolved`] (Chad, relay 379). The volatile
+/// overlay is its own record.
 #[cfg(feature = "setup-tz")]
-pub fn reread() -> Settings {
+pub fn reread() -> Reread {
     if volatile() {
-        return current();
+        return Reread::Held(current());
     }
-    let a = login::read_small(sc::SETTINGS_A);
-    let b = login::read_small(sc::SETTINGS_B);
+    let copy = |path: &str| -> Result<Option<alloc::vec::Vec<u8>>, ()> {
+        #[cfg(feature = "setup-tz-reread-fail-test")]
+        {
+            let _ = path;
+            Err(())
+        }
+        #[cfg(not(feature = "setup-tz-reread-fail-test"))]
+        login::read_small_checked(path)
+    };
+    let (Ok(a), Ok(b)) = (copy(sc::SETTINGS_A), copy(sc::SETTINGS_B)) else {
+        Line::new().s(b"SETTINGS reread unresolved\n").emit();
+        return Reread::Unresolved;
+    };
     let Some(c) = sc::select(a.as_deref(), b.as_deref()) else {
-        Line::new().s(b"SETTINGS reread none\n").emit();
-        return current();
+        let migrated = sc::migrate(present(sc::RT_PRESENCE), present(sc::RM_PRESENCE));
+        store(None, &migrated);
+        log_settings(Line::new().s(b"SETTINGS reread none migrated"), &migrated)
+            .s(b"\n")
+            .emit();
+        let _ = commit(&migrated);
+        return Reread::Held(current());
     };
     store(Some(c), &c.record.settings);
     let s = c.record.settings;
@@ -466,7 +497,7 @@ pub fn reread() -> Settings {
         .n(u64::from(s.rtc_local))
         .s(b"\n")
         .emit();
-    s
+    Reread::Held(s)
 }
 
 /// After a write whose read-back failed: read both copies again and put

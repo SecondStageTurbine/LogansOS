@@ -8489,6 +8489,10 @@ mod clock {
         /// holds (re-read), and the clock is resolved from them as a boot
         /// would resolve it. `confirmed`: the clock is now confirmed UTC.
         Reconciled { zone: ZoneId, confirmed: bool },
+        /// It didn't, and the store couldn't be re-read (Chad, relay 379):
+        /// what the next boot selects is unknown, so the live clock stays
+        /// exactly as it was and no stored zone is claimed.
+        Unresolved,
     }
 
     /// F11 S3 (Chad, #92 relays 369, 373 and 377): the setup menu's one
@@ -8568,10 +8572,15 @@ mod clock {
     #[cfg(feature = "setup-tz")]
     fn reconcile(scene: &mut Scene) -> Result<Confirmed, i32> {
         #[cfg(feature = "atrium-settings-store")]
-        {
-            let s = super::settings::reread();
-            scene.clock.zone = s.time_zone;
-            scene.clock.rtc_local = s.rtc_local;
+        match super::settings::reread() {
+            super::settings::Reread::Held(s) => {
+                scene.clock.zone = s.time_zone;
+                scene.clock.rtc_local = s.rtc_local;
+            }
+            super::settings::Reread::Unresolved => {
+                log_mode(&scene.clock, b"unresolved", None);
+                return Ok(Confirmed::Unresolved);
+            }
         }
         if let Some((r, m)) = sample() {
             if Basis::of(libneo::sys_clock_realtime_status()) == Basis::Rtc {
