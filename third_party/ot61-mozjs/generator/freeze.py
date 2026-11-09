@@ -238,6 +238,48 @@ def main():
             fh.write("".join(f"{d}\n" for d in sorted(deleted)))
         print(f"freeze: {len(changed - deleted)} patched files, {len(deleted)} deleted")
 
+    # The jsapi.cpp/jsglue.cpp compiles the bindgen step ran through neo-cc
+    # (NEO_CC_LOG, copied to obj/glue-cc.log): upstream get_common_cc's
+    # flags, recorded, so the product build never re-derives them. cc-rs's
+    # flag probes are dropped; only the two sources are kept.
+    glue_log = os.path.join(obj, "glue-cc.log")
+    if os.path.exists(glue_log):
+        glue = {}
+        for line in open(glue_log, encoding="utf-8"):
+            e = json.loads(line)
+            src = [a for a in e["arguments"] if a.endswith(("src/jsapi.cpp", "src/jsglue.cpp"))]
+            if not src:
+                continue
+            args = []
+            skip = False
+            for i, a in enumerate(e["arguments"]):
+                if skip:
+                    skip = False
+                    continue
+                if a == "-o":
+                    skip = True
+                    continue
+                if a == "-c":
+                    continue
+                p = a
+                if a.startswith("-I") and len(a) > 2:
+                    p = a[2:]
+                    p = p if os.path.isabs(p) else os.path.join(e["directory"], p)
+                    args.append("-I" + token(p))
+                    continue
+                if os.path.isabs(a) or a.startswith("./"):
+                    args.append(token(os.path.normpath(os.path.join(e["directory"], a))))
+                    continue
+                args.append(a)
+            name = os.path.basename(src[0])
+            glue[name] = {"cxx": e["cxx"], "file": name, "arguments": args}
+        if sorted(glue) != ["jsapi.cpp", "jsglue.cpp"]:
+            sys.exit(f"glue-cc.log has {sorted(glue)}, want jsapi.cpp and jsglue.cpp")
+        with open(os.path.join(out, "glue_commands.json"), "w") as fh:
+            json.dump([glue[k] for k in sorted(glue)], fh, indent=1, sort_keys=True)
+            fh.write("\n")
+        print("freeze: glue_commands.json (jsapi.cpp, jsglue.cpp)")
+
     # dist/include: links only.
     links = []
     base = os.path.join(obj, "dist", "include")
