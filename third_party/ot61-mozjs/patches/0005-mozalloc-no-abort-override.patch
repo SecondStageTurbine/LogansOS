@@ -1,0 +1,17 @@
+diff --git a/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp b/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp
+index d8b994f..783ee52 100644
+--- a/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp
++++ b/mozjs-sys/mozjs/memory/mozalloc/mozalloc_abort.cpp
+@@ -64,7 +64,11 @@ void fillAbortMessage(char (&msg)[N], uintptr_t retAddress) {
+ 
+ #if defined(XP_UNIX) && !defined(MOZ_ASAN) && !defined(MOZ_TSAN) &&    \
+     !defined(MOZ_UBSAN) && !defined(LIBFUZZER) && !defined(AFLFUZZ) && \
+-    !defined(FUZZING_JS_FUZZILLI)
++    !defined(FUZZING_JS_FUZZILLI) && !defined(__neoplutarch__)
++// NeoPlutarch: the C runtime (neo-crt) defines abort() itself, and the program
++// links it statically, so a second definition here is a duplicate symbol.
++// mozalloc_abort() still prints its message and crashes; only abort()'s
++// redirection to it is left out.
+ // Define abort() here, so that it is used instead of the system abort(). This
+ // lets us control the behavior when aborting, in order to get better results
+ // on *NIX platforms. See mozalloc_abort for details.
