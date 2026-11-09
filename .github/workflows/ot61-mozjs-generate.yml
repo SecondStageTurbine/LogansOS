@@ -244,6 +244,7 @@ jobs:
           echo "libclang from $libclang ($("$NEO_CLANG" --version | head -1))"
           extra=$(NEO_REPO="$GITHUB_WORKSPACE" NEO_CLANG="$NEO_CLANG" NEO_CXX_CONFIG="$cfg" \
             "$gen/neo-c++" --neo-print-flags | tr '\n' ' ')
+          rm -f "$obj/glue-cc.log"
           cd "$MOZJS_SRC/mozjs-sys"
           sudo unshare -n -- sudo -u "$(id -un)" env \
             PATH="$PATH" HOME="$HOME" NEO_OBJ="$obj" LIBCLANG_PATH="$libclang" \
@@ -256,7 +257,7 @@ jobs:
             CARGO_CFG_TARGET_FEATURE=fxsr,sse,sse2 \
             CXX_x86_64_unknown_neoplutarch="$gen/neo-c++" \
             AR_x86_64_unknown_neoplutarch="$NEO_LLVM_BIN/llvm-ar" \
-            CRATE_CC_NO_DEFAULTS=1 \
+            CRATE_CC_NO_DEFAULTS=1 NEO_CC_LOG="$obj/glue-cc.log" \
             BINDGEN_EXTRA_CLANG_ARGS="$extra" \
             "$tool" 2>&1 | tail -40
           ls -la "$obj"/jsapi.rs "$obj"/gluebindings.rs "$obj"/libjsapi.a "$obj"/libjsglue.a

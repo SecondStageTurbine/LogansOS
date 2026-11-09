@@ -35,6 +35,16 @@ for a in "$@"; do
   case "$a" in -c|-E|-S|-M|-MM) link= ;; esac
 done
 
+# NEO_CC_LOG: append each compile's directory and caller arguments (before
+# this wrapper adds its own) as one JSON line. The generator's bindgen step
+# sets it, to record upstream's jsapi.cpp/jsglue.cpp compiles for
+# generated/glue_commands.json.
+if [ -n "${NEO_CC_LOG:-}" ] && [ -z "$link" ] && [ -z "$print_flags" ]; then
+  python3 -I -c 'import json, os, sys
+print(json.dumps({"directory": os.getcwd(), "cxx": sys.argv[1] == "1", "arguments": sys.argv[2:]}))' \
+    "${cxx:-0}" "$@" >> "$NEO_CC_LOG"
+fi
+
 # The target ABI (static, no PIC, no red zone, small code model) goes after
 # the caller's flags, so configure's -fPIC can't override it. Stack protector
 # flags are the caller's: neo-crt provides __stack_chk_guard/__stack_chk_fail.
