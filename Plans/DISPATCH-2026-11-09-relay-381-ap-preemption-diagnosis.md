@@ -43,3 +43,16 @@ Read:
 
 If you can't name a falsification test, that is itself the finding, so report it as such. The fix goes to an
 implementation seat afterwards. Don't edit kernel code in this relay.
+
+## Added evidence (Seat B, #98, 2026-11-09 22:31 UTC, run 42704551922 at `496ba8c1`)
+
+- **The stall survives yielding spinners.** With `atrium-terminal`, the WM's polling loop and Arthur's idle loop call
+  `sys_sched_yield` instead of `spin_loop()`, and the terminal still stalls about 20 s after `TERM step=0 draw`. It
+  is resumed only when Arthur's session ends.
+- All four terminal scenarios stall at the same point, on every attempt.
+- The burst before the gap is a 430 ms render, long enough under TCG to be preempted at least once.
+- The child processes (echo, shell) only exit after the terminal is killed.
+
+So "a spinner never yields" isn't the whole story. Consider a preempted thread re-queued somewhere it isn't picked
+from (a per-CPU queue no CPU drains, or a parked-state flag left set), or a wake that targets the wrong CPU. Your
+falsification test should tell these apart from "no AP tick".
