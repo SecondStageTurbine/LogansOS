@@ -105,12 +105,15 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
   crate root. `patched/deleted.txt` names the one file they delete (`MoveOnlyFunction.h`). The product build lays
   these over the vendored tree instead of running `git apply`. The drift check proves they equal vendor plus
   patches.
+- **`glue_commands.json`:** upstream `mozjs-sys`'s own compiles of `src/jsapi.cpp` and `src/jsglue.cpp`, with the flags
+  its `get_common_cc` chose. The bindgen step records them through `neo-cc` (`NEO_CC_LOG`), so the product build never
+  re-derives them. Their sources are `@CRATES@/mozjs-sys/src/…`, `@CRATES@` being the patched copy's crate root.
 - **`system_wrappers.txt`:** the 1,061 names in `dist/system_wrappers`. Each wrapper is the same four lines
   (`#pragma GCC system_header`, `visibility push(default)`, `#include_next`, `visibility pop`).
 
-Paths are `@SRC@` (the patched source root), `@OBJ@` and `@REPO@`. The current copy is from run 42532935334 at
-`4f7c4e75`, the first with the pinned clang 19: a gzip'd tar with sha256
-`90b00f59c50c1e11825a1523b73e2db872ee0ff6dd8e191148960b76061093c3`, taken from
+Paths are `@SRC@` (the patched source root), `@OBJ@`, `@REPO@` and `@CRATES@` (the patched copy's crate root). The current copy is from run 42541535589 at
+`3fc087fb` (pinned clang 19, with `glue_commands.json`): a gzip'd tar with sha256
+`5f0ec159242234e9458f3549269cb1412f25c828c01a57029a1aa88df7c28b3e`, taken from
 the job log and checked against that hash. The first copy was run 42518384967. Moving from the runner's clang 21 to the pinned 19 changed exactly two files: clang 19 rejects `-Wno-character-conversion`, so configure dropped it from all 167 compile entries, and `jsapi.rs` changed with libclang. That is the drift the pin now prevents.
 
 ## Left out of the copy
