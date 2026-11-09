@@ -5,4 +5,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# F11 S5: the Keyboard page is shown, with the layouts (US, UK), the choice
+# and a test field. Off: the page is the stub (`stub_pages` only), as S1
+# left it.
+keyboard-layouts = []
+
 [dependencies]

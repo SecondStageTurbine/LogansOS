@@ -7,8 +7,9 @@
 //! decision is here, so the host KATs run the whole walk without QEMU:
 //!
 //! - the pages this build shows, in order ([`Wizard::pages`]): Welcome, then
-//!   (behind `stub_pages`) Language and Keyboard, then Time zone, Comfort
-//!   and Try. There is no Network page until S4 (§3.3);
+//!   (behind `stub_pages`) Language, then Keyboard (also with
+//!   `keyboard-layouts`, S5, where it is the real page), then Time zone,
+//!   Comfort and Try. There is no Network page until S4 (§3.3);
 //! - the key map: Up/Down and Tab move, Enter or Space chooses, Esc goes
 //!   back (on Welcome it asks before skipping, §4.2);
 //! - the rows: a title (with `N of M`, counting the pages after Welcome),
@@ -82,6 +83,13 @@ pub enum Input {
     Choose,
     /// Esc.
     Back,
+    /// S5: a printable character for the Keyboard page's test field, decoded
+    /// in the layout chosen on the page (other pages ignore it).
+    #[cfg(feature = "keyboard-layouts")]
+    Char(u8),
+    /// S5: Backspace in the test field.
+    #[cfg(feature = "keyboard-layouts")]
+    Erase,
 }
 
 /// How the wizard ended.
@@ -111,6 +119,9 @@ pub struct Choices {
     pub zone: usize,
     pub reduce_motion: bool,
     pub reduce_transparency: bool,
+    /// S5: a keyboard layout id (`keymap_layout_logic.rs`; 0: US).
+    #[cfg(feature = "keyboard-layouts")]
+    pub layout: u8,
 }
 
 /// The wizard: the page shown, the focused option, the choices.
@@ -120,6 +131,9 @@ pub struct Wizard {
     page: Page,
     focus: usize,
     choices: Choices,
+    /// S5: the Keyboard page's test field.
+    #[cfg(feature = "keyboard-layouts")]
+    field: keyboard::Field,
 }
 
 impl Wizard {
@@ -131,6 +145,8 @@ impl Wizard {
             page: Page::Welcome,
             focus: 0,
             choices: Choices::default(),
+            #[cfg(feature = "keyboard-layouts")]
+            field: keyboard::Field::default(),
         }
     }
 
@@ -146,12 +162,20 @@ impl Wizard {
         self.choices
     }
 
+    /// S5: the Keyboard page's test field.
+    #[cfg(feature = "keyboard-layouts")]
+    pub fn field(&self) -> &str {
+        keyboard::field(self)
+    }
+
     /// The pages this build shows, in order (Skip's confirmation is not one).
     pub fn pages(&self) -> Vec<Page> {
         let mut pages = Vec::new();
         pages.push(Page::Welcome);
         if self.stub_pages {
             pages.push(Page::Language);
+        }
+        if self.stub_pages || keyboard::SHOWN {
             pages.push(Page::Keyboard);
         }
         pages.push(Page::TimeZone);
@@ -172,7 +196,8 @@ impl Wizard {
                 o.push(String::from("Skip setup and use the defaults"));
                 o.push(String::from("Back"));
             }
-            Page::Language | Page::Keyboard => o.push(String::from("Continue")),
+            Page::Language => o.push(String::from("Continue")),
+            Page::Keyboard => keyboard::options(self, &mut o),
             Page::TimeZone => {
                 for (i, z) in ZONES.iter().enumerate() {
                     o.push(format!("{} {}", mark(i == self.choices.zone), z));
@@ -241,7 +266,7 @@ impl Wizard {
                 ));
             }
             Page::Language => b.push(String::from("English is the only language for now.")),
-            Page::Keyboard => b.push(String::from("US is the only keyboard layout for now.")),
+            Page::Keyboard => keyboard::body(self, &mut b),
             Page::TimeZone => b.push(String::from("Where are you? At Home: timezone Area/City.")),
             Page::Comfort => b.push(String::from("Make the screen calmer, if you like.")),
             Page::Try => {
@@ -257,6 +282,7 @@ impl Wizard {
     pub fn summary(&self) -> Vec<String> {
         let mut s = Vec::new();
         s.push(format!("Time zone: {}", ZONES[self.choices.zone]));
+        keyboard::summary(self, &mut s);
         s.push(format!(
             "Reduce motion: {}. Reduce transparency: {}.",
             on_off(self.choices.reduce_motion),
@@ -287,6 +313,10 @@ impl Wizard {
                 page => self.show(self.previous(page)),
             },
             Input::Choose => self.choose(),
+            #[cfg(feature = "keyboard-layouts")]
+            Input::Char(c) => keyboard::typed(self, Some(c)),
+            #[cfg(feature = "keyboard-layouts")]
+            Input::Erase => keyboard::typed(self, None),
         }
     }
 
@@ -296,7 +326,8 @@ impl Wizard {
             (Page::Welcome, _) => self.show(Page::SkipConfirm),
             (Page::SkipConfirm, 0) => Outcome::Done(Finish::Skipped),
             (Page::SkipConfirm, _) => self.show(Page::Welcome),
-            (Page::Language | Page::Keyboard, _) => self.show(self.next(self.page)),
+            (Page::Language, _) => self.show(self.next(self.page)),
+            (Page::Keyboard, i) => keyboard::choose(self, i),
             (Page::TimeZone, i) if i < ZONES.len() => {
                 self.choices.zone = i;
                 Outcome::Redraw
@@ -342,5 +373,13 @@ fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
-#[cfg(test)]
+mod keyboard;
+#[cfg(feature = "keyboard-layouts")]
+pub use keyboard::{FIELD_MAX, LAYOUT_COUNT, LAYOUT_NAMES};
+
+#[cfg(all(test, feature = "keyboard-layouts"))]
+mod keyboard_tests;
+// S1's KATs are the build without layouts (the kill-switch: the page machine
+// they pin is the one `keyboard-layouts` off ships).
+#[cfg(all(test, not(feature = "keyboard-layouts")))]
 mod tests;

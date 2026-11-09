@@ -208,6 +208,8 @@ pub mod scene;
 pub mod shape;
 pub mod wide;
 
+#[cfg(all(test, feature = "keyboard-layouts"))]
+mod keys_layout_tests;
 #[cfg(test)]
 mod tests;
 

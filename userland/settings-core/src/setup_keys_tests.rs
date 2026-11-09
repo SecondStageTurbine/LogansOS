@@ -10,7 +10,8 @@
 //! | `DEFAULTS7_GEN1` | 1 | today's five defaults, (6, 2, 0, 0) (7, 2, 0, 0) |
 //! | `CHANGED7_GEN2` | 2 | `tests.rs`'s `CHANGED` five, (6, 2, 0, 0) (7, 2, 0, 0) |
 //! | `LANGUAGE_1` | 3 | (6, 2, 0, 1): one past the only language |
-//! | `LAYOUT_1` | 3 | (7, 2, 0, 1): one past the only layout |
+//! | `LAYOUT_1` | 3 | (7, 2, 0, 1): one past the only layout (UK with `keyboard-layouts`) |
+//! | `LAYOUT_2` | 3 | (7, 2, 0, 2): one past UK, with `keyboard-layouts` |
 //! | `LAYOUT_BOOL` | 3 | (7, 1, 0, 0): the wrong type |
 //! | `DEFAULTS5_GEN1` | 1 | today's five-key record |
 
@@ -49,6 +50,14 @@ const LAYOUT_1: [u8; 44] = [
     0x4e, 0x45, 0x4f, 0x53, 0x45, 0x54, 0x31, 0x00, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, // 0
     0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x02, 0x00, 0x01, 0x00, 0x00, 0x00, 0xc3, 0x05, 0x53, 0x60, // 16
     0xdc, 0x2f, 0xff, 0x23, 0x7e, 0xc5, 0x34, 0x8f, 0xc4, 0xda, 0xc8, 0xa1, // 32
+];
+// LAYOUT_2: 44 bytes, checksum aea5536e19169977a9b4308da6d16006
+#[cfg(feature = "keyboard-layouts")]
+#[rustfmt::skip]
+const LAYOUT_2: [u8; 44] = [
+    0x4e, 0x45, 0x4f, 0x53, 0x45, 0x54, 0x31, 0x00, 0x01, 0x00, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00, // 0
+    0x00, 0x00, 0x00, 0x00, 0x07, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00, 0x00, 0xae, 0xa5, 0x53, 0x6e, // 16
+    0x19, 0x16, 0x99, 0x77, 0xa9, 0xb4, 0x30, 0x8d, 0xa6, 0xd1, 0x60, 0x06, // 32
 ];
 // LAYOUT_BOOL: 44 bytes, checksum 0bb1ef6c55545dbc307fca29d9eef0b2
 #[rustfmt::skip]
@@ -106,13 +115,16 @@ fn a_five_key_record_reads_the_new_keys_as_defaults() {
 #[test]
 fn the_new_keys_ranges_types_and_ids() {
     assert_eq!(KEYS.map(Key::id), [1, 2, 3, 4, 5, 6, 7]);
+    #[cfg(not(feature = "keyboard-layouts"))]
     assert_eq!((LANGUAGE_COUNT, LAYOUT_COUNT), (1, 1));
     assert_eq!(decode(&LANGUAGE_1), Err(RecordError::Value));
+    #[cfg(not(feature = "keyboard-layouts"))]
     assert_eq!(decode(&LAYOUT_1), Err(RecordError::Value));
     assert_eq!(decode(&LAYOUT_BOOL), Err(RecordError::Type));
     assert_eq!(Key::from_id(8), None);
     let s = Settings::default();
     assert_eq!(s.with(6, 1), Err(SetError::Value));
+    #[cfg(not(feature = "keyboard-layouts"))]
     assert_eq!(s.with(7, 1), Err(SetError::Value));
     assert_eq!(s.with(7, 0), Ok(s));
     assert_eq!(
@@ -134,4 +146,32 @@ fn the_new_keys_are_wm_only() {
     assert!(!Key::Language.client_writable());
     assert!(!Key::KeyboardLayout.client_writable());
     assert!(Key::ReduceTransparency.client_writable() && Key::ReduceMotion.client_writable());
+}
+
+/// F11 S5 (`keyboard-layouts`): two layouts, so UK (1) reads and sets, and
+/// one past it (2) is refused, in a record and in `with`.
+#[cfg(feature = "keyboard-layouts")]
+#[test]
+fn two_layouts_accept_uk_and_refuse_the_next_id() {
+    assert_eq!((LANGUAGE_COUNT, LAYOUT_COUNT), (1, 2));
+    assert_eq!(
+        decode(&LAYOUT_1),
+        Ok(Record {
+            generation: 3,
+            settings: Settings {
+                keyboard_layout: 1,
+                ..Settings::default()
+            }
+        })
+    );
+    assert_eq!(decode(&LAYOUT_2), Err(RecordError::Value));
+    let s = Settings::default();
+    assert_eq!(
+        s.with(7, 1),
+        Ok(Settings {
+            keyboard_layout: 1,
+            ..s
+        })
+    );
+    assert_eq!(s.with(7, 2), Err(SetError::Value));
 }
