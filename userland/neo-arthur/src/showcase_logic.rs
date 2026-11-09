@@ -138,10 +138,12 @@ pub fn set_layout(layout: u32) -> bool {
     }
 }
 
-/// A printable key in the session's layout.
+/// A printable key in the session's layout. Arthur's line is ASCII: a key
+/// whose legend is not ASCII types nothing, and a dead key types its accent
+/// only when that is ASCII, without composing (`ascii_in`).
 fn printable(keycode: u8, modifiers: u8, locks: u8) -> Option<u8> {
     #[cfg(feature = "keyboard-layouts")]
-    return keymap::printable_in(
+    return keymap::ascii_in(
         LAYOUT.load(core::sync::atomic::Ordering::Relaxed),
         keycode,
         modifiers,

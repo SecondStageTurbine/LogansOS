@@ -8,7 +8,7 @@
 /// The languages: a `Language` id is below it.
 pub const LANGUAGE_COUNT: u32 = 1;
 /// The keyboard layouts: a `KeyboardLayout` id is below it. With
-/// `keyboard-layouts`, US and UK (`keymap_layout_logic.rs`'s `LAYOUT_COUNT`;
+/// `keyboard-layouts`, US and Spanish (`keymap_layout_logic.rs`'s `LAYOUT_COUNT`;
 /// neo-init asserts the two agree at compile time).
 #[cfg(not(feature = "keyboard-layouts"))]
 pub const LAYOUT_COUNT: u32 = 1;

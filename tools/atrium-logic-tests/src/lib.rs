@@ -741,7 +741,7 @@ mod tests {
         assert_eq!(protocol::decode_reply(&FIXTURE), Ok(reply));
     }
 
-    /// F11 S5: the create reply with the session's layout id (UK, 1) in the
+    /// F11 S5: the create reply with the session's layout id (Spanish, 1) in the
     /// reserved word at byte 28; hand-laid, the same bytes as the plain reply
     /// above except byte 28. US (0) is the plain reply byte for byte, and a
     /// client without the keymap still refuses a non-zero word.
@@ -753,16 +753,16 @@ mod tests {
             status: 0,
             identity: identity(),
         };
-        const UK: [u8; protocol::REPLY_LEN] = [
+        const ES: [u8; protocol::REPLY_LEN] = [
             0x4e, 0x4d, 0x43, 0x31, 0x01, 0x00, 0x01, 0x80, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x38, 0x37, 0x36, 0x35, 0x34, 0x33, 0x32, 0x31, 0x00, 0x00, 0x00, 0x00,
             0x01, 0x00, 0x00, 0x00, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x18, 0x17,
             0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x28, 0x27, 0x26, 0x25, 0x24, 0x23, 0x22, 0x21,
         ];
-        assert_eq!(protocol::encode_create_reply(reply, 1), UK);
-        assert_eq!(protocol::decode_create_reply(&UK), Ok((reply, 1)));
+        assert_eq!(protocol::encode_create_reply(reply, 1), ES);
+        assert_eq!(protocol::decode_create_reply(&ES), Ok((reply, 1)));
         assert_eq!(
-            protocol::decode_reply(&UK),
+            protocol::decode_reply(&ES),
             Err(protocol::ProtocolError::BadField)
         );
         let us = protocol::encode_create_reply(reply, 0);
@@ -778,7 +778,7 @@ mod tests {
             Err(protocol::ProtocolError::BadField)
         );
         assert_eq!(
-            protocol::decode_create_reply(&UK[..protocol::REPLY_LEN - 1]),
+            protocol::decode_create_reply(&ES[..protocol::REPLY_LEN - 1]),
             Err(protocol::ProtocolError::BadLength)
         );
     }

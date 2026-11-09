@@ -9,6 +9,20 @@ fn rows(w: &Wizard) -> Vec<String> {
 }
 
 /// Begin, then the Keyboard page is the first one, with US chosen.
+/// The gate's keys as the WM decodes them in Spanish: ñ, Shift+¡ (¿), ¡,
+/// ç, the acute dead key, a.
+fn gate_keys() -> [keyboard::Typed; 6] {
+    use keyboard::{Dead, Typed};
+    [
+        Typed::Char('ñ'),
+        Typed::Char('¿'),
+        Typed::Char('¡'),
+        Typed::Char('ç'),
+        Typed::Dead(Dead::Acute),
+        Typed::Char('a'),
+    ]
+}
+
 fn on_keyboard() -> Wizard {
     let mut w = Wizard::new(false);
     assert_eq!(w.on(Input::Choose), Outcome::Page(Page::Keyboard));
@@ -51,7 +65,7 @@ fn the_page_lists_the_layouts_with_us_chosen() {
             "Choose the layout printed on your keys.",
             "Try it: _",
             "> [x] English (US)",
-            "  [ ] English (UK)",
+            "  [ ] Spanish (Spain)",
             "  Continue",
             "Up/Down to move, Enter to choose, Esc to go back.",
         ]
@@ -59,32 +73,33 @@ fn the_page_lists_the_layouts_with_us_chosen() {
     assert_eq!(w.choices().layout, 0);
 }
 
-/// The gate's walk on the page: choose UK, type the four characters the WM
-/// decodes in UK, erase one, Continue; the summary names UK.
+/// The gate's walk on the page: choose Spanish, type `ñ` `¿` `¡` `ç` and the
+/// acute dead key then `a` (as the WM decodes them in Spanish), erase one,
+/// Continue; the summary names Spanish.
 #[test]
-fn choose_uk_type_in_the_field_and_continue() {
+fn choose_spanish_type_in_the_field_and_continue() {
     let mut w = on_keyboard();
     assert_eq!(w.on(Input::Down), Outcome::Redraw);
     assert_eq!(w.on(Input::Choose), Outcome::Redraw);
     assert_eq!(w.choices().layout, 1);
-    for c in *b"\"@#\\" {
-        assert_eq!(w.on(Input::Char(c)), Outcome::Redraw);
+    for t in gate_keys() {
+        w.on(Input::Layout(t));
     }
-    assert_eq!(w.field(), "\"@#\\");
+    assert_eq!(w.field(), "ñ¿¡çá");
     assert_eq!(
         rows(&w),
         [
             "Keyboard (1 of 4)",
             "Choose the layout printed on your keys.",
-            "Try it: \"@#\\_",
+            "Try it: ñ¿¡çá_",
             "  [ ] English (US)",
-            "> [x] English (UK)",
+            "> [x] Spanish (Spain)",
             "  Continue",
             "Up/Down to move, Enter to choose, Esc to go back.",
         ]
     );
     assert_eq!(w.on(Input::Erase), Outcome::Redraw);
-    assert_eq!(w.field(), "\"@#");
+    assert_eq!(w.field(), "ñ¿¡ç");
     w.on(Input::Down);
     assert_eq!(w.on(Input::Choose), Outcome::Page(Page::TimeZone));
     // Onward to Try: UTC's Continue, Comfort's Continue.
@@ -97,7 +112,7 @@ fn choose_uk_type_in_the_field_and_continue() {
         [
             "Try LogansOS (4 of 4)",
             "Time zone: UTC",
-            "Keyboard: English (UK)",
+            "Keyboard: Spanish (Spain)",
             "Reduce motion: off. Reduce transparency: off.",
             "> Try LogansOS",
             "Up/Down to move, Enter to choose, Esc to go back.",
@@ -164,7 +179,7 @@ fn the_page_fits_the_card() {
     }
     assert!(w.rows().len() <= MAX_ROWS);
     assert_eq!(LAYOUT_COUNT, 2);
-    assert_eq!(LAYOUT_NAMES, ["English (US)", "English (UK)"]);
+    assert_eq!(LAYOUT_NAMES, ["English (US)", "Spanish (Spain)"]);
 }
 
 /// The gate compares the two: `scripts/desktop/setup_oracle.py`'s Keyboard
@@ -178,13 +193,13 @@ fn rows_are_the_oracles_wording() {
     let mut w = on_keyboard();
     w.on(Input::Down);
     w.on(Input::Choose);
-    for c in *b"\"@#\\" {
-        w.on(Input::Char(c));
+    for t in gate_keys() {
+        w.on(Input::Layout(t));
     }
-    assert_eq!(rows(&w), oracle::KEYBOARD_UK_ROWS);
+    assert_eq!(rows(&w), oracle::KEYBOARD_ES_ROWS);
 }
 
-/// S3 and S5 together: the Keyboard page (UK, a key typed into the field)
+/// S3 and S5 together: the Keyboard page (Spanish, a key typed into the field)
 /// comes before S3's searchable Time zone page, whose search still takes
 /// every character (Space included), and the Try summary names both.
 #[test]
@@ -212,15 +227,18 @@ fn the_keyboard_page_then_s3s_search() {
     assert_eq!(w.on(Input::Choose), Outcome::Page(Page::Keyboard));
     w.on(Input::Down);
     w.on(Input::Choose);
-    assert_eq!(w.on(Input::Char(b'#')), Outcome::Redraw);
-    assert_eq!(w.field(), "#");
+    assert_eq!(
+        w.on(Input::Layout(keyboard::Typed::Char('ñ'))),
+        Outcome::Redraw
+    );
+    assert_eq!(w.field(), "ñ");
     w.on(Input::Down);
     assert_eq!(w.on(Input::Choose), Outcome::Page(Page::TimeZone));
     for c in *b"lon" {
         assert_eq!(w.on(Input::Char(c)), Outcome::Redraw);
     }
     assert_eq!(w.query(), "lon");
-    assert_eq!(w.field(), "#");
+    assert_eq!(w.field(), "ñ");
     assert_eq!(w.on(Input::Choose), Outcome::Redraw);
     w.on(Input::Down);
     assert_eq!(w.on(Input::Choose), Outcome::Confirm(300));
@@ -229,7 +247,43 @@ fn the_keyboard_page_then_s3s_search() {
     assert_eq!(w.on(Input::Choose), Outcome::Page(Page::Try));
     let summary = w.summary();
     assert_eq!(summary[0], "Time zone: Europe/London");
-    assert_eq!(summary[1], "Keyboard: English (UK)");
+    assert_eq!(summary[1], "Keyboard: Spanish (Spain)");
     assert_eq!(w.choices().layout, 1);
     assert_eq!(w.choices().tz, Some(300));
+}
+
+/// Dead keys in the field: a waiting dead key changes nothing (no redraw);
+/// with a key it doesn't compose with, both; Backspace drops a waiting dead
+/// key before it erases; a non-ASCII field counts characters, not bytes.
+#[test]
+fn dead_keys_in_the_field() {
+    use keyboard::{Dead, Typed};
+    let mut w = on_keyboard();
+    w.on(Input::Down);
+    w.on(Input::Choose);
+    assert_eq!(
+        w.on(Input::Layout(Typed::Dead(Dead::Diaeresis))),
+        Outcome::Nothing
+    );
+    assert_eq!(w.on(Input::Layout(Typed::Char('u'))), Outcome::Redraw);
+    assert_eq!(w.field(), "ü");
+    w.on(Input::Layout(Typed::Dead(Dead::Acute)));
+    assert_eq!(w.on(Input::Layout(Typed::Char('n'))), Outcome::Redraw);
+    assert_eq!(w.field(), "ü´n");
+    w.on(Input::Layout(Typed::Dead(Dead::Grave)));
+    assert_eq!(w.on(Input::Erase), Outcome::Nothing);
+    assert_eq!(w.on(Input::Layout(Typed::Char('a'))), Outcome::Redraw);
+    assert_eq!(w.field(), "ü´na");
+    assert_eq!(w.on(Input::Erase), Outcome::Redraw);
+    assert_eq!(w.field(), "ü´n");
+    assert_eq!(w.on(Input::Layout(Typed::None)), Outcome::Nothing);
+    for _ in 0..FIELD_MAX {
+        w.on(Input::Layout(Typed::Char('ñ')));
+    }
+    assert_eq!(w.field().chars().count(), FIELD_MAX);
+    // Off the Keyboard page a layout key does nothing (Spanish is focused;
+    // Down is Continue).
+    w.on(Input::Down);
+    assert_eq!(w.on(Input::Choose), Outcome::Page(Page::TimeZone));
+    assert_eq!(w.on(Input::Layout(Typed::Char('ñ'))), Outcome::Nothing);
 }

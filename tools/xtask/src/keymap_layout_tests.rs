@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 //! F11 S5 keyboard layouts host KAT (`kernel/src/drivers/keymap_layout_logic.rs`).
 //!
-//! The UK table below is written out by hand from the keycap legends of a UK
-//! ISO keyboard, not derived from the code under test. Three raw sources agree
-//! on every legend used here (read as files, not through a summarizing fetch):
-//! xkeyboard-config `symbols/gb` ("basic"), kbd `data/keymaps/i386/qwerty/uk.map`
-//! and Unicode CLDR `keyboards/windows/en-GB-t-k0-windows.xml` (release-43).
-//! The HID usages are the USB HID Usage Tables' Keyboard/Keypad page (0x07):
-//! 0x32 is "Non-US # and ~" (the key left of Enter on ISO) and 0x64 is "Non-US
-//! \ and |" (the key left of Z).
-//!
-//! `None` marks a legend outside ASCII: UK Shift+3 is `£` and Shift+` is `¬`,
-//! and every decoder's text is ASCII today, so those keys type nothing.
+//! The Spanish (Spain, ISO) table below is written out by hand from the keycap
+//! legends, not derived from the code under test. The legends come from two
+//! raw sources read as files (never a summarizing fetch), which agree on every
+//! level used here: Unicode CLDR `keyboards/windows/es-t-k0-windows.xml`
+//! (release-43: the base, Shift, Caps and AltGr maps and the dead-key
+//! transforms) and xkeyboard-config `symbols/es` "basic" with `latin(type4)`
+//! (Ubuntu xkb-data 2.41). Where they differ CLDR is followed, being the
+//! printed keycaps: AltGr+5 is `€` (xkb has none), and AltGr+4 is a plain `~`
+//! as in xkb (CLDR makes it a dead tilde; S5 keeps only the four dead keys on
+//! the legends). The HID usages are the USB HID Usage Tables' page 0x07: 0x31
+//! and 0x32 are the ISO key left of Enter, 0x64 the key left of Z.
 
 #[allow(dead_code)]
 mod layout {
@@ -19,209 +19,236 @@ mod layout {
     include!("../../../kernel/src/drivers/keymap_layout_logic.rs");
 }
 
-use layout::{LAYOUT_COUNT, LAYOUT_NAMES, LAYOUT_UK, LAYOUT_US, printable, printable_in};
+use layout::{
+    Composer, Dead, LAYOUT_COUNT, LAYOUT_ES, LAYOUT_NAMES, LAYOUT_US, Typed, ascii_in, compose,
+    printable, spacing, typed_in,
+};
 
 const LSHIFT: u8 = 0x02;
 const RSHIFT: u8 = 0x20;
+const ALTGR: u8 = 0x40;
+const LALT: u8 = 0x04;
 const CAPS: u8 = 1;
 const NUM_OFF: u8 = 2;
 
-type Row = (u8, Option<u8>, Option<u8>, Option<u8>, Option<u8>);
-
-const fn s(c: u8) -> Option<u8> {
-    Some(c)
+const N: Typed = Typed::None;
+const fn c(ch: char) -> Typed {
+    Typed::Char(ch)
+}
+const fn d(dead: Dead) -> Typed {
+    Typed::Dead(dead)
 }
 
-/// UK ISO, by hand from the keycap legends: (usage, plain, Shift, Caps Lock,
-/// Caps Lock + Shift). Caps Lock affects letters only.
+/// (usage, plain, Shift, Caps Lock, Caps Lock + Shift, AltGr). AltGr types
+/// the same with Caps Lock, and nothing with Shift.
 #[rustfmt::skip]
-const UK: &[Row] = &[
-    (0x04, s(b'a'), s(b'A'), s(b'A'), s(b'a')),
-    (0x05, s(b'b'), s(b'B'), s(b'B'), s(b'b')),
-    (0x06, s(b'c'), s(b'C'), s(b'C'), s(b'c')),
-    (0x07, s(b'd'), s(b'D'), s(b'D'), s(b'd')),
-    (0x08, s(b'e'), s(b'E'), s(b'E'), s(b'e')),
-    (0x09, s(b'f'), s(b'F'), s(b'F'), s(b'f')),
-    (0x0a, s(b'g'), s(b'G'), s(b'G'), s(b'g')),
-    (0x0b, s(b'h'), s(b'H'), s(b'H'), s(b'h')),
-    (0x0c, s(b'i'), s(b'I'), s(b'I'), s(b'i')),
-    (0x0d, s(b'j'), s(b'J'), s(b'J'), s(b'j')),
-    (0x0e, s(b'k'), s(b'K'), s(b'K'), s(b'k')),
-    (0x0f, s(b'l'), s(b'L'), s(b'L'), s(b'l')),
-    (0x10, s(b'm'), s(b'M'), s(b'M'), s(b'm')),
-    (0x11, s(b'n'), s(b'N'), s(b'N'), s(b'n')),
-    (0x12, s(b'o'), s(b'O'), s(b'O'), s(b'o')),
-    (0x13, s(b'p'), s(b'P'), s(b'P'), s(b'p')),
-    (0x14, s(b'q'), s(b'Q'), s(b'Q'), s(b'q')),
-    (0x15, s(b'r'), s(b'R'), s(b'R'), s(b'r')),
-    (0x16, s(b's'), s(b'S'), s(b'S'), s(b's')),
-    (0x17, s(b't'), s(b'T'), s(b'T'), s(b't')),
-    (0x18, s(b'u'), s(b'U'), s(b'U'), s(b'u')),
-    (0x19, s(b'v'), s(b'V'), s(b'V'), s(b'v')),
-    (0x1a, s(b'w'), s(b'W'), s(b'W'), s(b'w')),
-    (0x1b, s(b'x'), s(b'X'), s(b'X'), s(b'x')),
-    (0x1c, s(b'y'), s(b'Y'), s(b'Y'), s(b'y')),
-    (0x1d, s(b'z'), s(b'Z'), s(b'Z'), s(b'z')),
-    (0x1e, s(b'1'), s(b'!'), s(b'1'), s(b'!')),
-    (0x1f, s(b'2'), s(b'"'), s(b'2'), s(b'"')),
-    (0x20, s(b'3'), None,    s(b'3'), None),    // Shift: £
-    (0x21, s(b'4'), s(b'$'), s(b'4'), s(b'$')),
-    (0x22, s(b'5'), s(b'%'), s(b'5'), s(b'%')),
-    (0x23, s(b'6'), s(b'^'), s(b'6'), s(b'^')),
-    (0x24, s(b'7'), s(b'&'), s(b'7'), s(b'&')),
-    (0x25, s(b'8'), s(b'*'), s(b'8'), s(b'*')),
-    (0x26, s(b'9'), s(b'('), s(b'9'), s(b'(')),
-    (0x27, s(b'0'), s(b')'), s(b'0'), s(b')')),
-    (0x2c, s(b' '), s(b' '), s(b' '), s(b' ')),
-    (0x2d, s(b'-'), s(b'_'), s(b'-'), s(b'_')),
-    (0x2e, s(b'='), s(b'+'), s(b'='), s(b'+')),
-    (0x2f, s(b'['), s(b'{'), s(b'['), s(b'{')),
-    (0x30, s(b']'), s(b'}'), s(b']'), s(b'}')),
-    (0x31, s(b'#'), s(b'~'), s(b'#'), s(b'~')), // the key left of Enter
-    (0x32, s(b'#'), s(b'~'), s(b'#'), s(b'~')), // the same key, Non-US #
-    (0x33, s(b';'), s(b':'), s(b';'), s(b':')),
-    (0x34, s(b'\''), s(b'@'), s(b'\''), s(b'@')),
-    (0x35, s(b'`'), None,    s(b'`'), None),    // Shift: ¬
-    (0x36, s(b','), s(b'<'), s(b','), s(b'<')),
-    (0x37, s(b'.'), s(b'>'), s(b'.'), s(b'>')),
-    (0x38, s(b'/'), s(b'?'), s(b'/'), s(b'?')),
-    (0x64, s(b'\\'), s(b'|'), s(b'\\'), s(b'|')), // the key left of Z
+const ES: &[(u8, Typed, Typed, Typed, Typed, Typed)] = &[
+    (0x04, c('a'), c('A'), c('A'), c('a'), N),
+    (0x05, c('b'), c('B'), c('B'), c('b'), N),
+    (0x06, c('c'), c('C'), c('C'), c('c'), N),
+    (0x07, c('d'), c('D'), c('D'), c('d'), N),
+    (0x08, c('e'), c('E'), c('E'), c('e'), c('€')),
+    (0x09, c('f'), c('F'), c('F'), c('f'), N),
+    (0x0a, c('g'), c('G'), c('G'), c('g'), N),
+    (0x0b, c('h'), c('H'), c('H'), c('h'), N),
+    (0x0c, c('i'), c('I'), c('I'), c('i'), N),
+    (0x0d, c('j'), c('J'), c('J'), c('j'), N),
+    (0x0e, c('k'), c('K'), c('K'), c('k'), N),
+    (0x0f, c('l'), c('L'), c('L'), c('l'), N),
+    (0x10, c('m'), c('M'), c('M'), c('m'), N),
+    (0x11, c('n'), c('N'), c('N'), c('n'), N),
+    (0x12, c('o'), c('O'), c('O'), c('o'), N),
+    (0x13, c('p'), c('P'), c('P'), c('p'), N),
+    (0x14, c('q'), c('Q'), c('Q'), c('q'), N),
+    (0x15, c('r'), c('R'), c('R'), c('r'), N),
+    (0x16, c('s'), c('S'), c('S'), c('s'), N),
+    (0x17, c('t'), c('T'), c('T'), c('t'), N),
+    (0x18, c('u'), c('U'), c('U'), c('u'), N),
+    (0x19, c('v'), c('V'), c('V'), c('v'), N),
+    (0x1a, c('w'), c('W'), c('W'), c('w'), N),
+    (0x1b, c('x'), c('X'), c('X'), c('x'), N),
+    (0x1c, c('y'), c('Y'), c('Y'), c('y'), N),
+    (0x1d, c('z'), c('Z'), c('Z'), c('z'), N),
+    (0x1e, c('1'), c('!'), c('1'), c('!'), c('|')),
+    (0x1f, c('2'), c('"'), c('2'), c('"'), c('@')),
+    (0x20, c('3'), c('·'), c('3'), c('·'), c('#')),
+    (0x21, c('4'), c('$'), c('4'), c('$'), c('~')),
+    (0x22, c('5'), c('%'), c('5'), c('%'), c('€')),
+    (0x23, c('6'), c('&'), c('6'), c('&'), c('¬')),
+    (0x24, c('7'), c('/'), c('7'), c('/'), N),
+    (0x25, c('8'), c('('), c('8'), c('('), N),
+    (0x26, c('9'), c(')'), c('9'), c(')'), N),
+    (0x27, c('0'), c('='), c('0'), c('='), N),
+    (0x2c, c(' '), c(' '), c(' '), c(' '), N),
+    (0x2d, c('\''), c('?'), c('\''), c('?'), N),
+    (0x2e, c('¡'), c('¿'), c('¡'), c('¿'), N),
+    (0x2f, d(Dead::Grave), d(Dead::Circumflex), d(Dead::Grave), d(Dead::Circumflex), c('[')),
+    (0x30, c('+'), c('*'), c('+'), c('*'), c(']')),
+    (0x31, c('ç'), c('Ç'), c('Ç'), c('ç'), c('}')),
+    (0x32, c('ç'), c('Ç'), c('Ç'), c('ç'), c('}')),
+    (0x33, c('ñ'), c('Ñ'), c('Ñ'), c('ñ'), N),
+    (0x34, d(Dead::Acute), d(Dead::Diaeresis), d(Dead::Acute), d(Dead::Diaeresis), c('{')),
+    (0x35, c('º'), c('ª'), c('º'), c('ª'), c('\\')),
+    (0x36, c(','), c(';'), c(','), c(';'), N),
+    (0x37, c('.'), c(':'), c('.'), c(':'), N),
+    (0x38, c('-'), c('_'), c('-'), c('_'), N),
+    (0x64, c('<'), c('>'), c('<'), c('>'), N),
 ];
 
-/// The same keys on a US keyboard, by hand from the US legends (as
-/// `keymap_tests`'s table, plus the two ISO keys a US keyboard lacks, which
-/// type nothing in US).
-#[rustfmt::skip]
-const US: &[Row] = &[
-    (0x1f, s(b'2'), s(b'@'), s(b'2'), s(b'@')),
-    (0x20, s(b'3'), s(b'#'), s(b'3'), s(b'#')),
-    (0x31, s(b'\\'), s(b'|'), s(b'\\'), s(b'|')),
-    (0x32, None,    None,    None,    None),
-    (0x34, s(b'\''), s(b'"'), s(b'\''), s(b'"')),
-    (0x35, s(b'`'), s(b'~'), s(b'`'), s(b'~')),
-    (0x64, None,    None,    None,    None),
-];
-
-fn check(layout: u8, rows: &[Row]) {
-    for &(usage, plain, shift, caps, caps_shift) in rows {
-        // Num Lock on (0) and off: the typing keys ignore it.
+#[test]
+fn every_spanish_key_under_shift_altgr_caps_and_num() {
+    assert_eq!(ES.len(), 50);
+    for &(usage, plain, shift, caps, caps_shift, altgr) in ES {
         for num in [0, NUM_OFF] {
-            let at = |mods, locks| printable_in(layout, usage, mods, locks | num);
-            let what =
-                |state: &str| format!("layout {layout} usage {usage:#04x} {state} num={num}");
+            let at = |mods, locks| typed_in(LAYOUT_ES, usage, mods, locks | num);
+            let what = |s: &str| format!("usage {usage:#04x} {s} num={num}");
             assert_eq!(at(0, 0), plain, "{}", what("plain"));
             assert_eq!(at(LSHIFT, 0), shift, "{}", what("left Shift"));
             assert_eq!(at(RSHIFT, 0), shift, "{}", what("right Shift"));
             assert_eq!(at(0, CAPS), caps, "{}", what("Caps Lock"));
             assert_eq!(at(LSHIFT, CAPS), caps_shift, "{}", what("Caps + Shift"));
+            assert_eq!(at(ALTGR, 0), altgr, "{}", what("AltGr"));
+            assert_eq!(at(ALTGR, CAPS), altgr, "{}", what("AltGr + Caps"));
+            assert_eq!(at(ALTGR | LSHIFT, 0), N, "{}", what("AltGr + Shift"));
+            // Left Alt is not AltGr: the plain level.
+            assert_eq!(at(LALT, 0), plain, "{}", what("left Alt"));
         }
     }
 }
 
+/// Every other usage types in Spanish exactly what it types in US (the
+/// keypad, Enter, the navigation and function keys), AltGr included for the
+/// keypad, and nothing with AltGr otherwise.
 #[test]
-fn every_uk_key_under_every_shift_caps_and_num_state() {
-    assert_eq!(UK.len(), 50);
-    check(LAYOUT_UK, UK);
-}
-
-#[test]
-fn us_rows_for_the_keys_uk_changes() {
-    check(LAYOUT_US, US);
-}
-
-/// The two hand-written tables agree everywhere except where the legends
-/// differ, and those places are exactly these (usage, column) pairs.
-#[test]
-fn uk_and_us_differ_only_where_the_legends_do() {
-    // Columns: 0 plain, 1 Shift, 2 Caps, 3 Caps + Shift.
-    let expected: &[(u8, usize)] = &[
-        (0x1f, 1),
-        (0x1f, 3), // " vs @
-        (0x20, 1),
-        (0x20, 3), // £ vs #
-        (0x31, 0),
-        (0x31, 1),
-        (0x31, 2),
-        (0x31, 3), // #~ vs \|
-        (0x32, 0),
-        (0x32, 1),
-        (0x32, 2),
-        (0x32, 3), // #~ vs nothing
-        (0x34, 1),
-        (0x34, 3), // @ vs "
-        (0x35, 1),
-        (0x35, 3), // ¬ vs ~
-        (0x64, 0),
-        (0x64, 1),
-        (0x64, 2),
-        (0x64, 3), // \| vs nothing
-    ];
-    let mut differ = Vec::new();
+fn keys_outside_the_table_are_the_us_keys() {
     for usage in 0..=u8::MAX {
-        for (col, (mods, locks)) in [(0, 0), (LSHIFT, 0), (0, CAPS), (LSHIFT, CAPS)]
-            .into_iter()
-            .enumerate()
-        {
-            for num in [0, NUM_OFF] {
-                let uk = printable_in(LAYOUT_UK, usage, mods, locks | num);
-                let us = printable_in(LAYOUT_US, usage, mods, locks | num);
-                if uk != us && num == 0 {
-                    differ.push((usage, col));
-                }
-                if uk != us && num == NUM_OFF {
-                    assert!(
-                        differ.contains(&(usage, col)),
-                        "{usage:#04x} differs only with Num off"
-                    );
-                }
+        if ES.iter().any(|r| r.0 == usage) {
+            continue;
+        }
+        let keypad = (0x53..=0x63).contains(&usage);
+        for (mods, locks) in [
+            (0, 0),
+            (LSHIFT, 0),
+            (0, CAPS),
+            (LSHIFT, NUM_OFF),
+            (0, NUM_OFF),
+        ] {
+            let us = match printable(usage, mods, locks) {
+                Some(b) => Typed::Char(b as char),
+                None => N,
+            };
+            assert_eq!(typed_in(LAYOUT_ES, usage, mods, locks), us, "{usage:#04x}");
+            let altgr = typed_in(LAYOUT_ES, usage, mods | ALTGR, locks);
+            if keypad {
+                let us_alt = match printable(usage, mods | ALTGR, locks) {
+                    Some(b) => Typed::Char(b as char),
+                    None => N,
+                };
+                assert_eq!(altgr, us_alt, "keypad {usage:#04x}");
+            } else if mods & LSHIFT == 0 {
+                assert_eq!(altgr, N, "AltGr {usage:#04x}");
             }
         }
     }
-    assert_eq!(differ, expected);
-    // And the hand tables say the same: the US rows differ from the UK rows
-    // at exactly those places.
-    for &(usage, col) in expected {
-        let uk = UK.iter().find(|r| r.0 == usage).unwrap();
-        let us = US.iter().find(|r| r.0 == usage).unwrap();
-        let pick = |r: &Row| [r.1, r.2, r.3, r.4][col];
-        assert_ne!(pick(uk), pick(us), "{usage:#04x} col {col}");
+}
+
+/// The dead keys' compositions, by hand from CLDR's transforms: each vowel
+/// (and y for acute) in both cases, Space for the bare accent.
+#[test]
+fn dead_key_compositions() {
+    let table: &[(Dead, &str, &str)] = &[
+        (Dead::Grave, "aAeEiIoOuU", "àÀèÈìÌòÒùÙ"),
+        (Dead::Acute, "aAeEiIoOuUyY", "áÁéÉíÍóÓúÚýÝ"),
+        (Dead::Circumflex, "aAeEiIoOuU", "âÂêÊîÎôÔûÛ"),
+        (Dead::Diaeresis, "aAeEiIoOuU", "äÄëËïÏöÖüÜ"),
+    ];
+    let mut count = 0;
+    for &(dead, bases, results) in table {
+        for (b, r) in bases.chars().zip(results.chars()) {
+            assert_eq!(compose(dead, b), Some(r), "{dead:?} {b}");
+            count += 1;
+        }
+        assert_eq!(compose(dead, 'n'), None);
+        assert_eq!(compose(dead, 'ñ'), None);
+    }
+    assert_eq!(count, 42);
+    assert_eq!(
+        [Dead::Grave, Dead::Acute, Dead::Circumflex, Dead::Diaeresis].map(spacing),
+        ['`', '´', '^', '¨']
+    );
+}
+
+/// The composer over key presses: the gate's ´ then a, a dead key then a
+/// key it does not compose with (both), then Space (the accent), two dead
+/// keys (both accents), and a key that types nothing (drops it).
+#[test]
+fn the_composer() {
+    fn run(k: &mut Composer, typed: &[Typed]) -> String {
+        let mut s = String::new();
+        for &t in typed {
+            s.extend(k.feed(t).as_slice());
+        }
+        s
+    }
+    let mut k = Composer::default();
+    let mut run = |typed: &[Typed]| run(&mut k, typed);
+    let acute = d(Dead::Acute);
+    let dia = d(Dead::Diaeresis);
+    assert_eq!(
+        run(&[c('ñ'), c('¿'), c('¡'), c('ç'), acute, c('a')]),
+        "ñ¿¡çá"
+    );
+    assert_eq!(run(&[dia, c('u'), acute, c('E')]), "üÉ");
+    assert_eq!(run(&[acute, c('n')]), "´n");
+    assert_eq!(run(&[acute, c(' ')]), "´");
+    assert_eq!(run(&[d(Dead::Grave), d(Dead::Circumflex)]), "`^");
+    assert_eq!(run(&[acute, N, c('a')]), "a");
+    assert_eq!(run(&[acute]), "");
+    assert_eq!(run(&[c('o')]), "ó");
+    let mut k = Composer::default();
+    k.feed(acute);
+    assert_eq!(k.pending(), Some(Dead::Acute));
+}
+
+/// The ASCII decoders' view of Spanish (Home's field, Arthur): ASCII legends,
+/// a dead key's ASCII accent (` and ^) without composing, nothing otherwise.
+#[test]
+fn ascii_in_spanish() {
+    let at = |usage, mods| ascii_in(LAYOUT_ES, usage, mods, 0);
+    assert_eq!(at(0x1f, LSHIFT), Some(b'"'));
+    assert_eq!(at(0x1f, ALTGR), Some(b'@'));
+    assert_eq!(at(0x27, LSHIFT), Some(b'='));
+    assert_eq!(at(0x2f, 0), Some(b'`'));
+    assert_eq!(at(0x2f, LSHIFT), Some(b'^'));
+    for (usage, mods) in [
+        (0x33, 0),
+        (0x2e, 0),
+        (0x2e, LSHIFT),
+        (0x34, 0),
+        (0x34, LSHIFT),
+        (0x22, ALTGR),
+    ] {
+        assert_eq!(at(usage, mods), None, "{usage:#04x} {mods:#04x}");
     }
 }
 
 /// The kill-switch's proof: US by id is `printable`, for every usage, every
-/// modifier byte and every lock state, so a decoder that selects US is the
-/// decoder without layouts. A bad id types US too.
+/// modifier byte and every lock state, as a [`Typed`] and as ASCII; a bad id
+/// types US too.
 #[test]
 fn us_by_id_is_the_us_table_for_every_key_modifier_and_lock() {
     for usage in 0..=u8::MAX {
         for mods in 0..=u8::MAX {
             for locks in 0..4u8 {
                 let us = printable(usage, mods, locks);
-                assert_eq!(printable_in(LAYOUT_US, usage, mods, locks), us);
-                for bad in [LAYOUT_COUNT, 0xff] {
-                    assert_eq!(printable_in(bad, usage, mods, locks), us);
+                for layout in [LAYOUT_US, LAYOUT_COUNT, 0xff] {
+                    assert_eq!(ascii_in(layout, usage, mods, locks), us);
+                    let typed = match us {
+                        Some(b) => Typed::Char(b as char),
+                        None => N,
+                    };
+                    assert_eq!(typed_in(layout, usage, mods, locks), typed);
                 }
-            }
-        }
-    }
-}
-
-/// Only Shift picks the upper legend in UK too (Control, Alt and AltGr do
-/// not), and the keypad is the same in both layouts.
-#[test]
-fn uk_ignores_non_shift_modifiers_and_keeps_the_keypad() {
-    for mods in [0x01, 0x04, 0x08, 0x10, 0x40, 0x80] {
-        assert_eq!(printable_in(LAYOUT_UK, 0x1f, mods, 0), Some(b'2'));
-        assert_eq!(printable_in(LAYOUT_UK, 0x64, mods, 0), Some(b'\\'));
-    }
-    for usage in 0x53..=0x63 {
-        for mods in [0, LSHIFT] {
-            for locks in 0..4 {
-                assert_eq!(
-                    printable_in(LAYOUT_UK, usage, mods, locks),
-                    printable(usage, mods, locks),
-                    "{usage:#04x}"
-                );
             }
         }
     }
@@ -229,7 +256,7 @@ fn uk_ignores_non_shift_modifiers_and_keeps_the_keypad() {
 
 #[test]
 fn layout_ids_and_names() {
-    assert_eq!((LAYOUT_US, LAYOUT_UK, LAYOUT_COUNT), (0, 1, 2));
-    assert_eq!(LAYOUT_NAMES, ["English (US)", "English (UK)"]);
+    assert_eq!((LAYOUT_US, LAYOUT_ES, LAYOUT_COUNT), (0, 1, 2));
+    assert_eq!(LAYOUT_NAMES, ["English (US)", "Spanish (Spain)"]);
     assert!(layout::layout_valid(1) && !layout::layout_valid(2));
 }

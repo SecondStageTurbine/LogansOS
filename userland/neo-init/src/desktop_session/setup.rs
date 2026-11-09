@@ -537,39 +537,52 @@ fn idle(scene: &mut Scene, focus: &HomeFocus) {
 #[cfg(feature = "keyboard-layouts")]
 mod keyboard {
     use super::Line;
-    use neo_atrium::keys::{self, Key};
+    use neo_atrium::keys::{self, Key, Typed};
     use setup_core::{Input, Wizard};
 
-    /// A key on the Keyboard page, decoded in the layout chosen on the page:
-    /// the moves and Enter/Space/Esc as on every page, Backspace and the
-    /// other printable characters for the test field.
+    /// A key on the Keyboard page, in the layout chosen on the page: the
+    /// moves and Enter/Space/Esc as on every page, Backspace for the field,
+    /// and every other key as that layout types it (any legend, or a dead
+    /// key), which the page composes into its test field.
     pub fn input(wizard: &Wizard, event: [u8; libneo::INPUT_EVENT_V1_LEN]) -> Option<Input> {
-        match keys::decode_in(wizard.choices().layout, event)? {
-            Key::Up => Some(Input::Up),
-            Key::Down | Key::Tab => Some(Input::Down),
-            Key::Enter | Key::Char(b' ') => Some(Input::Choose),
-            Key::Escape => Some(Input::Back),
-            Key::Backspace => Some(Input::Erase),
-            Key::Char(c) => Some(Input::Char(c)),
+        let layout = wizard.choices().layout;
+        match keys::decode_in(layout, event) {
+            Some(Key::Up) => return Some(Input::Up),
+            Some(Key::Down | Key::Tab) => return Some(Input::Down),
+            Some(Key::Enter | Key::Char(b' ')) => return Some(Input::Choose),
+            Some(Key::Escape) => return Some(Input::Back),
+            Some(Key::Backspace) => return Some(Input::Erase),
+            _ => {}
+        }
+        match keys::typed_in(layout, event)? {
+            Typed::None => None,
+            Typed::Char(c) => Some(Input::Layout(setup_core::Typed::Char(c))),
+            Typed::Dead(d) => Some(Input::Layout(setup_core::Typed::Dead(dead(d)))),
         }
     }
 
-    /// After a character or Backspace: what the field holds, and in which
-    /// layout the key was typed (the gate reads it).
+    /// The same table, `include!`d by both crates: the WM's dead key as the
+    /// page's.
+    fn dead(d: keys::Dead) -> setup_core::Dead {
+        match d {
+            keys::Dead::Grave => setup_core::Dead::Grave,
+            keys::Dead::Acute => setup_core::Dead::Acute,
+            keys::Dead::Circumflex => setup_core::Dead::Circumflex,
+            keys::Dead::Diaeresis => setup_core::Dead::Diaeresis,
+        }
+    }
+
+    /// After a key that changed the field: what it holds now (UTF-8), in
+    /// which layout (the gate reads it).
     pub fn log_typed(wizard: &Wizard, input: Input) {
-        if wizard.page() != setup_core::Page::Keyboard {
+        if wizard.page() != setup_core::Page::Keyboard
+            || !matches!(input, Input::Layout(_) | Input::Erase)
+        {
             return;
         }
-        let ascii = match input {
-            Input::Char(c) => u64::from(c),
-            Input::Erase => 8,
-            _ => return,
-        };
         Line::new()
             .s(b"DESKTOP setup typed layout=")
             .n(u64::from(wizard.choices().layout))
-            .s(b" ascii=")
-            .n(ascii)
             .s(b" field=")
             .s(wizard.field().as_bytes())
             .s(b"\n")

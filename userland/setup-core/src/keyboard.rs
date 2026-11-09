@@ -3,9 +3,12 @@
 //!
 //! With `keyboard-layouts` the page lists the layouts (`keymap_layout_logic.rs`'s
 //! names), marks the chosen one `[x]` and has a test field: the WM decodes
-//! each key in the layout chosen on the page and hands the character in
-//! ([`Input::Char`](crate::Input)), so the user sees what the keys type
-//! before leaving the screen. Choosing a layout clears the field (its text
+//! each key in the layout chosen on the page and hands it in as that layout
+//! types it, any legend or a dead key ([`Input::Layout`](crate::Input)); the
+//! page composes dead keys ([`Composer`]), so the user sees what the keys
+//! type, `ñ` and `á` included, before leaving the screen. The field is the
+//! only text in the session that is not ASCII yet: Home and Arthur take the
+//! ASCII part of the layout. Choosing a layout clears the field (its text
 //! was typed in the other layout). Without the feature the page is S1's
 //! stub, shown only with `stub_pages`.
 
@@ -52,7 +55,7 @@ mod on {
         include!("../../../kernel/src/drivers/keymap_layout_logic.rs");
     }
 
-    pub use keymap::{LAYOUT_COUNT, LAYOUT_NAMES};
+    pub use keymap::{Composer, Dead, LAYOUT_COUNT, LAYOUT_NAMES, Typed};
 
     /// The page is shown.
     pub const SHOWN: bool = true;
@@ -60,10 +63,12 @@ mod on {
     /// The test field's length: what fits the card's row after its label.
     pub const FIELD_MAX: usize = 24;
 
-    /// The test field: printable ASCII, bounded.
+    /// The test field: printable text (any legend, dead keys composed),
+    /// bounded in characters.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Field {
         text: String,
+        composer: Composer,
     }
 
     impl Field {
@@ -103,18 +108,36 @@ mod on {
         }
     }
 
-    /// A character (`Some`) or Backspace (`None`) for the test field, on the
-    /// Keyboard page ([`Wizard::on`] routes them here). A key that changes
-    /// nothing (past the field's end, not printable, Backspace on an empty
-    /// field) is [`Outcome::Nothing`].
-    pub fn typed(w: &mut Wizard, c: Option<u8>) -> Outcome {
-        match c {
-            Some(c) if (0x20..=0x7e).contains(&c) && w.field.text.len() < FIELD_MAX => {
-                w.field.text.push(c as char);
-                Outcome::Redraw
+    /// A key (`Some`) or Backspace (`None`) for the test field, on the
+    /// Keyboard page ([`Wizard::on`] routes them here). A dead key waits for
+    /// the next key ([`Composer`]); Backspace drops a waiting dead key, else
+    /// the last character. A key that changes nothing (a dead key waiting,
+    /// past the field's end, Backspace on an empty field) is
+    /// [`Outcome::Nothing`].
+    pub fn typed(w: &mut Wizard, key: Option<Typed>) -> Outcome {
+        let f = &mut w.field;
+        let Some(key) = key else {
+            if f.composer.pending().is_some() {
+                f.composer.feed(Typed::None);
+                return Outcome::Nothing;
             }
-            None if w.field.text.pop().is_some() => Outcome::Redraw,
-            _ => Outcome::Nothing,
+            return match f.text.pop() {
+                Some(_) => Outcome::Redraw,
+                None => Outcome::Nothing,
+            };
+        };
+        let out = f.composer.feed(key);
+        let mut changed = false;
+        for &c in out.as_slice() {
+            if !c.is_control() && f.text.chars().count() < FIELD_MAX {
+                f.text.push(c);
+                changed = true;
+            }
+        }
+        if changed {
+            Outcome::Redraw
+        } else {
+            Outcome::Nothing
         }
     }
 

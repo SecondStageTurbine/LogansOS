@@ -10,8 +10,8 @@
 //! | `DEFAULTS7_GEN1` | 1 | today's five defaults, (6, 2, 0, 0) (7, 2, 0, 0) |
 //! | `CHANGED7_GEN2` | 2 | `tests.rs`'s `CHANGED` five, (6, 2, 0, 0) (7, 2, 0, 0) |
 //! | `LANGUAGE_1` | 3 | (6, 2, 0, 1): one past the only language |
-//! | `LAYOUT_1` | 3 | (7, 2, 0, 1): one past the only layout (UK with `keyboard-layouts`) |
-//! | `LAYOUT_2` | 3 | (7, 2, 0, 2): one past UK, with `keyboard-layouts` |
+//! | `LAYOUT_1` | 3 | (7, 2, 0, 1): one past the only layout (Spanish with `keyboard-layouts`) |
+//! | `LAYOUT_2` | 3 | (7, 2, 0, 2): one past Spanish, with `keyboard-layouts` |
 //! | `LAYOUT_BOOL` | 3 | (7, 1, 0, 0): the wrong type |
 //! | `DEFAULTS5_GEN1` | 1 | today's five-key record |
 
@@ -148,7 +148,7 @@ fn the_new_keys_are_wm_only() {
     assert!(Key::ReduceTransparency.client_writable() && Key::ReduceMotion.client_writable());
 }
 
-/// F11 S5 (`keyboard-layouts`): two layouts, so UK (1) reads and sets, and
+/// F11 S5 (`keyboard-layouts`): two layouts, so Spanish (1) reads and sets, and
 /// one past it (2) is refused, in a record and in `with`.
 #[cfg(feature = "keyboard-layouts")]
 #[test]

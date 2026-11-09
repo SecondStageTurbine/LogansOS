@@ -1275,11 +1275,12 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 45] = [
             b"\r",
         )
     },
-    // F11 S5: the Keyboard page in UK, its field captured once the four keys
-    // are in, then Home and Arthur in UK; and the control, left on US.
+    // F11 S5: the Keyboard page in Spanish, its field captured once the
+    // gate's keys are in, then Home and Arthur in Spanish; and the control,
+    // left on US.
     DesktopScenario {
         mid: Some((
-            b"DESKTOP setup typed layout=1 ascii=92",
+            "DESKTOP setup typed layout=1 field=ñ¿¡çá\n".as_bytes(),
             SETUP_MENU_KEYS_PAGE_REL,
         )),
         long_timeout: true,
@@ -1554,21 +1555,21 @@ const SETUP_MENU_STORE_TRY_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP arthur answer composited serial=", b"q"),
 ];
 
-/// F11 S5 (`setup_menu_keys`): Begin, then the Keyboard page: UK, and the
-/// four keys that a UK keyboard labels `"` `@` `#` `\` (Shift+2, Shift+',
-/// the key left of Enter and the key left of Z: `sendkey shift-2`,
-/// `shift-apostrophe`, `backslash`, `less`), then Continue, Time zone,
-/// Comfort and Try. In the intro session, Shift+2 in Home and in Arthur
-/// types `"` (then Backspace), and the intro's walk runs as usual.
+/// F11 S5 (`setup_menu_keys`): Begin, then the Keyboard page: Spanish, and
+/// the keys a Spanish keyboard labels `ñ` `¿` `¡` `ç`, then its acute dead key
+/// and `a` (`sendkey semicolon`, `shift-equal`, `equal`, `backslash`,
+/// `apostrophe`, `a`), giving `ñ¿¡çá`; then Continue, Time zone, Comfort and
+/// Try. In the intro session, Shift+2 in Home and in Arthur types `"` (then
+/// Backspace), and the intro's walk runs as usual.
 const SETUP_MENU_KEYS_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP setup page=welcome rows=5", b"\n"),
     step(b"DESKTOP setup page=keyboard rows=7", &[HMP_DOWN]),
     step(b"DESKTOP setup redraw page=keyboard focus=1", b"\n"),
+    step(b"DESKTOP setup redraw page=keyboard focus=1", b";+=\\'a"),
     step(
-        b"DESKTOP setup redraw page=keyboard focus=1",
-        &[b'@', b'"', b'\\', HMP_LESS],
+        "DESKTOP setup typed layout=1 field=ñ¿¡çá\n".as_bytes(),
+        &[HMP_DOWN],
     ),
-    step(b"DESKTOP setup typed layout=1 ascii=92", &[HMP_DOWN]),
     step(b"DESKTOP setup redraw page=keyboard focus=2", b"\n"),
     step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
     step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
@@ -1593,15 +1594,12 @@ const SETUP_MENU_KEYS_STEPS: &[SerialScriptStep] = &[
 ];
 
 /// F11 S5's control (`setup_menu_keys_us`): the same keys with the layout
-/// left on US; they type `@` `"` `\` and nothing (US has no key left of Z),
-/// and Shift+2 is `@` in Home and Arthur.
+/// left on US; they type `;+=\'a` (no dead key), and Shift+2 is `@` in Home
+/// and Arthur.
 const SETUP_MENU_KEYS_US_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP setup page=welcome rows=5", b"\n"),
-    step(
-        b"DESKTOP setup page=keyboard rows=7",
-        &[b'@', b'"', b'\\', HMP_LESS],
-    ),
-    step(b"DESKTOP setup typed layout=0 ascii=92", &[HMP_UP]),
+    step(b"DESKTOP setup page=keyboard rows=7", b";+=\\'a"),
+    step(b"DESKTOP setup typed layout=0 field=;+=\\'a\n", &[HMP_UP]),
     step(b"DESKTOP setup redraw page=keyboard focus=2", b"\n"),
     step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
     step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
@@ -4159,8 +4157,8 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
-        // F11 S5: the Keyboard page in UK on the volatile overlay; the field,
-        // Home and Arthur type the UK characters.
+        // F11 S5: the Keyboard page in Spanish on the volatile overlay; the
+        // field, Home and Arthur type Spanish.
         name: "setup_menu_keys",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("keyboard-layouts-boot-test"),
@@ -16744,9 +16742,6 @@ const HMP_SUPER_ESCAPE: u8 = 0x9F;
 const HMP_CAPTURE_0: u8 = 0x97;
 /// `ps2_keyboard`: press and release Caps Lock.
 const HMP_CAPS_LOCK: u8 = 0xA2;
-/// F11 S5 (`setup_menu_keys`): the ISO key left of Z (QEMU's `less`, HID
-/// usage 0x64, "Non-US \\ and |").
-const HMP_LESS: u8 = 0xAC;
 /// `ps2_keyboard`: `"` typed with the right Shift.
 const HMP_RSHIFT_QUOTE: u8 = 0xA3;
 /// `ps2_keyboard`, the keypad: keypad 7, `*` (0x37), `/` (`E0 35`), Enter
@@ -16857,7 +16852,6 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         0x84 => Some("sendkey ctrl_r-c\n"),
         0x85 => Some("sendkey pause\n"),
         HMP_CAPS_LOCK => Some("sendkey caps_lock\n"),
-        HMP_LESS => Some("sendkey less\n"),
         HMP_RSHIFT_QUOTE => Some("sendkey shift_r-apostrophe\n"),
         HMP_KP_7 => Some("sendkey kp_7\n"),
         HMP_KP_MULTIPLY => Some("sendkey kp_multiply\n"),
@@ -21554,9 +21548,10 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         }
         require_framebuffer_capture(scenario, SETUP_MENU_STORE_TRY_CAPTURE_REL)?;
     }
-    // F11 S5 (setup-menu THINK §5 S5): UK chosen on the Keyboard page; the
-    // field, then Home and Arthur, type the UK characters, and key 7 holds
-    // UK (on the volatile overlay: in force, nothing written).
+    // F11 S5 (setup-menu THINK §5 S5): Spanish chosen on the Keyboard page;
+    // the field types every legend and composes the acute dead key, Home and
+    // Arthur type Spanish, and key 7 holds Spanish (on the volatile overlay:
+    // in force, nothing written).
     if scenario.name == "setup_menu_keys" {
         require_serial_sequence(
             scenario,
@@ -21567,10 +21562,11 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP setup page=keyboard rows=7",
                 "DESKTOP setup redraw page=keyboard focus=1",
                 "DESKTOP setup redraw page=keyboard focus=1",
-                "DESKTOP setup typed layout=1 ascii=34 field=\"\n",
-                "DESKTOP setup typed layout=1 ascii=64 field=\"@\n",
-                "DESKTOP setup typed layout=1 ascii=35 field=\"@#\n",
-                "DESKTOP setup typed layout=1 ascii=92 field=\"@#\\\n",
+                "DESKTOP setup typed layout=1 field=ñ\n",
+                "DESKTOP setup typed layout=1 field=ñ¿\n",
+                "DESKTOP setup typed layout=1 field=ñ¿¡\n",
+                "DESKTOP setup typed layout=1 field=ñ¿¡ç\n",
+                "DESKTOP setup typed layout=1 field=ñ¿¡çá\n",
                 "DESKTOP setup redraw page=keyboard focus=2",
                 "DESKTOP setup page=timezone rows=8",
                 "DESKTOP setup page=comfort rows=6",
@@ -21587,21 +21583,25 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 "DESKTOP arthur keystroke ascii=34\n",
                 "DESKTOP session end client=arthur exit=0",
             ],
-            "UK on the Keyboard page: the field, Home and Arthur type the UK characters, and key 7 holds UK",
+            "Spanish on the Keyboard page: the field types ñ¿¡ç and composes the acute dead key with a, Home and Arthur type Spanish, and key 7 holds Spanish",
         )?;
         for (needle, why) in [
             (
                 "DESKTOP setup typed layout=0",
-                "every key on the page was typed after UK was chosen",
+                "every key on the page was typed after Spanish was chosen",
+            ),
+            (
+                "field=ñ¿¡ç´",
+                "the acute dead key composes with a: no bare accent",
             ),
             ("SETTINGS written", "the volatile overlay writes no record"),
             (
                 "DESKTOP home keystroke ascii=64\n",
-                "Shift+2 is \" in UK, in Home",
+                "Shift+2 is \" in Spanish, in Home",
             ),
             (
                 "DESKTOP arthur keystroke ascii=64\n",
-                "Shift+2 is \" in UK, in Arthur",
+                "Shift+2 is \" in Spanish, in Arthur",
             ),
         ] {
             require_serial_absent(scenario, observed, needle, why)?;
@@ -21611,7 +21611,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         require_framebuffer_capture(scenario, SETUP_MENU_KEYS_CAPTURE_REL)?;
     }
     // F11 S5's control: the same build and keys with the layout left on US:
-    // the US characters (and nothing for the key US lacks), no layout change.
+    // the US characters (no dead key), no layout change.
     if scenario.name == "setup_menu_keys_us" {
         require_serial_sequence(
             scenario,
@@ -21619,9 +21619,12 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             &[
                 "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
                 "DESKTOP setup page=keyboard rows=7",
-                "DESKTOP setup typed layout=0 ascii=64 field=@\n",
-                "DESKTOP setup typed layout=0 ascii=34 field=@\"\n",
-                "DESKTOP setup typed layout=0 ascii=92 field=@\"\\\n",
+                "DESKTOP setup typed layout=0 field=;\n",
+                "DESKTOP setup typed layout=0 field=;+\n",
+                "DESKTOP setup typed layout=0 field=;+=\n",
+                "DESKTOP setup typed layout=0 field=;+=\\\n",
+                "DESKTOP setup typed layout=0 field=;+=\\'\n",
+                "DESKTOP setup typed layout=0 field=;+=\\'a\n",
                 "DESKTOP setup redraw page=keyboard focus=2",
                 "DESKTOP setup page=try rows=6",
                 "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 layout=0",
@@ -21637,11 +21640,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         for (needle, why) in [
             (
                 "DESKTOP setup typed layout=1",
-                "the control never chooses UK",
-            ),
-            (
-                "DESKTOP setup typed layout=0 ascii=35",
-                "US has no key left of Z, and its key left of Enter is \\",
+                "the control never chooses Spanish",
             ),
             (
                 "DESKTOP keyboard layout=",
@@ -24430,9 +24429,9 @@ fn require_setup_capture(
     }
 }
 
-/// F11 S5 (`setup_menu_keys`): the Keyboard page in UK with the four keys
-/// typed, against `setup_oracle.py fixture`'s `KEYBOARD_UK` (the scene, and
-/// every row's words: the field reads `"@#\_`).
+/// F11 S5 (`setup_menu_keys`): the Keyboard page in Spanish with the gate's
+/// keys typed, against `setup_oracle.py fixture`'s `KEYBOARD_ES` (the scene,
+/// and every row's words: the field reads `ñ¿¡çá_`).
 fn require_setup_keyboard_capture(
     scenario: TestScenario,
     capture_rel: &'static str,
@@ -24444,10 +24443,10 @@ fn require_setup_keyboard_capture(
     check_card_capture(
         scenario,
         capture_rel,
-        setup::KEYBOARD_UK_GLASS_1920X1080,
-        setup::KEYBOARD_UK_TEXT_BOX,
-        &setup::KEYBOARD_UK_PATTERNS[..],
-        "setup keyboard uk",
+        setup::KEYBOARD_ES_GLASS_1920X1080,
+        setup::KEYBOARD_ES_TEXT_BOX,
+        &setup::KEYBOARD_ES_PATTERNS[..],
+        "setup keyboard es",
     )
 }
 

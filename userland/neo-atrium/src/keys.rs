@@ -53,15 +53,36 @@ pub fn layout() -> u8 {
 }
 
 #[cfg(feature = "keyboard-layouts")]
-pub use keymap::{LAYOUT_COUNT, LAYOUT_NAMES, LAYOUT_UK, LAYOUT_US};
+pub use keymap::{Composer, Dead, LAYOUT_COUNT, LAYOUT_ES, LAYOUT_NAMES, LAYOUT_US, Out, Typed};
 
-/// [`decode`] in `layout`, whatever the session's: the Keyboard page's test
-/// field types in the layout chosen on the page.
+/// [`decode`] in `layout`, whatever the session's. The text is ASCII: a key
+/// whose legend is not ASCII types nothing, and a dead key types its accent
+/// only when that is ASCII, without composing (`keymap_layout_logic.rs`'s
+/// `ascii_in`; the Home field and Arthur's line are ASCII).
 #[cfg(feature = "keyboard-layouts")]
 pub fn decode_in(layout: u8, event: [u8; 8]) -> Option<Key> {
     decode_with(event, |usage, modifiers, locks| {
-        keymap::printable_in(layout, usage, modifiers, locks)
+        keymap::ascii_in(layout, usage, modifiers, locks)
     })
+}
+
+/// What a pressed key types in `layout`, with dead keys and every legend
+/// (`None` for a release or a non-key event): the Keyboard page's test
+/// field, which composes them ([`Composer`]).
+#[cfg(feature = "keyboard-layouts")]
+pub fn typed_in(layout: u8, event: [u8; 8]) -> Option<Typed> {
+    if event[0] != 1 || event[1] & 1 == 0 {
+        return None;
+    }
+    let usage = u8::try_from(u16::from_le_bytes([event[2], event[3]])).ok()?;
+    let modifiers = u16::from_le_bytes([event[4], event[5]]) as u8;
+    let locks = u16::from_le_bytes([event[6], event[7]]) as u8;
+    Some(keymap::typed_in(
+        layout,
+        keymap::effective_usage(usage, modifiers, locks),
+        modifiers,
+        locks,
+    ))
 }
 
 /// The decoder without layouts: the US table. With `keyboard-layouts` it is

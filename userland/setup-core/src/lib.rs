@@ -120,6 +120,10 @@ pub enum Input {
     Char(u8),
     /// Backspace: erases from the search (S3) or the test field (S5).
     Erase,
+    /// S5: a key on the Keyboard page, as the layout chosen there types it
+    /// (any legend, or a dead key); the page composes it into the test field.
+    #[cfg(feature = "keyboard-layouts")]
+    Layout(keyboard::Typed),
 }
 
 /// How the wizard ended.
@@ -490,12 +494,16 @@ impl Wizard {
         // S5: the Keyboard page's test field takes characters (not Space,
         // which chooses) and Backspace.
         #[cfg(feature = "keyboard-layouts")]
-        if self.page == Page::Keyboard {
-            match input {
-                Input::Char(c) if c != b' ' => return keyboard::typed(self, Some(c)),
-                Input::Erase => return keyboard::typed(self, None),
-                _ => {}
+        match input {
+            Input::Layout(t) if self.page == Page::Keyboard => {
+                return keyboard::typed(self, Some(t));
             }
+            Input::Char(c) if self.page == Page::Keyboard && c != b' ' => {
+                return keyboard::typed(self, Some(keyboard::Typed::Char(c as char)));
+            }
+            Input::Erase if self.page == Page::Keyboard => return keyboard::typed(self, None),
+            Input::Layout(_) => return Outcome::Nothing,
+            _ => {}
         }
         match input {
             Input::Char(b' ') => return self.on(Input::Choose),
@@ -522,6 +530,8 @@ impl Wizard {
             },
             Input::Choose => self.choose(),
             Input::Char(_) | Input::Erase => Outcome::Nothing,
+            #[cfg(feature = "keyboard-layouts")]
+            Input::Layout(_) => Outcome::Nothing,
         }
     }
 
@@ -627,7 +637,7 @@ fn on_off(on: bool) -> &'static str {
 
 mod keyboard;
 #[cfg(feature = "keyboard-layouts")]
-pub use keyboard::{FIELD_MAX, LAYOUT_COUNT, LAYOUT_NAMES};
+pub use keyboard::{Dead, FIELD_MAX, LAYOUT_COUNT, LAYOUT_NAMES, Typed};
 
 #[cfg(all(test, feature = "keyboard-layouts"))]
 mod keyboard_tests;
