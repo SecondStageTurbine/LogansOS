@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3c-1: servo/mozjs's mozjs-sys 153.6.0-2 (vendor/mozjs-138c9470/mozjs-sys)
+# for the product build. Only this manifest and build.rs differ from upstream;
+# the library is the vendored crate's own src/ (lib.path). See
+# docs/THINK-2026-11-08-ot61-c3c1-product-build.md §2.
+#
+# Changes from upstream's manifest:
+# - No [build-dependencies]: build.rs is std only, and compiles the generator's
+#   frozen command lines (third_party/ot61-mozjs/generated/).
+# - The workspace fields are written out (MPL-2.0, edition 2021).
+# - jit, intl, debugmozjs, profilemozjs, jitspew and libz-rs each change
+#   configure's options, and the frozen set is one configuration. They stay
+#   declared (src/ tests them with cfg) but are empty, and build.rs fails if
+#   one is on. Their optional dependencies are gone.
+[package]
+name = "mozjs_sys"
+description = "System crate for the Mozilla SpiderMonkey JavaScript engine."
+repository = "https://github.com/servo/mozjs/"
+version = "153.6.0-2"
+authors = ["Mozilla", "The Servo Project Developers"]
+links = "mozjs"
+license = "MPL-2.0"
+edition = "2021"
+build = "build.rs"
+
+[lib]
+name = "mozjs_sys"
+path = "../../vendor/mozjs-138c9470/mozjs-sys/src/lib.rs"
+# The generated jsapi.rs contains #[doc] strings which look like
+# doctests but are definitely not.
+doctest = false
+
+[features]
+debugmozjs = []
+profilemozjs = []
+jit = []
+jitspew = []
+libz-sys = ["dep:libz-sys"]
+libz-rs = []
+intl = []
+crown = []
+oom_with_hook = []
+
+[dependencies]
+libc = "0.2"
+encoding_c = "0.9.8"
+encoding_c_mem = "0.2.6"
+mozjs_normalizer_glue = { version = "=153.6.0", path = "../normalizer_glue" }
+libz-sys = { version = "1.1.19", default-features = false, features = [
+  "libc",
+  "stock-zlib",
+], optional = true }

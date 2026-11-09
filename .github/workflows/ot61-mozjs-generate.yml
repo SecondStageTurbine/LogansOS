@@ -330,6 +330,12 @@ jobs:
             exit 1
           fi
 
+      # The product build's patched copies (third_party/ot61-mozjs/patched/)
+      # may differ from the vendored crates only in their manifests and
+      # mozjs-sys's build.rs (THINK 2026-11-08 §2).
+      - name: patched crate copies against upstream
+        run: python3 -I third_party/ot61-mozjs/generator/check_patched_crates.py .
+
       - name: What came out (unified files, defines, source lists)
         if: always()
         run: |

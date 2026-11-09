@@ -116,6 +116,19 @@ Paths are `@SRC@` (the patched source root), `@OBJ@`, `@REPO@` and `@CRATES@` (t
 `5f0ec159242234e9458f3549269cb1412f25c828c01a57029a1aa88df7c28b3e`, taken from
 the job log and checked against that hash. The first copy was run 42518384967. Moving from the runner's clang 21 to the pinned 19 changed exactly two files: clang 19 rejects `-Wno-character-conversion`, so configure dropped it from all 167 compile entries, and `jsapi.rs` changed with libclang. That is the drift the pin now prevents.
 
+## The product build's crates: `patched/`
+
+`patched/mozjs`, `patched/mozjs-sys` and `patched/normalizer_glue` are what the product build compiles
+(`docs/THINK-2026-11-08-ot61-c3c1-product-build.md` §2). Each holds only a manifest, and `mozjs-sys` also a
+std-only `build.rs`. Their `[lib] path` is the vendored crate's own `src/lib.rs`, so the sources are upstream's,
+unchanged (with `generated/patched/` laid over the C++ in `mozjs-sys`'s build). The manifests drop the
+build-dependencies (cc, bindgen, cbindgen, walkdir, flate2, tar) and the optional dependencies of the features the
+frozen configuration can't build. `generator/check_patched_crates.py`, run by the generator job, holds them to that.
+
+`mozjs-sys`'s `build.rs` compiles `generated/compile_commands.json` and `generated/glue_commands.json` through
+`generator/neo-cc` with the pinned clang, archives the objects with that clang's `llvm-ar`, and includes the frozen
+bindings. It runs no Python, configure, make, bindgen, cbindgen, and no network.
+
 ## Left out of the copy
 
 | Path | Why |

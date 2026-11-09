@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3c-1: servo/mozjs's mozjs_normalizer_glue 153.6.0
+# (vendor/mozjs-138c9470/mozjs-extracted-crates/normalizer_glue) for the
+# product build. Only this manifest differs from upstream; the library is the
+# vendored crate's own src/ (lib.path). See
+# docs/THINK-2026-11-08-ot61-c3c1-product-build.md §2.
+#
+# Changes from upstream's manifest:
+# - build = false and no cbindgen build-dependency. The build script's one
+#   output was normalizer_glue.h, which is frozen in
+#   third_party/ot61-mozjs/generator/include/ and checked against cbindgen
+#   0.29.4 on every generator run.
+# - No `links` key: with no build script there is no metadata to pass on.
+[package]
+description = "copy of normalizer_glue for mozjs-sys"
+repository = "https://github.com/servo/mozjs"
+name = "mozjs_normalizer_glue"
+version = "153.6.0"
+edition = "2021"
+license = "MPL-2.0"
+build = false
+
+[lib]
+path = "../../vendor/mozjs-138c9470/mozjs-extracted-crates/normalizer_glue/src/lib.rs"
+
+[dependencies]
+icu_normalizer = { package = "mozjs_icu_normalizer", version = "=153.6.0", path = "../../vendor/mozjs-138c9470/mozjs-extracted-crates/icu_normalizer", features = ["compiled_data", "utf16_iter", "latin1"] }
+write16 = { version = "1.0", features = ["smallvec"] }
+smallvec = "1.9.0"
+encoding_rs = { version = "0.8", features = ["std"] }
