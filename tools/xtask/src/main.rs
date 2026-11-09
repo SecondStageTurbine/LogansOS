@@ -7115,7 +7115,7 @@ fn print_help() {
     );
     println!("    image-kernel-build  build exactly the product image's kernel (CI)");
     println!(
-        "    size-budget   measure image A's kernel .text and ISO against {SIZE_BUDGET_REL} (CI)"
+        "    size-budget   measure image A's kernel .text and ISO (less kernel debug sections) against {SIZE_BUDGET_REL} (CI); --stability: check a behaviour-free change barely moves them"
     );
     println!("    run           build the ISO and launch QEMU with a local GTK window");
     println!("    run-headless  build the ISO and launch QEMU with serial-only output");
@@ -7349,6 +7349,14 @@ const PRODUCT_IMAGE_KERNEL_FEATURES: &[&str] = &[
 /// CI's `image-kernel-build`) builds at 3; scenario kernels stay at the
 /// profile's 0, so their timing is unchanged.
 const PRODUCT_IMAGE_KERNEL_OPT_LEVEL: &str = "3";
+/// The product kernel is one codegen unit. With the dev profile's default
+/// split, inlining depends on how items fall into units, so any kernel change
+/// moved `.text` by about 64 KB and the ISO by about 1 MB of debug info (#82,
+/// a 6-line behaviour-free probe: +64,384 B). With one unit the same probe
+/// moves `.text` by about 256 B, so the size budget measures the change, not
+/// the layout. It is also the shipped kernel: `size-budget` measures what
+/// `iso --with-model` builds.
+const PRODUCT_IMAGE_KERNEL_CODEGEN_UNITS: &str = "1";
 
 /// Accepted for old command lines: `hwp-performance` is in image A now (the
 /// Zenbook A/B, A6 against A6-hwp, 2026-10-25).
@@ -7435,25 +7443,96 @@ struct SizeBudgetEntry {
 /// edit to the budget file); it still requires the ISO from a previous run.
 fn cmd_size_budget(args: &[String]) -> Result<(), String> {
     let mut build = true;
+    let mut stability = false;
     for arg in args {
         match arg.as_str() {
             "--no-build" => build = false,
+            "--stability" => stability = true,
             other => return Err(format!("size-budget: unknown option `{other}`")),
         }
+    }
+    if stability {
+        if !build {
+            return Err("size-budget: --stability builds twice; drop --no-build".to_string());
+        }
+        return cmd_size_budget_stability();
     }
     let root = workspace_root();
     let budget_path = root.join(SIZE_BUDGET_REL);
     let (kernel_budget, iso_budget) = read_size_budget(&budget_path)?;
 
+    let measured = measure_image_a(build, &[])?;
+
+    let mut exceeded = Vec::new();
+    for (label, measured, entry) in [
+        ("kernel .text", measured.kernel_text, &kernel_budget),
+        (
+            "ISO (kernel debug sections excluded)",
+            measured.iso_less_debug(),
+            &iso_budget,
+        ),
+    ] {
+        let delta = measured as i128 - entry.ceiling_bytes as i128;
+        println!(
+            "[xtask] size-budget {label}: measured {measured} bytes, ceiling {} bytes ({})",
+            entry.ceiling_bytes,
+            if delta > 0 {
+                format!("OVER by {delta}")
+            } else {
+                format!("headroom {} bytes", -delta)
+            }
+        );
+        println!("[xtask] size-budget {label} reason: {}", entry.reason);
+        if delta > 0 {
+            exceeded.push(label);
+        }
+    }
+    println!(
+        "[xtask] size-budget (for reference) ISO as built: {} bytes, of which the kernel's debug sections {} bytes",
+        measured.iso_bytes, measured.kernel_debug
+    );
+
+    if exceeded.is_empty() {
+        println!("[xtask] size-budget PASS");
+        Ok(())
+    } else {
+        Err(format!(
+            "size budget exceeded for {}.\n\
+             Raise the ceiling in {SIZE_BUDGET_REL} in the SAME PR and write the reason there: a bigger \
+             image must pay for itself (L7.2). If the growth is a one-off (a new driver, a new \
+             font), name the measured size and the headroom you are granting.",
+            exceeded.join(", ")
+        ))
+    }
+}
+
+/// What `size-budget` measures in image A.
+struct ImageASizes {
+    kernel_text: u64,
+    /// The kernel ELF's `.debug_*` sections: debugging data the ISO carries,
+    /// which moves with inlining far more than the code does.
+    kernel_debug: u64,
+    iso_bytes: u64,
+}
+
+impl ImageASizes {
+    /// The budgeted ISO size: the ISO less the kernel's debug sections.
+    fn iso_less_debug(&self) -> u64 {
+        self.iso_bytes.saturating_sub(self.kernel_debug)
+    }
+}
+
+/// Build (unless `build` is false) and measure image A: the product kernel
+/// with `extra` kernel features, and the model-less ISO.
+fn measure_image_a(build: bool, extra: &[String]) -> Result<ImageASizes, String> {
+    let root = workspace_root();
     if build {
         // The shipped userland and kernel, exactly as the product image builds
         // them. `build_user` variants never stage the model (not in git).
         build_product_image_user()?;
-        build_product_image_kernel()?;
+        build_product_image_kernel_with(extra)?;
     }
-
-    let kernel_elf = kernel_path();
-    let kernel_text = elf_text_size(&kernel_elf)?;
+    let (kernel_text, kernel_debug) = kernel_text_and_debug(&kernel_path())?;
     let iso_path = root.join(ISO_OUTPUT_REL);
     if build {
         // The ISO is assembled from the kernel just built plus the userland
@@ -7473,38 +7552,59 @@ fn cmd_size_budget(args: &[String]) -> Result<(), String> {
             )
         })?
         .len();
+    Ok(ImageASizes {
+        kernel_text,
+        kernel_debug,
+        iso_bytes,
+    })
+}
 
-    let mut exceeded = Vec::new();
-    for (label, measured, entry) in [
-        ("kernel .text", kernel_text, &kernel_budget),
-        ("ISO", iso_bytes, &iso_budget),
+/// The most a behaviour-free change (`size-budget-probe`: one `black_box`
+/// call) may move each budgeted number. Above it, the measurement depends on
+/// code layout again and the budget would fail innocent PRs (#82: +64,384 B
+/// of `.text`, about 1 MB of ISO, from a 6-line probe).
+const SIZE_STABILITY_TEXT_BYTES: u64 = 1024;
+const SIZE_STABILITY_ISO_BYTES: u64 = 64 * 1024;
+
+/// `size-budget --stability`: build image A twice, without and with the
+/// kernel's `size-budget-probe` feature (a behaviour-free change), and fail
+/// if either budgeted number moves by more than its bound.
+fn cmd_size_budget_stability() -> Result<(), String> {
+    let base = measure_image_a(true, &[])?;
+    let probe = measure_image_a(true, &["size-budget-probe".to_string()])?;
+    let mut failed = Vec::new();
+    for (label, a, b, bound) in [
+        (
+            "kernel .text",
+            base.kernel_text,
+            probe.kernel_text,
+            SIZE_STABILITY_TEXT_BYTES,
+        ),
+        (
+            "ISO (kernel debug sections excluded)",
+            base.iso_less_debug(),
+            probe.iso_less_debug(),
+            SIZE_STABILITY_ISO_BYTES,
+        ),
     ] {
-        let delta = measured as i128 - entry.ceiling_bytes as i128;
+        let moved = a.abs_diff(b);
         println!(
-            "[xtask] size-budget {label}: measured {measured} bytes, ceiling {} bytes ({})",
-            entry.ceiling_bytes,
-            if delta > 0 {
-                format!("OVER by {delta}")
-            } else {
-                format!("headroom {} bytes", -delta)
-            }
+            "[xtask] size-budget stability {label}: {a} -> {b} bytes with size-budget-probe (moved {moved}, bound {bound})"
         );
-        println!("[xtask] size-budget {label} reason: {}", entry.reason);
-        if delta > 0 {
-            exceeded.push(label);
+        if moved > bound {
+            failed.push(label);
         }
     }
-
-    if exceeded.is_empty() {
-        println!("[xtask] size-budget PASS");
+    // Rebuild the shipped kernel so the tree isn't left with the probe in it.
+    build_product_image_kernel()?;
+    if failed.is_empty() {
+        println!("[xtask] size-budget stability PASS");
         Ok(())
     } else {
         Err(format!(
-            "size budget exceeded for {}.\n\
-             Raise the ceiling in {SIZE_BUDGET_REL} in the SAME PR and write the reason there: a bigger \
-             image must pay for itself (L7.2). If the growth is a one-off (a new driver, a new \
-             font), name the measured size and the headroom you are granting.",
-            exceeded.join(", ")
+            "size-budget: a behaviour-free change moved {} past its bound; the measurement depends on \
+             code layout (see PRODUCT_IMAGE_KERNEL_CODEGEN_UNITS)",
+            failed.join(", ")
         ))
     }
 }
@@ -7593,15 +7693,14 @@ fn read_size_budget(path: &Path) -> Result<(SizeBudgetEntry, SizeBudgetEntry), S
     Ok((kernel, iso))
 }
 
-/// The `.text` section's `sh_size` from a little-endian ELF64 file. Parsing
-/// the section table directly keeps the budget dependency-free and identical
-/// on every host (no `llvm-size`/`readelf` version to pin).
-fn elf_text_size(path: &Path) -> Result<u64, String> {
-    let bytes = fs::read(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+/// Every section's name and `sh_size` from a little-endian ELF64 image.
+/// Parsing the section table directly keeps the budget dependency-free and
+/// identical on every host (no `llvm-size`/`readelf` version to pin).
+fn elf_section_sizes(bytes: &[u8], what: &str) -> Result<Vec<(String, u64)>, String> {
     let at = |off: usize, len: usize| -> Result<&[u8], String> {
         bytes
             .get(off..off.saturating_add(len))
-            .ok_or_else(|| format!("size-budget: {} is truncated at {off}", path.display()))
+            .ok_or_else(|| format!("size-budget: {what} is truncated at {off}"))
     };
     let u16_at = |off: usize| -> Result<usize, String> {
         Ok(u16::from_le_bytes(at(off, 2)?.try_into().unwrap()) as usize)
@@ -7613,29 +7712,23 @@ fn elf_text_size(path: &Path) -> Result<u64, String> {
         Ok(u64::from_le_bytes(at(off, 8)?.try_into().unwrap()) as usize)
     };
     if at(0, 4)? != b"\x7fELF" {
-        return Err(format!(
-            "size-budget: {} is not an ELF file",
-            path.display()
-        ));
+        return Err(format!("size-budget: {what} is not an ELF file"));
     }
     if at(4, 1)?[0] != 2 {
-        return Err(format!("size-budget: {} is not ELF64", path.display()));
+        return Err(format!("size-budget: {what} is not ELF64"));
     }
     let shoff = u64_at(0x28)?;
     let shentsize = u16_at(0x3a)?;
     let shnum = u16_at(0x3c)?;
     let shstrndx = u16_at(0x3e)?;
     if shentsize < 64 || shnum == 0 || shstrndx >= shnum {
-        return Err(format!(
-            "size-budget: {} has no usable section table",
-            path.display()
-        ));
+        return Err(format!("size-budget: {what} has no usable section table"));
     }
     let str_header = shoff + shstrndx * shentsize;
     let str_off = u64_at(str_header + 0x18)?;
     let str_len = u64_at(str_header + 0x20)?;
     let strtab = at(str_off, str_len)?;
-    let mut text = None;
+    let mut sections = Vec::with_capacity(shnum);
     for i in 0..shnum {
         let header = shoff + i * shentsize;
         let name_off = u32_at(header)?;
@@ -7644,11 +7737,31 @@ fn elf_text_size(path: &Path) -> Result<u64, String> {
             .get(name_off..)
             .and_then(|rest| rest.split(|b| *b == 0).next())
             .unwrap_or(&[]);
-        if name == b".text" {
-            text = Some(size);
-        }
+        sections.push((String::from_utf8_lossy(name).into_owned(), size));
     }
-    text.ok_or_else(|| format!("size-budget: {} has no .text section", path.display()))
+    Ok(sections)
+}
+
+/// The kernel's `.text` size, and the total size of its `.debug_*`
+/// sections (what the ISO carries for debugging, not for running).
+fn elf_text_and_debug(sections: &[(String, u64)], what: &str) -> Result<(u64, u64), String> {
+    let text = sections
+        .iter()
+        .find(|(name, _)| name == ".text")
+        .map(|(_, size)| *size)
+        .ok_or_else(|| format!("size-budget: {what} has no .text section"))?;
+    let debug = sections
+        .iter()
+        .filter(|(name, _)| name.starts_with(".debug_"))
+        .map(|(_, size)| *size)
+        .sum();
+    Ok((text, debug))
+}
+
+fn kernel_text_and_debug(path: &Path) -> Result<(u64, u64), String> {
+    let bytes = fs::read(path).map_err(|e| format!("size-budget: {} ({e})", path.display()))?;
+    let what = path.display().to_string();
+    elf_text_and_debug(&elf_section_sizes(&bytes, &what)?, &what)
 }
 
 /// L7.1: `--boot-time` builds image A with the boot-time numbers: the
@@ -9675,6 +9788,16 @@ fn build_member_at_opt_level(
     if let Some(level) = opt_level {
         eprintln!("[xtask] building {label} with dev opt-level={level}");
         cmd.env("CARGO_PROFILE_DEV_OPT_LEVEL", level);
+        // A kernel built at an explicit opt-level is the product kernel.
+        if subdir == "kernel" {
+            eprintln!(
+                "[xtask] building {label} with dev codegen-units={PRODUCT_IMAGE_KERNEL_CODEGEN_UNITS}"
+            );
+            cmd.env(
+                "CARGO_PROFILE_DEV_CODEGEN_UNITS",
+                PRODUCT_IMAGE_KERNEL_CODEGEN_UNITS,
+            );
+        }
     }
     if let Some(flags) = target_rustflags {
         // Cargo appends this to `[target.<triple>].rustflags` from the config
@@ -27002,6 +27125,82 @@ mod tests {
     #[test]
     fn inject_firmware_module_errors_without_anchor() {
         assert!(inject_firmware_module("/NeoPlutarch\n    kaslr: yes\n").is_err());
+    }
+
+    /// A hand-laid little-endian ELF64 with five sections (null, `.text`,
+    /// `.debug_info`, `.debug_line`, `.shstrtab`). The offsets and sizes are
+    /// written out here, not produced by a writer, so the parser is checked
+    /// against bytes it didn't make (the byte-oracle rule).
+    fn size_budget_fixture_elf() -> Vec<u8> {
+        // Section-name string table at 0x40: "\0.text\0.debug_info\0.debug_line\0.shstrtab\0"
+        // names at 1 (.text), 7 (.debug_info), 19 (.debug_line), 31 (.shstrtab).
+        let strtab: &[u8] = b"\0.text\0.debug_info\0.debug_line\0.shstrtab\0";
+        assert_eq!(strtab.len(), 41);
+        let shoff = 0x80usize; // section headers start here
+        let mut elf = vec![0u8; shoff + 5 * 64];
+        elf[0..4].copy_from_slice(b"\x7fELF");
+        elf[4] = 2; // ELFCLASS64
+        elf[5] = 1; // little-endian
+        elf[0x28..0x30].copy_from_slice(&(shoff as u64).to_le_bytes()); // e_shoff
+        elf[0x3a..0x3c].copy_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        elf[0x3c..0x3e].copy_from_slice(&5u16.to_le_bytes()); // e_shnum
+        elf[0x3e..0x40].copy_from_slice(&4u16.to_le_bytes()); // e_shstrndx
+        elf[0x40..0x40 + strtab.len()].copy_from_slice(strtab);
+        // (sh_name, sh_offset, sh_size) for sections 1..=4; section 0 is null.
+        let sections: [(u32, u64, u64); 4] = [
+            (1, 0x1000, 0x0012_3456),        // .text
+            (7, 0x0, 0x0004_0000),           // .debug_info
+            (19, 0x0, 0x0000_1000),          // .debug_line
+            (31, 0x40, strtab.len() as u64), // .shstrtab
+        ];
+        for (k, (name, off, size)) in sections.iter().enumerate() {
+            let h = shoff + (k + 1) * 64;
+            elf[h..h + 4].copy_from_slice(&name.to_le_bytes()); // sh_name
+            elf[h + 0x18..h + 0x20].copy_from_slice(&off.to_le_bytes()); // sh_offset
+            elf[h + 0x20..h + 0x28].copy_from_slice(&size.to_le_bytes()); // sh_size
+        }
+        elf
+    }
+
+    #[test]
+    fn size_budget_reads_text_and_sums_only_debug_sections() {
+        let elf = size_budget_fixture_elf();
+        let sections = elf_section_sizes(&elf, "fixture").unwrap();
+        let names: Vec<&str> = sections.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(
+            names,
+            ["", ".text", ".debug_info", ".debug_line", ".shstrtab"]
+        );
+        let (text, debug) = elf_text_and_debug(&sections, "fixture").unwrap();
+        assert_eq!(text, 0x0012_3456);
+        // .debug_info + .debug_line; not .text, not .shstrtab.
+        assert_eq!(debug, 0x0004_0000 + 0x0000_1000);
+    }
+
+    #[test]
+    fn size_budget_iso_excludes_only_the_kernel_debug_sections() {
+        let sizes = ImageASizes {
+            kernel_text: 1_000,
+            kernel_debug: 300_000,
+            iso_bytes: 5_000_000,
+        };
+        assert_eq!(sizes.iso_less_debug(), 4_700_000);
+    }
+
+    #[test]
+    fn size_budget_rejects_a_non_elf_and_a_missing_text() {
+        assert!(elf_section_sizes(b"not an elf at all, just bytes......", "x").is_err());
+        let mut elf = size_budget_fixture_elf();
+        // Rename .text (name offset 1) to .tex_ by changing its last byte.
+        elf[0x40 + 5] = b'_';
+        let sections = elf_section_sizes(&elf, "fixture").unwrap();
+        assert!(elf_text_and_debug(&sections, "fixture").is_err());
+    }
+
+    #[test]
+    fn product_kernel_is_one_codegen_unit() {
+        // The size budget's stability rests on this (#82); see the constant.
+        assert_eq!(PRODUCT_IMAGE_KERNEL_CODEGEN_UNITS, "1");
     }
 
     /// OT-61 C0.5 (AAG bounce, Finding 2): `inject_std_real_smoke_module` adds

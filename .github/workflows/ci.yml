@@ -1276,7 +1276,15 @@ jobs:
       # wants a password. So extract xorriso and its libburnia libraries into
       # a runner-local prefix with `apt-get download` + `dpkg-deb -x` (neither
       # needs root); Limine is the pinned binary release, as in the Dockerfile.
+      #
+      # The full tier also runs the stability check: image A built twice,
+      # without and with the kernel's behaviour-free `size-budget-probe`; it
+      # fails if that moves .text by more than 1 KiB or the budgeted ISO by more
+      # than 64 KiB (the product kernel is one codegen unit, so code layout
+      # doesn't swing the numbers; #82 saw +64 KB from a 6-line probe without).
       - name: Size budgets — image A .text + ISO (blocking)
+        env:
+          SIZE_BUDGET_STABILITY: ${{ needs.nightly-skip.outputs.full }}
         run: |
           if ! command -v xorriso >/dev/null 2>&1; then
             PREFIX="$RUNNER_TEMP/xorriso"
@@ -1322,6 +1330,9 @@ jobs:
             exit 1
           fi
           cargo run -p xtask -- size-budget
+          if [ "$SIZE_BUDGET_STABILITY" = "true" ]; then
+            cargo run -p xtask -- size-budget --stability
+          fi
 
       # The FXSAVE build. `inference-preemptible` (in both `default` and
       # `product`) pulls `xsave-fpu`, and every other kernel build in this

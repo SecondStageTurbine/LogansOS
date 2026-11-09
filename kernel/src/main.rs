@@ -587,12 +587,23 @@ fn initialize_framebuffer(required: bool) -> bool {
 ///   - Interrupts are disabled.
 ///   - A flat identity-mapped page table is active (Limine sets this up).
 ///   - `cr3` points to Limine's page tables; we'll replace these in Phase 1.
+/// `size-budget-probe`: one behaviour-free call, so
+/// `cargo xtask size-budget --stability` can check that a change this small
+/// moves the budgeted sizes by almost nothing. Never in an image.
+#[cfg(feature = "size-budget-probe")]
+#[inline(never)]
+fn size_budget_probe(x: u64) -> u64 {
+    x.rotate_left(7) ^ 3
+}
+
 #[unsafe(no_mangle)]
 extern "C" fn _kernel_start() -> ! {
     // Bring up serial FIRST so any panic from the BASE_REVISION check
     // below has a place to land. If we asserted before init, a protocol
     // mismatch would panic into a black hole.
     drivers::console::serial::init();
+    #[cfg(feature = "size-budget-probe")]
+    core::hint::black_box(size_budget_probe(core::hint::black_box(1)));
     // L7.1: the kernel-entry stamp (a TSC read; nothing else is up yet).
     #[cfg(feature = "boot-time")]
     boot_time::stamp_entry();
