@@ -2130,7 +2130,15 @@ fn arthur_session_turns(
                 scene.park(&items[..if escaped { 2 } else { 1 }], deadline);
             }
             #[cfg(not(feature = "desktop-park"))]
-            core::hint::spin_loop();
+            {
+                // L1a.3: with the terminal in the table, the loop yields:
+                // beside a WM and an Arthur that spin, the terminal (whose
+                // bursts are long) waited ~20 s to run again (#98).
+                #[cfg(feature = "atrium-terminal")]
+                libneo::sys_sched_yield();
+                #[cfg(not(feature = "atrium-terminal"))]
+                core::hint::spin_loop();
+            }
         };
         #[cfg(feature = "desktop-idle-boot-test")]
         idle_window.note_request();
