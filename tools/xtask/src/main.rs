@@ -2791,6 +2791,17 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-tick-1 (relay 381): two ring-3 spinners and a compute process on
+        // the BSP; the compute process's worst gap between runs is at most
+        // 30 ms. The tick diagnostic prints every scheduler's threads and
+        // preemption gates every 2 s.
+        name: "tick_preempt_ring3",
+        feature: "neo-test-tick-preempt-ring3",
+        user_feature: Some("tick-preempt-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 browser C1.1: cap-confinement EPERM + thread refcount + the
         // guard-page overflow fault-kill containment proof (worker child ×2),
         // now draining IPC-parked + process-wait-parked siblings too (AAG-C).
@@ -20938,6 +20949,31 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         require_framebuffer_capture(
             scenario,
             desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
+        )?;
+    }
+    // OT-tick-1 step 1 (relay 381): the scenario is a measurement, so its
+    // readings go into the job log whether it passed or not (a cloud seat
+    // can't read the run's artifacts).
+    if scenario.name == "tick_preempt_ring3" {
+        let serial = read_serial(observed)?;
+        let lines: Vec<&str> = serial
+            .lines()
+            .filter(|l| l.starts_with("TICKPRE") || l.starts_with("TICKDIAG"))
+            .collect();
+        let skip = lines.len().saturating_sub(400);
+        eprintln!(
+            "[xtask] tick_preempt_ring3 readings ({} line(s), last {}):",
+            lines.len(),
+            lines.len() - skip
+        );
+        for line in &lines[skip..] {
+            eprintln!("[tickdiag] {line}");
+        }
+        require_serial_contains(
+            scenario,
+            observed,
+            "TICKPRE compute worst_gap_us=",
+            "OT-tick-1: the compute process reports its worst gap",
         )?;
     }
     if scenario.name == "desktop_scroll_boot" {

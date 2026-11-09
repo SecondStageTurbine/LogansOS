@@ -1341,6 +1341,15 @@ neo-test-x2apic-smp = ["neo-test", "neo-test-instrumentation"]
 # and PIC IRQ0 stays masked. `_x2apic`: the same on -cpu max,+x2apic.
 # Control: neo-test-lapic-timer-control forces the not-calibrated fallback
 # (the boot must still run on the PIT; the scenario must FAIL timer_not_lapic).
+# OT-tick-1 step 1 (relay 381): every 2 s from the BSP's tick, each CPU's
+# ticks, rotates, ready length and preemption-disable depth, and where every
+# scheduler-held thread is (current, ready, token-parked) with its state and
+# handoff defer. Test only.
+neo-test-tick-diag = ["neo-test"]
+# OT-tick-1 (relay 381): two ring-3 spinners and a compute process on the BSP;
+# the compute process's worst gap between runs must stay within ~3 ticks. With
+# the diagnostic above, so a red run shows why.
+neo-test-tick-preempt-ring3 = ["neo-test", "neo-test-tick-diag"]
 neo-test-lapic-timer = ["neo-test", "lapic-timer"]
 neo-test-lapic-timer-x2apic = ["neo-test-lapic-timer"]
 # lapic_timer_demote: the first armed mode is silent (masked), so it must be

@@ -365,7 +365,40 @@ fn claim_dump_slot() -> bool {
     DUMPS.fetch_add(1, Ordering::Relaxed) < u64::from(MAX_DUMPS)
 }
 
+/// OT-tick-1 step 1: the per-CPU counters and where every thread is, every
+/// [`TICK_DIAG_TICKS`] (test only, `neo-test-tick-diag`).
+#[cfg(feature = "neo-test-tick-diag")]
+const TICK_DIAG_TICKS: u64 = 200;
+#[cfg(feature = "neo-test-tick-diag")]
+static TICK_DIAG_LAST: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "neo-test-tick-diag")]
+fn tick_diag(now: u64) {
+    if now.wrapping_sub(TICK_DIAG_LAST.load(Ordering::Relaxed)) < TICK_DIAG_TICKS {
+        return;
+    }
+    TICK_DIAG_LAST.store(now, Ordering::Relaxed);
+    for idx in 0..per_cpu::MAX_CPUS {
+        if !cpu_active(idx) {
+            continue;
+        }
+        crate::serial_println_isr!(
+            "TICKDIAG t={} cpu={} ticks={} rotate={} ready_len={} cur_tid={} cur_user={}",
+            now,
+            idx,
+            TICKS_SEEN[idx].load(Ordering::Relaxed),
+            ROTATE[idx].load(Ordering::Relaxed),
+            READY_LEN[idx].load(Ordering::Relaxed),
+            CURRENT_TID[idx].load(Ordering::Relaxed),
+            CURRENT_IS_USER[idx].load(Ordering::Relaxed),
+        );
+    }
+    crate::sched::scheduler::tick_diag_dump(now);
+}
+
 pub fn on_tick_watchdog(now: u64) {
+    #[cfg(feature = "neo-test-tick-diag")]
+    tick_diag(now);
     if now.wrapping_sub(LAST_CHECK_TICK.load(Ordering::Relaxed)) < CHECK_INTERVAL_TICKS {
         return;
     }

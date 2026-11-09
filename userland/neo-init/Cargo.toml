@@ -426,6 +426,9 @@ threads-futex = ["libneo/neo-test"]
 threads-tls = ["libneo/neo-test"]
 # OT-61 C1.3b (CP-86): the cross-CPU process-retire battery (threads_exit_group).
 threads-exit-group = ["libneo/neo-test"]
+# OT-tick-1 (`tick_preempt_ring3`, relay 381): two ring-3 spinners and a
+# compute process that measures its worst gap between runs.
+tick-preempt-test = []
 # OT-61 browser C1.1: cap-confinement + refcount + guard-fault containment
 # (spawns the worker child twice: no-cap EPERM, with-cap fault-kill).
 threads-guard-fault = []

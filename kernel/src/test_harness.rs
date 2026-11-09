@@ -212,6 +212,9 @@ const SCENARIO: &str = "threads_futex";
 const SCENARIO: &str = "threads_tls";
 #[cfg(feature = "neo-test-threads-exit-group")]
 const SCENARIO: &str = "threads_exit_group";
+/// OT-tick-1 (relay 381): a compute process beside two ring-3 spinners.
+#[cfg(feature = "neo-test-tick-preempt-ring3")]
+const SCENARIO: &str = "tick_preempt_ring3";
 #[cfg(feature = "neo-test-threads-guard-fault")]
 const SCENARIO: &str = "threads_guard_fault";
 #[cfg(feature = "neo-test-threads-guard-fault-observability")]
@@ -1388,6 +1391,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-threads-futex",
     feature = "neo-test-threads-tls",
     feature = "neo-test-threads-exit-group",
+    feature = "neo-test-tick-preempt-ring3",
     feature = "neo-test-threads-guard-fault",
     feature = "neo-test-threads-guard-fault-observability",
     feature = "neo-test-threads-guard-fault-timed",
@@ -3478,6 +3482,24 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         serial_println!(
             "NEO_TEST/1 event=FAIL name={} reason=threads_exit_group_exit_nonzero code={}",
+            SCENARIO,
+            exit_code
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+
+    // OT-tick-1 (relay 381): neo-init spawns two ring-3 spinners and a compute
+    // process that measures its worst gap between runs for 5 s; it exits 0 when
+    // the gap is within 30 ms (fair rotation of three on the BSP). The
+    // diagnostic prints every scheduler's threads and gates every 2 s.
+    #[cfg(feature = "neo-test-tick-preempt-ring3")]
+    {
+        let exit_code = _ipc_smoke();
+        if exit_code == 0 {
+            pass("tick_preempt_ring3=ok spinners=2 compute_worst_gap<=30ms");
+        }
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=tick_preempt_ring3_starved code={}",
             SCENARIO,
             exit_code
         );

@@ -59,6 +59,7 @@
         feature = "probe-app",
         feature = "installer-probe",
         feature = "record-guard-probe",
+        feature = "tick-preempt-test",
     ),
     allow(dead_code)
 )]
@@ -123,6 +124,9 @@ mod probe_app;
 mod record_guard;
 #[cfg(feature = "pipe-stdio-test")]
 mod stdio_probe;
+// OT-tick-1 (relay 381): the spinners and the compute process.
+#[cfg(feature = "tick-preempt-test")]
+mod tick_preempt;
 const BLOCK: Handle = Handle(1);
 
 #[cfg(feature = "atrium-surface-protocol")]
@@ -613,6 +617,13 @@ pub extern "C" fn _start() -> ! {
         sys_exit(threads_exit_group_worker());
     }
 
+    // OT-tick-1: a ring-3 spinner, or the compute process that measures its
+    // worst gap between runs.
+    #[cfg(feature = "tick-preempt-test")]
+    {
+        sys_exit(tick_preempt::run());
+    }
+
     #[cfg(not(any(
         feature = "cap-mint-and-use",
         feature = "cap-derive-subset",
@@ -654,6 +665,7 @@ pub extern "C" fn _start() -> ! {
         feature = "threads-guard-fault",
         feature = "threads-tls",
         feature = "threads-exit-group",
+        feature = "tick-preempt-test",
         feature = "desktop-lens",
         feature = "installer-probe",
         feature = "record-guard-probe",
