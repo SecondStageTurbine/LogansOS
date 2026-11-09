@@ -57,6 +57,10 @@ const SYS_BUFFER_MAP: u64 = 0x1A1;
 const SYS_BUFFER_QUERY: u64 = 0x1A2;
 const SYS_BUFFER_COMMIT_DAMAGE: u64 = 0x1AD;
 const SYS_BUFFER_UNMAP: u64 = 0x1B6;
+const SYS_SEND: u64 = 4;
+const SYS_RECV: u64 = 5;
+const SYS_GRANT: u64 = 10;
+const SYS_RECV_GRANT: u64 = 11;
 
 /// `SYS_CLOCK_GETTIME`'s monotonic clock id.
 const CLOCK_MONOTONIC: u64 = 1;
@@ -317,6 +321,35 @@ pub fn buffer_commit_damage(handle: u32, rect: &[u8; 8]) -> i64 {
 pub fn derive(handle: u32, meta: u8, semantic: u8) -> i64 {
     // SAFETY: three scalars.
     unsafe { syscall4(SYS_DERIVE, handle as u64, meta as u64, semantic as u64, 0) }
+}
+
+/// S3b: `SYS_SEND(channel, buf, len)`: rendezvous send (parks until the
+/// peer receives). Bytes sent, or -errno.
+pub fn send(channel: u32, buf: &[u8]) -> i64 {
+    // SAFETY: `buf` is a live slice; the kernel validates the range.
+    unsafe { syscall4(SYS_SEND, channel as u64, buf.as_ptr() as u64, buf.len() as u64, 0) }
+}
+
+/// S3b: `SYS_RECV(channel, buf, max)`: rendezvous receive. Bytes received
+/// (at most `buf.len()`), or -errno.
+pub fn recv(channel: u32, buf: &mut [u8]) -> i64 {
+    // SAFETY: `buf` is a live, writable slice; the kernel validates the range.
+    unsafe { syscall4(SYS_RECV, channel as u64, buf.as_mut_ptr() as u64, buf.len() as u64, 0) }
+}
+
+/// S3b: `SYS_GRANT(channel, handle, offered)`: hand the peer a copy of
+/// `handle` with at most `offered` rights (meta in the high byte); parks
+/// until the peer's [`recv_grant`]. 0, or -errno.
+pub fn grant(channel: u32, handle: u32, offered: u16) -> i64 {
+    // SAFETY: three scalars.
+    unsafe { syscall4(SYS_GRANT, channel as u64, handle as u64, offered as u64, 0) }
+}
+
+/// S3b: `SYS_RECV_GRANT(channel, max)`: receive a granted handle, keeping
+/// at most `max` rights. The new index, or -errno.
+pub fn recv_grant(channel: u32, max: u16) -> i64 {
+    // SAFETY: two scalars.
+    unsafe { syscall4(SYS_RECV_GRANT, channel as u64, max as u64, 0, 0) }
 }
 
 /// C2.1b: the handle-table slots [`handle_info`] scans (the kernel's tables

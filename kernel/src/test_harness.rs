@@ -177,6 +177,8 @@ const SCENARIO: &str = "swgl_smoke";
 const SCENARIO: &str = "webrender_smoke";
 #[cfg(feature = "neo-test-swgl-atrium-smoke")]
 const SCENARIO: &str = "swgl_atrium_smoke";
+#[cfg(feature = "neo-test-swgl-grant-smoke")]
+const SCENARIO: &str = "swgl_grant_smoke";
 #[cfg(feature = "neo-test-ring3-fault-ud")]
 const SCENARIO: &str = "ring3_fault_ud";
 #[cfg(feature = "neo-test-ring3-fault-de")]
@@ -1372,6 +1374,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-swgl-smoke",
     feature = "neo-test-webrender-smoke",
     feature = "neo-test-swgl-atrium-smoke",
+    feature = "neo-test-swgl-grant-smoke",
     feature = "neo-test-ring3-fault-ud",
     feature = "neo-test-ring3-fault-de",
     feature = "neo-test-ring3-fault-gp",
@@ -3162,6 +3165,109 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }
         pass(
             "swgl_atrium_smoke=ran exit=0 swgl=0.70.0 buffer=atrium views=rw+ro pattern=exact attenuation=checked frames_returned=1",
+        );
+    }
+
+    // OT-61 rung 4 (SWGL S3b): two processes joined by one channel. The
+    // client renders into an Atrium buffer and grants the compositor a
+    // read-only view; the compositor checks the bytes and its attenuation and
+    // sends a verdict back. Both must exit 0, and every frame must come back.
+    #[cfg(feature = "neo-test-swgl-grant-smoke")]
+    {
+        use crate::ipc::{Channel, EndpointSide};
+        use crate::sched::{self, process};
+        const SMOKE_FRAMES: u64 = 64 * 256; // 64 MiB each
+        let fail_with = |why: &str, a: i64, b: i64| -> ! {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=swgl_grant_{} a={} b={}",
+                SCENARIO,
+                why,
+                a,
+                b
+            );
+            debug_exit(EXIT_FAILURE);
+        };
+        let channel = Channel::new();
+        let handles = |side| {
+            [
+                process::InheritedHandle {
+                    handle: process::root_browser_runtime_cap(),
+                    parent: None,
+                },
+                process::InheritedHandle {
+                    handle: process::Handle::Channel {
+                        channel: channel.clone(),
+                        side,
+                        cap_id: process::alloc_cap_id(),
+                        rights: process::full_channel_rights(),
+                    },
+                    parent: None,
+                },
+            ]
+        };
+        let root = process::root_mem_account();
+        let baseline = root.used();
+        // The smokes' frames are charged to their own budgeted accounts, which
+        // the root account doesn't see; the global live-frame count does (the
+        // buffer's frames, both processes' mappings and tables), as OT-93.
+        let frames_before = crate::mm::frame::frames_in_use();
+        let compositor = process::spawn_user_by_name_budgeted(
+            "swgl-grant-compositor",
+            &handles(EndpointSide::B),
+            SMOKE_FRAMES,
+        )
+        .unwrap_or_else(|_| fail_with("spawn_compositor", 0, 0));
+        let client = process::spawn_user_by_name_budgeted(
+            "swgl-grant-client",
+            &handles(EndpointSide::A),
+            SMOKE_FRAMES,
+        )
+        .unwrap_or_else(|_| fail_with("spawn_client", 0, 0));
+        drop(channel);
+        serial_println!(
+            "[ kernel ] proc: swgl-grant-compositor pid={}, swgl-grant-client pid={}",
+            compositor.0,
+            client.0
+        );
+        // The peak shows the count sees the processes' frames at all.
+        let mut frames_peak = frames_before;
+        while process::any_user_process() {
+            frames_peak = frames_peak.max(crate::mm::frame::frames_in_use());
+            sched::yield_now();
+            sched::reap();
+        }
+        let comp_code = process::take_spawned_exit_code(compositor).unwrap_or(255);
+        let client_code = process::take_spawned_exit_code(client).unwrap_or(255);
+        let (used, underflows) = (root.used(), root.underflows());
+        let frames_after = crate::mm::frame::frames_in_use();
+        serial_println!(
+            "[ kernel ] proc: swgl-grant-compositor exit {}, swgl-grant-client exit {}, root used {} (baseline {}), frames in use {} (before {}, peak {})",
+            comp_code,
+            client_code,
+            used,
+            baseline,
+            frames_after,
+            frames_before,
+            frames_peak
+        );
+        if comp_code != 0 || client_code != 0 {
+            fail_with("exit", comp_code as i64, client_code as i64);
+        }
+        if used != baseline || underflows != 0 {
+            fail_with("frames_not_returned", used as i64, baseline as i64);
+        }
+        if frames_peak <= frames_before {
+            fail_with(
+                "frames_not_observed",
+                frames_peak as i64,
+                frames_before as i64,
+            );
+        }
+        if frames_after != frames_before {
+            fail_with("frames_leaked", frames_after as i64, frames_before as i64);
+        }
+        pass(
+            "swgl_grant_smoke=ran exit=0,0 swgl=0.70.0 buffer=atrium grant=channel rights=use+map_read+query+present pattern=exact attenuation=checked frames_returned=1",
         );
     }
 
