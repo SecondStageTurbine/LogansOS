@@ -11714,16 +11714,16 @@ fn print_serial_tail(err: &str) {
     for line in &lines[start..] {
         eprintln!("[serial] {line}");
     }
-    // L1a.3: the terminal's read-back and the WM's client-table and lock
+    // L1a.3: the terminal's read-back and the WM's, Arthur's and the lock's
     // lines from the whole log (bounded), which the tail cuts off.
     let witness: Vec<&&str> = lines[..start]
         .iter()
-        .filter(|l| l.starts_with("TERM ") || l.contains("DESKTOP apps") || l.starts_with("LOCK "))
+        .filter(|l| l.starts_with("TERM ") || l.starts_with("DESKTOP ") || l.starts_with("LOCK "))
         .collect();
     if lines[..start].iter().any(|l| l.starts_with("TERM ")) {
         let skip = witness.len().saturating_sub(SERIAL_WITNESS_LINES);
         eprintln!(
-            "[xtask] neo-test: {} earlier TERM/DESKTOP apps/LOCK line(s) of {path}:",
+            "[xtask] neo-test: {} earlier TERM/DESKTOP/LOCK line(s) of {path}:",
             witness.len() - skip
         );
         for line in &witness[skip..] {
