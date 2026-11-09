@@ -57,8 +57,12 @@ def main():
     obj, src, repo, out = (os.path.realpath(a) for a in sys.argv[1:5])
     patched_root = os.path.realpath(sys.argv[5]) if len(sys.argv) > 6 else None
     patch_dir = os.path.realpath(sys.argv[6]) if len(sys.argv) > 6 else None
+    # @CRATES@: the patched copy's root (the vendored crates' parent, so
+    # mozjs-sys/src/jsapi.cpp is @CRATES@/mozjs-sys/src/jsapi.cpp). @SRC@
+    # sits inside it and, being longer, is matched first.
+    extra = [(patched_root, "@CRATES@")] if patched_root else []
     roots = sorted(
-        [(src, "@SRC@"), (obj, "@OBJ@"), (repo, "@REPO@")],
+        [(src, "@SRC@"), (obj, "@OBJ@"), (repo, "@REPO@")] + extra,
         key=lambda r: -len(r[0]),
     )
 
@@ -312,7 +316,10 @@ def main():
         os.path.join(dp, f)
         for dp, _, fs in os.walk(out)
         for f in fs
-        if any(r in open(os.path.join(dp, f), encoding="utf-8").read() for r, _ in roots)
+        if any(
+            r in open(os.path.join(dp, f), encoding="utf-8").read()
+            for r in [r for r, _ in roots] + ["/home/runner/", "/tmp/"]
+        )
     ]
     print(
         f"freeze: {len(entries)} compile entries, {n_gen} generated files, "
