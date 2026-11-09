@@ -12,8 +12,10 @@
 //!
 //! Then it serves turns, as the probe app does: out of front it parks in its
 //! session receive for the WM's `K` (a try, which lands only on a parked
-//! receiver). In front it parks in `SYS_WAIT_ANY` on its focus and the stdout
-//! pipe with a 20 ms deadline, and on every wake, in order (§3.2, §3.3):
+//! receiver). In front it waits on its focus and the stdout pipe: with
+//! `terminal-park` it parks in `SYS_WAIT_ANY` with a 20 ms deadline; without
+//! it (the WM and Arthur spin) it scans and yields. On every wake, in order
+//! (§3.2, §3.3):
 //! 1. applies the child's mode request, if it made a new one;
 //! 2. reads at most 16 KiB of the child's output into the screen;
 //! 3. serves its keys: through the encoder and the line discipline into a
@@ -71,6 +73,7 @@ const BUFFER_CAP_PROVENANCE: u64 = libneo::atrium_launch::TERMINAL_BUFFER_PROVEN
 const STDIN_CAPACITY: u64 = 4 * 1024;
 const STDOUT_CAPACITY: u64 = 64 * 1024;
 /// The wake period in front: a mode request is in force within this (§3.2).
+#[cfg(feature = "terminal-park")]
 const WAKE_NS: u64 = 20_000_000;
 /// The grid read-back on serial at most this often while output streams.
 const DUMP_NS: u64 = 250_000_000;
@@ -327,11 +330,27 @@ pub fn run() -> i32 {
             };
             n = 2;
         }
-        let deadline = now_ns().saturating_add(WAKE_NS);
-        let ready = sys_wait_any(&items[..n], deadline);
-        if ready == EAGAIN {
+        // With `terminal-park` (an image whose WM and Arthur park too,
+        // `desktop-park`) it parks until its focus or the pipe is ready, or
+        // 20 ms. Without it the WM and Arthur spin, and a parked terminal
+        // gets almost no CPU beside them (#98's first runs: one wake took
+        // 20 s), so it scans without parking and yields each pass, as the
+        // probe app does.
+        #[cfg(feature = "terminal-park")]
+        let ready = {
+            let deadline = now_ns().saturating_add(WAKE_NS);
+            let ready = sys_wait_any(&items[..n], deadline);
+            if ready == EAGAIN {
+                libneo::sys_sched_yield();
+            }
+            ready
+        };
+        #[cfg(not(feature = "terminal-park"))]
+        let ready = {
+            let ready = sys_wait_any(&items[..n], 0);
             libneo::sys_sched_yield();
-        }
+            ready
+        };
         wakes += 1;
         // The first wakes, for a scenario's diagnosis: each step's end, in
         // microseconds since the wake.

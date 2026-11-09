@@ -56,6 +56,9 @@ terminal-app = [
     "libneo/atrium-launch",
     "libneo/atrium-terminal",
 ]
+# The terminal parks in SYS_WAIT_ANY between wakes (for an image whose WM and
+# Arthur park too, `desktop-park`); off, it scans and yields each pass.
+terminal-park = ["terminal-app"]
 # Test only: the terminal's child is this binary's src/terminal_child.rs.
 terminal-child-worker = ["terminal-app"]
 # Its roles: a cooked child that reports each line's bytes, and a 10 MiB flood.
