@@ -129,6 +129,22 @@ frozen configuration can't build. `generator/check_patched_crates.py`, run by th
 `generator/neo-cc` with the pinned clang, archives the objects with that clang's `llvm-ar`, and includes the frozen
 bindings. It runs no Python, configure, make, bindgen, cbindgen, and no network.
 
+## Crates new for the product build's closure
+
+`userland/mozjs-smoke` resolves every crate through `[patch.crates-io]` to a vendored copy: #81's
+`third_party/ot61-browser/vendor/`, `third_party/ot61-swgl/vendor/` (neo-crt's `cc` and its helpers), or these, which
+no other closure had. Each is the crates.io release as `cargo vendor` wrote it, with its `.cargo-checksum.json`, so
+`xtask vendor-verify` covers it. A sweep for GPL/LGPL text in them found none.
+
+| Crate | Version | Licence | Why |
+|---|---|---|---|
+| `encoding_c` | 0.9.8 | Apache-2.0 OR MIT | `mozjs-sys`'s encoding FFI |
+| `icu_casemap` | 2.4.0 | Unicode-3.0 | ICU4X, through the normalizer |
+| `libz-sys` | 1.1.32 | MIT OR Apache-2.0; its bundled zlib under the zlib licence | zlib for `Compression.cpp` (built from `src/zlib`, `LIBZ_SYS_STATIC=1`) |
+| `multiversion`, `multiversion-macros` | 0.9.2 | MIT OR Apache-2.0 | `encoding_rs`'s SIMD dispatch |
+| `pkg-config`, `vcpkg` | 0.3.34, 0.2.15 | MIT OR Apache-2.0 | `libz-sys`'s build-dependencies (unused on our target: it builds the bundled zlib) |
+| `write16` | 1.0.0 | Apache-2.0 OR MIT | `normalizer_glue` |
+
 ## Left out of the copy
 
 | Path | Why |

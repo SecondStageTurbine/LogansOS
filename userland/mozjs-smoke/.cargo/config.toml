@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3c-1 (SpiderMonkey smoke): the same real-std build as userland/std-real-smoke (std from the
+# overlaid rust-src copy xtask prepares; static; panic=abort). neo-crt, zlib and
+# SpiderMonkey compile their C/C++ with clang (xtask sets the cc flags;
+# mozjs-sys runs the frozen command lines through generator/neo-cc).
+[build]
+target = "../x86_64-unknown-neoplutarch.json"
+
+[unstable]
+build-std = ["std", "panic_abort"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-neoplutarch]
+rustflags = [
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-no-dynamic-linker",
+    "-C", "link-arg=-z", "-C", "link-arg=max-page-size=0x1000",
+]
