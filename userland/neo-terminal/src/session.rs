@@ -57,6 +57,8 @@ pub struct Session {
     /// A bell is pending (the app shows it, then clears it).
     bell: bool,
     exited: bool,
+    /// The child's last output byte was CR (`ONLCR` across reads).
+    last_cr: bool,
 }
 
 impl Session {
@@ -69,6 +71,7 @@ impl Session {
             dropped: 0,
             bell: false,
             exited: false,
+            last_cr: false,
         }
     }
 
@@ -80,6 +83,7 @@ impl Session {
         self.mode_seq = 0;
         self.stdin_gone = false;
         self.exited = false;
+        self.last_cr = false;
     }
 
     pub fn term(&self) -> &Term {
@@ -135,7 +139,40 @@ impl Session {
     }
 
     /// Child output: parsed into the screen; answerbacks to its stdin.
+    ///
+    /// While the child is cooked, a bare LF is drawn as CR LF, the output
+    /// processing a Unix tty does by default (`ONLCR`), so a plain program's
+    /// `\n` starts the next line at its first column. A raw child gets its
+    /// bytes as written, as `cfmakeraw` clears `OPOST` (kibi writes `\r\n`).
     pub fn output(&mut self, bytes: &[u8], sink: &mut impl Sink) {
+        if self.discipline.mode().cooked {
+            let mut start = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                if b == b'\n'
+                    && !(if i == 0 {
+                        self.last_cr
+                    } else {
+                        bytes[i - 1] == b'\r'
+                    })
+                {
+                    self.parse(&bytes[start..i], sink);
+                    self.parse(b"\r", sink);
+                    start = i;
+                }
+            }
+            self.parse(&bytes[start..], sink);
+        } else {
+            self.parse(bytes, sink);
+        }
+        if let Some(&last) = bytes.last() {
+            self.last_cr = last == b'\r';
+        }
+    }
+
+    fn parse(&mut self, bytes: &[u8], sink: &mut impl Sink) {
+        if bytes.is_empty() {
+            return;
+        }
         let out = self.term.process(bytes);
         self.bell |= out.bell;
         if !out.answers.is_empty() {
@@ -365,6 +402,24 @@ mod tests {
         s.output(b"ab\x1b[6n", &mut pipe);
         assert_eq!(dump::row_text(s.screen(), 0), "ab");
         assert_eq!(pipe.bytes, b"\x1b[1;3R");
+    }
+
+    /// Cooked: a bare LF is CR LF (ONLCR), also when the CR ended the
+    /// previous read; raw: LF only moves down.
+    #[test]
+    fn onlcr_while_cooked_only() {
+        let mut s = session();
+        let mut pipe = Pipe::new(4096);
+        s.output(b"neo> \nab", &mut pipe);
+        assert_eq!(dump::row_text(s.screen(), 1), "ab");
+        assert_eq!(s.screen().cursor_position(), (1, 2));
+        s.output(b"\r", &mut pipe);
+        s.output(b"\ncd", &mut pipe);
+        assert_eq!(dump::row_text(s.screen(), 2), "cd");
+        let mut r = session();
+        r.set_mode(Mode::RAW, 1, &mut pipe);
+        r.output(b"ab\ncd", &mut pipe);
+        assert_eq!(dump::row_text(r.screen(), 1), "  cd");
     }
 
     /// The exit line, once; then keys are not sent (End process still is).

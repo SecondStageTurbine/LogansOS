@@ -21,6 +21,9 @@ vault-core = { path = "../vault-core", optional = true }
 zeroize = { version = "1.8", default-features = false, features = ["alloc"], optional = true }
 # DS-1c: the Lens draws its listing with the desktop text engine.
 neo-text = { path = "../neo-text", features = ["inter"], optional = true }
+# L1a.3: the terminal window's session and renderer, and the term page.
+neo-terminal = { path = "../neo-terminal", optional = true }
+neo-term-core = { path = "../neo-term-core", optional = true }
 
 [features]
 default = []
@@ -43,6 +46,21 @@ desktop-lens = ["dep:neo-text", "libneo/atrium-launch"]
 # L1a.1 step 2b: the pipe_stdio scenario's probe child (src/stdio_probe.rs).
 pipe-stdio-test = []
 probe-app = ["dep:neo-text", "libneo/atrium-damage", "libneo/atrium-launch"]
+# L1a.3: the terminal window (src/terminal_app.rs), a client of the WM's
+# table; it runs `neo-shell` on two pipes and a term page
+# (docs/THINK-2026-10-31-l1a-terminal-window.md).
+terminal-app = [
+    "dep:neo-terminal",
+    "dep:neo-term-core",
+    "libneo/atrium-damage",
+    "libneo/atrium-launch",
+    "libneo/atrium-terminal",
+]
+# Test only: the terminal's child is this binary's src/terminal_child.rs.
+terminal-child-worker = ["terminal-app"]
+# Its roles: a cooked child that reports each line's bytes, and a 10 MiB flood.
+terminal-test-echo = ["terminal-child-worker"]
+terminal-test-flood = ["terminal-child-worker"]
 # Test only: the probe app exits 7 after its first key (per-client faults).
 probe-app-exit-after-key = ["probe-app"]
 probe-app-hang-reply = ["probe-app"]

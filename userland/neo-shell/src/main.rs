@@ -66,7 +66,26 @@ pub extern "C" fn _start() -> ! {
     sys_exit(run())
 }
 
+/// L1a.3 (`terminal-child`): this shell's stdio is a terminal's (its spawn
+/// chose a term page). The terminal starts every child cooked with echo
+/// (`docs/THINK-2026-10-31-l1a-terminal-window.md` §3.4, §4): it echoes and
+/// edits the line and delivers it at Enter, so the shell writes no echo of
+/// its own.
+#[cfg(feature = "terminal-child")]
+static ON_TERMINAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn echoes() -> bool {
+    #[cfg(feature = "terminal-child")]
+    return !ON_TERMINAL.load(core::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(feature = "terminal-child"))]
+    true
+}
+
 fn run() -> i32 {
+    #[cfg(feature = "terminal-child")]
+    if sys_stdio_info().is_ok_and(|info| info.term.is_some()) {
+        ON_TERMINAL.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     write_all(READY);
     #[cfg(feature = "v1-console-surface")]
     run_arthur();
@@ -1123,19 +1142,25 @@ fn read_line(out: &mut [u8]) -> Result<usize, ()> {
         let byte = read_stdin_byte();
         match byte {
             b'\r' | b'\n' => {
-                write_all(NEWLINE);
+                if echoes() {
+                    write_all(NEWLINE);
+                }
                 return if overflow { Err(()) } else { Ok(len) };
             }
             0x08 | 0x7f if len > 0 => {
                 len -= 1;
-                write_all(b"\x08 \x08");
+                if echoes() {
+                    write_all(b"\x08 \x08");
+                }
             }
             0x08 | 0x7f => {}
             0x00..=0x1f => {}
             byte if len < out.len() => {
                 out[len] = byte;
                 len += 1;
-                write_byte(byte);
+                if echoes() {
+                    write_byte(byte);
+                }
             }
             _ => overflow = true,
         }

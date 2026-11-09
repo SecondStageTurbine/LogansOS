@@ -1182,6 +1182,13 @@ neo-test-desktop-drag-cross-control-boot = ["neo-test-desktop-pointer", "ipc-try
 # loop needs SYS_TRY_RECV and the SAK), only the userland build differs.
 neo-test-desktop-apps-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 neo-test-desktop-apps-fault-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# L1a.3: the DS-1 session with the terminal window as a second client
+# (docs/THINK-2026-10-31-l1a-terminal-window.md §8): the apps kernel plus the
+# kernel pipe and the stdio chosen at spawn (L1a.1). Only the userland differs
+# between the three: neo-shell, a cooked echo child, a 10 MiB flood.
+neo-test-desktop-terminal-shell-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
+neo-test-desktop-terminal-echo-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
+neo-test-desktop-terminal-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
 # The WM-liveness legs (app-model THINK §2.3 items 7, 8): a probe app that
 # never receives its reply, one that never finishes its handshake, and one
 # that exits between a request and the reply. A0k's tries keep
