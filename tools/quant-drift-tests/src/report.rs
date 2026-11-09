@@ -738,6 +738,7 @@ fn comparison_json(comparison: &Comparison) -> String {
 #[allow(clippy::too_many_arguments)]
 pub fn kat_json(
     meta: &KatMeta,
+    quant: &str,
     ours: &RefRun,
     q4: &RefRun,
     fp32: &RefRun,
@@ -751,6 +752,7 @@ pub fn kat_json(
     let _ = writeln!(out, "  \"date\": \"{}\",", json_escape(&meta.date));
     let _ = writeln!(out, "  \"host\": \"{}\",", json_escape(&meta.host));
     out.push_str("  \"inputs\": {\n");
+    let _ = writeln!(out, "    \"quantization\": \"{}\",", json_escape(quant));
     let _ = writeln!(out, "    \"neom_sha256\": \"{}\",", meta.neom_sha256);
     let _ = writeln!(out, "    \"neom_blake3\": \"{}\",", meta.neom_blake3);
     let _ = writeln!(out, "    \"gguf_sha256\": \"{}\",", meta.gguf_sha256);
@@ -894,8 +896,11 @@ pub fn kat_json(
     out
 }
 
-/// Human-readable bar report for the RETURN / CI log.
+/// Human-readable bar report for the RETURN / CI log. `quant` names the
+/// shipped file's quantization (`Q4_K_M`, `Q8_0`) in the headings.
+#[allow(clippy::too_many_arguments)]
 pub fn markdown(
+    quant: &str,
     ours: &RefRun,
     q4: &RefRun,
     fp32: &RefRun,
@@ -907,7 +912,7 @@ pub fn markdown(
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "# Quantization drift (Q4_K_M vs full-precision reference)\n"
+        "# Quantization drift ({quant} vs full-precision reference)\n"
     );
     let _ = writeln!(
         out,
@@ -925,7 +930,7 @@ pub fn markdown(
     }
     let _ = writeln!(
         out,
-        "\n## Bar A — ours vs llama.cpp on the same Q4_K_M file\n"
+        "\n## Bar A — ours vs llama.cpp on the same {quant} file\n"
     );
     let _ = writeln!(
         out,
@@ -1011,11 +1016,11 @@ near-tie (both runtimes' top-1/top-2 gaps below 0.5).",
 
     let _ = writeln!(
         out,
-        "## Bar B — the shipped Q4_K_M vs the full-precision reference\n"
+        "## Bar B — the shipped {quant} vs the full-precision reference\n"
     );
     let _ = writeln!(
         out,
-        "- ΔPPL ≤ 10% relative: **{}** (Q4 {:.6}, {} {:.6}, Δ {:.4}%)",
+        "- ΔPPL ≤ 10% relative: **{}** ({quant} {:.6}, {} {:.6}, Δ {:.4}%)",
         bars.b_ppl_within_10pct.as_str(),
         ours_vs_fp32.left_ppl,
         fp32.model,
@@ -1041,7 +1046,11 @@ near-tie (both runtimes' top-1/top-2 gaps below 0.5).",
         if bars.b_pass() { "PASS" } else { "FAIL" }
     );
 
-    let _ = writeln!(out, "## Cross-check — llama.cpp Q4_K_M vs {}\n", fp32.model);
+    let _ = writeln!(
+        out,
+        "## Cross-check — llama.cpp {quant} vs {}\n",
+        fp32.model
+    );
     let _ = writeln!(
         out,
         "- ΔPPL {:.4}% ({:.6} vs {:.6}), boot reply identical: {}",
@@ -1058,7 +1067,7 @@ near-tie (both runtimes' top-1/top-2 gaps below 0.5).",
 
     let _ = writeln!(
         out,
-        "## Per-prompt divergence (shipped Q4_K_M vs {})\n",
+        "## Per-prompt divergence (shipped {quant} vs {})\n",
         fp32.model
     );
     let _ = writeln!(
