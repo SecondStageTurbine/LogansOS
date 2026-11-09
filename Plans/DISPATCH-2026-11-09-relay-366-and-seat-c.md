@@ -76,3 +76,18 @@ RETURN: `Plans/RETURN-2026-11-09-pr92-review-chad.md` on `codex/pr92-review-chad
 - [ ] xtask requires every `ok(n)` line it claims, so a missing line fails the scenario. Pass/fail plus the xtask line.
 - [ ] What the THINK says is still missing for C3c-1 (JIT off, single thread, the product-crates PR) matches the code. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-09-pr93-design-dexter.md` on `dexter/pr93-design`.
+
+## Section 371: Janus, #72 F1 only (your relay 368). **MODEL** GPT-6.1-Sol, medium. Head `70fa3e7e`.
+Seat B's evidence is on #72: comment 6732593123 and the 05:40 comment.
+- The late-control dispatch run 42555777440 failed on shard 4: `timing pipe_stdio 30.1 18.1 12.0 4 FAIL`, with
+  `PIPE_STDIO fail step=leg_kill:prompt` and the console leak `neo> [ kernel ] pipe_stdio late-control: window hit`.
+- Every CI shard boots with `NEO_SMP=4` (`.github/workflows/ci.yml`).
+- The normal `pipe_stdio` at the head is in run 42564447951.
+
+Check:
+- [ ] The control fails for the designed reason: the old selection used, so the prompt reached serial, not the pipe. A
+  missed window or a generic failure doesn't count. The fact that it surfaces at leg 3 rather than as
+  `pipe_stdio_prompt_not_in_pipe` should be explained by the design. Pass/fail plus the log lines.
+- [ ] `NEO_SMP=4` covers the multi-CPU requirement your F1 asked for with `NEO_SMP=2`. Pass/fail.
+- [ ] The normal `pipe_stdio` passes at `70fa3e7e`. Pass/fail plus the run's timing line.
+RETURN: `Plans/RETURN-2026-11-09-pr72-recheck2-janus.md` on `codex/pr72-recheck2-janus`.
