@@ -1190,7 +1190,7 @@ neo-test-desktop-apps-fault-boot = ["neo-test-desktop-pointer", "ipc-try-send", 
 # (docs/THINK-2026-10-31-l1a-terminal-window.md §8): the apps kernel plus the
 # kernel pipe and the stdio chosen at spawn (L1a.1). Only the userland differs
 # between the three: neo-shell, a cooked echo child, a 10 MiB flood.
-neo-test-desktop-terminal-shell-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
+neo-test-desktop-terminal-shell-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe", "neo-test-tick-diag"]
 neo-test-desktop-terminal-echo-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
 neo-test-desktop-terminal-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "pipe"]
 # The WM-liveness legs (app-model THINK §2.3 items 7, 8): a probe app that
@@ -1349,6 +1349,7 @@ neo-test-x2apic-smp = ["neo-test", "neo-test-instrumentation"]
 # and PIC IRQ0 stays masked. `_x2apic`: the same on -cpu max,+x2apic.
 # Control: neo-test-lapic-timer-control forces the not-calibrated fallback
 # (the boot must still run on the PIT; the scenario must FAIL timer_not_lapic).
+neo-test-tick-diag = ["neo-test"]
 neo-test-lapic-timer = ["neo-test", "lapic-timer"]
 neo-test-lapic-timer-x2apic = ["neo-test-lapic-timer"]
 # lapic_timer_demote: the first armed mode is silent (masked), so it must be

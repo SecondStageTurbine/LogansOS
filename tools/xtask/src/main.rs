@@ -11536,7 +11536,7 @@ fn print_serial_tail(err: &str) {
     // lines from the whole log (bounded), which the tail cuts off.
     let witness: Vec<&&str> = lines[..start]
         .iter()
-        .filter(|l| l.starts_with("TERM ") || l.starts_with("DESKTOP ") || l.starts_with("LOCK "))
+        .filter(|l| l.starts_with("TERM ") || l.starts_with("DESKTOP ") || l.starts_with("LOCK ") || l.starts_with("TICKDIAG"))
         .collect();
     if lines[..start].iter().any(|l| l.starts_with("TERM ")) {
         let skip = witness.len().saturating_sub(SERIAL_WITNESS_LINES);
@@ -11552,7 +11552,7 @@ fn print_serial_tail(err: &str) {
 
 /// The earlier witness lines [`print_serial_tail`] adds for a terminal
 /// scenario.
-const SERIAL_WITNESS_LINES: usize = 150;
+const SERIAL_WITNESS_LINES: usize = 600;
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
     let mut previous_error = None;

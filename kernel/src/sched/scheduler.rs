@@ -1459,6 +1459,59 @@ pub fn on_tick() {
     yield_now_recording(YieldKind::TimerPreemption);
 }
 
+/// OT-tick-1 step 1 (relay 381, test only): where every thread the
+/// schedulers hold is, and the BSP's preemption gates, printed from the BSP's
+/// tick. Per CPU: its `PREEMPT_DISABLE_DEPTH`, then its current thread, its
+/// ready ring in order and its token-parked threads, each as
+/// `tid/pid/state/defer`. A thread in none of them is blocked outside the
+/// scheduler (a channel, a futex, a wait-any). Takes each scheduler lock with
+/// a try: a busy CPU is reported as `locked`, never waited on.
+#[cfg(feature = "neo-test-tick-diag")]
+pub(crate) fn tick_diag_dump(now: u64) {
+    for idx in 0..per_cpu::MAX_CPUS {
+        let Some(sched) = scheduler_for_cpu(idx as u32) else {
+            continue;
+        };
+        let depth = PREEMPT_DISABLE_DEPTH[idx].load(Ordering::Relaxed);
+        let Some(s) = sched.inner.try_lock() else {
+            crate::serial_println_isr!("TICKDIAG t={} cpu={} depth={} locked", now, idx, depth);
+            continue;
+        };
+        let row = |role: &str, t: &Thread| {
+            crate::serial_println_isr!(
+                "TICKDIAG t={} cpu={} {} tid={} pid={} state={:?} defer={}",
+                now,
+                idx,
+                role,
+                t.id.0,
+                t.pid.0,
+                t.state,
+                t.preempt_defer_ticks
+            );
+        };
+        crate::serial_println_isr!(
+            "TICKDIAG t={} cpu={} depth={} ready={} idle_tid={}",
+            now,
+            idx,
+            depth,
+            s.ready.len(),
+            s.idle_tid
+        );
+        row("cur", &s.current);
+        let n = s.ready.capacity();
+        for k in 0..n {
+            if let Some(t) = s.ready.slots[(s.ready.head + k) % n].as_ref() {
+                row("ready", t);
+            }
+        }
+        for slot in s.token_parked.iter() {
+            if let Some(t) = slot.thread.as_ref() {
+                row("parked", t);
+            }
+        }
+    }
+}
+
 /// OT-49 (AAG B4): one-shot wake token for the deterministic idle-entry probe.
 /// `park_current_until_tick` stores the parking thread's token here; the next
 /// `on_tick` takes it and wakes the thread. Test-only — never compiled into a
