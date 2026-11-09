@@ -45,6 +45,10 @@ one thread, interpreter only, and build option (c).
   - `0004-jsglue-neoplutarch.patch`: `mozjs-sys/src/jsglue.cpp` (the Rust glue, compiled outside SpiderMonkey's own
     build) picks `<malloc.h>` and `malloc_usable_size` by platform. Our target joins the Linux/WASI branch, since
     musl has the header and neo-crt defines the function.
+  - `0005-mozalloc-no-abort-override.patch`: `memory/mozalloc/mozalloc_abort.cpp` defines `abort()` on Unix, to
+    route it to `mozalloc_abort`. neo-crt defines `abort()` and the program links it statically, so the two collide
+    (the C3c-1 smoke's first link: `duplicate symbol: abort`). Our target leaves the override out;
+    `mozalloc_abort` itself is unchanged.
 - `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
   neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
   `__neoplutarch__` predefined. configure's test programs link against a stub that defines exactly the symbols in
@@ -101,7 +105,7 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
 - **`bindings/`:** bindgen's `jsapi.rs` and `gluebindings.rs` for our target. The generator's bindgen step makes them
   by running upstream `mozjs-sys`'s own `build_bindings`, with libclang from the runner's `clang` and `neo-cc`'s target
   flags. The step fails if `jsapi.rs` lacks `wasiRecursionDepth` (trap B1).
-- **`patched/`:** the 29 files patches 0001–0004 change, whole and as patched, at their paths under the vendored
+- **`patched/`:** the 30 files patches 0001–0005 change, whole and as patched, at their paths under the vendored
   crate root. `patched/deleted.txt` names the one file they delete (`MoveOnlyFunction.h`). The product build lays
   these over the vendored tree instead of running `git apply`. The drift check proves they equal vendor plus
   patches.
