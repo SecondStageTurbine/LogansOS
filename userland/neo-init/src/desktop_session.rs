@@ -1629,13 +1629,40 @@ fn handshake(
         Ok(identity) => identity,
         Err(_) => return Err(7),
     };
-    if !link.send_reply(
+    // F11 S5: Arthur decodes his own keys, so his create reply carries the
+    // session's keyboard layout (the other clients type no text and decode
+    // the plain reply).
+    #[cfg(feature = "keyboard-layouts")]
+    let replied = if ids.namespace == NS {
+        let bytes = libneo::atrium_protocol::encode_create_reply(
+            Reply {
+                opcode: OP_CREATE_SURFACE,
+                request_id: create_header.request_id,
+                status: 0,
+                identity,
+            },
+            u32::from(neo_atrium::keys::layout()),
+        );
+        match link {
+            Link::Blocking => reply_send(session, &bytes),
+            _ => link.send(session, &bytes),
+        }
+    } else {
+        link.send_reply(
+            session,
+            OP_CREATE_SURFACE,
+            create_header.request_id,
+            identity,
+        )
+    };
+    #[cfg(not(feature = "keyboard-layouts"))]
+    let replied = link.send_reply(
         session,
         OP_CREATE_SURFACE,
         create_header.request_id,
         identity,
-    ) || !link.grant_over(session, surface_client, FULL_CHANNEL_RIGHTS)
-    {
+    );
+    if !replied || !link.grant_over(session, surface_client, FULL_CHANNEL_RIGHTS) {
         return Err(8);
     }
     // Arthur proves its own scanout bypass is refused before attaching.

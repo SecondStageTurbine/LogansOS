@@ -156,7 +156,15 @@ fn store(current: Option<Current>, settings: &Settings) {
     GENERATION.store(generation, Ordering::Release);
     FILE.store(file, Ordering::Release);
     LOADED.store(1, Ordering::Release);
+    // F11 S5: the WM's decoders type in the layout in force (an id the
+    // store accepted is a layout: the two counts agree, below).
+    #[cfg(feature = "keyboard-layouts")]
+    let _ = neo_atrium::keys::set_layout(settings.keyboard_layout as u8);
 }
+
+// F11 S5: the store's range for `KeyboardLayout` is the layout table's.
+#[cfg(feature = "keyboard-layouts")]
+const _: () = assert!(sc::LAYOUT_COUNT == neo_atrium::keys::LAYOUT_COUNT as u32);
 
 /// The settings app's module (§5.3; the app itself is S1's next slice). The
 /// WM takes `OP_SETTING` only from a client it launched from this module.
@@ -495,6 +503,15 @@ fn apply(scene: &mut Scene, before: &Settings, next: &Settings) {
     #[cfg(feature = "desktop-motion")]
     if before.reduce_motion != next.reduce_motion {
         scene.motion_profile = profile(next.reduce_motion);
+    }
+    // F11 S5: `store` set the decoders' layout; say so.
+    #[cfg(feature = "keyboard-layouts")]
+    if before.keyboard_layout != next.keyboard_layout {
+        Line::new()
+            .s(b"DESKTOP keyboard layout=")
+            .n(u64::from(neo_atrium::keys::layout()))
+            .s(b" cause=settings live=1\n")
+            .emit();
     }
     let _ = (scene, before, next);
 }

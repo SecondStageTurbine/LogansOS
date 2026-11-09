@@ -2838,3 +2838,24 @@ mod vocab_compose_tests {
         }
     }
 }
+
+/// F11 S5 (`keyboard-layouts`): Arthur's decoder follows the layout id his
+/// create reply carries; US is the decoder without layouts; a bad id is
+/// refused and leaves the layout. One test owns the global.
+#[cfg(feature = "keyboard-layouts")]
+#[test]
+fn arthur_decodes_in_the_session_layout() {
+    use showcase_logic::{input_event_to_ascii, set_layout};
+    let key = |usage: u8, mods: u8| [1u8, 1, usage, 0, mods, 0, 0, 0];
+    let gate = [key(0x1f, 0x02), key(0x34, 0x20), key(0x31, 0), key(0x64, 0)];
+    let typed = || gate.map(input_event_to_ascii);
+    assert_eq!(typed(), [Some(b'@'), Some(b'"'), Some(b'\\'), None]);
+    assert!(set_layout(1));
+    assert_eq!(typed(), [Some(b'"'), Some(b'@'), Some(b'#'), Some(b'\\')]);
+    assert!(!set_layout(2) && !set_layout(0x100));
+    assert_eq!(typed()[0], Some(b'"'));
+    // Enter, Esc, Backspace and Tab are not the layout's.
+    assert_eq!(input_event_to_ascii(key(0x28, 0)), Some(b'\n'));
+    assert!(set_layout(0));
+    assert_eq!(typed(), [Some(b'@'), Some(b'"'), Some(b'\\'), None]);
+}

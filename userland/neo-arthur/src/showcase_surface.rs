@@ -81,10 +81,21 @@ impl ArthurSurface {
         if !send_request(SESSION, 1, Request::Create(create)) {
             return Err(20);
         }
+        #[cfg(not(feature = "keyboard-layouts"))]
         let identity = recv_reply(SESSION, OP_CREATE_SURFACE, 1)
             .filter(|reply| reply.status == 0)
             .map(|reply| reply.identity)
             .ok_or(21)?;
+        // F11 S5: the reply carries the session's keyboard layout.
+        #[cfg(feature = "keyboard-layouts")]
+        let identity = {
+            let (reply, layout) = recv_create_reply().ok_or(21)?;
+            if reply.status != 0 {
+                return Err(21);
+            }
+            crate::showcase_logic::set_layout(layout);
+            reply.identity
+        };
 
         let mut offer = [0u8; 1];
         if sys_recv(SESSION, &mut offer) != 1 || offer[0] != b'O' || sys_send(SESSION, b"R") != 1 {
@@ -939,6 +950,17 @@ fn prove_client_scanout_denied() -> Result<(), i32> {
 fn send_request(channel: Handle, request_id: u64, request: Request) -> bool {
     let (bytes, len) = encode_request(request_id, request);
     sys_send(channel, &bytes[..len]) == len as i64
+}
+
+/// F11 S5: the create reply (request 1) with the session's layout id.
+#[cfg(feature = "keyboard-layouts")]
+fn recv_create_reply() -> Option<(Reply, u32)> {
+    let mut bytes = [0u8; REPLY_LEN];
+    if sys_recv(SESSION, &mut bytes) != REPLY_LEN as i64 {
+        return None;
+    }
+    let (reply, layout) = libneo::atrium_protocol::decode_create_reply(&bytes).ok()?;
+    (reply.opcode == OP_CREATE_SURFACE && reply.request_id == 1).then_some((reply, layout))
 }
 
 fn recv_reply(channel: Handle, opcode: u16, request_id: u64) -> Option<Reply> {

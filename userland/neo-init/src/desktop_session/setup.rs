@@ -26,7 +26,7 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
     show(scene, &wizard)?;
     log_page(&wizard);
     loop {
-        let Some(input) = next_input(scene, focus)? else {
+        let Some(input) = next_input(scene, focus, &wizard)? else {
             continue;
         };
         match wizard.on(input) {
@@ -39,6 +39,8 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                     .n(wizard.focus() as u64)
                     .s(b"\n")
                     .emit();
+                #[cfg(feature = "keyboard-layouts")]
+                keyboard::log_typed(&wizard, input);
             }
             Outcome::Page(_) => {
                 show(scene, &wizard)?;
@@ -60,6 +62,11 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                         .n(u64::from(c.reduce_motion))
                         .s(b" reduce_transparency=")
                         .n(u64::from(c.reduce_transparency)),
+                    Finish::Skipped => line,
+                };
+                #[cfg(feature = "keyboard-layouts")]
+                let line = match finish {
+                    Finish::Try => line.s(b" layout=").n(u64::from(c.layout)),
                     Finish::Skipped => line,
                 };
                 line.s(b"\n").emit();
@@ -84,9 +91,9 @@ fn store(scene: &mut Scene, c: &setup_core::Choices) {
     let writes = [
         (Key::ReduceTransparency, u32::from(c.reduce_transparency)),
         (Key::ReduceMotion, rm),
-        // One language and one layout exist (S6/S5 add the rest).
+        // One language exists (S6 adds the rest); S5's layouts are chosen.
         (Key::Language, 0),
-        (Key::KeyboardLayout, 0),
+        (Key::KeyboardLayout, layout(c)),
     ];
     let mut refused = 0u64;
     for (key, value) in writes {
@@ -113,8 +120,24 @@ fn log_page(wizard: &Wizard) {
         .emit();
 }
 
+/// The layout the wizard chose (S5), or US.
+#[cfg(feature = "setup-store")]
+fn layout(c: &setup_core::Choices) -> u32 {
+    #[cfg(feature = "keyboard-layouts")]
+    return u32::from(c.layout);
+    #[cfg(not(feature = "keyboard-layouts"))]
+    {
+        let _ = c;
+        0
+    }
+}
+
 /// The next key the wizard uses, as its input (`None`: a key it ignores).
-fn next_input(scene: &mut Scene, focus: &HomeFocus) -> Result<Option<Input>, i32> {
+fn next_input(
+    scene: &mut Scene,
+    focus: &HomeFocus,
+    #[cfg_attr(not(feature = "keyboard-layouts"), allow(unused_variables))] wizard: &Wizard,
+) -> Result<Option<Input>, i32> {
     let mut event = [0u8; INPUT_EVENT_V1_LEN];
     match sys_input_focus_recv(focus.events, &mut event) {
         0 => {}
@@ -123,6 +146,12 @@ fn next_input(scene: &mut Scene, focus: &HomeFocus) -> Result<Option<Input>, i32
             return Ok(None);
         }
         _ => return Err(190),
+    }
+    // S5: on the Keyboard page, keys are decoded in the layout chosen there,
+    // and the field takes characters.
+    #[cfg(feature = "keyboard-layouts")]
+    if wizard.page() == setup_core::Page::Keyboard {
+        return Ok(keyboard::input(wizard, event));
     }
     Ok(match keys::decode(event) {
         Some(Key::Up) => Some(Input::Up),
@@ -184,5 +213,46 @@ fn idle(scene: &mut Scene, focus: &HomeFocus) {
     {
         let _ = (scene, focus);
         core::hint::spin_loop();
+    }
+}
+
+/// F11 S5: the Keyboard page's keys and its log.
+#[cfg(feature = "keyboard-layouts")]
+mod keyboard {
+    use super::Line;
+    use neo_atrium::keys::{self, Key};
+    use setup_core::{Input, Wizard};
+
+    /// A key on the Keyboard page, decoded in the layout chosen on the page:
+    /// the moves and Enter/Space/Esc as on every page, Backspace and the
+    /// other printable characters for the test field.
+    pub fn input(wizard: &Wizard, event: [u8; libneo::INPUT_EVENT_V1_LEN]) -> Option<Input> {
+        match keys::decode_in(wizard.choices().layout, event)? {
+            Key::Up => Some(Input::Up),
+            Key::Down | Key::Tab => Some(Input::Down),
+            Key::Enter | Key::Char(b' ') => Some(Input::Choose),
+            Key::Escape => Some(Input::Back),
+            Key::Backspace => Some(Input::Erase),
+            Key::Char(c) => Some(Input::Char(c)),
+        }
+    }
+
+    /// After a character or Backspace: what the field holds, and in which
+    /// layout the key was typed (the gate reads it).
+    pub fn log_typed(wizard: &Wizard, input: Input) {
+        let ascii = match input {
+            Input::Char(c) => u64::from(c),
+            Input::Erase => 8,
+            _ => return,
+        };
+        Line::new()
+            .s(b"DESKTOP setup typed layout=")
+            .n(u64::from(wizard.choices().layout))
+            .s(b" ascii=")
+            .n(ascii)
+            .s(b" field=")
+            .s(wizard.field().as_bytes())
+            .s(b"\n")
+            .emit();
     }
 }

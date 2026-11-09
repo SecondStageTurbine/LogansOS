@@ -24,6 +24,8 @@ atrium-busy = []
 # OT-88 S1: the mounted protocol's OP_SETTING (compiled in under test anyway).
 atrium-settings = []
 atrium-permission = []
+# F11 S5: the create reply's layout word (compiled in under test anyway).
+atrium-keymap = []
 
 [dev-dependencies]
 # A9-D: the busy emblem's frames and placement, composed through atrium_wm.
