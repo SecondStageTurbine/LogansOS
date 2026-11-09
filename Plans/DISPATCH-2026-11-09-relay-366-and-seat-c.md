@@ -158,3 +158,18 @@ the store and apply exactly what it holds (zone, RTC mode, clock), and show the 
   live == re-read record. Pass/fail plus line.
 - [ ] The user sees an error on any failure, and the THINK's confirm section states the rule. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-09-pr92-recheck3-chad.md` on `codex/pr92-recheck3-chad`.
+
+## Section 380: Chad, #92 narrow re-check of the PM's two rulings (your relay 379). **MODEL** GPT-6.1-Sol, medium. Head `0945e6e5`.
+The PM's rulings on your 379 findings are on #92 (2026-11-09 ~13:55 UTC). Fixes: `3a1c50a2` (re-read failure is
+unresolved) and `0945e6e5` (the refused scenario's end state). Check only these:
+- [ ] When neither settings copy decodes on the confirm's re-read, the confirm returns a distinct unresolved outcome,
+  never the cached record; live clock unchanged; wizard stays on the Time zone page; the notice names no stored zone.
+  Pass/fail plus line.
+- [ ] On a re-read where neither copy is valid, the confirm applies the same rule the boot path does
+  (`settings.rs` boot fallback), so the confirm and the next boot agree. Pass/fail plus line.
+- [ ] `login_setup_tz_reread_fail` exists, is registered, injects fsync failure plus both opens failing on the
+  re-read, and asserts the unresolved notice and a second boot that selects what the store holds. Pass/fail plus line.
+- [ ] THINK §2.2 says a display (`present`) failure ends the session and is not a confirm error path; the next boot
+  reads the store. Pass/fail.
+- [ ] No other confirm path regressed (the six earlier `login_setup_tz*` legs keep their assertions). Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr92-recheck4-chad.md` on `codex/pr92-recheck4-chad`.
