@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3c-1: servo/mozjs's mozjs 0.26.14 (vendor/mozjs-138c9470/mozjs) for the
+# product build. Only this manifest differs from upstream; the library is the
+# vendored crate's own src/ (lib.path). See
+# docs/THINK-2026-11-08-ot61-c3c1-product-build.md §2.
+#
+# Changes from upstream's manifest:
+# - No [build-dependencies] (upstream's cc and bindgen; the crate has no
+#   build script).
+# - The workspace fields are written out (MPL-2.0, edition 2021).
+# - default = ["libz-sys"]: the frozen configuration (no jit, no intl). The
+#   other features stay and forward to mozjs-sys, whose build.rs rejects them.
+# - No dev-dependencies or benches.
+[package]
+name = "mozjs"
+description = "Rust bindings to the Mozilla SpiderMonkey JavaScript engine."
+repository = "https://github.com/servo/mozjs/"
+version = "0.26.14"
+authors = ["The Servo Project Developers"]
+license = "MPL-2.0"
+edition = "2021"
+build = false
+autobenches = false
+autoexamples = false
+autotests = false
+
+[lib]
+path = "../../vendor/mozjs-138c9470/mozjs/src/lib.rs"
+doctest = false
+
+[features]
+default = ["libz-sys"]
+debugmozjs = ["mozjs_sys/debugmozjs"]
+profilemozjs = ["mozjs_sys/profilemozjs"]
+jit = ["mozjs_sys/jit"]
+jitspew = ["mozjs_sys/jitspew"]
+libz-sys = ["mozjs_sys/libz-sys"]
+libz-rs = ["mozjs_sys/libz-rs"]
+intl = ["mozjs_sys/intl"]
+crown = ["mozjs_sys/crown"]
+
+[dependencies]
+encoding_rs = "0.8.35"
+libc = "0.2"
+log = "0.4"
+mozjs_sys = { version = "=153.6.0-2", path = "../mozjs-sys" }
+num-traits = "0.2"
