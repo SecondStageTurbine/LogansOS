@@ -24,7 +24,7 @@ after the tiered-gate stack lands.
 **J.c. (2026-11-02 midday):** he'll test F4/F8 (time zone), F10 (key repeat) and F9 (password message) together:
 the PM tells him once all three are on `main` **and** in a published preview. No interim updates on these.
 
-| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64), then Seat I builds | **Design approved and merged** (#64, `dfa85c06`; Jarvis re-check relay 305 all PASS). Seat I builds it (rungs S1-S7b) after F8 (#68). **S1 on main** (#70, `858e1284`, 2026-11-08: the wizard shell); **S2 on main** (#71, `1b0b9097`, 2026-11-09: choices saved, volatile overlay when the store can't be written); S3 (time zone + clock confirm) next |
+| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64), then Seat I builds | **Design approved and merged** (#64, `dfa85c06`; Jarvis re-check relay 305 all PASS). Seat I builds it (rungs S1-S7b) after F8 (#68). **S1 on main** (#70, `858e1284`, 2026-11-08: the wizard shell); **S2 on main** (#71, `1b0b9097`, 2026-11-09: choices saved, volatile overlay when the store can't be written); S3 (time zone + clock confirm) in review (#92, Seat I); S5 (keyboard layouts, US + UK) dispatched to Seat E 2026-11-09 |
 
 
 **Landing order (2026-11-03 03:45 UTC).** gate-plan puts #59, #62, #61 and #60 each in `full-alone` (they touch
