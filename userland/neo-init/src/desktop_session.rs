@@ -8480,12 +8480,18 @@ mod clock {
         Ok(())
     }
 
-    /// F11 S3 (Chad, #92): the setup menu's one confirm, **transactional**.
-    /// The kernel is asked first; only once it has accepted the offset are
-    /// the zone and RTC mode stored and shown. Anything else (no epoch, a
-    /// reading the zone can't place, the clock already confirmed, a refused
-    /// call) changes nothing: the store, the zone and the readout stay
-    /// exactly as they were. `true`: confirmed now, with `zone`.
+    /// F11 S3 (Chad, #92 relays 369 and 373): the setup menu's one confirm,
+    /// **all or nothing**. The kernel's confirm is write-once and can't be
+    /// undone, so the store goes first:
+    /// 1. the zone and RTC mode are written together, in one record, read
+    ///    back (`settings::store_zone`); a failed write stores nothing and
+    ///    the kernel is never asked;
+    /// 2. the kernel confirms; a refusal puts the previous record back
+    ///    (`settings::restore`);
+    /// 3. only then are the zone and mode made the clock's and shown.
+    ///
+    /// Any other failure (no epoch, a reading the zone can't place, the clock
+    /// already confirmed) changes nothing. `true`: confirmed now, with `zone`.
     #[cfg(feature = "setup-tz")]
     pub fn confirm_zone(scene: &mut Scene, zone: ZoneId, rtc_local: bool) -> Result<bool, i32> {
         if scene.clock.shown.is_none() {
@@ -8502,6 +8508,13 @@ mod clock {
         let Some(offset) = tz::confirm_offset(wall_s, zone, rtc_local) else {
             return Ok(false);
         };
+        #[cfg(feature = "atrium-settings-store")]
+        let Ok(previous) = super::settings::store_zone(zone, rtc_local) else {
+            Line::new()
+                .s(b"DESKTOP clock confirm skipped reason=store\n")
+                .emit();
+            return Ok(false);
+        };
         // The refused-confirm control: the kernel's answer when another
         // confirm already won.
         let answer = if cfg!(feature = "setup-tz-refuse-test") {
@@ -8515,14 +8528,10 @@ mod clock {
                 .n(e.unsigned_abs())
                 .s(b"\n")
                 .emit();
+            #[cfg(feature = "atrium-settings-store")]
+            super::settings::restore(&previous);
             scene.clock.basis = Basis::of(libneo::sys_clock_realtime_status());
             return Ok(false);
-        }
-        #[cfg(feature = "atrium-settings-store")]
-        {
-            use settings_core::Key;
-            let _ = super::settings::set_wm(scene, Key::TimeZone.id(), u32::from(zone));
-            let _ = super::settings::set_wm(scene, Key::RtcLocal.id(), u32::from(rtc_local));
         }
         scene.clock.zone = zone;
         scene.clock.rtc_local = rtc_local;

@@ -43,6 +43,10 @@ static VOLATILE: AtomicU8 = AtomicU8::new(0);
 /// Whether `load` found a valid record on disk (F11 S2: an installed
 /// system's setup menu runs only until one exists, setup-menu THINK §2.4).
 static FOUND: AtomicU8 = AtomicU8::new(0);
+/// F11 S3's write-failure control (`setup-tz-write-fail-test`): the next
+/// [`commit`] fails its write, through the real failed-write path.
+#[cfg(feature = "setup-tz-write-fail-test")]
+static FAIL_NEXT_WRITE: AtomicU8 = AtomicU8::new(0);
 
 /// Whether the first-boot setup menu should run: on a Try session (the
 /// volatile overlay: nothing persists, so every boot), or on an installed
@@ -310,7 +314,11 @@ fn commit(next: &Settings) -> bool {
     let Some((file, bytes)) = sc::plan(current.as_ref(), next) else {
         return false;
     };
-    let written = login::write_whole(file.path(), &bytes);
+    #[cfg(feature = "setup-tz-write-fail-test")]
+    let injected = FAIL_NEXT_WRITE.swap(0, Ordering::AcqRel) == 1;
+    #[cfg(not(feature = "setup-tz-write-fail-test"))]
+    let injected = false;
+    let written = !injected && login::write_whole(file.path(), &bytes);
     let landed = written && login::read_small(file.path()).is_some_and(|back| back == bytes);
     if !landed {
         Line::new()
@@ -348,6 +356,54 @@ fn commit(next: &Settings) -> bool {
         .s(b"\n")
         .emit();
     true
+}
+
+/// F11 S3 (Chad, #92 relay 373): the setup menu's zone and RTC mode, stored
+/// **together** in one record write and read back ([`commit`]: the file not
+/// holding the record, so a failed write leaves the old record in force).
+/// Nothing is applied live here; the clock applies them only once the kernel
+/// has also accepted the confirm. `Ok`: stored (or already in force), with the
+/// settings before, to [`restore`] if the kernel then refuses. `Err`: nothing
+/// stored, the old record still in force.
+#[cfg(feature = "setup-tz")]
+pub fn store_zone(zone: u16, rtc_local: bool) -> Result<Settings, ()> {
+    let before = current();
+    let next = before
+        .with(sc::Key::TimeZone.id(), u32::from(zone))
+        .and_then(|s| s.with(sc::Key::RtcLocal.id(), u32::from(rtc_local)))
+        .map_err(|_| ())?;
+    if next != before {
+        #[cfg(feature = "setup-tz-write-fail-test")]
+        FAIL_NEXT_WRITE.store(1, Ordering::Release);
+        if !commit(&next) {
+            Line::new().s(b"SETTINGS zone store=failed\n").emit();
+            return Err(());
+        }
+    }
+    Line::new()
+        .s(b"SETTINGS zone stored zone=")
+        .n(u64::from(zone))
+        .s(b" rtc=")
+        .n(u64::from(rtc_local))
+        .s(b"\n")
+        .emit();
+    Ok(before)
+}
+
+/// Put `previous` back in force after [`store_zone`], when the kernel
+/// refused the confirm. `false`: the write failed (logged); the zone stored
+/// stays, and the next boot confirms with it.
+#[cfg(feature = "setup-tz")]
+pub fn restore(previous: &Settings) -> bool {
+    let ok = current() == *previous || commit(previous);
+    Line::new()
+        .s(if ok {
+            b"SETTINGS zone restored\n" as &[u8]
+        } else {
+            b"SETTINGS zone restore=failed\n"
+        })
+        .emit();
+    ok
 }
 
 /// After a write whose read-back failed: read both copies again and put

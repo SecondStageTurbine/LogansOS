@@ -3660,6 +3660,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // F11 S3's failed store write (Chad, #92 relay 373): the zone's write
+        // fails, so nothing is stored and the kernel is never asked; the
+        // clock is unchanged, and the next boot reads the old record.
+        name: login_scenarios::LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("setup-tz-write-fail-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // F11 S2: the setup menu over two boots. Boot 1 walks it (both
         // Comfort options on), each choice written to the store and read
         // back by digest, then makes the account; boot 2 finds the record,
@@ -8371,6 +8381,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("setup-store-boot-test")
         | Some("setup-tz-boot-test")
         | Some("setup-tz-refuse-test")
+        | Some("setup-tz-write-fail-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -8591,6 +8602,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("setup-store-boot-test")
         | Some("setup-tz-boot-test")
         | Some("setup-tz-refuse-test")
+        | Some("setup-tz-write-fail-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -15327,7 +15339,8 @@ fn run_qemu_test_invocation(
     let rtc_base = match scenario.name {
         login_scenarios::LOGIN_SETUP_TZ_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO
-        | login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO => login_scenarios::SETUP_TZ_RTC_BASE,
+        | login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO => login_scenarios::SETUP_TZ_RTC_BASE,
         _ => WALLCLOCK_RTC_BASE,
     };
     qemu.arg("-rtc").arg(format!("base={rtc_base}"));
@@ -19568,7 +19581,8 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         login_scenarios::LOGIN_SETUP_STORE_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO
-        | login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO => "login_two_boot",
+        | login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO => "login_two_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }

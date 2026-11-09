@@ -54,6 +54,7 @@ pub const LOGIN_SETUP_STORE_SCENARIO: &str = "login_setup_store";
 pub const LOGIN_SETUP_TZ_SCENARIO: &str = "login_setup_tz";
 pub const LOGIN_SETUP_TZ_SKIP_SCENARIO: &str = "login_setup_tz_skip";
 pub const LOGIN_SETUP_TZ_REFUSED_SCENARIO: &str = "login_setup_tz_refused";
+pub const LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO: &str = "login_setup_tz_write_fail";
 
 /// F11 S3's RTC (`-rtc base=`): 01:57 local time in New York on the
 /// fall-back day, inside the repeated hour (01:00-01:59 happens twice), three
@@ -88,6 +89,7 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | LOGIN_SETUP_TZ_SCENARIO
             | LOGIN_SETUP_TZ_SKIP_SCENARIO
             | LOGIN_SETUP_TZ_REFUSED_SCENARIO
+            | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO
     )
 }
 
@@ -682,7 +684,8 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         }
         LOGIN_SETUP_TZ_SCENARIO
         | LOGIN_SETUP_TZ_SKIP_SCENARIO
-        | LOGIN_SETUP_TZ_REFUSED_SCENARIO => {
+        | LOGIN_SETUP_TZ_REFUSED_SCENARIO
+        | LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO => {
             setup_tz(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?
         }
         _ => cut_steps(scenario, attempt, &ovmf, &vars, &boot_disk, &data)?,
@@ -1937,19 +1940,26 @@ fn setup_tz(
             Some(steps),
         )
     };
-    // Nothing may change without an accepted confirm (Chad, #92): no zone
-    // write, no confirmed clock, the readout still `zone not set`, and the
-    // wizard's records carry the clock as read, without TIME_UTC.
-    let unchanged = |observed: &ObservedTest, pages: &[&str]| -> Result<(), String> {
+    use settings_core::Settings;
+    let defaults = Settings::default();
+    let ny = Settings {
+        time_zone: NEW_YORK_ID,
+        ..defaults
+    };
+    // Nothing may change without an accepted confirm (Chad, #92 relays 369
+    // and 373): no confirmed clock, the readout still `zone not set`, the
+    // zone never set key by key, and the wizard's records carrying the clock
+    // as read, without TIME_UTC. `writes`: the store writes expected.
+    let unchanged = |observed: &ObservedTest,
+                     pages: &[&str],
+                     writes: usize|
+     -> Result<(), String> {
         for (needle, why) in [
             ("DESKTOP clock utc=confirmed", "no confirm was accepted"),
-            (
-                "SETTING applied key=4 ",
-                "the zone is stored only after an accepted confirm",
-            ),
+            ("SETTING applied key=4 ", "the zone is never set key by key"),
             (
                 "SETTING applied key=5 ",
-                "the RTC mode is stored only after an accepted confirm",
+                "the RTC mode is never set key by key",
             ),
             (
                 " zone=\"EDT\"",
@@ -1959,10 +1969,10 @@ fn setup_tz(
             absent(scenario, observed, needle, why)?;
         }
         let serial = read_serial(observed)?;
-        let writes = serial.matches("SETTINGS written").count();
-        if writes != 1 {
+        let seen = serial.matches("SETTINGS written").count();
+        if seen != writes {
             return Err(format!(
-                "`{}`: only the first record may be written (no zone), saw {writes} writes",
+                "`{}`: {writes} store write(s) expected, saw {seen}",
                 scenario.name
             ));
         }
@@ -1979,6 +1989,32 @@ fn setup_tz(
             }
         }
         Ok(())
+    };
+    // The next boot reads the record back: the defaults (no zone) at
+    // `generation` in `file`, and the clock still unconfirmed.
+    let reboot_unchanged = |generation: u64, file: &str| -> Result<(), String> {
+        let second = run("boot2", SETUP_STORE2)?;
+        let loaded = format!(
+            "SETTINGS loaded generation={generation} file={file} rt=0 rm=0 idle=10 lang=0 kb=0"
+        );
+        require_serial_sequence(
+            scenario,
+            &second,
+            &[
+                &loaded,
+                "DESKTOP clock utc=unknown zone=",
+                "zone=\"zone not set\"",
+                "DESKTOP setup skipped reason=stored",
+                "LOGIN signed in",
+            ],
+            "boot 2 reads the record the failed confirm left: no zone, so the clock stays unconfirmed",
+        )?;
+        absent(
+            scenario,
+            &second,
+            "DESKTOP clock utc=confirmed",
+            "no zone was stored, so nothing confirms the clock at the start",
+        )
     };
     if scenario.name == LOGIN_SETUP_TZ_SKIP_SCENARIO {
         let first = run("boot1", SETUP_TZ_SKIP)?;
@@ -2002,15 +2038,19 @@ fn setup_tz(
             ],
             "the decline: New York chosen, then the page left backwards and the wizard skipped; no confirm is asked for",
         )?;
-        absent(
-            scenario,
-            &first,
-            "DESKTOP setup tz=",
-            "a declined page makes no confirm call",
-        )?;
-        return unchanged(&first, &["welcome", "done"]);
+        for (needle, why) in [
+            ("DESKTOP setup tz=", "a declined page makes no confirm call"),
+            ("SETTINGS zone stored", "a declined page stores no zone"),
+        ] {
+            absent(scenario, &first, needle, why)?;
+        }
+        return unchanged(&first, &["welcome", "done"], 1);
     }
     if scenario.name == LOGIN_SETUP_TZ_REFUSED_SCENARIO {
+        // The zone is stored first (the confirm can't be undone), the kernel
+        // refuses, and the record the boot started from is written back.
+        let w2 = settings7_written(&ny, 2, "b");
+        let w3 = settings7_written(&defaults, 3, "a");
         let first = run("boot1", SETUP_TZ1)?;
         require_serial_sequence(
             scenario,
@@ -2020,7 +2060,11 @@ fn setup_tz(
                 "zone=\"zone not set\"",
                 "DESKTOP setup tz page=search rtc=local",
                 "DESKTOP setup page=timezone rows=8",
+                &w2,
+                "SETTINGS zone stored zone=105 rtc=1",
                 "DESKTOP clock confirm refused errno=114",
+                &w3,
+                "SETTINGS zone restored",
                 "DESKTOP setup tz=America/New_York confirmed=0",
                 "DESKTOP setup page=comfort rows=6",
                 "DESKTOP setup page=try rows=5",
@@ -2029,16 +2073,45 @@ fn setup_tz(
                 "ACTIONLOG verify records=4 broken=none head=",
                 "LOGIN account created generation=1",
             ],
-            "the refused confirm: the kernel answers EALREADY, and the wizard goes on with nothing stored and the clock as it was",
+            "the refused confirm: the kernel answers EALREADY, the record the boot started from is written back, and the wizard goes on with the clock as it was",
         )?;
-        return unchanged(&first, &["welcome", "timezone", "comfort", "done"]);
+        unchanged(&first, &["welcome", "timezone", "comfort", "done"], 3)?;
+        return reboot_unchanged(3, "a");
     }
-    use settings_core::Settings;
-    let defaults = Settings::default();
-    let ny = Settings {
-        time_zone: NEW_YORK_ID,
-        ..defaults
-    };
+    if scenario.name == LOGIN_SETUP_TZ_WRITE_FAIL_SCENARIO {
+        let first = run("boot1", SETUP_TZ1)?;
+        require_serial_sequence(
+            scenario,
+            &first,
+            &[
+                "SETTINGS migrated rt=0 rm=0 idle=10 lang=0 kb=0",
+                "zone=\"zone not set\"",
+                "DESKTOP setup tz page=search rtc=local",
+                "DESKTOP setup page=timezone rows=8",
+                "SETTINGS write=failed file=b",
+                "SETTINGS zone store=failed",
+                "DESKTOP clock confirm skipped reason=store",
+                "DESKTOP setup tz=America/New_York confirmed=0",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup page=try rows=5",
+                "DESKTOP setup journal records=4 appended=4",
+                "ACTIONLOG verify records=4 broken=none head=",
+                "LOGIN account created generation=1",
+            ],
+            "the failed store write: nothing is stored, the kernel is never asked, and the wizard goes on with the clock as it was",
+        )?;
+        for (needle, why) in [
+            ("SETTINGS zone stored", "the zone's write failed"),
+            (
+                "DESKTOP clock confirm refused",
+                "the kernel is never asked after a failed store",
+            ),
+        ] {
+            absent(scenario, &first, needle, why)?;
+        }
+        unchanged(&first, &["welcome", "timezone", "comfort", "done"], 1)?;
+        return reboot_unchanged(1, "a");
+    }
     let w1 = settings7_written(&defaults, 1, "a");
     let w2 = settings7_written(&ny, 2, "b");
     let first = run("boot1", SETUP_TZ1)?;
@@ -2053,8 +2126,7 @@ fn setup_tz(
             "DESKTOP setup page=timezone rows=8",
             // Leaving the page: the zone stored, the clock confirmed once.
             &w2,
-            "SETTING applied key=4 value=105 status=0",
-            "SETTING applied key=5 value=1 status=0",
+            "SETTINGS zone stored zone=105 rtc=1",
             "DESKTOP clock utc=confirmed zone=America/New_York rtc=local offset_s=-14400",
             " zone=\"EDT\" realtime_s=",
             "DESKTOP setup tz=America/New_York confirmed=1",
