@@ -101,7 +101,7 @@ fn main() {
     for d in SOURCE_DIRS {
         println!("cargo:rerun-if-changed={}", vendor.join(d).display());
     }
-    for v in ["NEO_CLANG", "NEO_CXX_CONFIG", "NUM_JOBS"] {
+    for v in ["NEO_CLANG", "NEO_CXX_CONFIG", "NEO_LLVM_AR", "NUM_JOBS"] {
         println!("cargo:rerun-if-env-changed={v}");
     }
 
@@ -270,15 +270,38 @@ fn clang() -> PathBuf {
     clang
 }
 
-/// The pinned clang's own `llvm-ar`.
+/// An `llvm-ar` for the archives: `NEO_LLVM_AR` if set; else the pinned
+/// clang's own (`-print-prog-name`, when it gives a path); else
+/// `llvm-ar-<clang's major>`; else `llvm-ar`. Distribution clang packages
+/// often ship clang without llvm-ar, and any llvm-ar writes the same GNU
+/// archive format for these ELF objects.
 fn llvm_ar(clang: &Path) -> PathBuf {
+    if let Some(ar) = env::var_os("NEO_LLVM_AR") {
+        return PathBuf::from(ar);
+    }
+    let runs = |p: &Path| {
+        Command::new(p)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
     let out = Command::new(clang).arg("-print-prog-name=llvm-ar").output().unwrap();
     let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    if p.is_absolute() {
-        p
-    } else {
-        PathBuf::from("llvm-ar")
+    if p.is_absolute() && runs(&p) {
+        return p;
     }
+    let out = Command::new(clang).arg("-dumpversion").output().unwrap();
+    let version = String::from_utf8_lossy(&out.stdout);
+    let major = version.split('.').next().unwrap_or("");
+    for name in [format!("llvm-ar-{major}"), "llvm-ar".to_string()] {
+        if runs(Path::new(&name)) {
+            return PathBuf::from(name);
+        }
+    }
+    panic!(
+        "mozjs-sys: no llvm-ar (tried NEO_LLVM_AR, {}'s, llvm-ar-{major}, llvm-ar)",
+        clang.display()
+    )
 }
 
 /// Runs the compiles, `NUM_JOBS` at a time. Every failure is printed, then
