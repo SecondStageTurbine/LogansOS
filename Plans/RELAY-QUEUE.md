@@ -185,3 +185,8 @@ RELAY 364 | jarvis | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-08-relays-359
 RELAY 365 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 365 (#87 generator commits after 361, at `3b85ae50`; RETURN `Plans/RETURN-2026-11-08-pr87-recheck2-dexter.md`)
 RELAY 366 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 366 (#72 stdio-at-spawn code review at `576cd862`; RETURN `Plans/RETURN-2026-11-09-pr72-review-janus.md`)
 RELAY 367 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-08-relays-359-362.md | Section 367 (#91 THINK follow-up at `c0be27dd`; RETURN `Plans/RETURN-2026-11-09-pr91-design-dexter.md`)
+RELAY 368 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 368 (#72 F1/F2 re-check at `fc964d65`; RETURN `Plans/RETURN-2026-11-09-pr72-recheck-janus.md`)
+RELAY 369 | chad | GPT-6-Luna | high | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 369 (#92 setup S3 time zone at `46370757`; RETURN `Plans/RETURN-2026-11-09-pr92-review-chad.md`)
+RELAY 370 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 370 (#93 SpiderMonkey on target, docs; RETURN `Plans/RETURN-2026-11-09-pr93-design-dexter.md`)
+RELAY 371 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 371 (#72 F1 only at `70fa3e7e`; RETURN `Plans/RETURN-2026-11-09-pr72-recheck2-janus.md`)
+RELAY 372 | jarvis | GPT-6-Luna | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 372 (#94 quant drift on Q8_0; RETURN `Plans/RETURN-2026-11-09-pr94-review-jarvis.md`)
