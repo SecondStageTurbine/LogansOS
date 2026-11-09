@@ -17,11 +17,20 @@
 //!   colour-only (§4.3);
 //! - the choices, held until the wizard ends. S1 writes nothing: the store
 //!   (S2), the clock confirm (S3) and the Install action (S7) come later.
+//!
+//! **S3, the Time zone page with the one confirm** (§2.2, §3.4, §5 S3): with
+//! a [`Zones`] directory attached ([`Wizard::with_zones`]) the page lists real
+//! zones, searched by typing; leaving it forward with a zone chosen asks the
+//! view to confirm the clock once ([`Outcome::Confirm`]), and from then on the
+//! page is review-only for the session (write-once). Without a directory the
+//! page is S1's short list, unchanged; [`Wizard::without_time_zone`] hides it
+//! (the `rtc-offset` kill-switch: no zone the clock cannot apply).
 
 #![no_std]
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -40,6 +49,27 @@ pub const ZONES: [&str; 4] = [
 
 /// The last row of every page.
 pub const HINT: &str = "Up/Down to move, Enter to choose, Esc to go back.";
+
+/// The last row of the searchable Time zone page (S3): Space types there.
+pub const SEARCH_HINT: &str = "Type to search. Up/Down, Enter to choose.";
+
+/// The longest search the Time zone page keeps (a city name fits).
+pub const QUERY_MAX: usize = 32;
+
+/// The zones the Time zone page shows (S3), supplied by the view: the WM's is
+/// `libneo::tz`; the host KATs use a fixed table. Ids are `settings-core`'s
+/// `TimeZone` values.
+pub trait Zones {
+    /// The zones shown before anything is typed (pointer-pickable, §4.2).
+    fn shortlist(&self) -> Vec<u16>;
+    /// The zones matching what was typed, at most four.
+    fn search(&self, typed: &str) -> Vec<u16>;
+    /// The IANA name.
+    fn name(&self, id: u16) -> &'static str;
+    /// The preview after the name: abbreviation and offset now, read from
+    /// the computer's clock (`EDT, UTC-4`).
+    fn detail(&self, id: u16) -> String;
+}
 
 /// A page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,10 +108,15 @@ pub enum Input {
     Up,
     /// Down, and Tab.
     Down,
-    /// Enter, and Space.
+    /// Enter (and Space, except where it types).
     Choose,
     /// Esc.
     Back,
+    /// A printable character: typed into the Time zone search (S3); Space
+    /// chooses on every other page; any other character does nothing there.
+    Char(u8),
+    /// Backspace: erases from the search (S3).
+    Erase,
 }
 
 /// How the wizard ended.
@@ -96,27 +131,49 @@ pub enum Finish {
 /// What an input did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
+    /// Nothing: a key this page doesn't use.
+    Nothing,
     /// The focus moved, or a choice changed: redraw this page.
     Redraw,
     /// A new page is shown.
     Page(Page),
     /// The wizard is over.
     Done(Finish),
+    /// S3: the Time zone page was left with this zone chosen. The view
+    /// confirms the clock once, then calls [`Wizard::confirmed`], which shows
+    /// the next page.
+    Confirm(u16),
 }
 
 /// What the user chose. The defaults are the store's (`settings-core`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Choices {
-    /// An index into [`ZONES`].
+    /// An index into [`ZONES`] (S1's short list, without a [`Zones`]).
     pub zone: usize,
     pub reduce_motion: bool,
     pub reduce_transparency: bool,
+    /// S3: the zone chosen on the searchable page (`None`: not set).
+    pub tz: Option<u16>,
+}
+
+/// S3's Time zone page state.
+struct TzPage {
+    zones: Box<dyn Zones>,
+    /// What was typed (ASCII).
+    query: String,
+    /// The zones listed: the short list, or the search's matches.
+    listed: Vec<u16>,
+    /// The clock is confirmed with [`Choices::tz`] (or was at the start):
+    /// the page only shows it (write-once, §2.2).
+    review: bool,
 }
 
 /// The wizard: the page shown, the focused option, the choices.
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wizard {
     stub_pages: bool,
+    /// The Time zone page is shown (off: the `rtc-offset` kill-switch).
+    time_zone: bool,
+    tz: Option<TzPage>,
     page: Page,
     focus: usize,
     choices: Choices,
@@ -128,10 +185,64 @@ impl Wizard {
     pub fn new(stub_pages: bool) -> Self {
         Self {
             stub_pages,
+            time_zone: true,
+            tz: None,
             page: Page::Welcome,
             focus: 0,
             choices: Choices::default(),
         }
+    }
+
+    /// S3: the Time zone page lists `zones`, searched by typing, and leaving
+    /// it confirms the clock once. `confirmed`: the clock already is (by an
+    /// earlier session, with this zone, or `None` if unknown): the page is
+    /// review-only from the start.
+    pub fn with_zones(mut self, zones: Box<dyn Zones>, confirmed: Option<Option<u16>>) -> Self {
+        let listed = zones.shortlist();
+        let review = confirmed.is_some();
+        if let Some(zone) = confirmed {
+            self.choices.tz = zone;
+        }
+        self.tz = Some(TzPage {
+            zones,
+            query: String::new(),
+            listed,
+            review,
+        });
+        self
+    }
+
+    /// Hide the Time zone page (the kernel can't confirm a zone: §3.4).
+    pub fn without_time_zone(mut self) -> Self {
+        self.time_zone = false;
+        self
+    }
+
+    /// S3: the search typed on the Time zone page.
+    pub fn query(&self) -> &str {
+        self.tz.as_ref().map_or("", |t| t.query.as_str())
+    }
+
+    /// S3: the clock is confirmed; the Time zone page is review-only.
+    pub fn reviewed(&self) -> bool {
+        self.tz.as_ref().is_some_and(|t| t.review)
+    }
+
+    /// S3: the view's answer to [`Outcome::Confirm`]. `ok`: the clock is now
+    /// confirmed with the chosen zone; otherwise it stays unconfirmed (the
+    /// zone is kept as a choice, and the page stays editable). Either way the
+    /// next page is shown.
+    pub fn confirmed(&mut self, ok: bool) -> Outcome {
+        if let Some(t) = self.tz.as_mut() {
+            t.review = ok;
+        }
+        self.show(self.next(Page::TimeZone))
+    }
+
+    /// The zone's name, for the log and the Try summary (S3).
+    pub fn zone_name(&self) -> Option<&'static str> {
+        let t = self.tz.as_ref()?;
+        Some(t.zones.name(self.choices.tz?))
     }
 
     pub fn page(&self) -> Page {
@@ -154,7 +265,9 @@ impl Wizard {
             pages.push(Page::Language);
             pages.push(Page::Keyboard);
         }
-        pages.push(Page::TimeZone);
+        if self.time_zone {
+            pages.push(Page::TimeZone);
+        }
         pages.push(Page::Comfort);
         pages.push(Page::Try);
         pages
@@ -173,6 +286,20 @@ impl Wizard {
                 o.push(String::from("Back"));
             }
             Page::Language | Page::Keyboard => o.push(String::from("Continue")),
+            Page::TimeZone if self.tz.is_some() => {
+                let t = self.tz.as_ref().expect("checked");
+                if !t.review {
+                    for &id in &t.listed {
+                        o.push(format!(
+                            "{} {} ({})",
+                            mark(self.choices.tz == Some(id)),
+                            t.zones.name(id),
+                            t.zones.detail(id)
+                        ));
+                    }
+                }
+                o.push(String::from("Continue"));
+            }
             Page::TimeZone => {
                 for (i, z) in ZONES.iter().enumerate() {
                     o.push(format!("{} {}", mark(i == self.choices.zone), z));
@@ -207,8 +334,17 @@ impl Wizard {
             let focus = if i == self.focus { ">" } else { " " };
             rows.push(format!("{focus} {label}"));
         }
-        rows.push(String::from(HINT));
+        rows.push(String::from(if self.searching() {
+            SEARCH_HINT
+        } else {
+            HINT
+        }));
         rows
+    }
+
+    /// The searchable Time zone page is shown (S3, not yet confirmed).
+    fn searching(&self) -> bool {
+        self.page == Page::TimeZone && self.tz.as_ref().is_some_and(|t| !t.review)
     }
 
     fn title(&self) -> String {
@@ -242,7 +378,21 @@ impl Wizard {
             }
             Page::Language => b.push(String::from("English is the only language for now.")),
             Page::Keyboard => b.push(String::from("US is the only keyboard layout for now.")),
-            Page::TimeZone => b.push(String::from("Where are you? At Home: timezone Area/City.")),
+            Page::TimeZone => match self.tz.as_ref() {
+                None => b.push(String::from("Where are you? At Home: timezone Area/City.")),
+                Some(t) if t.review => {
+                    let name = self.zone_name().unwrap_or("not set");
+                    b.push(format!("Time zone: {name}. The clock is set."));
+                    b.push(String::from("Change it later at Home: timezone Area/City."));
+                }
+                Some(t) if t.query.is_empty() => {
+                    b.push(String::from("Type a city to search, or pick one."))
+                }
+                Some(t) if t.listed.is_empty() => {
+                    b.push(format!("Search: {}  (no zone matches)", t.query))
+                }
+                Some(t) => b.push(format!("Search: {}", t.query)),
+            },
             Page::Comfort => b.push(String::from("Make the screen calmer, if you like.")),
             Page::Try => {
                 for line in self.summary() {
@@ -256,7 +406,14 @@ impl Wizard {
     /// The Try page's summary: what the session will start with.
     pub fn summary(&self) -> Vec<String> {
         let mut s = Vec::new();
-        s.push(format!("Time zone: {}", ZONES[self.choices.zone]));
+        s.push(match self.tz.as_ref() {
+            None => format!("Time zone: {}", ZONES[self.choices.zone]),
+            Some(t) => match self.zone_name() {
+                Some(name) if t.review => format!("Time zone: {name}"),
+                Some(name) => format!("Time zone: {name} (clock not set)"),
+                None => String::from("Time zone: not set"),
+            },
+        });
         s.push(format!(
             "Reduce motion: {}. Reduce transparency: {}.",
             on_off(self.choices.reduce_motion),
@@ -268,6 +425,18 @@ impl Wizard {
     /// Apply one input.
     pub fn on(&mut self, input: Input) -> Outcome {
         let count = self.options().len();
+        if self.searching() {
+            match input {
+                Input::Char(c) => return self.type_char(c),
+                Input::Erase => return self.erase(),
+                _ => {}
+            }
+        }
+        match input {
+            Input::Char(b' ') => return self.on(Input::Choose),
+            Input::Char(_) | Input::Erase => return Outcome::Nothing,
+            _ => {}
+        }
         match input {
             Input::Up => {
                 self.focus = if self.focus == 0 {
@@ -287,7 +456,39 @@ impl Wizard {
                 page => self.show(self.previous(page)),
             },
             Input::Choose => self.choose(),
+            Input::Char(_) | Input::Erase => Outcome::Nothing,
         }
+    }
+
+    fn type_char(&mut self, c: u8) -> Outcome {
+        let t = self.tz.as_mut().expect("searching");
+        if !(0x20..0x7f).contains(&c) || t.query.len() >= QUERY_MAX {
+            return Outcome::Nothing;
+        }
+        t.query.push(c as char);
+        self.research()
+    }
+
+    fn erase(&mut self) -> Outcome {
+        let t = self.tz.as_mut().expect("searching");
+        if t.query.pop().is_none() {
+            return Outcome::Nothing;
+        }
+        self.research()
+    }
+
+    /// The list for the new search; the focus goes to its first row.
+    fn research(&mut self) -> Outcome {
+        let t = self.tz.as_mut().expect("searching");
+        t.listed = if t.query.trim().is_empty() {
+            t.zones.shortlist()
+        } else {
+            let mut found = t.zones.search(t.query.trim());
+            found.truncate(4);
+            found
+        };
+        self.focus = 0;
+        Outcome::Redraw
     }
 
     fn choose(&mut self) -> Outcome {
@@ -297,6 +498,21 @@ impl Wizard {
             (Page::SkipConfirm, 0) => Outcome::Done(Finish::Skipped),
             (Page::SkipConfirm, _) => self.show(Page::Welcome),
             (Page::Language | Page::Keyboard, _) => self.show(self.next(self.page)),
+            (Page::TimeZone, i) if self.tz.is_some() => {
+                let t = self.tz.as_ref().expect("checked");
+                match t.listed.get(i) {
+                    Some(&id) if !t.review => {
+                        self.choices.tz = Some(id);
+                        Outcome::Redraw
+                    }
+                    // Continue: confirm a new choice once; review, or no
+                    // zone (the clock stays unconfirmed), just go on.
+                    _ => match self.choices.tz {
+                        Some(id) if !t.review => Outcome::Confirm(id),
+                        _ => self.show(self.next(Page::TimeZone)),
+                    },
+                }
+            }
             (Page::TimeZone, i) if i < ZONES.len() => {
                 self.choices.zone = i;
                 Outcome::Redraw
@@ -344,3 +560,5 @@ fn on_off(on: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tz_tests;

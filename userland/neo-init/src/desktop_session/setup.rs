@@ -44,6 +44,14 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                 show(scene, &wizard)?;
                 log_page(&wizard);
             }
+            Outcome::Nothing => {}
+            // Only a wizard with a zone directory asks (S3); this one has
+            // none, so a confirm is never made.
+            Outcome::Confirm(_) => {
+                wizard.confirmed(false);
+                show(scene, &wizard)?;
+                log_page(&wizard);
+            }
             Outcome::Done(finish) => {
                 let c = wizard.choices();
                 let line = Line::new()
@@ -127,7 +135,10 @@ fn next_input(scene: &mut Scene, focus: &HomeFocus) -> Result<Option<Input>, i32
     Ok(match keys::decode(event) {
         Some(Key::Up) => Some(Input::Up),
         Some(Key::Down | Key::Tab) => Some(Input::Down),
-        Some(Key::Enter | Key::Char(b' ')) => Some(Input::Choose),
+        Some(Key::Enter) => Some(Input::Choose),
+        // Space chooses, except where it types (the S3 search).
+        Some(Key::Char(c)) => Some(Input::Char(c)),
+        Some(Key::Backspace) => Some(Input::Erase),
         Some(Key::Escape) => Some(Input::Back),
         _ => None,
     })
