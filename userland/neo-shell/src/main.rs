@@ -74,11 +74,22 @@ pub extern "C" fn _start() -> ! {
 #[cfg(feature = "terminal-child")]
 static ON_TERMINAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+#[cfg(feature = "terminal-child")]
 fn echoes() -> bool {
-    #[cfg(feature = "terminal-child")]
-    return !ON_TERMINAL.load(core::sync::atomic::Ordering::Relaxed);
-    #[cfg(not(feature = "terminal-child"))]
-    true
+    !ON_TERMINAL.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// An echo write: skipped on a terminal (`terminal-child`). Off, it is the
+/// write itself, so the shell builds as it did before (L1a.3's kill-switch).
+macro_rules! echo {
+    ($write:expr) => {{
+        #[cfg(feature = "terminal-child")]
+        if echoes() {
+            $write;
+        }
+        #[cfg(not(feature = "terminal-child"))]
+        $write;
+    }};
 }
 
 fn run() -> i32 {
@@ -1142,25 +1153,19 @@ fn read_line(out: &mut [u8]) -> Result<usize, ()> {
         let byte = read_stdin_byte();
         match byte {
             b'\r' | b'\n' => {
-                if echoes() {
-                    write_all(NEWLINE);
-                }
+                echo!(write_all(NEWLINE));
                 return if overflow { Err(()) } else { Ok(len) };
             }
             0x08 | 0x7f if len > 0 => {
                 len -= 1;
-                if echoes() {
-                    write_all(b"\x08 \x08");
-                }
+                echo!(write_all(b"\x08 \x08"));
             }
             0x08 | 0x7f => {}
             0x00..=0x1f => {}
             byte if len < out.len() => {
                 out[len] = byte;
                 len += 1;
-                if echoes() {
-                    write_byte(byte);
-                }
+                echo!(write_byte(byte));
             }
             _ => overflow = true,
         }
