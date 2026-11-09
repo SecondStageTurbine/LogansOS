@@ -355,21 +355,22 @@ mod tz_page {
         wizard.with_zones(Box::new(zones), confirmed)
     }
 
-    /// The one confirm: `clock::set_mode` stores the zone and, while the
-    /// clock is unconfirmed, confirms it. `true`: the clock is now confirmed
-    /// UTC. UTC itself is stored with an RTC that holds UTC: the same
-    /// reading, and the only way UTC can be confirmed (an RTC holding local
-    /// time with zone 0 means "no zone", `tz::rtc_reading_utc`).
+    /// The one confirm, transactional (`clock::confirm_zone`): the kernel
+    /// is asked first, and only an accepted confirm stores the zone and shows
+    /// it; a refusal leaves the store, the zone and the clock as they were
+    /// (Chad, #92). `true`: the clock is now confirmed UTC with `zone`. UTC
+    /// itself goes with an RTC that holds UTC: the same reading, and the only
+    /// way UTC can be confirmed (an RTC holding local time with zone 0 means
+    /// "no zone", `tz::rtc_reading_utc`).
     pub fn confirm(scene: &mut Scene, zone: ZoneId) -> Result<bool, i32> {
         let before = scene.clock.mode();
         if before.basis == Basis::Utc {
-            // Confirmed meanwhile (write-once): no second call.
+            // Confirmed meanwhile (write-once): no second call, no change.
             log(zone, b"already");
-            return Ok(true);
+            return Ok(false);
         }
         let rtc_local = before.rtc_local && zone != tz::UTC;
-        clock::set_mode(scene, zone, rtc_local)?;
-        let ok = scene.clock.mode().basis == Basis::Utc;
+        let ok = clock::confirm_zone(scene, zone, rtc_local)?;
         log(zone, if ok { b"1" } else { b"0" });
         Ok(ok)
     }

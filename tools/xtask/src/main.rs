@@ -3640,11 +3640,22 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
-        // F11 S3's control: skip the wizard; nothing is confirmed, and its
-        // one record carries the clock as read, without TIME_UTC.
+        // F11 S3's decline: New York chosen, then the page left backwards and
+        // the wizard skipped. Nothing is confirmed or stored, the clock still
+        // says zone not set, and the records carry the clock as read.
         name: login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO,
         feature: "neo-test-login-two-boot",
         user_feature: Some("setup-tz-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S3's refused confirm (Chad, #92): the kernel answers EALREADY
+        // when the page is left; no zone is stored, the clock is unchanged,
+        // and the wizard goes on.
+        name: login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO,
+        feature: "neo-test-login-two-boot",
+        user_feature: Some("setup-tz-refuse-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8359,6 +8370,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("login-boot-test")
         | Some("setup-store-boot-test")
         | Some("setup-tz-boot-test")
+        | Some("setup-tz-refuse-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -8578,6 +8590,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("login-boot-test")
         | Some("setup-store-boot-test")
         | Some("setup-tz-boot-test")
+        | Some("setup-tz-refuse-test")
         | Some("login-kdf-timing-boot-test")
         | Some("login-below-floor-test")
         | Some("login-cut-test")
@@ -15307,7 +15320,8 @@ fn run_qemu_test_invocation(
     // F11 S3's two scenarios pin a fall-back-day instant of their own.
     let rtc_base = match scenario.name {
         login_scenarios::LOGIN_SETUP_TZ_SCENARIO
-        | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO => login_scenarios::SETUP_TZ_RTC_BASE,
+        | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO => login_scenarios::SETUP_TZ_RTC_BASE,
         _ => WALLCLOCK_RTC_BASE,
     };
     qemu.arg("-rtc").arg(format!("base={rtc_base}"));
@@ -19547,7 +19561,8 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         // F11 S2: the plain sign-in kernel, with the setup menu before it.
         login_scenarios::LOGIN_SETUP_STORE_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SCENARIO
-        | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO => "login_two_boot",
+        | login_scenarios::LOGIN_SETUP_TZ_SKIP_SCENARIO
+        | login_scenarios::LOGIN_SETUP_TZ_REFUSED_SCENARIO => "login_two_boot",
         name if is_install_scenario(name) => "arthur_model_from_neofs",
         other => other,
     }

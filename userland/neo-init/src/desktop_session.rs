@@ -8480,6 +8480,64 @@ mod clock {
         Ok(())
     }
 
+    /// F11 S3 (Chad, #92): the setup menu's one confirm, **transactional**.
+    /// The kernel is asked first; only once it has accepted the offset are
+    /// the zone and RTC mode stored and shown. Anything else (no epoch, a
+    /// reading the zone can't place, the clock already confirmed, a refused
+    /// call) changes nothing: the store, the zone and the readout stay
+    /// exactly as they were. `true`: confirmed now, with `zone`.
+    #[cfg(feature = "setup-tz")]
+    pub fn confirm_zone(scene: &mut Scene, zone: ZoneId, rtc_local: bool) -> Result<bool, i32> {
+        if scene.clock.shown.is_none() {
+            return Ok(false);
+        }
+        let Some((r, _)) = sample() else {
+            return Ok(false);
+        };
+        scene.clock.basis = Basis::of(libneo::sys_clock_realtime_status());
+        if scene.clock.basis != Basis::Rtc {
+            return Ok(false);
+        }
+        let wall_s = (r / civil::NS_PER_SECOND) as i64;
+        let Some(offset) = tz::confirm_offset(wall_s, zone, rtc_local) else {
+            return Ok(false);
+        };
+        // The refused-confirm control: the kernel's answer when another
+        // confirm already won.
+        let answer = if cfg!(feature = "setup-tz-refuse-test") {
+            Err(libneo::EALREADY)
+        } else {
+            libneo::sys_clock_confirm_realtime(offset)
+        };
+        if let Err(e) = answer {
+            Line::new()
+                .s(b"DESKTOP clock confirm refused errno=")
+                .n(e.unsigned_abs())
+                .s(b"\n")
+                .emit();
+            scene.clock.basis = Basis::of(libneo::sys_clock_realtime_status());
+            return Ok(false);
+        }
+        #[cfg(feature = "atrium-settings-store")]
+        {
+            use settings_core::Key;
+            let _ = super::settings::set_wm(scene, Key::TimeZone.id(), u32::from(zone));
+            let _ = super::settings::set_wm(scene, Key::RtcLocal.id(), u32::from(rtc_local));
+        }
+        scene.clock.zone = zone;
+        scene.clock.rtc_local = rtc_local;
+        scene.clock.basis = Basis::Utc;
+        scene.clock.confirmed = Some((wall_s, offset));
+        log_mode(&scene.clock, b"confirmed", Some(offset));
+        let (r, m) = sample().unwrap_or((r, 0));
+        set(scene, r, m);
+        let b = wm_rect(scene.chrome.layout.clock_slot());
+        scene.repaint_chrome(b);
+        scene.present(false, b).map_err(|c| 140 + c)?;
+        log_shown(scene, b"zone", r);
+        Ok(true)
+    }
+
     /// Home is being shown again (`show_home` repaints the box): the text
     /// only, for the current minute.
     pub fn refresh(scene: &mut Scene) {
