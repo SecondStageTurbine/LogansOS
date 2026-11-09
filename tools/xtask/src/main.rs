@@ -19679,6 +19679,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     }
     if scenario.name == "mozjs_smoke" {
         for needle in [
+            "[ mozjs-smoke ] ok(12) a 1 MiB-aligned 1 MiB block (a GC chunk's shape) from posix_memalign",
             "[ mozjs-smoke ] ok(11) a runtime, a context and a global in one realm",
             "[ mozjs-smoke ] ok(1) 1 + 1 == 2",
             "[ mozjs-smoke ] ok(2) a closure keeps its counter across three calls",
