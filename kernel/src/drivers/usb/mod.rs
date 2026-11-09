@@ -340,9 +340,15 @@ pub fn init() {
     #[cfg(feature = "mt7601u")]
     mt7601u::init();
     xhci::init();
+    // F11 S4: the setup menu's Network gate boots the product's bring-up too
+    // (`neo-test-setup-net-boot`: its page reads the lease this takes).
     #[cfg(all(
         feature = "boot-eth0",
-        any(not(feature = "neo-test"), feature = "neo-test-product-integration")
+        any(
+            not(feature = "neo-test"),
+            feature = "neo-test-product-integration",
+            feature = "neo-test-setup-net-boot"
+        )
     ))]
     boot_eth0::bring_up();
 }

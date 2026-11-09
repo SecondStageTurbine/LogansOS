@@ -21558,19 +21558,20 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     if let Some((kernel, net, rows, continue_why)) = match scenario.name {
         "setup_menu_net" => Some((
             // The boot's bring-up holds slirp's lease before neo-init runs.
-            "[ kernel ] eth0: link up ip=10.0.2.15",
+            Some("[ kernel ] eth0: link up ip=10.0.2.15"),
             "DESKTOP setup net link=up driver=cdc-ecm ipv4=10.0.2.15 lease_s=",
             "DESKTOP setup page=network rows=6",
             "the Network page reads the CDC-ECM lease (link up, 10.0.2.15) from SYS_NET_IF_STATUS, then the walk and the intro session",
         )),
         "setup_menu_net_nonic" => Some((
-            "[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues",
+            Some("[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues"),
             "DESKTOP setup net link=down driver=none",
             "DESKTOP setup page=network rows=5",
             "no NIC: the page says no link, Continue without a network goes on, and Home follows",
         )),
         "setup_menu_net_off" => Some((
-            "[ kernel ] eth0: no device (no CDC-ECM/AX88179 bound); boot continues",
+            // The intro kernel runs no bring-up in a test (boot-eth0's gate).
+            None,
             // ENOSYS (38): the intro kernel has no `net-info`.
             "DESKTOP setup net status=unavailable errno=38",
             "DESKTOP setup page=network rows=5",
@@ -21578,27 +21579,32 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         )),
         _ => None,
     } {
-        require_serial_sequence(
-            scenario,
-            observed,
-            &[
-                kernel,
-                "DESKTOP setup page=welcome rows=5",
-                net,
-                rows,
-                "DESKTOP setup page=timezone rows=8",
-                "DESKTOP setup redraw page=timezone focus=4",
-                "DESKTOP setup page=comfort rows=6",
-                "DESKTOP setup redraw page=comfort focus=2",
-                "DESKTOP setup page=try rows=5",
-                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0",
-                "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
-                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
-                "DESKTOP arthur line=hello desktop",
-                "DESKTOP session end client=arthur exit=0",
-            ],
-            continue_why,
-        )?;
+        let mut want: Vec<&str> = kernel.into_iter().collect();
+        want.extend_from_slice(&[
+            // The page reads the kernel once, as the wizard starts.
+            net,
+            "DESKTOP setup page=welcome rows=5",
+            rows,
+            "DESKTOP setup page=timezone rows=8",
+            "DESKTOP setup redraw page=timezone focus=4",
+            "DESKTOP setup page=comfort rows=6",
+            "DESKTOP setup redraw page=comfort focus=2",
+            "DESKTOP setup page=try rows=5",
+            "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0",
+            "DESKTOP home ready focus=wm-home input=adr074-own field=intent",
+            "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+            "DESKTOP arthur line=hello desktop",
+            "DESKTOP session end client=arthur exit=0",
+        ]);
+        require_serial_sequence(scenario, observed, &want, continue_why)?;
+        if kernel.is_none() {
+            require_serial_absent(
+                scenario,
+                observed,
+                "[ kernel ] eth0:",
+                "the kill-switch control's kernel runs no bring-up",
+            )?;
+        }
         // Exactly one status line: the page reads the kernel once.
         let serial = read_serial(observed)?;
         let lines: Vec<&str> = serial
