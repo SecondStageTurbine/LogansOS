@@ -148,3 +148,13 @@ say so in its PR body and in `tools/size-budget.toml`'s reason.
   Pass/fail plus line.
 - [ ] The PR and the TOML state that the product kernel now builds with `codegen-units=1`. Pass/fail.
 RETURN: `Plans/RETURN-2026-11-09-pr96-recheck-chad.md` on `codex/pr96-recheck-chad`.
+
+## Section 379: Chad, #92 re-check against the PM's rule (your relay 377). **MODEL** GPT-6.1-Sol, medium. Head `1609c752`.
+**The rule (PM, on #92):** the durable record is the single source of truth. After any error in the confirm, re-read
+the store and apply exactly what it holds (zone, RTC mode, clock), and show the user an error. The fix is `d4671046`.
+- [ ] Every error path in the confirm ends in one "reconcile from store" step, so the live state equals the re-read
+  record. Pass/fail plus line.
+- [ ] Your two scenarios (bytes land but fsync errors; refusal plus failed rollback) each have a test asserting
+  live == re-read record. Pass/fail plus line.
+- [ ] The user sees an error on any failure, and the THINK's confirm section states the rule. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr92-recheck3-chad.md` on `codex/pr92-recheck3-chad`.
