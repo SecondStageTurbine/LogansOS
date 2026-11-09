@@ -329,6 +329,9 @@ lock-idle-test = ["lock-boot-test"]
 lock-stall-test = ["lock-boot-test"]
 # `lock_park` (L2b): Arthur never receives the WM's reply; Super+L must lock.
 lock-park-test = ["lock-boot-test"]
+# `login_terminal_lock` (L1a.3): the lock with the terminal window in front
+# (docs/THINK-2026-10-31-l1a-terminal-window.md §6).
+lock-terminal-test = ["lock-boot-test", "atrium-terminal"]
 # `login_settings_store` (OT-88 S1): the store's boot test. A setting's minute is
 # four seconds (the idle lock fires at the chosen time, scaled); the session
 # ends at the first unlock.

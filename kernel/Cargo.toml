@@ -1143,6 +1143,10 @@ neo-test-lock-stall = ["neo-test-login", "sak-lock-route"]
 # Arthur never receives the WM's reply, so the WM parks in its send; Super+L
 # still locks the input (L2b, CP-57).
 neo-test-lock-park = ["neo-test-login", "sak-lock-route"]
+# L1a.3 (terminal_lock_park): the lock with the terminal window in front; the
+# client table's polling loop (SYS_TRY_RECV, the pointer route) and the kernel
+# pipe with the stdio chosen at spawn.
+neo-test-terminal-lock = ["neo-test-login", "sak-lock-route", "atrium-pointer-forward", "ipc-try-send", "close-object-handles", "pipe"]
 # OT-88 S1: the settings store over two boots (OP_SETTING from a test
 # client, applied live; the idle lock at the chosen time; read back after a
 # reboot). The lock's kernel, as the product's.
