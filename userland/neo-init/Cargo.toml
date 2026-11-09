@@ -219,6 +219,10 @@ setup-store-boot-test = ["setup-store", "login-boot-test"]
 setup-store-try-boot-test = ["setup-store", "setup-menu-boot-test"]
 # Test: force the volatile overlay (the Try session's store).
 setup-store-volatile-test = ["setup-store"]
+# F11 S3: the Time zone page searches libneo::tz's zones, and leaving it
+# confirms the clock once (through the clock's set_mode, which stores
+# TimeZone). A kernel without rtc-offset hides the page.
+setup-tz = ["setup-store", "desktop-clock"]
 # The setup menu's boot test (`setup_menu_walk`).
 setup-menu-boot-test = ["setup-menu", "desktop-intro-boot-test"]
 atrium-settings-store = ["login", "desktop-home", "dep:settings-core", "libneo/atrium-settings"]

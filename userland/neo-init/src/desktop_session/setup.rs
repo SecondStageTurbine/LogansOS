@@ -11,6 +11,14 @@
 //! S1 writes nothing: no store write (S2), no clock confirm (S3), no
 //! network call (S4), no install action (S7) and no action-log record (the
 //! queue arrives with S3's confirm). The choices are logged and dropped.
+//!
+//! **S3** (`setup-tz`, §2.2, §3.4): the Time zone page lists `libneo::tz`'s
+//! zones, searched by typing, each with its abbreviation and offset read from
+//! the computer's clock. Leaving it with a zone chosen confirms the clock
+//! **once**, through `clock::set_mode` (which also stores `TimeZone`); the
+//! page is then review-only. A clock already confirmed when the wizard starts
+//! makes it review-only from the start, and a kernel without `rtc-offset`
+//! hides it (the kill-switch: the wizard doesn't offer a zone it can't apply).
 
 use super::home::HomeFocus;
 use super::{Line, Rect, Scene, wm_rect};
@@ -21,7 +29,10 @@ use setup_core::{Finish, Input, Outcome, Wizard, ZONES};
 
 /// Run the wizard to its end. `Ok` when the session may go on.
 pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
-    let mut wizard = Wizard::new(cfg!(feature = "setup-stub-pages"));
+    let wizard = Wizard::new(cfg!(feature = "setup-stub-pages"));
+    #[cfg(feature = "setup-tz")]
+    let wizard = tz_page::attach(scene, wizard);
+    let mut wizard = wizard;
     begin(scene)?;
     show(scene, &wizard)?;
     log_page(&wizard);
@@ -45,10 +56,16 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                 log_page(&wizard);
             }
             Outcome::Nothing => {}
-            // Only a wizard with a zone directory asks (S3); this one has
-            // none, so a confirm is never made.
-            Outcome::Confirm(_) => {
-                wizard.confirmed(false);
+            // S3: leaving the Time zone page with a zone chosen.
+            Outcome::Confirm(zone) => {
+                #[cfg(feature = "setup-tz")]
+                let ok = tz_page::confirm(scene, zone)?;
+                #[cfg(not(feature = "setup-tz"))]
+                let ok = {
+                    let _ = zone;
+                    false
+                };
+                wizard.confirmed(ok);
                 show(scene, &wizard)?;
                 log_page(&wizard);
             }
@@ -60,10 +77,21 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                         Finish::Try => b"try" as &[u8],
                         Finish::Skipped => b"skip",
                     });
+                let zone = wizard.zone_name().unwrap_or(if wizard.reviewed() {
+                    "unknown"
+                } else {
+                    ZONES[c.zone]
+                });
+                #[cfg(feature = "setup-tz")]
+                let zone = if c.tz.is_none() && !wizard.reviewed() {
+                    "unset"
+                } else {
+                    zone
+                };
                 let line = match finish {
                     Finish::Try => line
                         .s(b" zone=")
-                        .s(ZONES[c.zone].as_bytes())
+                        .s(zone.as_bytes())
                         .s(b" reduce_motion=")
                         .n(u64::from(c.reduce_motion))
                         .s(b" reduce_transparency=")
@@ -109,6 +137,125 @@ fn store(scene: &mut Scene, c: &setup_core::Choices) {
         .n(u64::from(super::settings::volatile()))
         .s(b"\n")
         .emit();
+}
+
+/// S3: the zone directory over `libneo::tz`, and the one confirm.
+#[cfg(feature = "setup-tz")]
+mod tz_page {
+    use super::super::{Line, Scene, clock};
+    use alloc::boxed::Box;
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec::Vec;
+    use libneo::tz::{self, Basis, LocalResult, ZoneId};
+    use setup_core::{Wizard, ZONES, Zones};
+
+    /// The directory, with the computer's clock as read when the page was
+    /// built: the preview's offsets are for that reading.
+    struct Tz {
+        wall_s: i64,
+        rtc_local: bool,
+    }
+
+    impl Zones for Tz {
+        fn shortlist(&self) -> Vec<u16> {
+            ZONES.iter().filter_map(|n| tz::zone_by_name(n)).collect()
+        }
+
+        fn search(&self, typed: &str) -> Vec<u16> {
+            match tz::find_zone(typed.as_bytes()) {
+                Ok(id) => alloc::vec![id],
+                Err(near) => near.iter().flatten().copied().collect(),
+            }
+        }
+
+        fn name(&self, id: u16) -> &'static str {
+            tz::zone(id).map_or("?", |z| z.name)
+        }
+
+        /// The abbreviation and offset this reading has in `id`: an RTC that
+        /// holds local time reads as local time there (an ambiguous reading
+        /// takes the earlier instant, as the confirm does).
+        fn detail(&self, id: u16) -> String {
+            let utc = if self.rtc_local {
+                match tz::local_to_utc(self.wall_s, id) {
+                    LocalResult::Single(u) | LocalResult::Ambiguous(u, _) => u,
+                    LocalResult::Gap { offset_after, .. } => offset_after,
+                }
+            } else {
+                self.wall_s
+            };
+            let (_, off) = tz::utc_to_local(utc, id);
+            let abbr = if id == tz::UTC { "UTC" } else { off.abbr };
+            let (sign, s) = if off.seconds < 0 {
+                ('-', -off.seconds)
+            } else {
+                ('+', off.seconds)
+            };
+            match (s / 3600, s % 3600 / 60) {
+                (h, 0) => format!("{abbr}, UTC{sign}{h}"),
+                (h, m) => format!("{abbr}, UTC{sign}{h}:{m:02}"),
+            }
+        }
+    }
+
+    /// The wizard with the page as the clock allows: hidden on a kernel
+    /// without `rtc-offset`, review-only when already confirmed, otherwise
+    /// searchable.
+    pub fn attach(scene: &Scene, wizard: Wizard) -> Wizard {
+        let mode = scene.clock.mode();
+        let wall_s = libneo::sys_clock_gettime(libneo::CLOCK_REALTIME)
+            .map_or(0, |ns| (ns / 1_000_000_000) as i64);
+        let (page, confirmed) = match mode.basis {
+            Basis::Legacy => ("hidden", None),
+            Basis::Utc => ("review", Some(Some(mode.zone))),
+            Basis::Rtc => ("search", None),
+        };
+        Line::new()
+            .s(b"DESKTOP setup tz page=")
+            .s(page.as_bytes())
+            .s(b" rtc=")
+            .s(if mode.rtc_local { b"local" } else { b"utc" })
+            .s(b"\n")
+            .emit();
+        if mode.basis == Basis::Legacy {
+            return wizard.without_time_zone();
+        }
+        let zones = Tz {
+            wall_s,
+            rtc_local: mode.rtc_local,
+        };
+        wizard.with_zones(Box::new(zones), confirmed)
+    }
+
+    /// The one confirm: `clock::set_mode` stores the zone and, while the
+    /// clock is unconfirmed, confirms it. `true`: the clock is now confirmed
+    /// UTC. UTC itself is stored with an RTC that holds UTC: the same
+    /// reading, and the only way UTC can be confirmed (an RTC holding local
+    /// time with zone 0 means "no zone", `tz::rtc_reading_utc`).
+    pub fn confirm(scene: &mut Scene, zone: ZoneId) -> Result<bool, i32> {
+        let before = scene.clock.mode();
+        if before.basis == Basis::Utc {
+            // Confirmed meanwhile (write-once): no second call.
+            log(zone, b"already");
+            return Ok(true);
+        }
+        let rtc_local = before.rtc_local && zone != tz::UTC;
+        clock::set_mode(scene, zone, rtc_local)?;
+        let ok = scene.clock.mode().basis == Basis::Utc;
+        log(zone, if ok { b"1" } else { b"0" });
+        Ok(ok)
+    }
+
+    fn log(zone: ZoneId, confirmed: &[u8]) {
+        Line::new()
+            .s(b"DESKTOP setup tz=")
+            .s(tz::zone(zone).map_or("?", |z| z.name).as_bytes())
+            .s(b" confirmed=")
+            .s(confirmed)
+            .s(b"\n")
+            .emit();
+    }
 }
 
 fn log_page(wizard: &Wizard) {
