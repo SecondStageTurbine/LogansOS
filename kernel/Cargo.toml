@@ -252,6 +252,8 @@ desktop = [
     "usb-hotplug",
     "rtc-epoch",
     "rtc-offset",
+    # F11 S4: the setup menu's Network page reads the default interface.
+    "net-info",
     # F10 (J.c., 2026-11-02): held keys repeat, in every desktop kernel the
     # gate boots as in the product image.
     "key-autorepeat",
@@ -261,6 +263,11 @@ desktop = [
     "phase9-avx2-matmul",
     "forward-perf",
 ]
+# F11 S4 (setup-menu THINK §3.3): SYS_NET_IF_STATUS, a read-only snapshot of
+# the default network interface (link, driver, MAC, IPv4, the DHCP lease) for
+# the setup menu's Network page. Off => the number is ENOSYS and nothing is
+# compiled; the page then says "Network status is unavailable". On in `desktop`.
+net-info = []
 # OT-61 NetDialCap: require an explicit, scope-matching kernel capability for
 # SYS_NET_DIAL. OFF by default leaves the original three-argument ambient dial
 # implementation compiled unchanged (the Rule-1 kill-switch).

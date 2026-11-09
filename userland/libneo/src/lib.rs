@@ -76,6 +76,8 @@ pub mod install;
 pub mod install_abi;
 /// OT-61 C2.2: the `SYS_MEM_INFO` record (pure).
 pub mod mem_info;
+/// F11 S4: the `SYS_NET_IF_STATUS` record.
+pub mod net_if_status;
 pub mod nsync;
 pub mod nthread;
 pub mod ntls;
@@ -279,6 +281,9 @@ pub const SYS_NET_TCP_ENABLE_TLS: u64 = 0x18E;
 pub const SYS_NET_DIAL_CAP_DERIVE: u64 = 0x18F;
 /// Phase 10.3: userland randomness via the kernel CSPRNG DRBG.
 pub const SYS_GETRANDOM: u64 = 0x190;
+/// F11 S4: the default network interface's status (`net_if_status`);
+/// `ENOSYS` without the kernel's `net-info`.
+pub const SYS_NET_IF_STATUS: u64 = 0x191;
 // Atrium G1 compositor range (0x1A0..0x1AF) — mirror of the kernel numbers.
 // ENOSYS unless the kernel was built with `atrium-compositor-g1` AND the
 // runtime switch is on (the two-layer kill-switch).
@@ -1854,6 +1859,17 @@ pub fn sys_net_stats(handle: SocketHandle) -> Result<NetStatsV1, i64> {
         )
     };
     if r < 0 { Err(r) } else { Ok(stats) }
+}
+
+/// F11 S4: the default network interface's link, driver, address and lease.
+/// `Err(ENOSYS)` when the kernel has no `net-info`.
+pub fn sys_net_if_status() -> Result<net_if_status::NetIfStatus, i64> {
+    let mut rec = [0u8; net_if_status::RECORD_LEN];
+    let r = unsafe { raw3(SYS_NET_IF_STATUS, rec.as_mut_ptr() as u64, rec.len() as u64, 0) };
+    if r < 0 {
+        return Err(r);
+    }
+    net_if_status::decode(&rec).ok_or(EINVAL)
 }
 
 #[inline]

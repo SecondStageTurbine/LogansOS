@@ -377,6 +377,28 @@ pub fn now() -> u64 {
     CLOCK_TICKS.load(Ordering::Acquire)
 }
 
+/// F11 S4 (`SYS_NET_IF_STATUS`): the bound lease with the client's interface
+/// and clock, read in one hold of the client's lock (so the lease, the
+/// interface and the state agree). `None` unless a lease is in force
+/// (`Bound`, `Renewing` or `Rebinding`).
+#[cfg(feature = "net-info")]
+pub fn bound_lease() -> Option<crate::net::if_status_logic::Lease> {
+    let client = CLIENT.lock();
+    let lease = match client.state {
+        DhcpState::Bound | DhcpState::Renewing | DhcpState::Rebinding => client.lease?,
+        DhcpState::Init | DhcpState::Selecting | DhcpState::Requesting => return None,
+    };
+    Some(crate::net::if_status_logic::Lease {
+        ifindex: client.interface_id,
+        ip: lease.ip,
+        mask: lease.mask,
+        router: lease.router,
+        dns: lease.dns,
+        expiry: lease.expiry,
+        now: CLOCK_TICKS.load(Ordering::Acquire),
+    })
+}
+
 pub fn parse_message(packet: &[u8]) -> Result<DhcpMessage, DhcpError> {
     if packet.len() < DHCP_FIXED_LEN {
         return Err(DhcpError::Invalid);
