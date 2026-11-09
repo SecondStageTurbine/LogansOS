@@ -13,6 +13,11 @@
 //! 6. a forced GC after allocating well past one 1 MiB chunk (trap T3), then
 //!    the survivors are still intact.
 //!
+//! Before the engine starts, check 12 takes a 1 MiB block at 1 MiB alignment
+//! through neo-crt's `posix_memalign`: SpiderMonkey's GC chunks come that way
+//! (`gc/Memory.cpp`'s WASI branch, which our target uses), so a failure there
+//! is named before `JS_NewContext` can only return null.
+//!
 //! Exit 0 on a pass. A failed check prints `FAIL(n)` and exits `n`.
 
 #![no_main]
@@ -24,8 +29,8 @@ use mozjs::jsval::UndefinedValue;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_GC, JS_NewGlobalObject};
 use mozjs::rust::{
-    evaluate_script, CompileOptionsWrapper, HandleObject, JSEngine, RealmOptions, Runtime,
-    SIMPLE_GLOBAL_CLASS,
+    CompileOptionsWrapper, HandleObject, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS,
+    evaluate_script,
 };
 use neo_std_pal::SyscallHeap;
 
@@ -33,6 +38,11 @@ use neo_std_pal::SyscallHeap;
 static HEAP: SyscallHeap = SyscallHeap::new();
 
 const TAG: &str = "[ mozjs-smoke ]";
+
+unsafe extern "C" {
+    fn posix_memalign(out: *mut *mut core::ffi::c_void, align: usize, size: usize) -> i32;
+    fn free(p: *mut core::ffi::c_void);
+}
 
 /// (check, what, script, expected int32). Every script's value is an int32,
 /// so a wrong type fails the same way a wrong value does.
@@ -116,6 +126,17 @@ pub extern "C" fn _start() -> ! {
     neo_crt::init();
     println!("{TAG} start: SpiderMonkey 153.6 (mozjs 0.26.14), interpreter, one thread");
 
+    const MIB: usize = 1 << 20;
+    let mut block = ptr::null_mut();
+    let err = unsafe { posix_memalign(&mut block, MIB, MIB) };
+    println!("{TAG}   check 12: posix_memalign(1 MiB, 1 MiB) = {err}, {block:p}");
+    check(
+        12,
+        "a 1 MiB-aligned 1 MiB block (a GC chunk's shape) from posix_memalign",
+        err == 0 && !block.is_null() && (block as usize) % MIB == 0,
+    );
+    unsafe { free(block) };
+
     let engine = JSEngine::init().unwrap_or_else(|e| {
         println!("{TAG} FAIL(10) JSEngine::init: {e:?}");
         std::process::exit(10)
@@ -131,7 +152,11 @@ pub extern "C" fn _start() -> ! {
             &*options,
         )
     });
-    check(11, "a runtime, a context and a global in one realm", !global.get().is_null());
+    check(
+        11,
+        "a runtime, a context and a global in one realm",
+        !global.get().is_null(),
+    );
 
     for &(n, what, script, want) in CHECKS {
         let got = eval(&mut rt, global.handle(), script);
@@ -141,11 +166,19 @@ pub extern "C" fn _start() -> ! {
 
     let kept = eval(&mut rt, global.handle(), ALLOCATE);
     println!("{TAG}   check 7: allocated 40000 objects, kept {kept:?}");
-    check(7, "about 4 MiB allocated (past one chunk), 2500 kept", kept == Some(2500));
+    check(
+        7,
+        "about 4 MiB allocated (past one chunk), 2500 kept",
+        kept == Some(2500),
+    );
     unsafe { JS_GC(rt.cx(), GCReason::API) };
     let ok = eval(&mut rt, global.handle(), SURVIVORS);
     println!("{TAG}   check 8: after JS_GC, {ok:?} of 2500 survivors intact");
-    check(8, "after a forced GC every survivor is intact", ok == Some(2500));
+    check(
+        8,
+        "after a forced GC every survivor is intact",
+        ok == Some(2500),
+    );
 
     println!("{TAG} PASS");
     std::process::exit(0)
