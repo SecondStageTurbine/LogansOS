@@ -333,7 +333,14 @@ pub fn run() -> i32 {
             libneo::sys_sched_yield();
         }
         wakes += 1;
-        // The first wakes, for a scenario's diagnosis.
+        // The first wakes, for a scenario's diagnosis: each step's end, in
+        // microseconds since the wake.
+        let woke = now_ns();
+        let trace = |step: &[u8]| {
+            if wakes <= TRACE {
+                log_pair(b"TERM step=", 0, step, now_ns().saturating_sub(woke) / 1000);
+            }
+        };
         if wakes <= TRACE {
             log_signed_pair(b"TERM wake n=", wakes, b" ready=", ready);
         }
@@ -350,6 +357,7 @@ pub fn run() -> i32 {
             );
         }
 
+        trace(b" mode us=");
         // 2. At most READ_BUDGET bytes of output (§3.3).
         let mut streaming = false;
         if let Some(out) = child.stdout {
@@ -373,6 +381,7 @@ pub fn run() -> i32 {
             }
         }
 
+        trace(b" output us=");
         // 3. Keys.
         for _ in 0..KEYS_PER_WAKE {
             let mut event = [0u8; INPUT_EVENT_V1_LEN];
@@ -420,6 +429,7 @@ pub fn run() -> i32 {
         }
         let _ = session.take_bell();
 
+        trace(b" keys us=");
         // 4. The child's exit (a killed child keeps no code: ESRCH).
         if !child.exited {
             match sys_wait(child.process, WAIT_FLAG_WNOHANG) {
@@ -442,8 +452,11 @@ pub fn run() -> i32 {
             }
         }
 
+        trace(b" exit us=");
         // 5. Draw what changed and commit its band.
-        if let Some(band) = renderer.draw(session.screen(), pixels) {
+        let drawn = renderer.draw(session.screen(), pixels);
+        trace(b" draw us=");
+        if let Some(band) = drawn {
             serial += 1;
             if serial <= TRACE + 1 {
                 log_pair(
