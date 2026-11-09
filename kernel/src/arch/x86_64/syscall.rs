@@ -1358,6 +1358,9 @@ extern "C" fn syscall_dispatch(
         #[cfg(not(feature = "net-dial-cap"))]
         SYS_NET_DIAL_CAP_DERIVE => ENOSYS,
         SYS_GETRANDOM => sys_getrandom_impl(a0 as *mut u8, a1 as usize),
+        // The `net-info` kill-switch: off, the number answers ENOSYS.
+        #[cfg(not(feature = "net-info"))]
+        SYS_NET_IF_STATUS => ENOSYS,
         #[cfg(feature = "net-info")]
         SYS_NET_IF_STATUS => sys_net_if_status_impl(
             a0 as *mut crate::net::if_status_logic::NetIfStatusV1,
