@@ -132,3 +132,19 @@ Head `697ad91c`. The problem is in the PR body and #82 (a 6-line no-op moved `.t
 - [ ] The new ceilings come from the new measurement plus the file's margins, with reasons recorded. Pass/fail.
 - [ ] Nothing changes the product image itself; only the measurement changes. Pass/fail plus line.
 RETURN: `Plans/RETURN-2026-11-09-pr96-review-chad.md` on `codex/pr96-review-chad`.
+
+## Section 377: Chad, #92 re-check of the all-or-nothing confirm (your relay 373). **MODEL** GPT-6.1-Sol, medium. Head `5dd0e4e9`.
+The fix is `3cebc991`.
+- [ ] A failed or refused settings write leaves the stored zone, the RTC mode and the live clock all unchanged:
+  nothing is applied live before the write is read back, and a partial write is rolled back. Pass/fail plus line.
+- [ ] A test forces the write to fail and checks all three are unchanged. Pass/fail plus line.
+RETURN: `Plans/RETURN-2026-11-09-pr92-recheck2-chad.md` on `codex/pr92-recheck2-chad`.
+
+## Section 378: Chad, #96 re-check (your relay 376). **MODEL** GPT-6.1-Sol, medium. Head `0eea4614`.
+**PM decision on your item 5:** `codegen-units=1` for the product kernel is accepted. It changes the shipped image, but
+deliberately: it's the standard release setting, it gives deterministic codegen, and the full gate ran with it. #96 should
+say so in its PR body and in `tools/size-budget.toml`'s reason.
+- [ ] The ceilings are re-baselined from #96's own CI measurement plus the file's margins (`1a09cd3b`), with reasons.
+  Pass/fail plus line.
+- [ ] The PR and the TOML state that the product kernel now builds with `codegen-units=1`. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr96-recheck-chad.md` on `codex/pr96-recheck-chad`.

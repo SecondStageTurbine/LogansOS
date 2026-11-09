@@ -1,0 +1,663 @@
+{
+  "schema": "quant-drift-kat-v1",
+  "kind": "dequantized-f32 control of the 37 clear-gap positions",
+  "date": "2026-11-08T00:00:00Z",
+  "inputs": {
+    "neom_sha256": "b934a7149ede095d9b11e58e5aae9411a233d578e6d772f1eed205a54122ffc9",
+    "neom_blake3": "a32e4a1ba94a850724c15d840f3ae2c44902d9f1f34d8069bac5fcb37e1ccafe",
+    "shipped_q4_gguf_sha256": "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db",
+    "dequantized_f32_gguf_sha256": "89ac62425c46039797e260ad4789adeda174320aa400e8b4b0d4a5e9aaa4ac25",
+    "dequantized_f32_gguf_bytes": 2526617440,
+    "dequantization": "llama-quantize --allow-requantize Q4_K_M -> F32 (one dequantization, read by both runtimes)",
+    "llama_cpp_commit": "a2b301831d05b07860de508d229d430207127802",
+    "llama_cpp_diagnostic_patch": "src/models/qwen2.cpp: + res->t_layer_inp[il] = inpL; (exposes layer inputs; no math change)",
+    "corpus_window": "tokens 6144..8191 of the pinned WikiText-2 slice; BLAKE3 1782216d7805bdc404e80dbc34f5af707e290559711d6e8dc23b5173567cecdb",
+    "clear_gap_definition": "ours_vs_llama_q4 divergences with left_gap > 0.5 or right_gap > 0.5 (37 rows; 30 are the same shared-prefix position 7)",
+    "shared_prefix": "all 30 prompts have identical ids[0..8]; the 30 index-7 rows are one measured row replicated"
+  },
+  "analysis": {
+    "summary": {
+      "positions": 37,
+      "runtime_max_abs_all_vocab": 0.26563262939453125,
+      "kernel_vs_f64_max": 0.05394741075520315,
+      "llama_vs_f64_max": 0.29910846727375784,
+      "top1_identical_all": true,
+      "top1_mismatches": 0,
+      "index7_rows": 30,
+      "unique_indexes": [
+        7,
+        17,
+        19,
+        20,
+        21
+      ]
+    },
+    "per_position": [
+      {
+        "prompt": "act_read",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "act_write",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "act_write",
+        "index": 20,
+        "kernel_vs_llama_max": 0.08940741419792175,
+        "kernel_vs_f64_max": 0.018529771988571753,
+        "llama_vs_f64_max": 0.10678660792607175,
+        "top1_kernel": 198,
+        "top1_llama": 198,
+        "top1_f64": 198,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "boot_hello_world",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "confirm",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "console_hello",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "console_model",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "delete",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_again",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_apps",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_date",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_help",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_list",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_session",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_time",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "desktop_tokyo",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "kill",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "login_hi",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "login_hi",
+        "index": 17,
+        "kernel_vs_llama_max": 0.2451610565185547,
+        "kernel_vs_f64_max": 0.05394741075520315,
+        "llama_vs_f64_max": 0.29910846727375784,
+        "top1_kernel": 872,
+        "top1_llama": 872,
+        "top1_f64": 872,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "multi_clean",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "multi_clean",
+        "index": 19,
+        "kernel_vs_llama_max": 0.11298370361328125,
+        "kernel_vs_f64_max": 0.03232640334991288,
+        "llama_vs_f64_max": 0.14531010696319413,
+        "top1_kernel": 198,
+        "top1_llama": 198,
+        "top1_f64": 198,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "multi_runaway",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "posture",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "posture_off",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "posture_yolo",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "preview_calc",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "preview_time",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "preview_time",
+        "index": 20,
+        "kernel_vs_llama_max": 0.1835474967956543,
+        "kernel_vs_f64_max": 0.018239588692662068,
+        "llama_vs_f64_max": 0.19976632713301345,
+        "top1_kernel": 198,
+        "top1_llama": 198,
+        "top1_f64": 198,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "read_scratch",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "read_scratch",
+        "index": 20,
+        "kernel_vs_llama_max": 0.1394057273864746,
+        "kernel_vs_f64_max": 0.024008090593437004,
+        "llama_vs_f64_max": 0.15690351028963168,
+        "top1_kernel": 872,
+        "top1_llama": 872,
+        "top1_f64": 872,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "send_external",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "send_external",
+        "index": 20,
+        "kernel_vs_llama_max": 0.26563262939453125,
+        "kernel_vs_f64_max": 0.031233110542544296,
+        "llama_vs_f64_max": 0.29686573993707555,
+        "top1_kernel": 872,
+        "top1_llama": 872,
+        "top1_f64": 872,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "undo",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "write_danger",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "write_forbidden",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "write_reversible",
+        "index": 7,
+        "kernel_vs_llama_max": 0.08672666549682617,
+        "kernel_vs_f64_max": 0.010073281214939556,
+        "llama_vs_f64_max": 0.09470696066427031,
+        "top1_kernel": 498,
+        "top1_llama": 498,
+        "top1_f64": 498,
+        "all_top1_equal": true
+      },
+      {
+        "prompt": "write_reversible",
+        "index": 21,
+        "kernel_vs_llama_max": 0.2073535919189453,
+        "kernel_vs_f64_max": 0.015087527645171406,
+        "llama_vs_f64_max": 0.22244111956411672,
+        "top1_kernel": 198,
+        "top1_llama": 198,
+        "top1_f64": 198,
+        "all_top1_equal": true
+      }
+    ]
+  },
+  "layer_localization": {
+    "prompt": "preview_time",
+    "index": 20,
+    "layers": [
+      {
+        "layer": 0,
+        "llama_vs_f64_max": 0.0,
+        "kernel_vs_f64_max": 0.0,
+        "llama_vs_kernel_max": 0.0
+      },
+      {
+        "layer": 1,
+        "llama_vs_f64_max": 0.03036665916442871,
+        "kernel_vs_f64_max": 0.00011432170867919922,
+        "llama_vs_kernel_max": 0.030305862426757812
+      },
+      {
+        "layer": 2,
+        "llama_vs_f64_max": 0.033705711364746094,
+        "kernel_vs_f64_max": 0.00014519691467285156,
+        "llama_vs_kernel_max": 0.033641815185546875
+      },
+      {
+        "layer": 3,
+        "llama_vs_f64_max": 0.036426544189453125,
+        "kernel_vs_f64_max": 0.00019550323486328125,
+        "llama_vs_kernel_max": 0.03635096549987793
+      },
+      {
+        "layer": 4,
+        "llama_vs_f64_max": 0.03425908088684082,
+        "kernel_vs_f64_max": 0.00029331445693969727,
+        "llama_vs_kernel_max": 0.0342257022857666
+      },
+      {
+        "layer": 5,
+        "llama_vs_f64_max": 0.03422689437866211,
+        "kernel_vs_f64_max": 0.00030237436294555664,
+        "llama_vs_kernel_max": 0.03432512283325195
+      },
+      {
+        "layer": 6,
+        "llama_vs_f64_max": 0.03312492370605469,
+        "kernel_vs_f64_max": 0.0003729574382305145,
+        "llama_vs_kernel_max": 0.033213138580322266
+      },
+      {
+        "layer": 7,
+        "llama_vs_f64_max": 0.03239727020263672,
+        "kernel_vs_f64_max": 0.0007156729698181152,
+        "llama_vs_kernel_max": 0.032601356506347656
+      },
+      {
+        "layer": 8,
+        "llama_vs_f64_max": 0.030644893646240234,
+        "kernel_vs_f64_max": 0.0009653568267822266,
+        "llama_vs_kernel_max": 0.030856609344482422
+      },
+      {
+        "layer": 9,
+        "llama_vs_f64_max": 0.03753519058227539,
+        "kernel_vs_f64_max": 0.0013015270233154297,
+        "llama_vs_kernel_max": 0.037024736404418945
+      },
+      {
+        "layer": 10,
+        "llama_vs_f64_max": 0.02832651138305664,
+        "kernel_vs_f64_max": 0.0012819766998291016,
+        "llama_vs_kernel_max": 0.028612136840820312
+      },
+      {
+        "layer": 11,
+        "llama_vs_f64_max": 0.03622269630432129,
+        "kernel_vs_f64_max": 0.0013365745544433594,
+        "llama_vs_kernel_max": 0.035881757736206055
+      },
+      {
+        "layer": 12,
+        "llama_vs_f64_max": 0.04033684730529785,
+        "kernel_vs_f64_max": 0.0010042190551757812,
+        "llama_vs_kernel_max": 0.040584564208984375
+      },
+      {
+        "layer": 13,
+        "llama_vs_f64_max": 0.040154457092285156,
+        "kernel_vs_f64_max": 0.001131296157836914,
+        "llama_vs_kernel_max": 0.03943657875061035
+      },
+      {
+        "layer": 14,
+        "llama_vs_f64_max": 0.031389474868774414,
+        "kernel_vs_f64_max": 0.0015347003936767578,
+        "llama_vs_kernel_max": 0.029854774475097656
+      },
+      {
+        "layer": 15,
+        "llama_vs_f64_max": 0.028630733489990234,
+        "kernel_vs_f64_max": 0.0016989707946777344,
+        "llama_vs_kernel_max": 0.029433250427246094
+      },
+      {
+        "layer": 16,
+        "llama_vs_f64_max": 0.030077457427978516,
+        "kernel_vs_f64_max": 0.004363298416137695,
+        "llama_vs_kernel_max": 0.031226158142089844
+      },
+      {
+        "layer": 17,
+        "llama_vs_f64_max": 0.026437759399414062,
+        "kernel_vs_f64_max": 0.0035152435302734375,
+        "llama_vs_kernel_max": 0.029618263244628906
+      },
+      {
+        "layer": 18,
+        "llama_vs_f64_max": 0.02404928207397461,
+        "kernel_vs_f64_max": 0.003413677215576172,
+        "llama_vs_kernel_max": 0.02746295928955078
+      },
+      {
+        "layer": 19,
+        "llama_vs_f64_max": 0.02106475830078125,
+        "kernel_vs_f64_max": 0.0036535263061523438,
+        "llama_vs_kernel_max": 0.024718284606933594
+      },
+      {
+        "layer": 20,
+        "llama_vs_f64_max": 0.024964630603790283,
+        "kernel_vs_f64_max": 0.004221439361572266,
+        "llama_vs_kernel_max": 0.02462679147720337
+      },
+      {
+        "layer": 21,
+        "llama_vs_f64_max": 0.03639507293701172,
+        "kernel_vs_f64_max": 0.004271507263183594,
+        "llama_vs_kernel_max": 0.032692909240722656
+      },
+      {
+        "layer": 22,
+        "llama_vs_f64_max": 0.042159080505371094,
+        "kernel_vs_f64_max": 0.004538774490356445,
+        "llama_vs_kernel_max": 0.038134098052978516
+      },
+      {
+        "layer": 23,
+        "llama_vs_f64_max": 0.04912233352661133,
+        "kernel_vs_f64_max": 0.005236625671386719,
+        "llama_vs_kernel_max": 0.0452570915222168
+      }
+    ],
+    "layer0_precision_variants": {
+      "prompt": "preview_time",
+      "index": 20,
+      "exact_f64_vs_kernel_max": 5.97e-11,
+      "llama_vs_exact_f64_max": 0.03036677373007235,
+      "llama_vs_f64_with_f16_kv_max": 0.0003406377133681193,
+      "note": "Layer 0 input is the token embedding (bit-identical). With f16 K/V the numpy layer-0 output matches llama.cpp to 3.4e-4; with f32/f64 K/V it matches the kernel to 6e-11. So llama.cpp is running an f16 K/V cache here, while the kernel runs f32 K/V."
+    }
+  },
+  "bar": {
+    "written": "max |delta logit| <= 0.05 at all 37, and identical top-1 at all 37",
+    "literal_kernel_vs_llama": "FAIL (max 0.2656; top-1 37/37 identical)",
+    "kernel_vs_exact_f64": "max 0.0539 (one position, login_hi 17), top-1 37/37 identical",
+    "llama_vs_exact_f64": "max 0.2991, top-1 37/37 identical",
+    "verdict": "The kernel tracks the exact f64 result 5-10x closer than llama.cpp does. The literal bar is failed by the reference runtime, not by the kernel: llama.cpp runs an f16 K/V cache (confirmed at layer 0), the kernel runs f32 K/V. No kernel forward-pass bug."
+  },
+  "block_identity": {
+    "tensors": [
+      {
+        "name": "blk.0.attn_q.weight",
+        "type": "Q5_0",
+        "blocks": 4,
+        "block_bytes": 22,
+        "neom_bytes_identical": true,
+        "max_abs_dequant_diff": 0.0,
+        "f16_rel_rms": 0.04986340552568436,
+        "f16_max_abs_err": 0.0008258819580078125,
+        "neom_total_bytes": 551936,
+        "gguf_total_bytes": 551936
+      },
+      {
+        "name": "blk.0.ffn_down.weight",
+        "type": "Q6_K",
+        "blocks": 4,
+        "block_bytes": 210,
+        "neom_bytes_identical": true,
+        "max_abs_dequant_diff": 0.0,
+        "f16_rel_rms": 0.023343389853835106,
+        "f16_max_abs_err": 0.00156402587890625,
+        "neom_total_bytes": 3575040,
+        "gguf_total_bytes": 3575040
+      },
+      {
+        "name": "blk.2.ffn_down.weight",
+        "type": "Q4_K",
+        "blocks": 4,
+        "block_bytes": 144,
+        "neom_bytes_identical": true,
+        "max_abs_dequant_diff": 0.0,
+        "f16_rel_rms": 0.07127293944358826,
+        "f16_max_abs_err": 0.00047898292541503906,
+        "neom_total_bytes": 2451456,
+        "gguf_total_bytes": 2451456
+      },
+      {
+        "name": "output.weight",
+        "type": "Q8_0",
+        "blocks": 4,
+        "block_bytes": 34,
+        "neom_bytes_identical": true,
+        "max_abs_dequant_diff": 0.0,
+        "f16_rel_rms": 0.006514823995530605,
+        "f16_max_abs_err": 0.0002205371856689453,
+        "neom_total_bytes": 144643072,
+        "gguf_total_bytes": 144643072
+      }
+    ],
+    "all_291_byte_identical": true
+  }
+}

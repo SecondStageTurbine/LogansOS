@@ -1,0 +1,14 @@
+{
+  "schema": "quant-drift-control-v1",
+  "candidate": "llama_q8_0",
+  "reference": "llama_f32_transformers",
+  "candidate_ppl": 30.303362732,
+  "reference_ppl": 30.746210417,
+  "ppl_relative_delta": 0.014403326,
+  "top1_agreement": 0.901004304,
+  "top1_matches": 628,
+  "top1_positions": 697,
+  "bar_top1_at_least_98pct": false,
+  "bar_ppl_within_1pct": false,
+  "pass": false
+}
