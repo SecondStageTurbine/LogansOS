@@ -57,3 +57,22 @@ the measurement, not the ceilings:
 4. Add a KAT or self-test showing the measurement is stable: build twice with a no-op change and compare.
 
 Gate: full-alone (`tools/xtask`, `.github/workflows`). Close-gate, scan, PR, then post PM:.
+
+## Section 369: Chad, #92 (setup menu S3: the Time zone page and the one confirm). **MODEL** GPT-6-Luna, high: contained userland.
+Head `46370757`. The design is `docs/THINK-2026-11-02-setup-menu.md` §5 (also §2.2, §3.4, §4.4).
+- [ ] The zone list comes from the attached `Zones` directory, and each entry shows the right id, abbreviation and
+  offset. Check two zones by hand against the tz data. Pass/fail plus line.
+- [ ] Search: typing filters the list; on this page Space types, and on every other page Space still chooses. Pass/fail.
+- [ ] Leaving the page with a zone chosen gives one confirm (`Outcome::Confirm(id)`), the clock shows the new zone's
+  time, and declining leaves the old zone untouched. Pass/fail plus line.
+- [ ] The zone is written through the S2 store (checked, read back, applied live), and nothing is written when the
+  store is volatile. Pass/fail plus line.
+- [ ] The scenario's witness would fail on a wrong zone or a missing confirm. Pass/fail plus the xtask line.
+- [ ] Off by default; with the feature off, today's image is unchanged. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr92-review-chad.md` on `codex/pr92-review-chad`.
+
+## Section 370: Dexter, #93 (THINK C3c-1 step 4: SpiderMonkey green on target). DeepSeek, high: docs only, light. Head `21b56b16`.
+- [ ] The run it cites (42556683335) is green on all four QEMU shards, and `mozjs_smoke` passed in it. Check the job log.
+- [ ] xtask requires every `ok(n)` line it claims, so a missing line fails the scenario. Pass/fail plus the xtask line.
+- [ ] What the THINK says is still missing for C3c-1 (JIT off, single thread, the product-crates PR) matches the code. Pass/fail.
+RETURN: `Plans/RETURN-2026-11-09-pr93-design-dexter.md` on `dexter/pr93-design`.
