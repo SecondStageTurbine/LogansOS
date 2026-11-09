@@ -1,0 +1,251 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# The Zenbook timing image, built and published once for J.c.'s test run
+# (Plans/DISPATCH-2026-11-09-seat-f-arthur-q8-zenbook-timing.md; PR #97; the
+# PM's go-ahead on #97, 2026-11-09). It builds `cargo xtask iso --with-model
+# <q4_k_m.neom> --quant-timing <q8_0.neom>` from PR #97's head, exactly, with
+# both models imported from the pinned upstream GGUFs (xtask holds each to its
+# BLAKE3 pin), and publishes it as a test-only pre-release. The PM deletes the
+# release after J.c.'s Q4/Q8 decision.
+#
+# Runs only when this file is pushed (it lives on its own branch, never on
+# main). GitHub-hosted runners only; only the publish job holds a write token.
+name: Zenbook timing image
+
+on:
+  push:
+    paths:
+      - .github/workflows/zenbook-timing-image.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zenbook-timing-image
+  cancel-in-progress: false
+
+env:
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_RETRY: "10"
+  # PR #97's head: the code the image is built from.
+  BUILD_SHA: 79d72ce25e214e9efbedc2a9af9a612eebcf9e28
+  TAG: zenbook-timing-2026-11-09
+  MODEL_REPO: Qwen/Qwen2.5-0.5B-Instruct-GGUF
+  MODEL_REV: 9217f5db79a29953eb74d5343926648285ec7e67
+  Q4_FILE: qwen2.5-0.5b-instruct-q4_k_m.gguf
+  Q4_SHA256: 74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db
+  Q8_FILE: qwen2.5-0.5b-instruct-q8_0.gguf
+  Q8_SHA256: ca59ca7f13d0e15a8cfa77bd17e65d24f6844b554a7b6c12e07a5f89ff76844e
+  MODEL_LICENSE_SHA256: 832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e
+  Q4_BLAKE3: a32e4a1ba94a850724c15d840f3ae2c44902d9f1f34d8069bac5fcb37e1ccafe
+  Q8_BLAKE3: 1cfd06dc7fe42710f8fab7d337a681ac5527a46e5b2ba6204e929f210055cd4d
+
+jobs:
+  build:
+    name: Build the timing ISO
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      DOCKER_CONFIG: ${{ github.workspace }}/.docker
+      CONTAINER_PATH: /workspace/.rustup-home/toolchains/nightly-2026-04-16-x86_64-unknown-linux-gnu/bin:/workspace/.cargo-home/bin:/home/neo/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Checkout PR #97's head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.BUILD_SHA }}
+
+      - name: Prepare container cache directories
+        run: mkdir -p .docker .home .rustup-home .cargo-home target/timing/model
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache-gh
+          key: buildx-${{ runner.os }}-${{ hashFiles('Dockerfile') }}
+          restore-keys: |
+            buildx-${{ runner.os }}-
+
+      - name: Build dev container
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          tags: neoplutarch-dev:latest
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache-gh
+          cache-to: type=local,dest=/tmp/.buildx-cache-new-gh,mode=max
+
+      - name: Rotate buildx cache
+        run: |
+          rm -rf /tmp/.buildx-cache-gh
+          mv /tmp/.buildx-cache-new-gh /tmp/.buildx-cache-gh
+
+      - name: Restore cargo registry, git, and target cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ github.workspace }}/.rustup-home
+            ${{ github.workspace }}/.cargo-home/registry
+            ${{ github.workspace }}/.cargo-home/git
+            ${{ github.workspace }}/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-timing-${{ env.BUILD_SHA }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}-
+            cargo-${{ runner.os }}-
+
+      - name: Bootstrap pinned Rust toolchain on cache miss
+        run: |
+          TOOLCHAIN=nightly-2026-04-16-x86_64-unknown-linux-gnu
+          if [ ! -x ".rustup-home/toolchains/${TOOLCHAIN}/bin/cargo" ]; then
+            docker compose run --rm \
+              --user "$(id -u):$(id -g)" \
+              -e HOME=/home/neo \
+              -e CARGO_HOME=/home/neo/.cargo \
+              -e RUSTUP_HOME=/workspace/.rustup-home \
+              neo \
+              /home/neo/.cargo/bin/rustup toolchain install nightly-2026-04-16 \
+                --profile minimal \
+                --component rust-src,llvm-tools-preview,rustfmt,clippy \
+                --target x86_64-unknown-none,aarch64-unknown-none
+          fi
+
+      # Both GGUFs from raw bytes at the pinned revision: each one's LFS oid
+      # from the repository tree, then its SHA-256; the LICENSE's SHA-256 and
+      # text (Apache License 2.0). Any mismatch fails the run.
+      - name: Fetch both models and the licence
+        run: |
+          set -euo pipefail
+          d=target/timing/model
+          base="https://huggingface.co/${MODEL_REPO}"
+          curl -fsSL --retry 5 -o "$d/tree.json" "https://huggingface.co/api/models/${MODEL_REPO}/tree/${MODEL_REV}"
+          python3 - "$d/tree.json" <<'PY'
+          import json, os, sys
+          tree = {e["path"]: e for e in json.load(open(sys.argv[1]))}
+          assert "LICENSE" in tree, "no LICENSE at the pinned revision"
+          for f, sha in (("Q4_FILE", "Q4_SHA256"), ("Q8_FILE", "Q8_SHA256")):
+              oid = tree[os.environ[f]]["lfs"]["oid"]
+              assert oid == os.environ[sha], f"{os.environ[f]}: LFS oid {oid} is not the pin"
+              print(os.environ[f], "oid", oid)
+          PY
+          curl -fsSL --retry 5 -o "$d/LICENSE" "$base/resolve/${MODEL_REV}/LICENSE"
+          echo "${MODEL_LICENSE_SHA256}  $d/LICENSE" | sha256sum -c -
+          grep -q "Apache License" "$d/LICENSE"
+          grep -q "Version 2.0, January 2004" "$d/LICENSE"
+          for f in "$Q4_FILE" "$Q8_FILE"; do
+            curl -fSL --retry 5 -o "$d/$f" "$base/resolve/${MODEL_REV}/$f"
+          done
+          echo "${Q4_SHA256}  $d/${Q4_FILE}" | sha256sum -c -
+          echo "${Q8_SHA256}  $d/${Q8_FILE}" | sha256sum -c -
+          ls -l "$d"
+
+      # In the dev container: import both (neomc), then the timing image.
+      # xtask holds the Q4_K_M .neom and its vocab to the product pins and the
+      # Q8_0 .neom to #90's (669,799,936 B, BLAKE3 1cfd06dc...).
+      - name: Import both models and build the timing ISO
+        run: |
+          docker compose run --rm \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/workspace/.home \
+            -e CARGO_HOME=/workspace/.cargo-home \
+            -e RUSTUP_HOME=/workspace/.rustup-home \
+            -e PATH="${CONTAINER_PATH}" \
+            -e LIMINE_DIR=/opt/limine \
+            -e NEO_SMP=4 \
+            -e CARGO_HTTP_MULTIPLEXING \
+            -e CARGO_NET_RETRY \
+            -e Q4_FILE -e Q8_FILE \
+            neo \
+            bash -euo pipefail -c '
+              d=target/timing/model
+              cargo build -p neomc --release
+              target/release/neomc import "$d/$Q4_FILE" -o "$d/q4_k_m.neom" --vocab-output "$d/q4_k_m.vocab"
+              target/release/neomc import "$d/$Q8_FILE" -o "$d/q8_0.neom"
+              cargo xtask iso --with-model "$d/q4_k_m.neom" --quant-timing "$d/q8_0.neom"
+            '
+          ls -l boot/neoplutarch-quant-timing.iso
+          (cd boot && sha256sum neoplutarch-quant-timing.iso > SHA256SUMS && cat SHA256SUMS)
+          cp target/timing/model/LICENSE boot/MODEL-LICENSE-Apache-2.0.txt
+
+      - name: Hand the ISO to the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: zenbook-timing-iso
+          path: |
+            boot/neoplutarch-quant-timing.iso
+            boot/SHA256SUMS
+            boot/MODEL-LICENSE-Apache-2.0.txt
+          compression-level: 0
+          retention-days: 3
+
+  publish:
+    name: Publish the test-only pre-release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zenbook-timing-iso
+          path: pkg
+
+      - name: Write the release notes
+        run: |
+          set -euo pipefail
+          sha=$(cut -d' ' -f1 pkg/SHA256SUMS)
+          bytes=$(stat -c %s pkg/neoplutarch-quant-timing.iso)
+          mib=$(( (bytes + 1048575) / 1048576 ))
+          {
+            echo "**Test only: the Zenbook timing image (Q4_K_M vs Q8_0).** Not a LogansOS release, not image A."
+            echo
+            echo "It measures Arthur's reply speed with the shipped Qwen2.5-0.5B-Instruct **Q4_K_M** and with **Q8_0**, in one boot, so J.c. can decide #90 on measured numbers. Built from PR #97's head \`${BUILD_SHA}\`."
+            echo
+            echo "**It writes nothing to any disk.** No log sink, no NeoFS, no install; the laptop's internal disk is never touched. It boots, builds both models, runs five short commands on each, prints the times and holds the screen."
+            echo
+            echo "### Steps"
+            echo
+            echo "1. Write \`neoplutarch-quant-timing.iso\` (${mib} MiB) to the Kingston stick with **Rufus in DD image mode** (check the target is the ~30 GB stick, never the laptop's disk)."
+            echo "2. Power the Zenbook off fully, insert the stick, power on, press **Esc** at the ASUS logo and pick the Kingston (UEFI) entry. Let it run; don't interrupt it."
+            echo "3. When the screen reads \`TIMING done runs=10 ...\`, **photograph the whole screen** (and a closer shot of the \`TIMING\` lines if the text is small). Then power off and remove the stick."
+            echo
+            echo "### Checks"
+            echo
+            echo "- ISO SHA-256: \`${sha}\` (also in \`SHA256SUMS\`)"
+            echo "- Q4_K_M: \`${Q4_FILE}\` (SHA-256 \`${Q4_SHA256}\`), imported \`.neom\` BLAKE3 \`${Q4_BLAKE3}\`"
+            echo "- Q8_0: \`${Q8_FILE}\` (SHA-256 \`${Q8_SHA256}\`), imported \`.neom\` BLAKE3 \`${Q8_BLAKE3}\`"
+            echo "- Both from \`${MODEL_REPO}\` at revision \`${MODEL_REV}\`. The image's kernel refuses a model whose BLAKE3 isn't its pin."
+            echo
+            echo "### Model licence"
+            echo
+            echo "The models are Qwen2.5-0.5B-Instruct, Copyright (c) Alibaba Cloud (the Qwen team), under the Apache License 2.0. The image holds them converted to LogansOS's \`.neom\` format by \`neomc\` (no retraining). The upstream LICENSE file at that revision (SHA-256 \`${MODEL_LICENSE_SHA256}\`) follows; it is also attached as \`MODEL-LICENSE-Apache-2.0.txt\`."
+            echo
+            echo '```'
+            cat pkg/MODEL-LICENSE-Apache-2.0.txt
+            echo '```'
+          } > notes.md
+          cat notes.md
+
+      - name: Create the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            echo "release $TAG already exists; not replacing it" >&2
+            exit 1
+          fi
+          gh release create "$TAG" \
+            pkg/neoplutarch-quant-timing.iso pkg/SHA256SUMS pkg/MODEL-LICENSE-Apache-2.0.txt \
+            --repo "$REPO" --target "$BUILD_SHA" --prerelease \
+            --title "Zenbook timing image (Q4_K_M vs Q8_0), test only" \
+            --notes-file notes.md
+          gh release view "$TAG" --repo "$REPO" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'
