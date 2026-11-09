@@ -5699,7 +5699,7 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // NEO_TEST_EXTRA_FEATURES=neo-test-pipe-stdio-late-control (must FAIL:
         // pipe_stdio_prompt_not_in_pipe, or pipe_stdio_late_window_not_hit).
         name: "pipe_stdio",
-        feature: "neo-test-pipe-stdio",
+        feature: "neo-test-pipe-stdio-late-control",
         user_feature: Some("pipe-stdio-test"),
         ignored: false,
         limine_kaslr: None,
