@@ -201,6 +201,19 @@ impl Regions {
     }
 }
 
+/// Bytes to map for `layout` when no region can hold it: its size, plus its
+/// alignment when that is more than a page (a fresh map is only
+/// page-aligned), and at least 64 KiB.
+const fn grow_need(layout: Layout) -> usize {
+    let pad = if layout.align() > PAGE_SIZE {
+        layout.align()
+    } else {
+        0
+    };
+    let need = layout.size().saturating_add(pad);
+    if need < 64 * 1024 { 64 * 1024 } else { need }
+}
+
 impl SyscallHeap {
     pub const fn new() -> Self {
         Self {
@@ -230,7 +243,12 @@ unsafe impl GlobalAlloc for SyscallHeap {
         // Consecutive maps usually abut and extend one heap; one that doesn't
         // (another thread mapped in between) starts a new region, so an
         // allocation larger than one map can then fail (null), never corrupt.
-        let need = layout.size().max(64 * 1024);
+        // A new map is only page-aligned, so a block with a larger alignment
+        // (SpiderMonkey's 1 MiB GC chunks, through posix_memalign) needs up
+        // to `align` more to find an aligned start inside it (OT-61 C3c-1:
+        // without this, a fresh 1 MiB map can't hold a 1 MiB-aligned 1 MiB
+        // block, and the allocation fails).
+        let need = grow_need(layout);
         // Geometric once a region exists: each growth may cost a region slot.
         let chunk = if r.n == 0 {
             need
@@ -412,5 +430,38 @@ mod spin_once {
         fn drop(&mut self) {
             self.m.locked.store(false, Ordering::Release);
         }
+    }
+}
+
+#[cfg(test)]
+mod grow_need_tests {
+    use super::{PAGE_SIZE, grow_need};
+    use core::alloc::Layout;
+
+    const MIB: usize = 1 << 20;
+
+    #[test]
+    fn small_requests_map_at_least_64k() {
+        assert_eq!(
+            grow_need(Layout::from_size_align(100, 8).unwrap()),
+            64 * 1024
+        );
+    }
+
+    #[test]
+    fn page_alignment_needs_no_padding() {
+        // A fresh map is page-aligned already.
+        let l = Layout::from_size_align(MIB, PAGE_SIZE).unwrap();
+        assert_eq!(grow_need(l), MIB);
+    }
+
+    #[test]
+    fn larger_alignment_reserves_room_to_align() {
+        // SpiderMonkey's GC chunk: 1 MiB at 1 MiB alignment needs 2 MiB of
+        // page-aligned space to be sure of an aligned start.
+        let l = Layout::from_size_align(MIB, MIB).unwrap();
+        assert_eq!(grow_need(l), 2 * MIB);
+        let l = Layout::from_size_align(256 * 1024, MIB).unwrap();
+        assert_eq!(grow_need(l), 256 * 1024 + MIB);
     }
 }
