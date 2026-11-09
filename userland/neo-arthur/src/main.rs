@@ -1178,14 +1178,7 @@ fn run_desktop_session(
                     #[cfg(feature = "desktop-park")]
                     surface.park();
                     #[cfg(not(feature = "desktop-park"))]
-                    {
-                        // L1a.3: yield beside the terminal (#98), whose
-                        // preempted bursts otherwise waited ~20 s.
-                        #[cfg(feature = "atrium-terminal")]
-                        libneo::sys_sched_yield();
-                        #[cfg(not(feature = "atrium-terminal"))]
-                        core::hint::spin_loop();
-                    }
+                    core::hint::spin_loop();
                     continue;
                 }
                 Err(code) => return code,
@@ -1408,12 +1401,7 @@ fn run_desktop_session(
                                 #[cfg(feature = "desktop-park")]
                                 surface.park();
                                 #[cfg(not(feature = "desktop-park"))]
-                                {
-                                    #[cfg(feature = "atrium-terminal")]
-                                    libneo::sys_sched_yield();
-                                    #[cfg(not(feature = "atrium-terminal"))]
-                                    core::hint::spin_loop();
-                                }
+                                core::hint::spin_loop();
                             }
                             Err(code) => return code,
                         }
