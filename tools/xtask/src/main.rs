@@ -8612,16 +8612,15 @@ fn swgl_cc_env(cmd: &mut Command) -> Result<(), String> {
 /// `cc` crate, and mozjs-sys's build script runs the generator's frozen
 /// command lines. Both go through `generator/neo-cc`, the wrapper the
 /// generator itself used (neo-crt's compile line for our target), with the
-/// pinned clang (`NEO_CRT_CLANG`, the CI image's major). `LIBZ_SYS_STATIC`
-/// takes libz-sys straight to its bundled zlib instead of probing
-/// pkg-config and linking a test program for a system zlib we don't have.
+/// pinned clang (`NEO_CRT_CLANG`, the CI image's major). The smoke turns on
+/// libz-sys's `static` feature, which takes it straight to its bundled zlib
+/// instead of probing pkg-config for a system zlib we don't have.
 fn mozjs_cc_env(cmd: &mut Command) {
     let root = workspace_root();
     let clang = env::var("NEO_CRT_CLANG").unwrap_or_else(|_| "clang".to_string());
     let t = "x86_64_unknown_neoplutarch";
     cmd.env("NEO_REPO", &root)
         .env("NEO_CLANG", &clang)
-        .env("LIBZ_SYS_STATIC", "1")
         .env("CRATE_CC_NO_DEFAULTS", "1")
         .env(
             format!("CC_{t}"),
@@ -8636,8 +8635,9 @@ fn mozjs_cc_env(cmd: &mut Command) {
 
 /// The build scripts the SpiderMonkey closure may run. mozjs-sys and libz-sys
 /// compile C/C++ (the frozen command lines; the bundled zlib), as does our
-/// own neo-crt (musl and libc++); neo-std-pal's is ours too. The rest only
-/// print cfgs or metadata (rustc version probes, include directories).
+/// own neo-crt (musl and libc++); neo-std-pal's (ours) runs the A4
+/// syscall-manifest check. The rest only print cfgs or metadata (rustc
+/// version probes, include directories).
 /// Anything else, a new build script that might run Python, configure,
 /// bindgen or the network, fails the build (THINK 2026-11-08 §2).
 const MOZJS_BUILD_SCRIPTS: &[&str] = &[
