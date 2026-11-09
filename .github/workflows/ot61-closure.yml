@@ -402,10 +402,14 @@ jobs:
           set -e
           grep -q "^ARG NEO_CRT_CLANG_MAJOR=${NEO_CRT_CLANG_MAJOR}\$" Dockerfile \
             || { echo "ERROR: Dockerfile pins a different NEO_CRT_CLANG_MAJOR"; exit 1; }
-          if ! command -v "clang-${NEO_CRT_CLANG_MAJOR}" >/dev/null 2>&1; then
+          # llvm-<major> too: mozjs-sys archives its objects with llvm-ar.
+          if ! command -v "clang-${NEO_CRT_CLANG_MAJOR}" >/dev/null 2>&1 \
+            || ! command -v "llvm-ar-${NEO_CRT_CLANG_MAJOR}" >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends "clang-${NEO_CRT_CLANG_MAJOR}"
+            sudo apt-get install -y --no-install-recommends \
+              "clang-${NEO_CRT_CLANG_MAJOR}" "llvm-${NEO_CRT_CLANG_MAJOR}"
           fi
+          "llvm-ar-${NEO_CRT_CLANG_MAJOR}" --version | head -1
           "clang-${NEO_CRT_CLANG_MAJOR}" --version | head -1
           test "$("clang-${NEO_CRT_CLANG_MAJOR}" -dumpversion | cut -d. -f1)" = "${NEO_CRT_CLANG_MAJOR}"
           echo "NEO_CRT_CLANG=clang-${NEO_CRT_CLANG_MAJOR}" >> "$GITHUB_ENV"
