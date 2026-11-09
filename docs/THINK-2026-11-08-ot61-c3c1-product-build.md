@@ -42,23 +42,30 @@ Three upstream crates have build scripts or build-dependencies that run what the
 - `mozjs_normalizer_glue`: its `build.rs` runs cbindgen.
 
 Each gets a patched copy under `third_party/ot61-mozjs/patched/`, following the `ot61-browser/patched/` precedent.
-Each copy is the upstream crate with only its manifest, and for `mozjs-sys` its `build.rs`, replaced. In all three
-manifests:
+A copy holds only its manifest, and for `mozjs-sys` its `build.rs`. Its `[lib] path` is the vendored crate's own
+`src/lib.rs`, so there is no second copy of the sources to drift. In all three manifests:
 - the `[build-dependencies]` blocks are gone;
 - the `*.workspace = true` fields are written out (MPL-2.0, edition 2021);
 - path dependencies point at `vendor/mozjs-138c9470/mozjs-extracted-crates/` or the other patched copies.
 
-The `generated/` drift check covers the copies' sources. A small check in the generator job compares each copy's
-`src/` with the vendored crate's, so only the manifests and `mozjs-sys/build.rs` may differ.
+`mozjs-sys`'s features that change configure's options (`jit`, `intl`, `debugmozjs`, `profilemozjs`, `jitspew`,
+`libz-rs`) stay declared, because `src/` tests them with `cfg`, but they are empty, and `build.rs` fails if one is on.
+Their optional dependencies are gone. `mozjs`'s default features are `["libz-sys"]`.
+
+A check in the generator job (`generator/check_patched_crates.py`) holds each copy to that: only the allowed files;
+`[lib] path` at the vendored `src/lib.rs`; upstream's name, version, licence and edition; no build-dependencies;
+and upstream's dependencies and version requirements, less the dropped optional ones.
 
 - **`mozjs_normalizer_glue`:** `build = false`, and no `links` key. Its one output was `normalizer_glue.h`, which is
   frozen in `generator/include/` and checked against cbindgen 0.29.4 on every generator run (#87).
 - **`mozjs`:** the manifest only. It has no build script.
 - **`mozjs-sys`:** a new `build.rs` that uses only `std`. It:
   1. **Source view.** In `OUT_DIR/src`, mirrors the compiled directories of the vendored tree (`js/src`, `js/public`,
-     `mfbt`, `mozglue`, `memory`, `modules/fdlibm`, `modules/zlib/src`, `third_party/fmt`, `config`, `build`;
-     about 65 MB), with `generated/patched/` laid over them and `patched/deleted.txt` honoured. These are hard links
-     where the filesystem allows, copies otherwise.
+     `mfbt`, `mozglue`, `memory`, `modules/fdlibm`, `third_party/fmt`, `config`, `build`, `toolkit`, and
+     `mozjs-sys/src`; about 65 MB), with `generated/patched/` laid over them and `patched/deleted.txt` honoured.
+     These are hard links where the filesystem allows, copies otherwise; an overlaid file replaces its link, never
+     writes through it. The script fails if the frozen set names a path outside these directories. (zlib's headers
+     come from the vendored tree through `neo-cc`.)
   2. **Object view.** In `OUT_DIR/obj`, writes `generated/obj/` with `@SRC@`/`@OBJ@`/`@REPO@` replaced. Makes
      `dist/include` from `dist_include.txt`, pointing into the source view so patched headers win, and writes each
      `dist/system_wrappers/<name>` from its one template.
@@ -74,14 +81,19 @@ The `generated/` drift check covers the copies' sources. A small check in the ge
   4. **Archive** with the pinned `llvm-ar` into `libjs_static.a`, `libjsapi.a` and `libjsglue.a`. Emit upstream's
      `cargo:rustc-link-lib` lines, and include `generated/bindings/jsapi.rs` and `gluebindings.rs`.
 
-**Nothing in these three crates runs Python, configure, make, bindgen, cbindgen or the network.** The one other
-build script in the closure is `libz-sys`'s: it compiles its bundled zlib C sources with `cc`, which is compiling C,
-and it fetches nothing. It's the same copy #81's L0 closure already vendors and builds.
+**Nothing in these three crates runs Python, configure, make, bindgen, cbindgen or the network.** Two other build
+scripts in the closure compile C: `libz-sys`'s builds its bundled zlib with `cc` (through `neo-cc`, with
+`LIBZ_SYS_STATIC=1` so it never probes for a system zlib), and our own `neo-crt`'s builds musl and libc++. The rest
+only print cfgs or metadata: `libc`, `num-traits`, `proc-macro2`, `quote`, `rustversion` and `encoding_rs` probe the
+rustc version; `encoding_c` and `encoding_c_mem` print their include directory; `mozjs_icu_normalizer_data` sets
+a cfg. Our `neo-std-pal`'s runs its A4 syscall-manifest check. All of these but `libz-sys`, `encoding_c` and `mozjs_icu_normalizer_data` already build in
+#81's L0 closure. `xtask ot61-closure-build --mozjs` lists the build scripts that ran (the smoke's own packages, from
+its `Cargo.lock`) and fails on any outside that list.
 
 ## 3. The Rust closure, with licences
 
 Resolved with `cargo tree -p mozjs --no-default-features --features libz-sys -e normal` (no JIT, no intl). There are
-46 crates, and every licence is on CLAUDE.md's list (Unicode-3.0 included, 2026-10-31). The product lockfile pins
+48 crates, and every licence is on CLAUDE.md's list (Unicode-3.0 included, 2026-10-31). The product lockfile pins
 the exact versions; those below are the current compatible releases.
 
 | Crate | Version | Licence | Role |
@@ -102,7 +114,13 @@ the exact versions; those below are the current compatible releases.
 | `synstructure` | 0.14.0 | MIT | proc-macro support (build time) |
 | `unicode-ident` | 1.0.27 | (MIT OR Apache-2.0) AND Unicode-3.0 | `proc-macro2` (build time) |
 
-They are vendored like #81's closure, with a `.cargo-checksum.json` per crate so `vendor-verify` covers them. Each
+That is the `-e normal` closure. The build-dependencies come on top: `libz-sys`'s `cc`, `pkg-config` and `vcpkg`,
+and `cc`'s `find-msvc-tools` and `shlex`. All are MIT OR Apache-2.0, and #81 or `third_party/ot61-swgl` already
+vendors them. The smoke's own lockfile also names the optional dependencies no feature turns on (`serde`,
+`serde_core`, `serde_derive`, `icu_properties_data`), so they resolve to #81's copies but are never compiled.
+
+They are vendored like #81's closure, with a `.cargo-checksum.json` per crate so `vendor-verify` covers them. Where
+#81 or `ot61-swgl` already has a crate, the smoke patches to that copy rather than vendoring it again. Each
 crate's licence goes in the PR table. `js/src/dtoa.c` (David Gay's Lucent notice) is allowed since J.c.'s ruling of
 2026-11-08, and is recorded in #87's `VENDORED.md`.
 
@@ -133,8 +151,15 @@ run there too (trap B1).
    their manifests and `mozjs-sys/build.rs`. Gate: generator green with the drift check.
 3. **The product crates and the Rust closure.** Gate:
    - `xtask ot61-closure-build --mozjs` builds and links the smoke on the host;
-   - the build log shows no build script ran other than `mozjs-sys`'s and `libz-sys`'s;
+   - xtask's list of the build scripts that ran holds only the allowed ones (§2);
    - push CI passes.
+
+   It also needs #81: #81's patched `libc` gives our target `off_t`, `size_t` and an opaque `FILE` (the frozen
+   bindings name `::libc::FILE`), and its `libz-sys` 1.1.31, `pkg-config` and `vcpkg` are reused. The first link
+   found one duplicate symbol, `abort` (neo-crt's, and mozalloc's Unix override), so patch 0005 leaves the override
+   out on our target. On a try branch (`claude/ot61-c3c1-mozjs-try`: the product crates with #88 and #81's crates
+   merged in), the gate's first two items passed in closure run 42547284444, and the generator run with patch 0005
+   (42547284389) passed its drift, cbindgen and patched-crate checks.
 4. **The smoke on target.** Gate: a quick tier with `mozjs_smoke`, then the full four shards before merge. It's
    kernel-touching only through the scenario.
 
