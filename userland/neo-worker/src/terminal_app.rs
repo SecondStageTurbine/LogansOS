@@ -388,6 +388,10 @@ pub fn run() -> i32 {
                         session.output(&buf[..n as usize], &mut child.stdin);
                         taken += n as usize;
                         streaming = true;
+                        // Short bursts, as the probe app's: beside the WM and
+                        // Arthur, which spin, a burst long enough to be
+                        // preempted can wait a long time to run again (#98).
+                        libneo::sys_sched_yield();
                     }
                     0 => {
                         // EOF: every writer is gone.
@@ -473,7 +477,7 @@ pub fn run() -> i32 {
 
         trace(b" exit us=");
         // 5. Draw what changed and commit its band.
-        let drawn = renderer.draw(session.screen(), pixels);
+        let drawn = renderer.draw_with(session.screen(), pixels, libneo::sys_sched_yield);
         trace(b" draw us=");
         if let Some(band) = drawn {
             serial += 1;
