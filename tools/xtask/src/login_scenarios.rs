@@ -2099,7 +2099,7 @@ fn setup_tz(
                 "DESKTOP setup tz reconciled zone=not set confirmed=0",
                 "DESKTOP setup page=comfort rows=7",
                 "DESKTOP setup page=try rows=5",
-                "DESKTOP setup done action=try zone=America/New_York",
+                "DESKTOP setup done action=try zone=unset",
                 "DESKTOP setup journal records=4 appended=4",
                 "ACTIONLOG verify records=4 broken=none head=",
                 "LOGIN account created generation=1",
