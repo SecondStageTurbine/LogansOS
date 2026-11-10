@@ -33,17 +33,20 @@ fn spin() -> ! {
     }
 }
 
-fn now() -> u64 {
-    sys_clock_gettime(CLOCK_MONOTONIC).unwrap_or(0)
-}
-
 fn compute() -> i32 {
-    let start = now();
+    // A kernel without the clock (ENOSYS) would never end the run: say so
+    // at once (exit 4) instead.
+    let now = || sys_clock_gettime(CLOCK_MONOTONIC).ok();
+    let Some(start) = now() else {
+        return 4;
+    };
     let mut prev = start;
     let mut worst = 0u64;
     let mut reads = 0u64;
     while prev.saturating_sub(start) < RUN_NS {
-        let t = now();
+        let Some(t) = now() else {
+            return 4;
+        };
         worst = worst.max(t.saturating_sub(prev));
         prev = t;
         reads += 1;
