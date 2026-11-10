@@ -9302,11 +9302,16 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-scrollback",
             "arthur-lock-park-test",
         ],
-        // L1a.3: the lock's Arthur, who opens the terminal on `open terminal`.
+        // L1a.3: the lock's Arthur (the same build as the other lock tests',
+        // which the login image's WM expects: its buffer import is refused
+        // without `desktop-resize`), who opens the terminal on `open terminal`.
         Some("lock-terminal-test") => vec![
             "desktop-session",
             "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
             "arthur-busy-emblem",
+            "arthur-scrollback",
             "atrium-terminal",
         ],
         Some("settings-boot-test") | Some("settings-wm-only-control") => vec![
