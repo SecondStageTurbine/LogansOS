@@ -17,7 +17,7 @@ inside the card.
   persona KAT in `neo-atrium` allows printable ASCII only; S6b relaxes it to "covered by the face" for the
   Spanish table.
 - **Width.** Every row fits the card with its widest realistic arguments (a 30-byte zone name, a 32-byte
-  typed name, the longest date). The widest Spanish row is IntroModelAbsent at 96.6% of the card.
+  typed name, the longest date). The widest Spanish row is IntroModelAbsent at 96.7% of the card.
 
 ## Every row
 
@@ -51,7 +51,7 @@ inside the card.
 | `SetupBodySearchEmpty` | Type a city to search, or pick one. | Escribe una ciudad para buscar, o elige una. |  |
 | `SetupBodySearchNone` | Search: {}  (no zone matches) | Buscar: {}  (ninguna zona coincide) | Keeps the two spaces before the bracket. |
 | `SetupBodySearch` | Search: {} | Buscar: {} |  |
-| `SetupBodyComfort` | Make the screen calmer, if you like. | Haz la pantalla más tranquila, si quieres. | Informal *tú* ("Haz…, si quieres"), as everywhere in this table. |
+| `SetupBodyComfort` | Make the screen calmer, if you like. | Haz que la pantalla sea más tranquila, si quieres. | Chad's wording (relay 384). Informal *tú*, as everywhere in this table. |
 | `SetupNotSet` | not set | sin definir | "sin definir" (not "no configurado"). |
 | `ZoneRow` | Time zone: {} | Zona horaria: {} |  |
 | `SetupSummaryZoneClockNotSet` | Time zone: {} (clock not set) | Zona horaria: {} (reloj sin ajustar) | "reloj sin ajustar". |
@@ -61,7 +61,7 @@ inside the card.
 | `Off` | off | no | See On. |
 | `SetupNoticeZoneInUse` | Couldn't save the time zone. In use: {}. | No se pudo guardar la zona horaria. En uso: {}. |  |
 | `SetupNoticeZoneRestart` | Couldn't save the time zone. Restart to check it. | No se pudo guardar la zona horaria. Reinicia para comprobarla. | "comprobarla" (la zona). |
-| `IntroGreeting` | Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | Buen día. Soy Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | Arthur's name is an English acronym, so its expansion stays in English (translating it breaks the acronym). **Reviewer: check whether J.c. wants a Spanish gloss instead.** |
+| `IntroGreeting` | Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | Buen día. Soy Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | **Decision: the acronym's expansion stays in English, as the name it spells.** "ARTHUR" is an English acronym; translating the expansion (Chad's alternative, "Asistente para tareas en tiempo real, automatización del hogar y solicitudes de usuario") no longer spells it. It also doesn't fit: measured with the card's face and size, that row is 114% of the card with "Buen día." and 104% without it, and a Spanish gloss next to the English would be longer still. A gloss on a row of its own would change the intro's row count, which is S6b's and the persona's call. **J.c. decides**; the catalog takes either answer. |
 | `IntroName` | I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | Soy Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | As IntroGreeting. |
 | `IntroHousehold` | The household side comes later; for now, I look after this computer for you. | Lo del hogar llegará después; por ahora, cuido esta computadora por ti. | "Lo del hogar" for "the household side"; "cuido esta computadora por ti". |
 | `IntroPrivacy` | I work entirely on this machine, and I don't send what you tell me anywhere. | Trabajo solo en esta máquina y no envío a ningún lado lo que me dices. |  |
@@ -73,11 +73,11 @@ inside the card.
 | `HelpTitle` | What you can do yourself, without asking me: | Lo que puedes hacer tú, sin preguntarme: |  |
 | `HelpEsc` | Esc sets me aside and brings you back to Home. | Esc me deja a un lado y te lleva de vuelta a Inicio. |  |
 | `HelpList` | "list /" opens the Lens: a read-only view of the files on this machine. | "list /" abre Lens: una vista de solo lectura de los archivos de esta máquina. | **Lens** is the app's name and stays (the chip says "Lens"). |
-| `HelpChips` | The chips on the left switch between me and the Lens; Tab reaches them. | Los botones de la izquierda alternan entre Lens y yo; Tab los alcanza. | "chips" become "botones" (the Spine chips are buttons to the user). "entre Lens y yo" puts Arthur last, as Spanish politeness has it. |
+| `HelpChips` | The chips on the left switch between me and the Lens; Tab reaches them. | Los botones de la izquierda alternan entre Lens y yo; puedes acceder a ellos con Tab. | Chad's wording for "Tab reaches them" (relay 384). "chips" become "botones" (the Spine chips are buttons to the user); "entre Lens y yo" puts Arthur last. 90% of the card. |
 | `HelpDrag` | Drag a window by its title bar to move it, or by an edge to resize it. | Arrastra una ventana por su barra de título para moverla, o por un borde para ajustarla. | "ajustarla" for "resize it", shorter than "cambiar su tamaño" (this row is 91% of the card). |
 | `HelpType` | Start typing to ask me something, or press Esc to close this card. | Empieza a escribir para preguntarme algo, o presiona Esc para cerrar esta tarjeta. | "presiona" (Latin American) rather than "pulsa" (Spain). |
 | `IntroHint` | Type help, or click here, for what you can do yourself. | Escribe help, o haz clic aquí, para ver lo que puedes hacer tú. | `help` stays. |
-| `IntroModelAbsent` | I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with. | Te escucho, pero mi modelo aún no está en este sistema. Arranca con el USB de LogansOS. | Shortened for width (the widest Spanish row, 96.6% of the card): "Boot the LogansOS USB **it came with**" loses "it came with". **Reviewer: check the shorter wording is acceptable.** |
+| `IntroModelAbsent` | I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with. | Te oigo, pero aún no tengo mi modelo. Arranca el USB de LogansOS que vino con el equipo. | Keeps "it came with" ("que vino con el equipo"; Chad, relay 384). His full line ("…que venía con esta computadora", keeping "en este sistema") measures 127% of the card, so "my model isn't on this system yet" becomes "aún no tengo mi modelo" and "the computer" becomes "el equipo". "Te oigo" is the literal "I can hear you". 96.7% of the card. |
 | `IntroModelDamaged` | My model file is damaged, so I won't use it. Re-create the USB from the original image. | Mi modelo está dañado, así que no lo usaré. Vuelve a crear el USB con la imagen original. | Shortened for width: the first draft overflowed the card by 6 px. |
 | `IntroModelLoadFailed` | My model didn't load, so I'm running without it. The details are in /model. | Mi modelo no se cargó, así que funciono sin él. Los detalles están en /model. | `/model` is a path and stays. |
 | `IntroTooLittleMemory` | This computer has {} GB of memory; my smallest brain needs {} GB. | Esta computadora tiene {} GB de memoria; mi cerebro más pequeño necesita {} GB. | "mi cerebro más pequeño" keeps the persona's metaphor. |

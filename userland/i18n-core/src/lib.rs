@@ -149,7 +149,7 @@ catalog! {
         "Buscar: {}  (ninguna zona coincide)";
     SetupBodySearch = "Search: {}", "Buscar: {}";
     SetupBodyComfort = "Make the screen calmer, if you like.",
-        "Haz la pantalla más tranquila, si quieres.";
+        "Haz que la pantalla sea más tranquila, si quieres.";
     /// Stands in for a zone name when none is held.
     SetupNotSet = "not set", "sin definir";
     /// The Try summary's and Home's zone row; the argument is the name.
@@ -195,7 +195,7 @@ catalog! {
     HelpList = "\"list /\" opens the Lens: a read-only view of the files on this machine.",
         "\"list /\" abre Lens: una vista de solo lectura de los archivos de esta máquina.";
     HelpChips = "The chips on the left switch between me and the Lens; Tab reaches them.",
-        "Los botones de la izquierda alternan entre Lens y yo; Tab los alcanza.";
+        "Los botones de la izquierda alternan entre Lens y yo; puedes acceder a ellos con Tab.";
     HelpDrag = "Drag a window by its title bar to move it, or by an edge to resize it.",
         "Arrastra una ventana por su barra de título para moverla, o por un borde para ajustarla.";
     HelpType = "Start typing to ask me something, or press Esc to close this card.",
@@ -204,7 +204,7 @@ catalog! {
     IntroHint = "Type help, or click here, for what you can do yourself.",
         "Escribe help, o haz clic aquí, para ver lo que puedes hacer tú.";
     IntroModelAbsent = "I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with.",
-        "Te escucho, pero mi modelo aún no está en este sistema. Arranca con el USB de LogansOS.";
+        "Te oigo, pero aún no tengo mi modelo. Arranca el USB de LogansOS que vino con el equipo.";
     IntroModelDamaged = "My model file is damaged, so I won't use it. Re-create the USB from the original image.",
         "Mi modelo está dañado, así que no lo usaré. Vuelve a crear el USB con la imagen original.";
     IntroModelLoadFailed = "My model didn't load, so I'm running without it. The details are in /model.",
