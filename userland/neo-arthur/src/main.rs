@@ -1337,10 +1337,11 @@ fn run_desktop_session(
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
-                // (Opening the probe app or the browser is not one of the
-                // boot test's answers: the second answer ends the session.)
+                // (Opening the probe app, the browser or the terminal is not
+                // one of the boot test's answers: the second answer ends the
+                // session.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                if !probe_app && !browser {
+                if !probe_app && !browser && !terminal {
                     answers += 1;
                 }
                 #[cfg(all(
