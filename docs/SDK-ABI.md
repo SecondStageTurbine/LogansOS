@@ -309,7 +309,7 @@ Notes:
 - `SYS_NET_IF_STATUS` (F11 S4) is read-only and needs no capability: the default interface (the DHCP
   client's when it holds a lease, else the first with link, else the first registered). `NetIfStatusV1`,
   little-endian: `version` u32 (1) @0, `flags` u32 @4 (bit 0 link up, 1 lease bound, 2 carrier,
-  3 present), `ifindex` u32 @8, `driver` [u8; 12] @12 (NUL-padded), `mac` [u8; 6] @24, `ipv4` [u8; 4] @30,
+  3 present, 4 stale: the sources kept changing over 4 reads, so the parts may mix two states), `ifindex` u32 @8, `driver` [u8; 12] @12 (NUL-padded), `mac` [u8; 6] @24, `ipv4` [u8; 4] @30,
   `prefix` u8 @34, pad @35, `router` [u8; 4] @36, `dns` [u8; 4] @40, pad u32 @44, `lease_secs_left` u64 @48
   (`u64::MAX`: no lease). The hand-laid oracle is `tools/net-if-status-abi-tests`.
 

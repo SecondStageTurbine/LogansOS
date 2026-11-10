@@ -713,12 +713,22 @@ Continue, and the rest of the boot is unchanged.
 - **The lease's time left is on the DHCP client's clock**, whose ticks are the lease's seconds. It advances only
   while something calls `net::tick` (the boot's bring-up; `net-tick` where present), so on image A it is the
   lease's length less the bring-up's ticks. The renewal gap above stands.
-- **Each source is read under its own lock, and no lock is held while another is taken**: the DHCP client (one
-  hold, so the lease, its interface and the clock agree), the identity registry, the device registry, then the
-  IPv4 table. The syscall body runs IF=0, like every other net-lock taker (`net-tick` runs its step IF-off), so it
-  adds no new taker class (CP-37). None of them is an AI-governance lock (I-14). Two sources read at different
-  instants can disagree for one call (a lease bound just after the first read); the page then says no address, and
-  it reads once.
+- **One coherent record (Janus, #100 relay 382).** The sources live in separate consistency domains (the DHCP
+  client, the device and identity registries, the IPv4 table, each driver's carrier), so reading them one after
+  another could return a mix no state ever held (an old lease with a new link-down). A **network-status
+  generation** (`kernel/src/net/status_gen.rs`) covers them: every writer of a source bumps it **inside its own
+  lock, after the write** (a DHCP state, lease or interface change; a device or interface registration; a
+  link-state change; an IPv4 address added or expired). The reader loads it, reads, and loads it again; on a
+  change it reads again, at most 4 times, then returns the last record with bit 4, `STALE`, set. It never spins
+  unbounded. The carriers have no lock, so they are read first, right after the first load: the record is the
+  state at that instant. Since the reader takes the writers' locks, a write it saw had bumped before the read,
+  and a write in its window moves the generation. The page shows nothing it can't trust: a `STALE` record reads
+  "Network status is unavailable." The host discriminator (`tools/net-if-status-abi-tests`) runs a writer in
+  every gap between the reader's reads, and shows a mixed record without the generation and a held-or-flagged
+  one with it.
+- **No new lock order.** Each network subsystem lock is taken alone and released before the next, and
+  `CLIENT`'s hold is unchanged. The syscall body runs IF=0, like every other net-lock taker (`net-tick` runs its
+  step IF-off), so it adds no new taker class (CP-37). None of them is an AI-governance lock (I-14).
 - **`net-info` is not in `desktop` yet**: the setup menu isn't in the product image. Its gate kernel is
   `neo-test-setup-net-boot` (the intro kernel plus `net-info`). That makes the kill-switch a QEMU control:
   `setup_menu_net_off` boots the plain intro kernel, where the number is `ENOSYS` and the page says the status is

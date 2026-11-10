@@ -34,6 +34,9 @@ pub mod rx;
 pub mod rx_logic;
 pub mod smoltcp_wrap;
 pub mod socket;
+/// F11 S4: the network-status generation every status writer bumps (a
+/// no-op without `net-info`).
+pub mod status_gen;
 pub mod tcp;
 pub mod tls_record;
 /// Phase 7.5 BUILD-W0: the WPA2/3 supplicant crypto library. Compiled only

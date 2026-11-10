@@ -14,6 +14,9 @@ pub const FLAG_LINK_UP: u32 = 1 << 0;
 pub const FLAG_LEASE_BOUND: u32 = 1 << 1;
 pub const FLAG_CARRIER: u32 = 1 << 2;
 pub const FLAG_PRESENT: u32 = 1 << 3;
+/// The network kept changing while the kernel read it: the record may mix
+/// two states.
+pub const FLAG_STALE: u32 = 1 << 4;
 
 /// `lease_secs_left` with no lease.
 const LEASE_NONE: u64 = u64::MAX;
@@ -44,6 +47,12 @@ impl NetIfStatus {
     /// Its link is up.
     pub fn link_up(&self) -> bool {
         self.flags & FLAG_LINK_UP != 0
+    }
+
+    /// The network kept changing as the kernel read it; don't trust the
+    /// record's parts together.
+    pub fn stale(&self) -> bool {
+        self.flags & FLAG_STALE != 0
     }
 
     /// A DHCP lease is bound on it.

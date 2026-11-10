@@ -27,6 +27,13 @@ pub const FLAG_LEASE_BOUND: u32 = 1 << 1;
 pub const FLAG_CARRIER: u32 = 1 << 2;
 /// Bit 3: an interface exists. Clear: no network device is registered.
 pub const FLAG_PRESENT: u32 = 1 << 3;
+/// Bit 4: the sources kept changing while they were read
+/// ([`READ_ATTEMPTS`] times): this is the last record read, and it may mix
+/// two states. Clear: the record is one state of the network.
+pub const FLAG_STALE: u32 = 1 << 4;
+/// How many times [`read_consistent`] reads before it gives up (bounded:
+/// it never spins waiting for the network to settle).
+pub const READ_ATTEMPTS: usize = 4;
 /// `lease_secs_left` when no lease is bound.
 pub const LEASE_NONE: u64 = u64::MAX;
 
@@ -168,6 +175,35 @@ pub fn build(
         None => out.ipv4 = address.unwrap_or([0; 4]),
     }
     out
+}
+
+/// One coherent record (Janus, #100 relay 382). `generation` is the
+/// network-status generation, which every writer of a source bumps inside its
+/// lock after the write; `read` reads every source once and builds the record
+/// (`None`: a source vanished mid-read). A record read between two equal
+/// loads of the generation is returned. After [`READ_ATTEMPTS`] reads that
+/// each saw a change, the last record is returned with [`FLAG_STALE`] set
+/// (with none, an empty record so flagged).
+pub fn read_consistent(
+    generation: impl Fn() -> u64,
+    mut read: impl FnMut() -> Option<NetIfStatusV1>,
+) -> NetIfStatusV1 {
+    let mut last = None;
+    for _ in 0..READ_ATTEMPTS {
+        let before = generation();
+        let record = read();
+        // The reads above happen before the second load.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        if let Some(r) = record {
+            if generation() == before {
+                return r;
+            }
+            last = Some(r);
+        }
+    }
+    let mut r = last.unwrap_or(NetIfStatusV1::none());
+    r.flags |= FLAG_STALE;
+    r
 }
 
 /// The caller's buffer length: shorter than the record is refused (the

@@ -445,6 +445,16 @@ mod net_page {
                     .emit();
                 Network::Unavailable
             }
+            // The network kept changing as the kernel read it: the parts may
+            // not belong together, so the page claims nothing.
+            Ok(s) if s.stale() => {
+                Line::new()
+                    .s(b"DESKTOP setup net status=unavailable stale=1 flags=")
+                    .n(u64::from(s.flags))
+                    .s(b"\n")
+                    .emit();
+                Network::Unavailable
+            }
             Ok(s) if s.present() && s.link_up() => {
                 let line = Line::new()
                     .s(b"DESKTOP setup net link=up driver=")

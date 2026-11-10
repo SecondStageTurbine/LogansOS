@@ -126,18 +126,20 @@ mod tests {
                 kernel::FLAG_LINK_UP,
                 kernel::FLAG_LEASE_BOUND,
                 kernel::FLAG_CARRIER,
-                kernel::FLAG_PRESENT
+                kernel::FLAG_PRESENT,
+                kernel::FLAG_STALE
             ],
-            [1, 2, 4, 8]
+            [1, 2, 4, 8, 16]
         );
         assert_eq!(
             [
                 libneo::FLAG_LINK_UP,
                 libneo::FLAG_LEASE_BOUND,
                 libneo::FLAG_CARRIER,
-                libneo::FLAG_PRESENT
+                libneo::FLAG_PRESENT,
+                libneo::FLAG_STALE
             ],
-            [1, 2, 4, 8]
+            [1, 2, 4, 8, 16]
         );
     }
 
@@ -271,6 +273,231 @@ mod tests {
         let s = kernel::build(Some(long), None, None);
         assert_eq!(&s.driver, b"a-very-long-");
         assert_eq!(libneo::decode(&bytes(&s)).unwrap().driver(), "a-very-long-");
+    }
+
+    /// Janus, #100 relay 382 (F1): the sources the record reads, each with
+    /// its writer, and the network-status generation every writer bumps
+    /// after its write (as the kernel's writers do inside their locks). A
+    /// writer can run between any two of the reader's reads.
+    mod world {
+        use super::*;
+        use std::cell::{Cell, RefCell};
+        use std::collections::VecDeque;
+
+        pub struct World {
+            pub generation: Cell<u64>,
+            pub leased: Cell<bool>,
+            pub link: Cell<bool>,
+            pub carrier: Cell<bool>,
+            /// Writers, run one per gap between reads (`step`).
+            pub writers: RefCell<VecDeque<fn(&World)>>,
+            /// Writers run again whenever the queue runs dry (a network that
+            /// keeps changing).
+            pub forever: Option<fn(&World)>,
+            pub reads: Cell<usize>,
+            /// Every state the sources held, `(lease, link, carrier)`, in order.
+            pub held: RefCell<Vec<(bool, bool, bool)>>,
+        }
+
+        impl World {
+            /// Janus's start: interface 0 up, carrier up, the gate's lease.
+            pub fn up() -> World {
+                World {
+                    generation: Cell::new(0),
+                    leased: Cell::new(true),
+                    link: Cell::new(true),
+                    carrier: Cell::new(true),
+                    writers: RefCell::new(VecDeque::new()),
+                    forever: None,
+                    reads: Cell::new(0),
+                    held: RefCell::new(vec![(true, true, true)]),
+                }
+            }
+
+            /// After a write: the generation moves, and the new state is one
+            /// the sources held.
+            fn bump(&self) {
+                self.generation.set(self.generation.get() + 1);
+                self.held.borrow_mut().push((
+                    self.leased.get(),
+                    self.link.get(),
+                    self.carrier.get(),
+                ));
+            }
+
+            /// The record is a state the sources really held.
+            pub fn coherent(&self, r: &NetIfStatusV1) -> bool {
+                let seen = (
+                    r.flags & kernel::FLAG_LEASE_BOUND != 0,
+                    r.flags & kernel::FLAG_LINK_UP != 0,
+                    r.flags & kernel::FLAG_CARRIER != 0,
+                );
+                self.held.borrow().contains(&seen)
+            }
+
+            /// The gap between two reads: the next writer, if any, runs.
+            fn step(&self) {
+                let next = self.writers.borrow_mut().pop_front();
+                if let Some(w) = next.or(self.forever) {
+                    w(self);
+                }
+            }
+
+            /// One read, in the kernel's order: the carrier first, then the
+            /// lease, then the registry's link, a writer in each gap.
+            pub fn read(&self) -> NetIfStatusV1 {
+                self.reads.set(self.reads.get() + 1);
+                let carrier = self.carrier.get();
+                self.step();
+                let lease = self.leased.get().then_some(GATE_LEASE);
+                self.step();
+                let link_up = self.link.get();
+                self.step();
+                kernel::build(
+                    Some(Iface {
+                        link_up,
+                        carrier,
+                        ..ECM
+                    }),
+                    lease,
+                    None,
+                )
+            }
+        }
+
+        /// The lease is invalidated (an ACD conflict or expiry).
+        pub fn drop_lease(w: &World) {
+            w.leased.set(false);
+            w.bump();
+        }
+
+        /// The link goes down: the driver's carrier, then the registry's
+        /// refresh.
+        pub fn link_down(w: &World) {
+            w.carrier.set(false);
+            w.link.set(false);
+            w.bump();
+        }
+
+        /// Janus's gap: the lease drops, then the link goes down, between the
+        /// reader's lease read and its link read.
+        pub fn drop_then_down(w: &World) {
+            drop_lease(w);
+            link_down(w);
+        }
+
+        /// A no-op gap.
+        pub fn nothing(_: &World) {}
+
+        /// The link flaps: down, and back up with its lease.
+        pub fn flap(w: &World) {
+            let up = !w.link.get();
+            w.carrier.set(up);
+            w.link.set(up);
+            w.leased.set(up);
+            w.bump();
+        }
+    }
+
+    /// Without the generation, Janus's schedule returns a record no state
+    /// held: the lease bound, the link down (flags 0x0a, `PRESENT |
+    /// LEASE_BOUND`).
+    #[test]
+    fn without_the_generation_a_mixed_record_appears() {
+        let w = world::World::up();
+        // Carrier read (up); then the lease is read (bound); then the lease
+        // drops and the link goes down before the link is read. The states
+        // held: (lease, link) = (1,1) -> (0,1) -> (0,0).
+        w.writers
+            .borrow_mut()
+            .extend([world::nothing as fn(&world::World), world::drop_then_down]);
+        let mixed = w.read();
+        // Carrier as first read (up), the lease, the link down.
+        assert_eq!(
+            mixed.flags,
+            kernel::FLAG_PRESENT | kernel::FLAG_LEASE_BOUND | kernel::FLAG_CARRIER
+        );
+        assert_eq!(mixed.ipv4, [10, 0, 2, 15]);
+        assert_eq!(mixed.lease_secs_left, 86_000);
+        assert!(!w.coherent(&mixed));
+    }
+
+    /// With it, the same schedule is seen and read again: the record is the
+    /// state after both writes (no lease, link down), not a mix.
+    #[test]
+    fn with_the_generation_the_record_is_one_state() {
+        let w = world::World::up();
+        w.writers
+            .borrow_mut()
+            .extend([world::nothing as fn(&world::World), world::drop_then_down]);
+        let r = kernel::read_consistent(|| w.generation.get(), || Some(w.read()));
+        assert_eq!(w.reads.get(), 2, "the mixed read is read again");
+        assert_eq!(r.flags, kernel::FLAG_PRESENT);
+        assert_eq!(r.lease_secs_left, kernel::LEASE_NONE);
+        assert!(w.coherent(&r));
+        assert_eq!(r.flags & kernel::FLAG_STALE, 0);
+    }
+
+    /// A writer in every gap of every read, in every order: each record
+    /// returned is a state the sources held, or it says it is stale.
+    #[test]
+    fn every_interleaving_is_one_state_or_flagged() {
+        let writers: [fn(&world::World); 5] = [
+            world::nothing,
+            world::drop_lease,
+            world::link_down,
+            world::drop_then_down,
+            world::flap,
+        ];
+        let mut mixed_without = 0;
+        for a in writers {
+            for b in writers {
+                for c in writers {
+                    // Without the generation: one read.
+                    let w = world::World::up();
+                    w.writers.borrow_mut().extend([a, b, c]);
+                    if !w.coherent(&w.read()) {
+                        mixed_without += 1;
+                    }
+                    // With it.
+                    let w = world::World::up();
+                    w.writers.borrow_mut().extend([a, b, c]);
+                    let r = kernel::read_consistent(|| w.generation.get(), || Some(w.read()));
+                    assert!(
+                        w.coherent(&r) || r.flags & kernel::FLAG_STALE != 0,
+                        "flags={:#x}",
+                        r.flags
+                    );
+                }
+            }
+        }
+        // The schedules do produce mixed records without it.
+        assert!(mixed_without > 0);
+    }
+
+    /// A network that never settles: the reader stops after its bound and
+    /// says so; it never spins.
+    #[test]
+    fn a_network_that_keeps_changing_is_flagged_stale_after_the_bound() {
+        let mut w = world::World::up();
+        w.forever = Some(world::flap);
+        let r = kernel::read_consistent(|| w.generation.get(), || Some(w.read()));
+        assert_eq!(w.reads.get(), kernel::READ_ATTEMPTS);
+        assert_ne!(r.flags & kernel::FLAG_STALE, 0);
+        let d = libneo::decode(&bytes(&r)).unwrap();
+        assert!(d.stale());
+        // A read that never yields a record is flagged, and empty.
+        let none = kernel::read_consistent(|| 0, || None);
+        assert_eq!(none.flags, kernel::FLAG_STALE);
+    }
+
+    /// A quiet network is read once.
+    #[test]
+    fn a_quiet_network_is_read_once() {
+        let w = world::World::up();
+        let r = kernel::read_consistent(|| w.generation.get(), || Some(w.read()));
+        assert_eq!(w.reads.get(), 1);
+        assert_eq!(bytes(&r), LEASED);
     }
 
     #[test]
