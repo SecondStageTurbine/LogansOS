@@ -1,0 +1,1 @@
+mozjs-sys/mozjs/mfbt/MoveOnlyFunction.h

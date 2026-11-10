@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# OT-61 C3c-1: the generator's bindgen step (THINK
+# docs/THINK-2026-11-08-ot61-c3c1-product-build.md §1). A host program that
+# runs upstream mozjs-sys's own `build` and `build_bindings` (its build.rs,
+# included verbatim with only `main` renamed) against the generator's
+# configured object directory for x86_64-unknown-neoplutarch. It runs on the
+# CI runners only, network off; its outputs are frozen with the rest.
+[package]
+name = "neo-mozjs-bindgen"
+version = "0.0.1"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Not a member of the repository's workspace.
+[workspace]
+
+[dependencies]
+# Upstream's workspace pins (vendor/mozjs-138c9470/Cargo.toml).
+bindgen = { version = "=0.72.1", default-features = false, features = ["runtime"] }
+cc = "1.3"
+# What upstream's build.rs imports (its `archive` module is compiled, unused).
+walkdir = "2"
+flate2 = "1"
+tar = "0.4"

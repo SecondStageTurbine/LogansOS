@@ -141,7 +141,8 @@ const NEOFS_LARGE_FILE_BYTES: usize = NEOFS_LARGE_FILE_BLOCKS * NEOFS_LARGE_FILE
 const STAGE_B_NEOM_ENV: &str = "NEO_STAGE_B_NEOM";
 const REAL_NEOM_ENV: &str = "NEO_REAL_NEOM";
 const STAGE_B_GGUF_ENV: &str = "NEO_STAGE_B_GGUF";
-const STAGE_B_05B_NEOM_BYTES: u64 = 485_489_152;
+/// The pinned 0.5B `.neom` (Q8_0, `boot_model_logic::QWEN25_05B`).
+const STAGE_B_05B_NEOM_BYTES: u64 = 669_799_936;
 const STAGE_B_15B_NEOM_BYTES: u64 = 1_111_411_200;
 const STAGE_B_15B_VOCAB_BYTES: u64 = 7_990_862;
 const QWEN35_08B_NEOM_BYTES: u64 = 725_171_456;
@@ -2621,6 +2622,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // The same with xsave-fpu: AVX advertised and saved, memchr on AVX2.
         name: "servo_closure_smoke_avx",
         feature: "neo-test-servo-closure-smoke-avx",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 4 (SWGL S3b): the client grants a separate compositor
+        // process a read-only view of its Atrium buffer over a channel.
+        name: "swgl_grant_smoke",
+        feature: "neo-test-swgl-grant-smoke",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -8170,6 +8180,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "swgl_smoke" => &[SWGL_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
+        "swgl_grant_smoke" => &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
         _ => &[],
     }
 }
@@ -9292,6 +9303,13 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SWGL_ATRIUM_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_ATRIUM_BIN], SWGL_DIR)?;
         }
+        if std_real_staged_bins().contains(&SWGL_GRANT_CLIENT_BIN) {
+            build_standalone_std_smoke(
+                SWGL_BIN,
+                &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
+                SWGL_DIR,
+            )?;
+        }
     }
     Ok(())
 }
@@ -9318,6 +9336,10 @@ const SWGL_DIR: &str = "userland/swgl-smoke";
 /// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
 /// the same crate (`src/atrium.rs`).
 const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
+/// OT-61 rung 4 (SWGL S3b): the client and the compositor process, in the
+/// same crate (`src/grant_client.rs`, `src/grant_compositor.rs`).
+const SWGL_GRANT_CLIENT_BIN: &str = "swgl-grant-client";
+const SWGL_GRANT_COMPOSITOR_BIN: &str = "swgl-grant-compositor";
 /// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
 const WEBRENDER_BIN: &str = "webrender-smoke";
 const WEBRENDER_DIR: &str = "userland/webrender-smoke";
@@ -9330,7 +9352,9 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
-        SWGL_BIN | SWGL_ATRIUM_BIN => Some(SWGL_DIR),
+        SWGL_BIN | SWGL_ATRIUM_BIN | SWGL_GRANT_CLIENT_BIN | SWGL_GRANT_COMPOSITOR_BIN => {
+            Some(SWGL_DIR)
+        }
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         _ => None,
     }
@@ -9417,10 +9441,15 @@ fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    // S1's crate also holds the S3a Atrium smoke, whose std surface is the
-    // A4 change, so both are built and checked.
+    // S1's crate also holds the S3 Atrium smokes, whose std surface is the
+    // A4 change, so all of them are built and checked.
     let bins: &[&str] = if bin == SWGL_BIN {
-        &[SWGL_BIN, SWGL_ATRIUM_BIN]
+        &[
+            SWGL_BIN,
+            SWGL_ATRIUM_BIN,
+            SWGL_GRANT_CLIENT_BIN,
+            SWGL_GRANT_COMPOSITOR_BIN,
+        ]
     } else {
         &[bin]
     };
@@ -18303,7 +18332,7 @@ fn prepare_stage_b_real_brain_model() -> Result<PathBuf, String> {
                 output_dir.display()
             )
         })?;
-        let neom_path = output_dir.join("qwen2.5-0.5b-instruct-q4_k_m.neom");
+        let neom_path = output_dir.join("qwen2.5-0.5b-instruct-q8_0.neom");
         let vocab_path = neom_path.with_extension("vocab");
         if !neom_path.exists() || !vocab_path.exists() {
             let status = Command::new("cargo")
@@ -20068,6 +20097,24 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "WebRender on SWGL must render the hand-derived scene",
+            )?;
+        }
+    }
+    if scenario.name == "swgl_grant_smoke" {
+        for needle in [
+            "[ swgl-grant-compositor ] ok(3) it is a buffer with exactly the offer: USE; MAP_READ|QUERY|PRESENT",
+            "[ swgl-grant-compositor ] ok(5) it cannot map the client view (EPERM)",
+            "[ swgl-grant-compositor ] ok(8) it cannot be granted onwards (EPERM, no GRANT)",
+            "[ swgl-grant-compositor ] ok(10) the view == the hand-laid pattern (BGRA, no flip, padding and the rest of the page untouched)",
+            "[ swgl-grant-compositor ] PASS",
+            "[ swgl-grant-client ] ok(9) the compositor read the pattern through its own view",
+            "[ swgl-grant-client ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "a separate compositor must read the client's render through a granted RO view",
             )?;
         }
     }
@@ -22282,7 +22329,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         require_serial_contains(
             scenario,
             observed,
-            "boot_model_load_stack blake3 bytes=485489152 depth=",
+            "boot_model_load_stack blake3 bytes=669799936 depth=",
             "the stack depth at the real model's size must be measured",
         )?;
     }
@@ -26216,7 +26263,7 @@ mod tests {
         let err = check_pinned_digest(&fixture, &boot_model_logic::QWEN25_05B.blake3)
             .expect_err("the fixture is not the 0.5B");
         assert!(err.contains("fails its pin"), "{err}");
-        assert!(err.contains("a32e4a1b"), "names the expected digest: {err}");
+        assert!(err.contains("1cfd06dc"), "names the expected digest: {err}");
         assert!(err.contains("6f14b933"), "names the actual digest: {err}");
         assert!(err.contains("no image was written"), "{err}");
     }
@@ -26948,7 +26995,7 @@ mod tests {
         fs::write(&neom, [0u8; 16]).unwrap();
         fs::write(&vocab, [0u8; 16]).unwrap();
         let err = check_product_model_files(&neom, &vocab).unwrap_err();
-        assert!(err.contains("485489152"), "{err}");
+        assert!(err.contains("669799936"), "{err}");
         let _ = fs::remove_dir_all(&dir);
         assert!(check_product_model_files(&dir.join("absent.neom"), &vocab).is_err());
     }
@@ -27454,10 +27501,10 @@ mod tests {
         assert!(!stage_b_real_artifact_selected(Some("  "), Some("")));
         assert!(stage_b_real_artifact_selected(Some("qwen.neom"), None));
         assert!(stage_b_real_artifact_selected(None, Some("qwen.gguf")));
-        assert_eq!(STAGE_B_05B_NEOM_BYTES, 485_489_152);
+        assert_eq!(STAGE_B_05B_NEOM_BYTES, 669_799_936);
         assert_eq!(
-            Path::new("qwen2.5-0.5b-instruct-q4_k_m.neom").with_extension("vocab"),
-            PathBuf::from("qwen2.5-0.5b-instruct-q4_k_m.vocab")
+            Path::new("qwen2.5-0.5b-instruct-q8_0.neom").with_extension("vocab"),
+            PathBuf::from("qwen2.5-0.5b-instruct-q8_0.vocab")
         );
     }
 

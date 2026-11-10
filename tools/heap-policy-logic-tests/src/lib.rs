@@ -4,7 +4,8 @@
 //! Mounts the *real* `kernel/src/mm/heap_policy.rs` via `#[path]` (no shims, the
 //! `frame-guard-logic-tests` pattern) and proves on the host that with the 3B
 //! and 1.5B real-brain-boot flags OFF the heap budget is bit-for-bit the
-//! previous layer's value — 768 MiB for the 0.5B boot, 4 MiB otherwise — and
+//! previous layer's value — 944 MiB for the 0.5B boot (768 MiB before Arthur
+//! moved to Q8_0), 4 MiB otherwise — and
 //! that each larger flag selects its larger budget (1.5B → 1.75 GiB, 3B → 2.75
 //! GiB) and the largest set flag wins.
 
@@ -22,7 +23,7 @@ mod tests {
     };
 
     /// Kill-switch (Rule 1): with the 1.5B budget OFF (and 3B OFF), the heap size
-    /// equals the previous layer's value bit-for-bit — 768 MiB under the 0.5B
+    /// equals the previous layer's value bit-for-bit — 944 MiB under the 0.5B
     /// real-brain boot, 4 MiB otherwise. This is the disabled ≡ previous-layer
     /// regression for the 1.5B tier.
     #[test]
@@ -38,7 +39,7 @@ mod tests {
         );
         assert_eq!(
             heap_size_bytes(true, false, false, false),
-            768 * 1024 * 1024
+            944 * 1024 * 1024
         );
     }
 
@@ -62,7 +63,7 @@ mod tests {
     }
 
     /// Kill-switch (Rule 1) for the 3B tier: with the 3B flag OFF the budget is
-    /// bit-for-bit the previous layer's — 4 MiB / 768 MiB / 1.75 GiB depending
+    /// bit-for-bit the previous layer's — 4 MiB / 944 MiB / 1.75 GiB depending
     /// on the lower flags — i.e. adding the 3B tier changed nothing when 3B is
     /// disabled. `heap_size_bytes(_, _, false)` never returns the 3B budget.
     #[test]
@@ -166,9 +167,10 @@ mod tests {
 
     /// B1b: a boot-module source shrinks only the 0.5B tier, by the staging
     /// buffer it no longer needs, and keeps the 0.5B's old non-staging headroom.
+    /// Q8_0 (2026-11-08): the staging buffer grew, the headroom did not.
     #[test]
     fn boot_module_drops_only_the_05b_staging_buffer() {
-        const REAL_05B_NEOM_BYTES: usize = 485_489_152;
+        const REAL_05B_NEOM_BYTES: usize = 669_799_936;
         assert_eq!(
             heap_size_bytes_for_source(true, true, false, false, false),
             HEAP_SIZE_REAL_BRAIN_05B_BOOT_MODULE
@@ -196,5 +198,32 @@ mod tests {
             let (a, b, c, d) = flags;
             assert_eq!(heap_size_bytes_for_source(true, a, b, c, d), expect);
         }
+    }
+
+    /// Q8_0 (`Plans/DISPATCH-2026-11-08-arthur-q8.md` step 3): the 0.5B tier is
+    /// the pinned `.neom` rounded up to whole MiB plus the same 305 MiB it kept
+    /// under Q4_K_M, and it stays below the Qwen3.5-0.8B tier it must lose to.
+    #[test]
+    fn q8_05b_tier_is_the_module_plus_the_old_headroom() {
+        use super::heap_policy::{REAL_BRAIN_05B_HEADROOM_MIB, REAL_BRAIN_05B_STAGING_MIB};
+        const MIB: usize = 1024 * 1024;
+        const REAL_05B_NEOM_BYTES: usize = 669_799_936;
+        assert_eq!(
+            REAL_BRAIN_05B_STAGING_MIB,
+            REAL_05B_NEOM_BYTES.div_ceil(MIB)
+        );
+        assert_eq!(REAL_BRAIN_05B_STAGING_MIB, 639);
+        // The headroom the 0.5B tier had under Q4_K_M: 768 - ceil(485,489,152 B).
+        assert_eq!(
+            REAL_BRAIN_05B_HEADROOM_MIB,
+            768 - 485_489_152usize.div_ceil(MIB)
+        );
+        assert_eq!(HEAP_SIZE_REAL_BRAIN_05B, (639 + 305) * MIB);
+        assert_eq!(HEAP_SIZE_REAL_BRAIN_05B_BOOT_MODULE, 305 * MIB);
+        const { assert!(HEAP_SIZE_REAL_BRAIN_05B < HEAP_SIZE_REAL_BRAIN_QWEN35) };
+        assert_eq!(
+            heap_size_bytes(true, false, false, true),
+            HEAP_SIZE_REAL_BRAIN_QWEN35
+        );
     }
 }

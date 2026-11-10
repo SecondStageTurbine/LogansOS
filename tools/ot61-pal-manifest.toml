@@ -53,7 +53,7 @@ std_sys_modules = [
 # attenuate that handle. Same rules. SYS_FB_PRESENT is deliberately absent:
 # the client never presents.
 [gate]
-allowed_syscalls = ["SYS_WRITE", "SYS_MAP_REGION", "SYS_EXIT", "SYS_CLOCK_GETTIME", "SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_THREAD_CREATE", "SYS_THREAD_EXIT", "SYS_THREAD_JOIN", "SYS_THREAD_DETACH", "SYS_THREAD_GET_INFO", "SYS_THREAD_SET_TLS", "SYS_SCHED_YIELD", "SYS_GETRANDOM", "SYS_OPEN", "SYS_READ", "SYS_CLOSE", "SYS_FSYNC", "SYS_PROCESS_SELF", "SYS_HANDLE_INFO", "SYS_DERIVE", "SYS_BUFFER_CREATE", "SYS_BUFFER_MAP", "SYS_BUFFER_QUERY", "SYS_BUFFER_COMMIT_DAMAGE", "SYS_BUFFER_UNMAP"]
+allowed_syscalls = ["SYS_WRITE", "SYS_MAP_REGION", "SYS_EXIT", "SYS_CLOCK_GETTIME", "SYS_FUTEX_WAIT", "SYS_FUTEX_WAKE", "SYS_THREAD_CREATE", "SYS_THREAD_EXIT", "SYS_THREAD_JOIN", "SYS_THREAD_DETACH", "SYS_THREAD_GET_INFO", "SYS_THREAD_SET_TLS", "SYS_SCHED_YIELD", "SYS_GETRANDOM", "SYS_OPEN", "SYS_READ", "SYS_CLOSE", "SYS_FSYNC", "SYS_PROCESS_SELF", "SYS_HANDLE_INFO", "SYS_DERIVE", "SYS_BUFFER_CREATE", "SYS_BUFFER_MAP", "SYS_BUFFER_QUERY", "SYS_BUFFER_COMMIT_DAMAGE", "SYS_BUFFER_UNMAP", "SYS_SEND", "SYS_RECV", "SYS_GRANT", "SYS_RECV_GRANT"]
 pal_crate = "userland/neo-std-pal"
 
 [gate.provenance]
@@ -82,6 +82,10 @@ SYS_BUFFER_MAP = "S3: atrium::map. Maps a buffer the caller holds a handle to: r
 SYS_BUFFER_QUERY = "S3: atrium::query. Reads a held buffer's geometry; needs QUERY; grants nothing."
 SYS_BUFFER_COMMIT_DAMAGE = "S3: atrium::commit_damage. Publishes a damage rectangle on a held buffer for its compositor; needs COMMIT. Does not present."
 SYS_BUFFER_UNMAP = "S3: atrium::unmap. Removes the caller's own buffer mapping."
+SYS_SEND = "S3b: std::os::neoplutarch::channel::send. Rendezvous send on a channel the launcher handed the process (SEND right); a process holds none it wasn't given, so it reaches only its connected peers."
+SYS_RECV = "S3b: channel::recv. Rendezvous receive on a held channel (RECV right)."
+SYS_GRANT = "S3b: channel::grant. Hands the peer a copy of a held handle that carries the GRANT meta right, with at most the offered rights (the kernel intersects with the source's own); how the browser gives the compositor its read-only buffer view."
+SYS_RECV_GRANT = "S3b: channel::recv_grant. Receives a granted handle, capped at the rights the receiver asks for (RECV right)."
 SYS_GETRANDOM = "C2.0: std fill_bytes (HashMap RandomState, std randomness). The kernel CSPRNG (ChaCha20 DRBG seeded from RDRAND), whole fills only, 64 KiB per call; ENOSYS without kernel-rng, which std turns into a loud abort (no weaker fallback). No capability yet: the sealed-entropy-handle option is a later rung."
 
 # ── The surface inventory, grouped by gap-table surface ───────────────────────

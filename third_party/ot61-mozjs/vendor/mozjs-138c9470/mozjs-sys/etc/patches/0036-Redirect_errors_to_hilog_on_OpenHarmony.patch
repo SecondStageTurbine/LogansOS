@@ -1,0 +1,240 @@
+diff --git a/build/moz.configure/init.configure b/build/moz.configure/init.configure
+index 42bf4327c..d54c04cc6 100644
+--- a/build/moz.configure/init.configure
++++ b/build/moz.configure/init.configure
+@@ -932,6 +932,8 @@ def target_is_ohos(target):
+ 
+ 
+ set_define("XP_OHOS", target_is_ohos)
++set_config("OHOS", target_is_ohos)
++set_define("OHOS_LOG_DOMAIN", "0xE0C4", when=target_is_ohos)
+
+
+ @depends(target)
+diff --git a/memory/mozalloc/mozalloc_abort.cpp b/memory/mozalloc/mozalloc_abort.cpp
+index 23c581f41..05c7e5348 100644
+--- a/memory/mozalloc/mozalloc_abort.cpp
++++ b/memory/mozalloc/mozalloc_abort.cpp
+@@ -6,6 +6,11 @@
+ 
+ #ifdef ANDROID
+ #  include <android/log.h>
++#elif defined(XP_OHOS)
++  extern "C" {
++    int OH_LOG_Print(unsigned int type, unsigned int level, unsigned int domain, const char *tag, const char *fmt, ...)
++        __attribute__((__format__(os_log, 5, 6))) __attribute__((visibility("default")));
++  }
+ #endif
+ #ifdef MOZ_WIDGET_ANDROID
+ #  include "APKOpen.h"
+@@ -18,11 +23,14 @@
+ #include "mozilla/Sprintf.h"
+ 
+ void mozalloc_abort(const char* const msg) {
+-#ifndef ANDROID
++#ifdef ANDROID
++  __android_log_print(ANDROID_LOG_ERROR, "Gecko", "mozalloc_abort: %s", msg);
++#elif defined(XP_OHOS)
++    (void) OH_LOG_Print(0 /* LOG_APP */, 7 /* LOG_FATAL */, OHOS_LOG_DOMAIN, "Gecko",
++         "mozalloc_abort: %{public}s\n", msg);
++#else
+   fputs(msg, stderr);
+   fputs("\n", stderr);
+-#else
+-  __android_log_print(ANDROID_LOG_ERROR, "Gecko", "mozalloc_abort: %s", msg);
+ #endif
+ 
+ #ifdef MOZ_WIDGET_ANDROID
+diff --git a/mfbt/Assertions.h b/mfbt/Assertions.h
+index 5518bff6b..635940938 100644
+--- a/mfbt/Assertions.h
++++ b/mfbt/Assertions.h
+@@ -89,6 +89,11 @@ MOZ_END_EXTERN_C
+ #endif
+ #ifdef ANDROID
+ #  include <android/log.h>
++#elif defined(XP_OHOS)
++MOZ_BEGIN_EXTERN_C
++int OH_LOG_Print(unsigned int type, unsigned int level, unsigned int domain, const char *tag, const char *fmt, ...)
++    __attribute__((__format__(os_log, 5, 6))) __attribute__((visibility("default")));
++MOZ_END_EXTERN_C
+ #endif
+ 
+ MOZ_BEGIN_EXTERN_C
+@@ -149,6 +154,10 @@ MOZ_ReportAssertionFailure(const char* aStr, const char* aFilename,
+   MozWalkTheStackWithWriter(MOZ_ReportAssertionFailurePrintFrame, CallerPC(),
+                             /* aMaxFrames */ 0);
+ #  endif
++#elif defined(XP_OHOS)
++    (void) OH_LOG_Print(0 /* LOG_APP */, 7 /* LOG_FATAL */, OHOS_LOG_DOMAIN, "MOZ_Assert",
++     "Assertion failure: %{public}s, at %{public}s:%{public}d\n",
++     aStr, aFilename, aLine);
+ #else
+ #  if defined(MOZ_BUFFER_STDERR)
+   char msg[1024] = "";
+@@ -178,6 +187,10 @@ MOZ_ReportAssertionFailure(const char* aStr, const char* aFilename,
+   MozWalkTheStackWithWriter(MOZ_CrashPrintFrame, CallerPC(),
+                             /* aMaxFrames */ 0);
+ #  endif
++#elif defined(XP_OHOS)
++  (void) OH_LOG_Print(0 /* LOG_APP */, 7 /* LOG_FATAL */, OHOS_LOG_DOMAIN, "MOZ_CRASH",
++   "Hit MOZ_CRASH(%{public}s), at %{public}s:%{public}d\n",
++   aStr, aFilename, aLine);
+ #else
+ #  if defined(MOZ_BUFFER_STDERR)
+   char msg[1024] = "";
+diff --git a/mfbt/DbgMacro.h b/mfbt/DbgMacro.h
+index 4f85f2ffb..b21386984 100644
+--- a/mfbt/DbgMacro.h
++++ b/mfbt/DbgMacro.h
+@@ -17,8 +17,13 @@
+ template <typename T>
+ class nsTSubstring;
+ 
+-#ifdef ANDROID
++#if defined(ANDROID)
+ #  include <android/log.h>
++#elif defined(XP_OHOS)
++  MOZ_BEGIN_EXTERN_C
++  int OH_LOG_Print(unsigned int type, unsigned int level, unsigned int domain, const char *tag, const char *fmt, ...)
++      __attribute__((__format__(os_log, 5, 6))) __attribute__((visibility("default")));
++  MOZ_END_EXTERN_C
+ #endif
+ 
+ namespace mozilla {
+@@ -78,8 +83,10 @@ auto&& MozDbg(const char* aFile, int aLine, const char* aExpression,
+   std::ostringstream s;
+   s << "[MozDbg] [" << aFile << ':' << aLine << "] " << aExpression << " = ";
+   mozilla::DebugValue(s, std::forward<T>(aValue)) << '\n';
+-#ifdef ANDROID
++#if defined(ANDROID)
+   __android_log_print(ANDROID_LOG_INFO, "Gecko", "%s", s.str().c_str());
++#elif defined(XP_OHOS)
++  (void) OH_LOG_Print(0 /* LOG_APP */, 4 /* LOG_INFO */, OHOS_LOG_DOMAIN, "Gecko", "%{public}s\n", s.str().c_str());
+ #else
+   fputs(s.str().c_str(), stderr);
+ #endif
+diff --git a/mozglue/misc/Debug.cpp b/mozglue/misc/Debug.cpp
+index 5a658aa82..78a1c34fa 100644
+--- a/mozglue/misc/Debug.cpp
++++ b/mozglue/misc/Debug.cpp
+@@ -8,6 +8,8 @@
+ #include <stdarg.h>
+ #include <stdio.h>
+ 
++#include "mozilla/Sprintf.h"
++
+ #ifdef XP_WIN
+ #  include <io.h>
+ #  include <windows.h>
+@@ -15,9 +17,16 @@
+ 
+ #ifdef ANDROID
+ #  include <android/log.h>
++#elif defined(XP_OHOS)
++extern "C" {
++int OH_LOG_Print(unsigned int type, unsigned int level, unsigned int domain,
++                 const char* tag, const char* fmt, ...)
++    __attribute__((__format__(os_log, 5, 6)))
++    __attribute__((visibility("default")));
++}
+ #endif
+ 
+-#ifndef ANDROID
++#if !(defined(ANDROID) || defined(XP_OHOS))
+ static void vprintf_stderr_buffered(const char* aFmt, va_list aArgs) {
+   // Avoid interleaving by writing to an on-stack buffer and then writing in one
+   // go with fputs, as long as the output fits into the buffer.
+@@ -63,6 +72,14 @@ MFBT_API void vprintf_stderr(const char* aFmt, va_list aArgs) {
+ MFBT_API void vprintf_stderr(const char* aFmt, va_list aArgs) {
+   __android_log_vprint(ANDROID_LOG_INFO, "Gecko", aFmt, aArgs);
+ }
++#elif defined(XP_OHOS)
++MFBT_API void vprintf_stderr(const char* aFmt, va_list aArgs) {
++  // OH_LOG_VPrint is available with API-level 18 (19?) or higher.
++  char buffer[1024];
++  VsprintfBuf(buffer, 1024, aFmt, aArgs);
++  (void)OH_LOG_Print(0 /* LOG_APP */, 4 /* LOG_INFO */, OHOS_LOG_DOMAIN, "Gecko",
++                     "%{public}s", buffer);
++}
+ #elif defined(FUZZING_SNAPSHOT)
+ MFBT_API void vprintf_stderr(const char* aFmt, va_list aArgs) {
+   if (nyx_puts) {
+@@ -105,14 +122,19 @@ MFBT_API void fprint_stderr(FILE* aFile, const std::string& aStr) {
+ }
+ 
+ MFBT_API void print_stderr(std::stringstream& aStr) {
+-#if defined(ANDROID)
++#if defined(ANDROID) || defined(XP_OHOS)
+   // On Android logcat output is truncated to 1024 chars per line, and
+   // we usually use std::stringstream to build up giant multi-line gobs
+   // of output. So to avoid the truncation we find the newlines and
+   // print the lines individually.
+   std::string line;
+   while (std::getline(aStr, line)) {
++#  ifdef XP_OHOS
++    (void)OH_LOG_Print(0 /* LOG_APP */, 4 /* LOG_INFO */, OHOS_LOG_DOMAIN, "Gecko",
++                       "%{public}s", line.c_str());
++#  else
+     printf_stderr("%s\n", line.c_str());
++#  endif
+   }
+ #else
+   print_stderr(aStr.str());
+diff --git a/nsprpub/pr/src/io/prlog.c b/nsprpub/pr/src/io/prlog.c
+index 955d718b0..230128e81 100644
+--- a/nsprpub/pr/src/io/prlog.c
++++ b/nsprpub/pr/src/io/prlog.c
+@@ -6,8 +6,11 @@
+ #include "prenv.h"
+ #include "prprf.h"
+ #include <string.h>
+-#ifdef ANDROID
++#if defined(ANDROID)
+ #  include <android/log.h>
++#elif defined(XP_OHOS)
++  int OH_LOG_Print(unsigned int type, unsigned int level, unsigned int domain, const char *tag, const char *fmt, ...)
++      __attribute__((__format__(os_log, 5, 6))) __attribute__((visibility("default")));
+ #endif
+ 
+ /*
+@@ -112,6 +115,20 @@ static void OutputDebugStringA(const char* msg) {
+       PR_Write(fd, buf, nb);                               \
+     }                                                      \
+     PR_END_MACRO
++#elif defined(XP_OHOS)
++#  define _PUT_LOG(fd, buf, nb)                              \
++    PR_BEGIN_MACRO                                           \
++    if (fd == _pr_stderr) {                                  \
++        char savebyte = buf[nb];                             \
++        buf[nb] = '\0';                                      \
++        (void) OH_LOG_Print(0 /* LOG_APP */,                 \
++                4 /* LOG_INFO */, OHOS_LOG_DOMAIN, "PRLog",  \
++               "%{public}s\n", buf);                         \
++        buf[nb] = savebyte;                                  \
++    } else {                                                 \
++        PR_Write(fd, buf, nb);                               \
++    }                                                        \
++    PR_END_MACRO
+ #elif defined(_PR_PTHREADS)
+ #  define _PUT_LOG(fd, buf, nb) PR_Write(fd, buf, nb)
+ #else
+@@ -537,6 +553,8 @@ PR_IMPLEMENT(void) PR_Abort(void) {
+   PR_LogPrint("Aborting");
+ #ifdef ANDROID
+   __android_log_write(ANDROID_LOG_ERROR, "PRLog", "Aborting");
++#elif defined(XP_OHOS)
++  (void) OH_LOG_Print(0 /* LOG_APP */, 7 /* LOG_FATAL */, OHOS_LOG_DOMAIN, "PRLog", "Aborting\n");
+ #endif
+   abort();
+ }
+@@ -550,6 +568,9 @@ PR_IMPLEMENT(void) PR_Assert(const char* s, const char* file, PRIntn ln) {
+ #elif defined(ANDROID)
+   __android_log_assert(NULL, "PRLog", "Assertion failure: %s, at %s:%d\n", s,
+                        file, ln);
++#elif defined(XP_OHOS)
++  (void) OH_LOG_Print(0 /* LOG_APP */, 7 /* LOG_FATAL */, OHOS_LOG_DOMAIN, "PRLog",
++                      "Assertion failure: %{public}s, at %{public}s:%{public}d\n",s, file, ln);
+ #endif
+   abort();
+ }

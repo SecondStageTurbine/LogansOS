@@ -198,3 +198,9 @@ RELAY 377 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-an
 RELAY 378 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 378 (#96 ceilings re-baselined at `0eea4614`; RETURN `Plans/RETURN-2026-11-09-pr96-recheck-chad.md`)
 RELAY 379 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 379 (#92 reconcile-from-store at `1609c752`; RETURN `Plans/RETURN-2026-11-09-pr92-recheck3-chad.md`)
 RELAY 380 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-09-relay-366-and-seat-c.md | Section 380 (#92 narrow re-check of the PM rulings at `0945e6e5`; RETURN `Plans/RETURN-2026-11-09-pr92-recheck4-chad.md`)
+RELAY 381 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-09-relay-381-ap-preemption-diagnosis.md | Diagnosis: preempted user thread starves ~20 s beside non-yielding spinners on NEO_SMP=4 (#98 evidence); RETURN `Plans/RETURN-2026-11-09-ap-preemption-diagnosis-dexter.md`
+RELAY 382 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-09-relays-382-384-setup-reviews.md | Section 382 (#100 setup S4 at `67be4ba2`; RETURN `Plans/RETURN-2026-11-09-pr100-review-janus.md`)
+RELAY 383 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-09-relays-382-384-setup-reviews.md | Section 383 (#99 setup S5 at `8e407c15`; RETURN `Plans/RETURN-2026-11-09-pr99-review-jarvis.md`)
+RELAY 384 | chad | GPT-5.6-Luna | medium | Plans/DISPATCH-2026-11-09-relays-382-384-setup-reviews.md | Section 384 (#101 setup S6a at `b33788db`; RETURN `Plans/RETURN-2026-11-09-pr101-review-chad.md`)
+RELAY 385 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-10-relay-385-ot100-think-read.md | OT-100 THINK read (#103 at `a94a5e60`; RETURN `Plans/RETURN-2026-11-10-pr103-ot100-think-read-dexter.md`)
+RELAY 386 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-10-relay-386-pr101-recheck.md | #101 narrow re-check at `24b59a34`; RETURN `Plans/RETURN-2026-11-10-pr101-recheck-chad.md`

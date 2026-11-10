@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
-//! On-demand regression KAT for the shipped Q4_K_M forward pass.
+//! On-demand regression KATs for Arthur's forward pass, one per model file.
 //!
-//! Hermetic: skips cleanly (like `real_model_*_when_available`) unless
-//! `QUANT_DRIFT_NEOM` points at the real `model-qwen2.5-0.5b.neom` with its
-//! `.vocab` sidecar beside it. Then it re-runs the SAME prompts and compares
-//! them with `fixtures/quant-drift-kat-2026-11-08.ours.tsv`, the pinned output
-//! of the 2026-11-08 quantization-drift run. A forward-pass change that moves a
-//! token fails here instead of being re-blessed by review.
+//! - `QUANT_DRIFT_NEOM`: the Q4_K_M `.neom` Arthur shipped until 2026-11-08
+//!   (BLAKE3 `a32e4a1b…`), against
+//!   `fixtures/quant-drift-kat-2026-11-08-control.ours.tsv`. Kept as the
+//!   historical record.
+//! - `QUANT_DRIFT_NEOM_Q8`: the Q8_0 `.neom` Arthur ships from #90 (BLAKE3
+//!   `1cfd06dc…`), against `fixtures/quant-drift-kat-2026-11-09-q8.ours.tsv`.
+//!
+//! Hermetic: each test skips cleanly (like `real_model_*_when_available`)
+//! unless its variable points at the real `.neom` with its `.vocab` sidecar
+//! beside it. Then it re-runs the SAME prompts and compares them with the
+//! pinned run. A forward-pass change that moves a token fails here instead of
+//! being re-blessed by review.
 //!
 //! `QUANT_DRIFT_CORPUS=corpus.u32` additionally checks the pinned PPL window
 //! (the KAT's `corpus_tokens` / `corpus_eval_start`) within 0.5% relative. The
@@ -24,13 +30,17 @@ const BOOT_PROMPT: [u32; 21] = [
     1879, 151645, 198, 151644, 77091, 198,
 ];
 
-fn kat_path() -> PathBuf {
+/// The pinned run for the Q4_K_M file, unless `QUANT_DRIFT_KAT` names another.
+fn q4_kat_path() -> PathBuf {
     std::env::var("QUANT_DRIFT_KAT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/quant-drift-kat-2026-11-08-control.ours.tsv")
-        })
+        .unwrap_or_else(|_| fixture("quant-drift-kat-2026-11-08-control.ours.tsv"))
+}
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("fixtures")
+        .join(name)
 }
 
 #[test]
@@ -39,10 +49,27 @@ fn quant_drift_kat_when_available() {
         eprintln!("SKIP quant_drift_kat_when_available: QUANT_DRIFT_NEOM unset");
         return;
     };
-    let neom_path = PathBuf::from(neom_path);
-    let (model, vocab) = Model::load(&neom_path).expect("load real .neom");
+    check_against_kat(Path::new(&neom_path), &q4_kat_path());
+}
 
-    let kat_text = std::fs::read_to_string(kat_path()).expect("read KAT reference run");
+/// Arthur's Q8_0 model (#90). The Q4_K_M test above stays as the historical
+/// record; this one pins the file Arthur ships now.
+#[test]
+fn quant_drift_q8_kat_when_available() {
+    let Ok(neom_path) = std::env::var("QUANT_DRIFT_NEOM_Q8") else {
+        eprintln!("SKIP quant_drift_q8_kat_when_available: QUANT_DRIFT_NEOM_Q8 unset");
+        return;
+    };
+    check_against_kat(
+        Path::new(&neom_path),
+        &fixture("quant-drift-kat-2026-11-09-q8.ours.tsv"),
+    );
+}
+
+fn check_against_kat(neom_path: &Path, kat_path: &Path) {
+    let (model, vocab) = Model::load(neom_path).expect("load real .neom");
+
+    let kat_text = std::fs::read_to_string(kat_path).expect("read KAT reference run");
     let kat = RefRun::from_tsv(&kat_text).expect("parse KAT reference run");
     assert_eq!(
         kat.prompts.len(),
