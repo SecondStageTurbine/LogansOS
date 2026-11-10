@@ -202,3 +202,4 @@ RELAY 381 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-09-relay-381-ap-pr
 RELAY 382 | janus | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-09-relays-382-384-setup-reviews.md | Section 382 (#100 setup S4 at `67be4ba2`; RETURN `Plans/RETURN-2026-11-09-pr100-review-janus.md`)
 RELAY 383 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-09-relays-382-384-setup-reviews.md | Section 383 (#99 setup S5 at `8e407c15`; RETURN `Plans/RETURN-2026-11-09-pr99-review-jarvis.md`)
 RELAY 384 | chad | GPT-5.6-Luna | medium | Plans/DISPATCH-2026-11-09-relays-382-384-setup-reviews.md | Section 384 (#101 setup S6a at `b33788db`; RETURN `Plans/RETURN-2026-11-09-pr101-review-chad.md`)
+RELAY 385 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-10-relay-385-ot100-think-read.md | OT-100 THINK read (#103 at `a94a5e60`; RETURN `Plans/RETURN-2026-11-10-pr103-ot100-think-read-dexter.md`)
