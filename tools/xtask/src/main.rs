@@ -2539,6 +2539,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 rung 4 (SWGL S3b): the client grants a separate compositor
+        // process a read-only view of its Atrium buffer over a channel.
+        name: "swgl_grant_smoke",
+        feature: "neo-test-swgl-grant-smoke",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 rung 4 (SWGL S3a): the S1 pattern rendered into a kernel
         // Atrium buffer, byte-compared through the compositor's RO view.
         name: "swgl_atrium_smoke",
@@ -8054,6 +8063,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "swgl_smoke" => &[SWGL_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
+        "swgl_grant_smoke" => &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
         _ => &[],
     }
 }
@@ -9174,6 +9184,13 @@ fn build_user_members(
         if std_real_staged_bins().contains(&SWGL_ATRIUM_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_ATRIUM_BIN], SWGL_DIR)?;
         }
+        if std_real_staged_bins().contains(&SWGL_GRANT_CLIENT_BIN) {
+            build_standalone_std_smoke(
+                SWGL_BIN,
+                &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
+                SWGL_DIR,
+            )?;
+        }
     }
     Ok(())
 }
@@ -9200,6 +9217,10 @@ const SWGL_DIR: &str = "userland/swgl-smoke";
 /// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
 /// the same crate (`src/atrium.rs`).
 const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
+/// OT-61 rung 4 (SWGL S3b): the client and the compositor process, in the
+/// same crate (`src/grant_client.rs`, `src/grant_compositor.rs`).
+const SWGL_GRANT_CLIENT_BIN: &str = "swgl-grant-client";
+const SWGL_GRANT_COMPOSITOR_BIN: &str = "swgl-grant-compositor";
 /// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
 const WEBRENDER_BIN: &str = "webrender-smoke";
 const WEBRENDER_DIR: &str = "userland/webrender-smoke";
@@ -9212,7 +9233,9 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SERVO_CLOSURE_BIN => Some(SERVO_CLOSURE_DIR),
         STYLO_SMOKE_BIN => Some(STYLO_SMOKE_DIR),
         CXX_RUNTIME_BIN | CXX_TRAP_BIN => Some(CXX_RUNTIME_DIR),
-        SWGL_BIN | SWGL_ATRIUM_BIN => Some(SWGL_DIR),
+        SWGL_BIN | SWGL_ATRIUM_BIN | SWGL_GRANT_CLIENT_BIN | SWGL_GRANT_COMPOSITOR_BIN => {
+            Some(SWGL_DIR)
+        }
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         _ => None,
     }
@@ -9299,10 +9322,15 @@ fn cmd_ot61_swgl_build(args: &[String]) -> Result<(), String> {
     };
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
-    // S1's crate also holds the S3a Atrium smoke, whose std surface is the
-    // A4 change, so both are built and checked.
+    // S1's crate also holds the S3 Atrium smokes, whose std surface is the
+    // A4 change, so all of them are built and checked.
     let bins: &[&str] = if bin == SWGL_BIN {
-        &[SWGL_BIN, SWGL_ATRIUM_BIN]
+        &[
+            SWGL_BIN,
+            SWGL_ATRIUM_BIN,
+            SWGL_GRANT_CLIENT_BIN,
+            SWGL_GRANT_COMPOSITOR_BIN,
+        ]
     } else {
         &[bin]
     };
@@ -19935,6 +19963,24 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "WebRender on SWGL must render the hand-derived scene",
+            )?;
+        }
+    }
+    if scenario.name == "swgl_grant_smoke" {
+        for needle in [
+            "[ swgl-grant-compositor ] ok(3) it is a buffer with exactly the offer: USE; MAP_READ|QUERY|PRESENT",
+            "[ swgl-grant-compositor ] ok(5) it cannot map the client view (EPERM)",
+            "[ swgl-grant-compositor ] ok(8) it cannot be granted onwards (EPERM, no GRANT)",
+            "[ swgl-grant-compositor ] ok(10) the view == the hand-laid pattern (BGRA, no flip, padding and the rest of the page untouched)",
+            "[ swgl-grant-compositor ] PASS",
+            "[ swgl-grant-client ] ok(9) the compositor read the pattern through its own view",
+            "[ swgl-grant-client ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "a separate compositor must read the client's render through a granted RO view",
             )?;
         }
     }

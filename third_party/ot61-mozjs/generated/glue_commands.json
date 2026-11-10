@@ -1,0 +1,48 @@
+[
+ {
+  "arguments": [
+   "-std=gnu++20",
+   "-I",
+   "@OBJ@/dist/include",
+   "-I",
+   "@OBJ@/js/src",
+   "-Wall",
+   "-Wextra",
+   "-fno-rtti",
+   "-fno-sized-deallocation",
+   "-Wno-c++0x-extensions",
+   "-Wno-return-type-c-linkage",
+   "-Wno-unused-parameter",
+   "-Wno-invalid-offsetof",
+   "-Wno-unused-private-field",
+   "-include",
+   "@OBJ@/js/src/js-confdefs.h",
+   "-DSTATIC_JS_API",
+   "@CRATES@/mozjs-sys/src/jsapi.cpp"
+  ],
+  "cxx": true,
+  "file": "jsapi.cpp"
+ },
+ {
+  "arguments": [
+   "-std=gnu++20",
+   "-I",
+   "@OBJ@/dist/include",
+   "-Wall",
+   "-Wextra",
+   "-fno-rtti",
+   "-fno-sized-deallocation",
+   "-Wno-c++0x-extensions",
+   "-Wno-return-type-c-linkage",
+   "-Wno-unused-parameter",
+   "-Wno-invalid-offsetof",
+   "-Wno-unused-private-field",
+   "-include",
+   "@OBJ@/js/src/js-confdefs.h",
+   "-DSTATIC_JS_API",
+   "@CRATES@/mozjs-sys/src/jsglue.cpp"
+  ],
+  "cxx": true,
+  "file": "jsglue.cpp"
+ }
+]

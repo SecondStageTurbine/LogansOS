@@ -1,0 +1,91 @@
+#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+# OT-61 C3c-1: the C/C++ compiler the SpiderMonkey generator hands to
+# configure for x86_64-unknown-neoplutarch (trap T6). It is neo-crt's own
+# compile line (userland/cxx-runtime-smoke/build.rs): clang for
+# x86_64-unknown-none-elf over musl's and libc++'s headers, with
+# __neoplutarch__ predefined so configure's kernel check finds us.
+#
+# Run as `neo-cc` for C and `neo-c++` (a symlink) for C++. NEO_REPO is the
+# repository root; NEO_CLANG the clang to use (default clang); NEO_CXX_CONFIG
+# a directory holding libc++'s __config_site (default neo-crt's own).
+# _GNU_SOURCE: libc++'s locale headers need musl's strto*_l and vasprintf.
+#
+# Linking: configure links small test programs. They link against a stub
+# that defines exactly the symbols in neo-crt-symbols.txt (what neo-crt
+# defines), and an undefined symbol fails the link, so a function check
+# passes only for a function neo-crt has.
+set -eu
+repo=${NEO_REPO:?NEO_REPO must name the repository root}
+clang=${NEO_CLANG:-clang}
+crt=$repo/third_party/ot61-crt/vendor
+res=$("$clang" -print-resource-dir)
+
+cxx=
+case "$0" in *++) cxx=1 ;; esac
+
+# `neo-c++ --neo-print-flags`: print the flags this wrapper adds (target,
+# defines, headers), one per line, for tools that parse C++ themselves
+# (the generator's bindgen step) and so never run this script.
+print_flags=
+[ "${1:-}" = "--neo-print-flags" ] && { print_flags=1; shift; }
+
+link=1
+for a in "$@"; do
+  case "$a" in -c|-E|-S|-M|-MM) link= ;; esac
+done
+
+# NEO_CC_LOG: append each compile's directory and caller arguments (before
+# this wrapper adds its own) as one JSON line. The generator's bindgen step
+# sets it, to record upstream's jsapi.cpp/jsglue.cpp compiles for
+# generated/glue_commands.json.
+if [ -n "${NEO_CC_LOG:-}" ] && [ -z "$link" ] && [ -z "$print_flags" ]; then
+  python3 -I -c 'import json, os, sys
+print(json.dumps({"directory": os.getcwd(), "cxx": sys.argv[1] == "1", "arguments": sys.argv[2:]}))' \
+    "${cxx:-0}" "$@" >> "$NEO_CC_LOG"
+fi
+
+# The target ABI (static, no PIC, no red zone, small code model) goes after
+# the caller's flags, so configure's -fPIC can't override it. Stack protector
+# flags are the caller's: neo-crt provides __stack_chk_guard/__stack_chk_fail.
+set -- --target=x86_64-unknown-none-elf -D__neoplutarch__ \
+  -D_XOPEN_SOURCE=700 -D_GNU_SOURCE -nostdinc "$@" \
+  -mno-red-zone -mcmodel=small -fno-pic -fno-pie
+here=$(cd "$(dirname "$0")" && pwd)
+inc="-isystem $repo/third_party/ot61-mozjs/vendor/encoding_c_mem-0.2.6/include \
+  -isystem $repo/third_party/ot61-mozjs/vendor/mozjs-138c9470/mozjs-sys/mozjs/modules/zlib/src \
+  -isystem $crt/musl-generated -isystem $crt/musl/arch/x86_64 \
+  -isystem $crt/musl/arch/generic -isystem $crt/musl/include \
+  -isystem $res/include"
+if [ -n "$cxx" ]; then
+  inc="-nostdinc++ -fno-exceptions -fno-rtti \
+    -isystem $here/include \
+    -isystem ${NEO_CXX_CONFIG:-$repo/userland/neo-crt/cxx} \
+    -isystem $crt/libcxx/include $inc"
+  exe="$clang --driver-mode=g++"
+else
+  exe="$clang"
+fi
+if [ -n "$print_flags" ]; then
+  # shellcheck disable=SC2086
+  for f in "$@" $inc; do printf '%s\n' "$f"; done
+  exit 0
+fi
+if [ -n "$link" ]; then
+  # clang hands an x86_64-unknown-none-elf link to the host's gcc driver,
+  # which finds ld.lld on PATH; put clang's own lld first.
+  lld=$("$clang" -print-prog-name=ld.lld)
+  case "$lld" in /*) PATH=$(dirname "$lld"):$PATH; export PATH ;; esac
+  syms=$here/neo-crt-symbols.txt
+  stub=${TMPDIR:-/tmp}/neo-crt-stub-$(cksum <"$syms" | cut -d' ' -f1).o
+  if [ ! -f "$stub" ]; then
+    tmp=$stub.$$
+    grep -v '^#' "$syms" | awk 'NF { printf ".globl %s\n%s:\n", $1, $1 }' \
+      | "$clang" --target=x86_64-unknown-none-elf -x assembler -c - -o "$tmp"
+    mv "$tmp" "$stub"
+  fi
+  # shellcheck disable=SC2086
+  exec $exe $inc "$@" -nostdlib -static -fuse-ld=lld "$stub" -Wl,-e,0
+fi
+# shellcheck disable=SC2086
+exec $exe $inc "$@"
