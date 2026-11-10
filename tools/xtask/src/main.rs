@@ -12054,7 +12054,19 @@ fn run_two_boot_scenario_with_retries(
                     "[xtask] neo-test: `{}` two-boot attempt {}/{} failed: {}",
                     scenario.name, attempt, attempts, err
                 );
-                print_serial_tail(&err);
+                if err.contains("serial=") {
+                    print_serial_tail(&err);
+                } else {
+                    // A timeout names no log: the first boot's (a hang is
+                    // usually there; best-effort).
+                    let boot1 = scenario_serial_log(&format!(
+                        "{}{}.attempt{}.boot1.serial.log",
+                        scenario.name,
+                        neo_test_run_id_suffix(),
+                        attempt
+                    ));
+                    print_serial_tail(&format!("{err}; serial={}", boot1.display()));
+                }
                 eprintln!(
                     "[xtask] neo-test: retrying `{}` with a freshly seeded persistence disk",
                     scenario.name
