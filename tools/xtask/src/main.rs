@@ -11431,6 +11431,22 @@ fn print_serial_tail(err: &str) {
     for line in &lines[start..] {
         eprintln!("[serial] {line}");
     }
+    // OT-tick-1: the scheduler diagnostic's earlier lines (bounded), which
+    // the tail cuts off.
+    let diag: Vec<&&str> = lines[..start]
+        .iter()
+        .filter(|l| l.starts_with("TICKDIAG") || l.starts_with("TICKPRE"))
+        .collect();
+    if !diag.is_empty() {
+        let skip = diag.len().saturating_sub(300);
+        eprintln!(
+            "[xtask] neo-test: {} earlier TICKDIAG/TICKPRE line(s) of {path}:",
+            diag.len() - skip
+        );
+        for line in &diag[skip..] {
+            eprintln!("[serial] {line}");
+        }
+    }
 }
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
@@ -12595,7 +12611,15 @@ fn run_test_scenario(
     // path so existing tooling keeps working. The per-attempt log remains the
     // load-bearing copy and is never overwritten by subsequent retries.
     let _ = copy_attempt_log_to_canonical(scenario.name, &serial_log);
-    result
+    // A failure that names no serial log (a QEMU timeout) gets this attempt's,
+    // so `print_serial_tail` can show it in the job log.
+    result.map_err(|e| {
+        if e.contains("serial=") {
+            e
+        } else {
+            format!("{e}; serial={}", serial_log.display())
+        }
+    })
 }
 
 fn run_arthur_memory_scenario_with_retries(
