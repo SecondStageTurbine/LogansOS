@@ -24586,7 +24586,9 @@ fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             // What reached the child's stdin: exactly `ab` and the newline.
             "TERM row=2 |got=61620a|",
             "TERM stdin closed",
-            "TERM row=3 |child eof|",
+            // `child eof` is drawn at the commit of the wake that read it,
+            // which can be the wake that saw the exit (whose line comes
+            // first): it is checked present below, not ordered.
             "TERM child exited value=0",
             "TERM row=5 |[process exited 0]|",
         ],
@@ -24619,6 +24621,9 @@ fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         "DESKTOP apps client ended client=2 value=0",
     ] {
         require_serial_contains(scenario, observed, needle, detail)?;
+    }
+    if scenario.name == "desktop_terminal_echo_boot" {
+        require_serial_contains(scenario, observed, "TERM row=3 |child eof|", detail)?;
     }
     // The child's stdio is the terminal's: its banner is on the grid only.
     require_serial_absent(scenario, observed, "\n[ neo-shell ] ready", detail)?;
