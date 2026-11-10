@@ -14,7 +14,7 @@
 //! session receive for the WM's `K` (a try, which lands only on a parked
 //! receiver). In front it waits on its focus and the stdout pipe: with
 //! `terminal-park` it parks in `SYS_WAIT_ANY` with a 20 ms deadline; without
-//! it (the WM and Arthur spin) it scans and yields. On every wake, in order
+//! it (the default, as the probe app) it scans and yields. On every wake, in order
 //! (§3.2, §3.3):
 //! 1. applies the child's mode request, if it made a new one;
 //! 2. reads at most 16 KiB of the child's output into the screen;
@@ -330,12 +330,10 @@ pub fn run() -> i32 {
             };
             n = 2;
         }
-        // With `terminal-park` (an image whose WM and Arthur park too,
-        // `desktop-park`) it parks until its focus or the pipe is ready, or
-        // 20 ms. Without it the WM and Arthur spin, and a parked terminal
-        // gets almost no CPU beside them (#98's first runs: one wake took
-        // 20 s), so it scans without parking and yields each pass, as the
-        // probe app does.
+        // With `terminal-park` it parks until its focus or the pipe is
+        // ready, or 20 ms. Without it, the default, it scans without parking
+        // and yields each pass, as the probe app does beside a WM and an
+        // Arthur that spin (no `desktop-park`).
         #[cfg(feature = "terminal-park")]
         let ready = {
             let deadline = now_ns().saturating_add(WAKE_NS);
