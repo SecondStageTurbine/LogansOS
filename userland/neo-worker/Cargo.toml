@@ -64,6 +64,8 @@ threads-guard-fault = []
 threads-tls = []
 # OT-61 C1.3b (CP-86): the cross-CPU process-retire battery (threads_exit_group).
 threads-exit-group = ["libneo/neo-test"]
+# OT-tick-1 (`tick_preempt_ring3`): a ring-3 spinner, or the compute process.
+tick-preempt-test = []
 # CP-46: the futex-parked sibling waits with a (far) deadline, so the fault-kill
 # purges a TIMED waiter and recomputes the earliest futex deadline. libneo's
 # neo-test gives it the futex queue-length probe for its park barrier.

@@ -111,7 +111,8 @@
         feature = "net-dial-cap-kill-switch",
         feature = "fetch-broker",
         feature = "vault-phase-b",
-        feature = "desktop-session"
+        feature = "desktop-session",
+        feature = "tick-preempt-test"
     ),
     allow(dead_code)
 )]
@@ -2242,7 +2243,8 @@ mod gpu_glass_slice6_tests {
     feature = "threads-guard-fault",
     feature = "threads-cap-compose",
     feature = "vault-phase-b",
-    feature = "desktop-session"
+    feature = "desktop-session",
+    feature = "tick-preempt-test"
 )))]
 fn run_selected_scenario() -> i32 {
     run_ipc_heap_kill_smoke()
@@ -2667,6 +2669,80 @@ mod wallclock {
 #[cfg(feature = "threads-tls")]
 fn run_selected_scenario() -> i32 {
     threads_tls_battery::run()
+}
+
+/// OT-tick-1 (`tick_preempt_ring3`, relay 381): two ring-3 spinners, then a
+/// compute process that measures its worst gap between runs for 5 s. The
+/// result line carries the gap; 0 when it is within [`tick_preempt::MAX_GAP_NS`].
+#[cfg(feature = "tick-preempt-test")]
+fn run_selected_scenario() -> i32 {
+    tick_preempt::run()
+}
+
+#[cfg(feature = "tick-preempt-test")]
+mod tick_preempt {
+    use libneo::{
+        Handle, ProcessHandle, sys_chan_create, sys_kill, sys_recv, sys_send, sys_spawn, sys_wait,
+        sys_write,
+    };
+
+    /// Three runnable processes share the BSP; a fair rotation gives each
+    /// one tick (10 ms) in three, so the compute process waits at most two
+    /// other ticks. 30 ms allows one tick of slack.
+    pub const MAX_GAP_NS: u64 = 30_000_000;
+
+    fn say(m: &[u8]) {
+        let _ = sys_write(1, m.as_ptr(), m.len());
+    }
+
+    fn worker(role: u8) -> Result<(Handle, ProcessHandle), i32> {
+        let (mine, theirs) = sys_chan_create().map_err(|_| 1)?;
+        let (_, process) = sys_spawn("worker", &[theirs]).map_err(|_| 2)?;
+        if sys_send(mine, &[role]) != 1 {
+            return Err(3);
+        }
+        Ok((mine, process))
+    }
+
+    fn dec(out: &mut [u8; 20], mut v: u64) -> &[u8] {
+        let mut i = out.len();
+        loop {
+            i -= 1;
+            out[i] = b'0' + (v % 10) as u8;
+            v /= 10;
+            if v == 0 {
+                return &out[i..];
+            }
+        }
+    }
+
+    pub fn run() -> i32 {
+        say(b"TICKPRE spinners=2 compute=1\n");
+        let Ok((_, a)) = worker(1) else { return 10 };
+        let Ok((_, b)) = worker(1) else { return 11 };
+        let Ok((chan, c)) = worker(2) else { return 12 };
+        let mut result = [0u8; 16];
+        let got = sys_recv(chan, &mut result);
+        let _ = sys_kill(a);
+        let _ = sys_kill(b);
+        let _ = sys_wait(c, 0);
+        if got != 16 {
+            say(b"TICKPRE compute sent no result\n");
+            return 13;
+        }
+        let mut w = [0u8; 8];
+        w.copy_from_slice(&result[..8]);
+        let worst = u64::from_le_bytes(w);
+        w.copy_from_slice(&result[8..]);
+        let reads = u64::from_le_bytes(w);
+        let mut buf = [0u8; 20];
+        say(b"TICKPRE compute worst_gap_us=");
+        say(dec(&mut buf, worst / 1000));
+        say(b" reads=");
+        say(dec(&mut buf, reads));
+        say(b"\n");
+        if worst <= MAX_GAP_NS { 0 } else { 20 }
+    }
 }
 
 /// OT-61 C1.3b (CP-86): the cross-CPU process-retire battery. Spawns three
