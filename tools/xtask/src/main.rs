@@ -1020,7 +1020,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 49] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 52] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
