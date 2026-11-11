@@ -64,8 +64,19 @@ const MAIN: Handle = Handle(0);
 /// The WM's client size (neo-init's `CLIENT_W` x `CLIENT_H`).
 const WIDTH: usize = 640;
 const HEIGHT: usize = 400;
-const STRIDE_BYTES: usize = WIDTH * 4;
-const BUFFER_BYTES: u64 = (WIDTH * HEIGHT * 4) as u64;
+/// The buffer the WM imports (neo-init's `BUFFER_W` x `BUFFER_H`): the
+/// window's own size, or, for a WM with `desktop-resize` (the product's), the
+/// largest client a resize can configure, with the window at its top left.
+#[cfg(not(feature = "desktop-resize"))]
+const BUFFER_W: usize = WIDTH;
+#[cfg(not(feature = "desktop-resize"))]
+const BUFFER_H: usize = HEIGHT;
+#[cfg(feature = "desktop-resize")]
+const BUFFER_W: usize = 1280;
+#[cfg(feature = "desktop-resize")]
+const BUFFER_H: usize = 800;
+const STRIDE_BYTES: usize = BUFFER_W * 4;
+const BUFFER_BYTES: u64 = (BUFFER_W * BUFFER_H * 4) as u64;
 const NS: u64 = libneo::atrium_launch::TERMINAL_NAMESPACE;
 const BUFFER_CAP_PROVENANCE: u64 = libneo::atrium_launch::TERMINAL_BUFFER_PROVENANCE;
 
@@ -152,8 +163,8 @@ pub fn run() -> i32 {
     }
 
     let desc = encode_buffer_desc(
-        WIDTH as u32,
-        HEIGHT as u32,
+        BUFFER_W as u32,
+        BUFFER_H as u32,
         STRIDE_BYTES as u32,
         FORMAT_XRGB8888_LE,
         BUFFER_BYTES,
@@ -165,10 +176,11 @@ pub fn run() -> i32 {
         return 22;
     };
     // SAFETY: this process's RW view of a buffer whose descriptor is exactly
-    // WIDTH x HEIGHT tightly packed XRGB8888 pixels; never unmapped while the
-    // process lives, and only this thread writes it.
-    let pixels = unsafe { core::slice::from_raw_parts_mut(mapping as *mut u32, WIDTH * HEIGHT) };
-    let Some(mut renderer) = Renderer::new(WIDTH, HEIGHT) else {
+    // BUFFER_W x BUFFER_H tightly packed XRGB8888 pixels; never unmapped while
+    // the process lives, and only this thread writes it.
+    let pixels =
+        unsafe { core::slice::from_raw_parts_mut(mapping as *mut u32, BUFFER_W * BUFFER_H) };
+    let Some(mut renderer) = Renderer::with_stride(WIDTH, HEIGHT, BUFFER_W) else {
         return 23;
     };
     let geo = renderer.geometry();

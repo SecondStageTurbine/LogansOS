@@ -75,12 +75,25 @@ pub struct Renderer {
     geo: Geometry,
     width: usize,
     height: usize,
+    /// Pixels from one row to the next in the buffer (`>= width`): a WM with
+    /// `desktop-resize` imports a buffer sized for the largest client, and
+    /// the window is its top-left `width` x `height`.
+    stride: usize,
     /// What each row drew last (`None`: never drawn).
     drawn: Vec<Option<u64>>,
 }
 
 impl Renderer {
     pub fn new(width: usize, height: usize) -> Option<Self> {
+        Self::with_stride(width, height, width)
+    }
+
+    /// A window of `width` x `height` in a buffer whose rows are `stride`
+    /// pixels apart (`None` when `stride < width`).
+    pub fn with_stride(width: usize, height: usize, stride: usize) -> Option<Self> {
+        if stride < width {
+            return None;
+        }
         let font = Font::from_bytes(PLEX_MONO_REGULAR)?;
         let geo = geometry(&font, width, height)?;
         Some(Self {
@@ -88,6 +101,7 @@ impl Renderer {
             geo,
             width,
             height,
+            stride,
             drawn: alloc::vec![None; usize::from(geo.rows)],
         })
     }
@@ -98,10 +112,13 @@ impl Renderer {
 
     /// Paint the whole window: the floor, then every row.
     pub fn draw_all(&mut self, screen: &vt100::Screen, pixels: &mut [u32]) -> Option<(u16, u16)> {
-        if pixels.len() < self.width * self.height {
+        if self.height == 0 || pixels.len() < self.stride * (self.height - 1) + self.width {
             return None;
         }
-        pixels[..self.width * self.height].fill(FLOOR);
+        for y in 0..self.height {
+            let row = y * self.stride;
+            pixels[row..row + self.width].fill(FLOOR);
+        }
         self.drawn.iter_mut().for_each(|d| *d = None);
         self.draw(screen, pixels)?;
         Some((0, self.height as u16))
@@ -121,7 +138,7 @@ impl Renderer {
         pixels: &mut [u32],
         mut between: impl FnMut(),
     ) -> Option<(u16, u16)> {
-        let mut canvas = Canvas::new(pixels, self.width, self.height, self.width)?;
+        let mut canvas = Canvas::new(pixels, self.width, self.height, self.stride)?;
         let (rows, cols) = screen.size();
         let rows = rows.get().min(self.geo.rows);
         let cols = cols.get().min(self.geo.cols);
@@ -340,6 +357,47 @@ mod tests {
         assert_eq!(r.draw(t.screen(), &mut px), Some(g.band(2, 2)));
         let _ = t.process(b"\x1b[1;1Hx\x1b[3;1Hy");
         assert_eq!(r.draw(t.screen(), &mut px), Some(g.band(0, 2)));
+    }
+
+    /// In a wider buffer (a `desktop-resize` WM's, 1280 x 800) the window is
+    /// its top-left 640 x 400: the same pixels as a tight buffer, and nothing
+    /// written to the right of the window or below it.
+    #[test]
+    fn a_stride_draws_the_top_left_window_only() {
+        const SW: usize = 1280;
+        const SH: usize = 800;
+        const UNTOUCHED: u32 = 0x00AB_CDEF;
+        let (mut tight, mut t, mut tight_px) = setup();
+        let mut wide = Renderer::with_stride(W, H, SW).expect("renderer");
+        assert_eq!(wide.geometry(), tight.geometry());
+        let mut wide_px = alloc::vec![UNTOUCHED; SW * SH];
+        let _ = t.process(b"hello\r\nworld");
+        assert_eq!(
+            wide.draw_all(t.screen(), &mut wide_px),
+            tight.draw_all(t.screen(), &mut tight_px)
+        );
+        let _ = t.process(b"\r\nagain");
+        assert_eq!(
+            wide.draw(t.screen(), &mut wide_px),
+            tight.draw(t.screen(), &mut tight_px)
+        );
+        for y in 0..SH {
+            for x in 0..SW {
+                let got = wide_px[y * SW + x];
+                if x < W && y < H {
+                    assert_eq!(got, tight_px[y * W + x], "({x}, {y})");
+                } else {
+                    assert_eq!(got, UNTOUCHED, "({x}, {y})");
+                }
+            }
+        }
+        // A stride narrower than the window, or a buffer too short for it,
+        // is refused.
+        assert!(Renderer::with_stride(W, H, W - 1).is_none());
+        assert_eq!(
+            wide.draw_all(t.screen(), &mut wide_px[..SW * (H - 1)]),
+            None
+        );
     }
 
     #[test]
