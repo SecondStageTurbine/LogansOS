@@ -206,3 +206,4 @@ RELAY 385 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-10-relay-385-ot100
 RELAY 386 | chad | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-10-relay-386-pr101-recheck.md | #101 narrow re-check at `24b59a34`; RETURN `Plans/RETURN-2026-11-10-pr101-recheck-chad.md`
 RELAY 387 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-10-relays-387-388-rechecks.md | Section 387 (#100 re-check at `8414cc5f`; RETURN `Plans/RETURN-2026-11-10-pr100-recheck-janus.md`)
 RELAY 388 | dexter | DeepSeek | high | Plans/DISPATCH-2026-11-10-relays-387-388-rechecks.md | Section 388 (#103 OT-100 THINK re-check at `9a2c97dd`; RETURN `Plans/RETURN-2026-11-10-pr103-recheck-dexter.md`)
+RELAY 389 | janus | GPT-6.1-Sol | medium | Plans/DISPATCH-2026-11-10-relays-387-388-rechecks.md | Section 387, re-run (#100 re-check at `8414cc5f`; relay 387 ran 11-10 03:13 but pushed no RETURN); RETURN `Plans/RETURN-2026-11-10-pr100-recheck-janus.md` on `codex/pr100-recheck-janus`
