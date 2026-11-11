@@ -2075,8 +2075,29 @@ fn arthur_session_turns(
                     return code;
                 }
                 let front_activator = apps.front_activator(activator);
+                #[cfg(not(all(feature = "atrium-terminal", feature = "login")))]
                 if let Err(code) = scene.pointer_tick(front_activator, home_focus, &mut escaped) {
                     return code;
+                }
+                // L1a.3: the lock is served here, not from inside
+                // `pointer_tick` (whose 10 KB frame would sit under the
+                // password check, its repaint and the font parse): with the
+                // client table in this loop, that path overflowed the WM's
+                // 64 KiB stack at a wrong password (`login_terminal_lock`).
+                // Locked, the pointer tick is skipped, as `pointer_tick`
+                // itself returns at once; unlocked, its own call finds
+                // nothing due.
+                #[cfg(all(feature = "atrium-terminal", feature = "login"))]
+                match lock::service(scene) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Err(code) =
+                            scene.pointer_tick(front_activator, home_focus, &mut escaped)
+                        {
+                            return code;
+                        }
+                    }
+                    Err(code) => return code,
                 }
             }
             #[cfg(feature = "atrium-apps")]
