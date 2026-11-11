@@ -86,6 +86,8 @@ fn fill_is_positional_and_leaves_a_missing_argument_visible() {
 // ---- 2. English is today's literals ----
 
 const SETUP_CORE: &str = include_str!("../../setup-core/src/lib.rs");
+const KEYBOARD: &str = include_str!("../../setup-core/src/keyboard.rs");
+const LAYOUTS: &str = include_str!("../../../kernel/src/drivers/keymap_layout_logic.rs");
 const SETUP_VIEW: &str = include_str!("../../neo-init/src/desktop_session/setup.rs");
 const DESKTOP: &str = include_str!("../../neo-init/src/desktop_session.rs");
 const INTRO: &str = include_str!("../../neo-atrium/src/intro.rs");
@@ -172,10 +174,20 @@ const SOURCES: &[(Msg, &str, &str, At)] = {
         ),
         (
             SetupBodyKeyboard,
-            SETUP_CORE,
+            KEYBOARD,
             "US is the only keyboard layout for now.",
             Whole,
         ),
+        (
+            SetupKeyboardBodyChoose,
+            KEYBOARD,
+            "Choose the layout printed on your keys.",
+            Whole,
+        ),
+        (SetupKeyboardTryIt, KEYBOARD, "Try it: {}_", Whole),
+        (SetupSummaryKeyboard, KEYBOARD, "Keyboard: {}", Whole),
+        (LayoutEnglishUs, LAYOUTS, "English (US)", Whole),
+        (LayoutSpanishSpain, LAYOUTS, "Spanish (Spain)", Whole),
         (
             SetupBodyTimeZoneNoSearch,
             SETUP_CORE,
@@ -679,6 +691,10 @@ fn widest_row(lang: Lang, m: Msg) -> String {
         ],
         PowerError => vec!["-38".into()],
         ZoneRowNow => vec![ZONE.into(), OFFSET.into()],
+        // The test field at `setup_core::keyboard::FIELD_MAX` (24) of the
+        // widest Latin capital.
+        SetupKeyboardTryIt => vec!["W".repeat(24)],
+        SetupSummaryKeyboard => vec![longest(&[LayoutEnglishUs, LayoutSpanishSpain]).into()],
         _ => Vec::new(),
     };
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -695,7 +711,15 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             | SetupReduceMotionOption
             | SetupReduceTransparencyOption
     );
-    if option { format!("> {row}") } else { row }
+    // A layout is a check-box option on the Keyboard page.
+    let layout = matches!(m, LayoutEnglishUs | LayoutSpanishSpain);
+    if layout {
+        format!("> [x] {row}")
+    } else if option {
+        format!("> {row}")
+    } else {
+        row
+    }
 }
 
 #[test]

@@ -45,6 +45,11 @@ inside the card.
 | `SetupBodySkip` | The defaults are UTC, with full motion and transparency. | Lo predeterminado es UTC, con movimiento y transparencia completos. | "Lo predeterminado es…" reads more naturally than a literal "The defaults are…". |
 | `SetupBodyLanguage` | English is the only language for now. | Por ahora, el inglés es el único idioma. |  |
 | `SetupBodyKeyboard` | US is the only keyboard layout for now. | Por ahora, la única distribución de teclado es la de EE. UU. | "distribución de teclado" for layout; "EE. UU." with the RAE spacing. |
+| `SetupKeyboardBodyChoose` | Choose the layout printed on your keys. | Elige la distribución impresa en tus teclas. | S5's Keyboard page (`keyboard-layouts`). "distribución" for layout, as in SetupBodyKeyboard; "impresa en tus teclas" for "printed on your keys". |
+| `SetupKeyboardTryIt` | Try it: {}_ | Pruébalo: {}_ | The test field: what was typed, then the `_` cursor. Measured with 24 `W`s (`FIELD_MAX`): 65% of the card. |
+| `SetupSummaryKeyboard` | Keyboard: {} | Teclado: {} | The Try summary's row; the argument is a layout's name in the same language. |
+| `LayoutEnglishUs` | English (US) | Inglés (EE. UU.) | The layout's name, as the option row and the summary show it. "EE. UU." with the RAE spacing, as in SetupBodyKeyboard. |
+| `LayoutSpanishSpain` | Spanish (Spain) | Español (España) | The Spain layout (J.c.: US and Spanish keyboards). |
 | `SetupBodyTimeZoneNoSearch` | Where are you? At Home: timezone Area/City. | ¿Dónde estás? En Inicio: timezone Area/City. | **Home** is "Inicio" everywhere (the Home view). `timezone Area/City` is the command and stays as typed. |
 | `SetupBodyZoneSet` | Time zone: {}. The clock is set. | Zona horaria: {}. El reloj está en hora. | "The clock is set" means set to the right time: "El reloj está en hora". |
 | `SetupBodyZoneLater` | Change it later at Home: timezone Area/City. | Cámbiala después en Inicio: timezone Area/City. | "Cámbiala" (la zona). The command stays. |

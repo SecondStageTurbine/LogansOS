@@ -135,6 +135,17 @@ catalog! {
         "Por ahora, el inglés es el único idioma.";
     SetupBodyKeyboard = "US is the only keyboard layout for now.",
         "Por ahora, la única distribución de teclado es la de EE. UU.";
+    /// The Keyboard page with layouts (S5, `keyboard-layouts`).
+    SetupKeyboardBodyChoose = "Choose the layout printed on your keys.",
+        "Elige la distribución impresa en tus teclas.";
+    /// The test field; the argument is what was typed, then a cursor `_`.
+    SetupKeyboardTryIt = "Try it: {}_", "Pruébalo: {}_";
+    /// The Try summary's keyboard row; the argument is a layout's name.
+    SetupSummaryKeyboard = "Keyboard: {}", "Teclado: {}";
+    /// The layouts' names (`kernel/src/drivers/keymap_layout_logic.rs`
+    /// `LAYOUT_NAMES`, in that order).
+    LayoutEnglishUs = "English (US)", "Inglés (EE. UU.)";
+    LayoutSpanishSpain = "Spanish (Spain)", "Español (España)";
     SetupBodyTimeZoneNoSearch = "Where are you? At Home: timezone Area/City.",
         "¿Dónde estás? En Inicio: timezone Area/City.";
     /// The confirmed zone; the argument is its name.
