@@ -2195,6 +2195,10 @@ neo-test-usb-enumerate = ["neo-test", "usb-host"]
 # reads back; `-off` (no `usb-storage`) is the kill-switch.
 neo-test-usb-storage-read = ["neo-test-phase3-fat32", "usb-storage"]
 neo-test-usb-storage-off = ["neo-test", "usb-host"]
+# OT-100 R2: two usb-storage sticks, one sealed: the sealed one is probed, written
+# across the chunk boundaries, flushed and read back; the unsealed one is never
+# probed or written. xtask hashes both images and reads QEMU's SCSI trace.
+neo-test-usb-msc-write = ["neo-test", "usb-storage-write"]
 # #30: a stick hot-plugged, bound and read, then pulled while a reader runs:
 # the driver is told, the block device leaves the registry, and every read
 # after (and the one in flight) fails NoDevice.

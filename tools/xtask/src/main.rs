@@ -5725,6 +5725,17 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-100 R2: the USB mass-storage write path. Two sticks: the sealed one
+    // is probed, written across the chunk boundaries, flushed and read back;
+    // the unsealed one is never probed or written. xtask then hashes both
+    // images and holds QEMU's SCSI trace against the driver's counts.
+    TestScenario {
+        name: "usb_msc_write",
+        feature: "neo-test-usb-msc-write",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // #30: the stick hot-plugged, bound, read, then pulled with a reader
     // running: every read after (and the one in flight) is NoDevice and the
     // block device leaves the registry.
@@ -16189,6 +16200,27 @@ fn run_qemu_test_invocation(
         ));
     }
 
+    if scenario.name == "usb_msc_write" {
+        // OT-100 R2: two fresh 4 MiB sticks, one with the sealed scratch
+        // sector (the guard arms it), one blank (never armed), and QEMU's
+        // SCSI command trace in a file of its own.
+        let (marked, unmarked, trace) = usb_msc_write_paths();
+        prepare_usb_msc_write_stick(&marked, true)?;
+        prepare_usb_msc_write_stick(&unmarked, false)?;
+        let _ = fs::remove_file(&trace);
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        for (id, path) in [("stickm", &marked), ("sticku", &unmarked)] {
+            qemu.arg("-drive").arg(format!(
+                "if=none,id={id},format=raw,file={}",
+                path.display()
+            ));
+            qemu.arg("-device")
+                .arg(format!("usb-storage,drive={id},bus=xhci0.0"));
+        }
+        qemu.arg("-D").arg(&trace);
+        qemu.arg("-trace").arg("scsi_req_parsed");
+    }
+
     if scenario.name == "usb_storage_read" || scenario.name == "usb_storage_off" {
         // L3u-2: QEMU's Bulk-Only usb-storage (46f4:0001) on qemu-xhci,
         // holding the FAT32 fixture volume (the same image the phase3_fat32_*
@@ -17916,6 +17948,141 @@ fn prepare_storage_disk(scenario_name: &str) -> Result<PathBuf, String> {
     }
 
     prepare_raw_storage_disk(&path)
+}
+
+/// OT-100 R2 (`usb_msc_write`): the marked stick, the unmarked stick and
+/// QEMU's SCSI trace log.
+fn usb_msc_write_paths() -> (PathBuf, PathBuf, PathBuf) {
+    let dir = workspace_root().join(TEST_OUTPUT_REL);
+    (
+        dir.join("usb_msc_write-marked.raw"),
+        dir.join("usb_msc_write-unmarked.raw"),
+        dir.join("usb_msc_write-scsi-trace.log"),
+    )
+}
+
+/// The sticks' size: 4 MiB of 512-byte blocks.
+const USB_MSC_WRITE_STICK_BYTES: u64 = 4 << 20;
+/// The region the kernel writes (`kernel/src/test_harness.rs`,
+/// `USB_MSC_WRITE_LBA` / `USB_MSC_WRITE_BLOCKS`).
+const USB_MSC_WRITE_LBA: usize = 63;
+const USB_MSC_WRITE_BLOCKS: usize = 300;
+
+/// Byte `i` of the pattern the kernel writes. Written out here from the
+/// scenario's definition, not shared with the kernel: the image check is
+/// independent of the code that produced the bytes.
+fn usb_msc_write_pattern_byte(i: usize) -> u8 {
+    ((i.wrapping_mul(31) ^ (i >> 9).wrapping_mul(7)) as u8) ^ 0xa5
+}
+
+/// A fresh, all-zero stick; `marked` stamps the sealed scratch sector.
+fn prepare_usb_msc_write_stick(path: &Path, marked: bool) -> Result<(), String> {
+    let _ = fs::remove_file(path);
+    let mut file =
+        fs::File::create(path).map_err(|e| format!("create stick {}: {e}", path.display()))?;
+    file.set_len(USB_MSC_WRITE_STICK_BYTES)
+        .map_err(|e| format!("size stick {}: {e}", path.display()))?;
+    if marked {
+        stamp_scratch_marker(&mut file, USB_MSC_WRITE_STICK_BYTES, path)?;
+    }
+    file.sync_all()
+        .map_err(|e| format!("sync stick {}: {e}", path.display()))
+}
+
+/// SCSI opcodes the write-path kernel may send: today's six read-only ones,
+/// and WRITE(10), SYNCHRONIZE CACHE(10), MODE SENSE(6).
+const USB_MSC_READ_ONLY_OPCODES: [u32; 6] = [0x12, 0x00, 0x03, 0x25, 0x9e, 0x28];
+const USB_MSC_WRITE_CLASS_OPCODES: [u32; 3] = [0x2a, 0x35, 0x1a];
+
+/// OT-100 R2's host-side oracle for `usb_msc_write`:
+/// - the marked image holds exactly the pattern in the written region, the
+///   scratch sector unchanged in its last 512 bytes, and zero everywhere
+///   else;
+/// - the unmarked image is still all zero;
+/// - QEMU's SCSI trace shows only allowed opcodes, and its WRITE(10),
+///   SYNCHRONIZE CACHE(10) and MODE SENSE(6) counts equal the marked
+///   stick's own counts, while the driver says the unmarked stick was sent
+///   none: so the unmarked stick received no write-class command.
+fn check_usb_msc_write(
+    serial: &str,
+    marked: &[u8],
+    unmarked: &[u8],
+    trace: &str,
+) -> Result<(), String> {
+    let size = USB_MSC_WRITE_STICK_BYTES as usize;
+    if marked.len() != size || unmarked.len() != size {
+        return Err(format!(
+            "stick sizes {} / {} (want {size})",
+            marked.len(),
+            unmarked.len()
+        ));
+    }
+    let start = USB_MSC_WRITE_LBA * 512;
+    let end = start + USB_MSC_WRITE_BLOCKS * 512;
+    if let Some(i) = (start..end).find(|&i| marked[i] != usb_msc_write_pattern_byte(i - start)) {
+        return Err(format!("marked stick byte {i} is not the pattern"));
+    }
+    let scratch = write_guard_logic::scratch_sector(USB_MSC_WRITE_STICK_BYTES);
+    if marked[size - 512..] != scratch[..] {
+        return Err("marked stick's scratch sector changed".into());
+    }
+    if let Some(i) = (0..size - 512).find(|&i| !(start..end).contains(&i) && marked[i] != 0) {
+        return Err(format!("marked stick byte {i} written outside the region"));
+    }
+    if let Some(i) = unmarked.iter().position(|&b| b != 0) {
+        return Err(format!("unmarked stick written at byte {i}"));
+    }
+    let counts = serial
+        .lines()
+        .find_map(|l| l.split_once("USB_MSC_WRITE counts ").map(|(_, rest)| rest))
+        .ok_or("no `USB_MSC_WRITE counts` line")?;
+    let field = |name: &str| -> Result<u64, String> {
+        counts
+            .split_whitespace()
+            .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+            .ok_or(format!("counts line lacks {name}"))?
+            .parse()
+            .map_err(|e| format!("counts {name}: {e}"))
+    };
+    let marked_counts = [
+        field("marked_writes")?,
+        field("marked_syncs")?,
+        field("marked_mode_senses")?,
+    ];
+    let unmarked_counts = [
+        field("unmarked_writes")?,
+        field("unmarked_syncs")?,
+        field("unmarked_mode_senses")?,
+    ];
+    if unmarked_counts != [0, 0, 0] {
+        return Err(format!(
+            "driver sent the unmarked stick {unmarked_counts:?}"
+        ));
+    }
+    let mut seen: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    for line in trace.lines().filter(|l| l.contains("scsi_req_parsed")) {
+        let op: u32 = line
+            .split_once("command ")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .ok_or(format!("unparsed trace line: {line}"))?;
+        *seen.entry(op).or_default() += 1;
+    }
+    if !seen.contains_key(&0x28) {
+        return Err("QEMU's SCSI trace has no READ(10): the trace is not being recorded".into());
+    }
+    if let Some(op) = seen.keys().find(|op| {
+        !USB_MSC_READ_ONLY_OPCODES.contains(op) && !USB_MSC_WRITE_CLASS_OPCODES.contains(op)
+    }) {
+        return Err(format!("a stick was sent opcode 0x{op:02x}"));
+    }
+    let traced = USB_MSC_WRITE_CLASS_OPCODES.map(|op| seen.get(&op).copied().unwrap_or(0));
+    if traced != marked_counts {
+        return Err(format!(
+            "QEMU traced WRITE/SYNC/MODE SENSE {traced:?}, the marked stick was sent {marked_counts:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// Zenbook lane: the kernel writes only inside extents a sealed marker claims
@@ -21338,6 +21505,19 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     if scenario.name == "desktop_scroll_boot" {
         let serial = read_serial(observed)?;
         check_scroll_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
+    }
+    if scenario.name == "usb_msc_write" {
+        let serial = read_serial(observed)?;
+        let (marked, unmarked, trace) = usb_msc_write_paths();
+        let read = |p: &Path| fs::read(p).map_err(|e| format!("read {}: {e}", p.display()));
+        let trace = fs::read_to_string(&trace).map_err(|e| {
+            format!(
+                "`usb_msc_write`: QEMU's SCSI trace {}: {e}",
+                trace.display()
+            )
+        })?;
+        check_usb_msc_write(&serial, &read(&marked)?, &read(&unmarked)?, &trace)
+            .map_err(|e| format!("`usb_msc_write` {e}"))?;
     }
     if scenario.name == "desktop_wheel_boot" {
         let serial = read_serial(observed)?;
@@ -27598,6 +27778,66 @@ mod tests {
         assert!(check_scroll_sequence(&ok.replace("view_top=22", "view_top=21")).is_err());
         assert!(check_scroll_sequence(&ok.replace("view=follow", "view_top=23")).is_err());
         assert!(check_scroll_sequence("DESKTOP arthur scroll key=pgup view_top=12\n").is_err());
+    }
+
+    /// OT-100 R2: `usb_msc_write`'s host oracle passes on the expected images
+    /// and trace, and fails on each way the run can go wrong.
+    #[test]
+    fn usb_msc_write_oracle() {
+        let size = USB_MSC_WRITE_STICK_BYTES as usize;
+        let start = USB_MSC_WRITE_LBA * 512;
+        let mut marked = vec![0u8; size];
+        for i in 0..USB_MSC_WRITE_BLOCKS * 512 {
+            marked[start + i] = usb_msc_write_pattern_byte(i);
+        }
+        marked[size - 512..].copy_from_slice(&write_guard_logic::scratch_sector(
+            USB_MSC_WRITE_STICK_BYTES,
+        ));
+        let unmarked = vec![0u8; size];
+        let serial = "USB_MSC_WRITE counts marked_writes=3 marked_syncs=2 marked_mode_senses=1 unmarked_writes=0 unmarked_syncs=0 unmarked_mode_senses=0\n";
+        let line = |op: u32| {
+            format!("4242@1.0:scsi_req_parsed target 0 lun 0 tag 1 command {op} dir 0 length 0\n")
+        };
+        let mut trace = String::new();
+        for op in [
+            0x12, 0x00, 0x25, 0x28, 0x12, 0x00, 0x25, 0x28, 0x1a, 0x00, 0x35, 0x2a, 0x2a, 0x2a,
+            0x35, 0x28,
+        ] {
+            trace.push_str(&line(op));
+        }
+        assert_eq!(
+            check_usb_msc_write(serial, &marked, &unmarked, &trace),
+            Ok(())
+        );
+
+        // A pattern byte wrong, a byte outside the region, the scratch sector
+        // changed, the unmarked stick touched.
+        let mut bad = marked.clone();
+        bad[start + 70 * 512] ^= 1;
+        assert!(check_usb_msc_write(serial, &bad, &unmarked, &trace).is_err());
+        let mut bad = marked.clone();
+        bad[start - 1] = 1;
+        assert!(check_usb_msc_write(serial, &bad, &unmarked, &trace).is_err());
+        let mut bad = marked.clone();
+        bad[size - 1] ^= 1;
+        assert!(check_usb_msc_write(serial, &bad, &unmarked, &trace).is_err());
+        let mut bad = unmarked.clone();
+        bad[0] = 0x5a;
+        assert!(check_usb_msc_write(serial, &marked, &bad, &trace).is_err());
+
+        // One more WRITE(10) or MODE SENSE than the marked stick was sent:
+        // the unmarked stick got it. An opcode outside the lists. No trace.
+        let extra = format!("{trace}{}", line(0x2a));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        let extra = format!("{trace}{}", line(0x1a));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        let extra = format!("{trace}{}", line(0x1b));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, "").is_err());
+        // The driver's own counts for the unmarked stick must be zero.
+        let serial_bad = serial.replace("unmarked_syncs=0", "unmarked_syncs=1");
+        assert!(check_usb_msc_write(&serial_bad, &marked, &unmarked, &trace).is_err());
+        assert!(check_usb_msc_write("", &marked, &unmarked, &trace).is_err());
     }
 
     /// NEOVOCB1: the fixture vocab this xtask writes holds its text pin, and
