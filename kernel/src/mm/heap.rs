@@ -30,7 +30,8 @@ use crate::serial_println;
 /// Kernel heap size, selected by the real-brain-boot feature flags via the pure
 /// `heap_policy::heap_size_bytes` (host-tested in `tools/heap-policy-logic-tests`).
 /// Kill-switch (Rule 1): with all model-specific flags OFF this is bit-for-bit
-/// the previous layer's budget — 768 MiB for the 0.5B boot, 4 MiB otherwise.
+/// the previous layer's budget — 944 MiB for the 0.5B boot (Q8_0; 768 MiB under
+/// Q4_K_M), 4 MiB otherwise.
 /// The largest selected model tier wins; see `heap_policy` for the pure oracle.
 /// B1b: with `model-boot-module` the 0.5B tier drops its staging buffer.
 /// B1c: the 0.5B tier is selected by `real-lm` (which every real-brain test

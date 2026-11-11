@@ -116,6 +116,10 @@ desktop-lens-fault-test = ["desktop-lens"]
 # re-lays itself out at the size the WM publishes in its configure mailbox,
 # acking with OP_CONFIGURE. Off = a fixed 640x400 buffer, DI-1b move exactly.
 desktop-resize = ["desktop-home", "libneo/atrium-configure"]
+# F11 S5: the keyboard layouts. Arthur reads the session's layout id from his
+# create reply and decodes his keys in it (keymap_layout_logic.rs). Off: the
+# one US table, the decoder identical. neo-init's `keyboard-layouts`.
+keyboard-layouts = ["desktop-home", "libneo/atrium-keymap"]
 # OT-22 rung 1 (kernel `wait-multiplex`): while idle, park in SYS_WAIT_ANY on
 # the input focus (and, with a configure mailbox, until the next tick)
 # instead of spinning. Off: the loops spin exactly as before.

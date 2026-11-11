@@ -24,7 +24,7 @@ reason = "image A kernel .text: 1,562,501 B measured by CI 2026-11-09 (#96 PR ru
 # userland, licences and the Limine boot payload, LESS the kernel ELF's
 # `.debug_*` sections (debugging data that moves with inlining; the as-built ISO
 # is printed alongside). The pinned Qwen2.5-0.5B model
-# (485,489,152 B) and vocab (7,990,862 B) are staged from out-of-git files whose
+# (Q8_0, 669,799,936 B) and vocab (7,990,862 B) are staged from out-of-git files whose
 # sizes the kernel pins at boot, so they cannot drift and are not in this
 # budget. Grows when the kernel, userland or staged licences grow.
 ceiling_bytes = 123908998

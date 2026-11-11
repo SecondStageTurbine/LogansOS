@@ -114,6 +114,7 @@ fn a4_gate_passes_the_real_pal_and_overlay() {
         .chain(C21B_SYSCALLS.iter())
         .chain(S3_SYSCALLS.iter())
         .chain(S3B_SYSCALLS.iter())
+        .chain(R6_SYSCALLS.iter())
         .map(|s| s.to_string())
         .collect();
     want.extend(["SYS_EXIT", "SYS_MAP_REGION", "SYS_WRITE"].map(String::from));
@@ -155,6 +156,14 @@ const S3_SYSCALLS: [&str; 6] = [
 /// The four calls rung 4 S3b adds (std::os::neoplutarch::channel).
 const S3B_SYSCALLS: [&str; 4] = ["SYS_SEND", "SYS_RECV", "SYS_GRANT", "SYS_RECV_GRANT"];
 
+/// The four calls rung 6 adds (channel::try_recv, std::os::neoplutarch::input).
+const R6_SYSCALLS: [&str; 4] = [
+    "SYS_TRY_RECV",
+    "SYS_INPUT_FOCUS_CREATE",
+    "SYS_INPUT_FOCUS_MINT_ACTIVATOR",
+    "SYS_INPUT_FOCUS_RECV",
+];
+
 /// The six calls C2.1b adds (std::fs, process::id, std::os::neoplutarch).
 const C21B_SYSCALLS: [&str; 6] = [
     "SYS_OPEN",
@@ -190,6 +199,7 @@ fn a4_g1_refuses_each_c13_syscall_once_unlisted() {
         .chain(C21B_SYSCALLS.iter())
         .chain(S3_SYSCALLS.iter())
         .chain(S3B_SYSCALLS.iter())
+        .chain(R6_SYSCALLS.iter())
     {
         let name = *name;
         let quoted = format!("\"{name}\"");

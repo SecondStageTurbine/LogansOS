@@ -12,3 +12,6 @@ blake3 = { version = "1.8.2", default-features = false }
 # F11 S2 (setup-menu THINK §2.2): keys 6 (Language) and 7 (KeyboardLayout).
 # Off: today's five keys, and the record is byte-identical to before.
 setup-keys = []
+# F11 S5: two keyboard layouts (US, Spanish), so `KeyboardLayout` accepts 0 and 1.
+# Off: one layout, as S2 left it.
+keyboard-layouts = ["setup-keys"]

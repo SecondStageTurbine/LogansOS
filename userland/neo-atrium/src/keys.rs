@@ -20,8 +20,80 @@ pub enum Key {
 }
 
 /// Decode one input event; `None` for releases, non-key events and keys the
-/// Home view does not use.
+/// Home view does not use. With `keyboard-layouts`, in the session's layout
+/// ([`set_layout`]).
 pub fn decode(event: [u8; 8]) -> Option<Key> {
+    #[cfg(feature = "keyboard-layouts")]
+    return decode_in(layout(), event);
+    #[cfg(not(feature = "keyboard-layouts"))]
+    decode_us(event)
+}
+
+/// F11 S5: the session's keyboard layout, the settings store's
+/// `KeyboardLayout` (0: US). The WM sets it when the setting applies and
+/// hands it to its clients at session setup; every WM decoder reads it.
+#[cfg(feature = "keyboard-layouts")]
+static LAYOUT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Set the session's layout. An id that is not a layout is refused
+/// (`false`) and the layout stays.
+#[cfg(feature = "keyboard-layouts")]
+pub fn set_layout(layout: u8) -> bool {
+    if !keymap::layout_valid(layout) {
+        return false;
+    }
+    LAYOUT.store(layout, core::sync::atomic::Ordering::Relaxed);
+    true
+}
+
+/// The session's layout id.
+#[cfg(feature = "keyboard-layouts")]
+pub fn layout() -> u8 {
+    LAYOUT.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(feature = "keyboard-layouts")]
+pub use keymap::{Composer, Dead, LAYOUT_COUNT, LAYOUT_ES, LAYOUT_NAMES, LAYOUT_US, Out, Typed};
+
+/// [`decode`] in `layout`, whatever the session's. The text is ASCII: a key
+/// whose legend is not ASCII types nothing, and a dead key types its accent
+/// only when that is ASCII, without composing (`keymap_layout_logic.rs`'s
+/// `ascii_in`; the Home field and Arthur's line are ASCII).
+#[cfg(feature = "keyboard-layouts")]
+pub fn decode_in(layout: u8, event: [u8; 8]) -> Option<Key> {
+    decode_with(event, |usage, modifiers, locks| {
+        keymap::ascii_in(layout, usage, modifiers, locks)
+    })
+}
+
+/// What a pressed key types in `layout`, with dead keys and every legend
+/// (`None` for a release or a non-key event): the Keyboard page's test
+/// field, which composes them ([`Composer`]).
+#[cfg(feature = "keyboard-layouts")]
+pub fn typed_in(layout: u8, event: [u8; 8]) -> Option<Typed> {
+    if event[0] != 1 || event[1] & 1 == 0 {
+        return None;
+    }
+    let usage = u8::try_from(u16::from_le_bytes([event[2], event[3]])).ok()?;
+    let modifiers = u16::from_le_bytes([event[4], event[5]]) as u8;
+    let locks = u16::from_le_bytes([event[6], event[7]]) as u8;
+    Some(keymap::typed_in(
+        layout,
+        keymap::effective_usage(usage, modifiers, locks),
+        modifiers,
+        locks,
+    ))
+}
+
+/// The decoder without layouts: the US table. With `keyboard-layouts` it is
+/// the kill-switch test's reference (`decode_in(LAYOUT_US, e)` equals it for
+/// every event).
+#[cfg_attr(feature = "keyboard-layouts", allow(dead_code))]
+pub(crate) fn decode_us(event: [u8; 8]) -> Option<Key> {
+    decode_with(event, keymap::printable)
+}
+
+fn decode_with(event: [u8; 8], printable: impl Fn(u8, u8, u8) -> Option<u8>) -> Option<Key> {
     if event[0] != 1 || event[1] & 1 == 0 {
         return None;
     }
@@ -37,15 +109,18 @@ pub fn decode(event: [u8; 8]) -> Option<Key> {
         0x2b => Key::Tab,
         0x52 => Key::Up,
         0x51 => Key::Down,
-        _ => Key::Char(keymap::printable(usage, modifiers, locks)?),
+        _ => Key::Char(printable(usage, modifiers, locks)?),
     })
 }
 
 /// The shared US layout (`kernel/src/drivers/keymap_us_logic.rs`): the same
-/// table the kernel and Arthur read.
+/// table the kernel and Arthur read. With `keyboard-layouts`, the layouts by
+/// id too (`keymap_layout_logic.rs`), as Arthur reads them.
 #[allow(dead_code)]
 mod keymap {
     include!("../../../kernel/src/drivers/keymap_us_logic.rs");
+    #[cfg(feature = "keyboard-layouts")]
+    include!("../../../kernel/src/drivers/keymap_layout_logic.rs");
 }
 
 /// The intent field's line editor: printable ASCII only, bounded.

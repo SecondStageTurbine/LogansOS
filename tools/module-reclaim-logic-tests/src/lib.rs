@@ -33,18 +33,19 @@ mod tests {
         MapEntry { base, length, kind }
     }
 
-    /// The real Qwen2.5-0.5B `.neom`: 485,489,152 bytes, 2,560 past a page.
-    const NEOM_05B: u64 = 485_489_152;
+    /// The real Qwen2.5-0.5B `.neom` (Q8_0): 669,799,936 bytes, 1,536 past a
+    /// page.
+    const NEOM_05B: u64 = 669_799_936;
     const EXEC: Span = Span::new(0x0010_0000, 0x0050_0000);
 
     #[test]
     fn real_05b_length_keeps_its_unaligned_tail_page() {
-        assert_eq!(NEOM_05B % PAGE, 2560);
+        assert_eq!(NEOM_05B % PAGE, 1536);
         let base = 0x4000_0000;
         let module = Span::new(base, base + NEOM_05B);
         let memmap = [entry(base, NEOM_05B, MODS)];
         let plan = plan_module_reclaim(module, &memmap, EXEC, &[]).unwrap();
-        assert_eq!(plan, Span::new(base, base + NEOM_05B - 2560));
+        assert_eq!(plan, Span::new(base, base + NEOM_05B - 1536));
         assert_eq!(plan.pages(), NEOM_05B / PAGE);
     }
 
@@ -310,17 +311,17 @@ mod pin_tests {
         assert_eq!(neofs_name("/firmware/x"), None);
     }
 
-    /// Byte oracle: the first and last bytes of the 0.5B pin, laid out by hand
-    /// from the digest recorded in `docs/OPEN-THREADS.md` (OT-73), independent
-    /// of `hex32`.
+    /// Byte oracle: the first and last bytes of the 0.5B pin (Q8_0), laid out
+    /// by hand from the digest `.github/workflows/model-pin.yml` measured (run
+    /// 42525296441), independent of `hex32`.
     #[test]
     fn real_05b_pin_bytes_are_the_recorded_digest() {
         let pin = QWEN25_05B.blake3;
-        assert_eq!(&pin[..4], &[0xa3, 0x2e, 0x4a, 0x1b]);
-        assert_eq!(&pin[28..], &[0x7e, 0x1c, 0xca, 0xfe]);
+        assert_eq!(&pin[..4], &[0x1c, 0xfd, 0x06, 0xdc]);
+        assert_eq!(&pin[28..], &[0x00, 0x55, 0xcd, 0x4d]);
         assert_eq!(
             &hex_digest(&pin),
-            b"a32e4a1ba94a850724c15d840f3ae2c44902d9f1f34d8069bac5fcb37e1ccafe"
+            b"1cfd06dc7fe42710f8fab7d337a681ac5527a46e5b2ba6204e929f210055cd4d"
         );
         assert_eq!(QWEN25_05B.module, "/models/model-qwen2.5-0.5b.neom");
     }
@@ -518,14 +519,17 @@ mod guaranteed_order_tests {
     }
 
     #[test]
-    fn the_model_span_guarantees_15_not_16_and_the_probe_9() {
-        // The pinned 0.5B module: 485,489,152 bytes = 118,527 whole pages at
-        // best (its tail page is partial); a reclaimed span can lose one more
-        // partial edge page.
-        let model_pages = 485_489_152u64 / PAGE;
-        assert_eq!(model_pages, 118_527);
-        assert_eq!(guaranteed_order(model_pages, 16), Some(15));
-        assert_eq!(guaranteed_order(model_pages - 1, 16), Some(15));
+    fn the_model_span_guarantees_16_and_the_probe_9() {
+        // The pinned 0.5B module (Q8_0): 669,799,936 bytes = 163,525 whole
+        // pages at best (its tail page is partial); a reclaimed span can lose
+        // one more partial edge page. Either way it guarantees order 16.
+        let model_pages = 669_799_936u64 / PAGE;
+        assert_eq!(model_pages, 163_525);
+        assert_eq!(guaranteed_order(model_pages, 16), Some(16));
+        assert_eq!(guaranteed_order(model_pages - 1, 16), Some(16));
+        // The Q4_K_M module it replaced (485,489,152 bytes, 118,527 pages)
+        // guaranteed only 15.
+        assert_eq!(guaranteed_order(118_527, 16), Some(15));
         // order 16 would need 2^17 - 1 = 131,071 pages.
         assert_eq!(guaranteed_order(131_071, 16), Some(16));
         assert_eq!(guaranteed_order(131_070, 16), Some(15));
