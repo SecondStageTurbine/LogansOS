@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
-//! L3u-2: USB mass storage (Bulk-Only Transport + SCSI), read-only, as a
-//! block device (`docs/THINK-2026-10-31-l3u-usb-mass-storage.md` §4).
+//! L3u-2: USB mass storage (Bulk-Only Transport + SCSI) as a block device
+//! (`docs/THINK-2026-10-31-l3u-usb-mass-storage.md` §4). Read-only unless
+//! the kernel is built with `usb-storage-write` (OT-100 R2,
+//! `docs/THINK-2026-11-10-ot100-usb-persistence.md` §3): then WRITE(10),
+//! SYNCHRONIZE CACHE(10) and a MODE SENSE(6) write-protect check, every write
+//! still through `GuardedDevice`, and the probe only on an armed device.
 //!
 //! The protocol is `msc_logic` (pure, host-tested); this file is the binding
 //! and the transport: a [`Pipe`] over the xHCI bulk pipes, and a
@@ -14,7 +18,9 @@
 //! (c) every transfer goes through one 64 KiB bounce buffer and one wrapper
 //! buffer allocated in the DMA arena and fenced (`dma_arena::fence`), under
 //! the existing IOMMU containment; caller buffers are never given to the
-//! device.
+//! device. The write path (`usb-storage-write`) keeps all three: the same
+//! lock, the same event path, a deadline in time on every wait, and its
+//! data-out stage through the same fenced bounce buffer.
 
 extern crate alloc;
 
@@ -33,6 +39,8 @@ use super::msc_logic::{self, Capacity10, Outcome, Pipe, ReadyAction, Xfer};
 use super::usb_parse::UsbEndpoint;
 use super::xhci::{self, ClaimedDevice, EndpointPipe};
 use super::{UsbClassDriver, UsbDevice};
+#[cfg(feature = "usb-storage-write")]
+use core::sync::atomic::{AtomicU8, AtomicU64};
 
 /// The bounce buffer: one READ(10) at most (`MAX_READ_BLOCKS` × 512).
 const BOUNCE_LEN: usize = msc_logic::MAX_READ_BLOCKS as usize * 512;
@@ -47,6 +55,19 @@ const READY_TRIES: u32 = 5;
 /// on top of the UNIT ATTENTION retries).
 const SPIN_UP_WAITS: u32 = 40;
 const SPIN_UP_PAUSE_POLLS: u32 = 25_000;
+
+/// OT-100 R2: the write path's waits are bounded in time (THINK §3.4, CP-80):
+/// a WRITE(10) chunk, and SYNCHRONIZE CACHE (flash can take seconds).
+#[cfg(feature = "usb-storage-write")]
+const WRITE_DEADLINE_MS: u64 = 10_000;
+#[cfg(feature = "usb-storage-write")]
+const SYNC_DEADLINE_MS: u64 = 30_000;
+/// The timer tick's period, as `TICKS` counts it (100 Hz).
+#[cfg(feature = "usb-storage-write")]
+const MS_PER_TICK: u64 = 10;
+/// NOT READY on a write: retries, each after about 250 ms.
+#[cfg(feature = "usb-storage-write")]
+const NOT_READY_TRIES: u32 = 4;
 
 /// xHCI completion codes (xHCI §6.4.5).
 const CC_SUCCESS: u32 = 1;
@@ -131,13 +152,80 @@ struct Transport {
     lun: u8,
     /// Set when the device is unplugged (#30); shared with its `MscDisk`.
     gone: Arc<AtomicBool>,
+    /// OT-100 R2: the current command's deadline in ms, if it has one (the
+    /// write path's commands); reads keep today's poll bound.
+    #[cfg(feature = "usb-storage-write")]
+    deadline_ms: Option<u64>,
 }
 
 /// Wait for the transfer at ring index `index` on `pipe`: `(code, residue)`,
 /// or `None` on timeout, or as soon as `gone` is set (the stick was pulled:
 /// #30, an in-flight read fails at once rather than after the timeout).
 fn wait(pipe: &mut EndpointPipe, index: usize, gone: &AtomicBool) -> Option<(u32, u32)> {
-    for _ in 0..WAIT_POLLS {
+    wait_bounded(pipe, index, gone, WAIT_POLLS)
+}
+
+/// OT-100 R2: [`wait`], but bounded by `ms` of the timer tick (time, not
+/// spins: CP-80). The poll count is only a backstop for a tick that does not
+/// advance (interrupts off), sized well past the deadline at any CPU speed.
+#[cfg(feature = "usb-storage-write")]
+fn wait_until(
+    pipe: &mut EndpointPipe,
+    index: usize,
+    gone: &AtomicBool,
+    ms: u64,
+) -> Option<(u32, u32)> {
+    use crate::arch::x86_64::timer::TICKS;
+    let start = TICKS.load(Ordering::Relaxed);
+    let end = start.saturating_add(ms.div_ceil(MS_PER_TICK) + 1);
+    let backstop = (WAIT_POLLS as u64).saturating_mul(ms.div_ceil(1000).max(1) * 4);
+    for _ in 0..backstop {
+        if gone.load(Ordering::Acquire) {
+            return None;
+        }
+        xhci::poll_events();
+        for event in pipe.completions() {
+            if pipe.index_of(event.parameter) == Some(index) {
+                return Some((event.completion_code(), event.transfer_residue()));
+            }
+        }
+        if TICKS.load(Ordering::Relaxed) >= end {
+            return None;
+        }
+        for _ in 0..20_000 {
+            core::hint::spin_loop();
+        }
+    }
+    None
+}
+
+/// Wait for one transfer: the command's deadline in time when it has one
+/// (the write path), else today's poll bound.
+fn wait_for(t: &mut Transport, inbound: bool, index: usize) -> Option<(u32, u32)> {
+    #[cfg(feature = "usb-storage-write")]
+    if let Some(ms) = t.deadline_ms {
+        let pipe = if inbound {
+            &mut t.bulk_in
+        } else {
+            &mut t.bulk_out
+        };
+        return wait_until(pipe, index, &t.gone, ms);
+    }
+    let pipe = if inbound {
+        &mut t.bulk_in
+    } else {
+        &mut t.bulk_out
+    };
+    wait(pipe, index, &t.gone)
+}
+
+fn wait_bounded(
+    pipe: &mut EndpointPipe,
+    index: usize,
+    gone: &AtomicBool,
+    polls: u32,
+) -> Option<(u32, u32)> {
+    for _ in 0..polls {
         if gone.load(Ordering::Acquire) {
             return None;
         }
@@ -193,6 +281,29 @@ impl Transport {
         msc_logic::command(&mut PipeView(self), tag, lun, cdb, data)
     }
 
+    /// OT-100 R2: one write-path command (`msc_logic::command_dir`), with a
+    /// deadline of `ms` on each of its transfers.
+    #[cfg(feature = "usb-storage-write")]
+    fn run_dir(&mut self, cdb: &[u8], data: msc_logic::Data<'_>, ms: u64) -> Outcome {
+        let len = match &data {
+            msc_logic::Data::None => 0,
+            msc_logic::Data::In(b) => b.len(),
+            msc_logic::Data::Out(b) => b.len(),
+        };
+        if len > BOUNCE_LEN {
+            return Outcome::Reset {
+                reason: msc_logic::ResetReason::Data,
+                recovered: true,
+            };
+        }
+        self.tag = self.tag.wrapping_add(1);
+        let (tag, lun) = (self.tag, self.lun);
+        self.deadline_ms = Some(ms);
+        let out = msc_logic::command_dir(&mut PipeView(self), tag, lun, cdb, data);
+        self.deadline_ms = None;
+        out
+    }
+
     /// REQUEST SENSE after a failed command (U9).
     fn sense(&mut self) -> Option<msc_logic::Sense> {
         let mut buf = [0u8; msc_logic::SENSE_LEN as usize];
@@ -208,14 +319,29 @@ struct PipeView<'a>(&'a mut Transport);
 impl Pipe for PipeView<'_> {
     fn bulk_out(&mut self, data: &[u8]) -> Xfer {
         let t = &mut *self.0;
-        // SAFETY: no transfer is in flight on `small`; the device reads it
-        // only after the doorbell below.
-        unsafe { t.small.as_mut_slice()[..data.len()].copy_from_slice(data) };
-        let Ok(addr) = fence(&t.small, data.len()) else {
+        // The CBW goes from the wrapper buffer; a data-out stage (OT-100 R2,
+        // `usb-storage-write` only) from the bounce buffer, never from the
+        // caller's memory.
+        let target = if data.len() == msc_logic::CBW_LEN {
+            t.small.clone()
+        } else {
+            t.bounce.clone()
+        };
+        if data.len() > target.len() {
+            return Xfer::Error;
+        }
+        // SAFETY: no transfer is in flight on `target` (one command at a
+        // time, under the transport lock); the device reads it only after
+        // the doorbell `submit` rings, and the copy is complete before it.
+        unsafe { target.as_mut_slice()[..data.len()].copy_from_slice(data) };
+        let Ok(addr) = fence(&target, data.len()) else {
             return Xfer::Error;
         };
+        // The bounce's bytes are in memory before the TRB that names them
+        // is published (CP-78; `submit` publishes the TRB, then the doorbell).
+        core::sync::atomic::fence(Ordering::Release);
         let index = t.bulk_out.submit(addr, data.len() as u32);
-        classify(wait(&mut t.bulk_out, index, &t.gone), data.len())
+        classify(wait_for(t, false, index), data.len())
     }
 
     fn bulk_in(&mut self, buf: &mut [u8]) -> Xfer {
@@ -230,7 +356,7 @@ impl Pipe for PipeView<'_> {
         };
         let target = target.clone();
         let index = t.bulk_in.submit(addr, buf.len() as u32);
-        let got = classify(wait(&mut t.bulk_in, index, &t.gone), buf.len());
+        let got = classify(wait_for(t, true, index), buf.len());
         if let Xfer::Done(n) = got {
             // SAFETY: the transfer completed; nothing else uses the buffer.
             buf[..n].copy_from_slice(unsafe { &target.as_slice()[..n] });
@@ -274,6 +400,202 @@ struct MscDisk {
     /// The stick was unplugged (#30): every read from now on, and the one in
     /// flight, fails `NoDevice`.
     gone: Arc<AtomicBool>,
+    /// OT-100 R2: the write path's state.
+    #[cfg(feature = "usb-storage-write")]
+    write: WriteState,
+}
+
+/// OT-100 R2: what the write probe and the writes have learned.
+#[cfg(feature = "usb-storage-write")]
+struct WriteState {
+    /// The probe ran (it runs once).
+    probed: AtomicBool,
+    /// SYNCHRONIZE CACHE worked at the probe and hasn't been refused since:
+    /// `supports_flush`, and the only state in which `flush` sends anything.
+    sync_ok: AtomicBool,
+    /// 0 unknown, 1 not write-protected, 2 write-protected (MODE SENSE, or
+    /// a DATA PROTECT sense on a write).
+    protect: AtomicU8,
+    /// Write-class commands this device was sent (for `usb_msc_write`'s
+    /// comparison with QEMU's SCSI trace).
+    writes: AtomicU64,
+    syncs: AtomicU64,
+    mode_senses: AtomicU64,
+}
+
+#[cfg(feature = "usb-storage-write")]
+const PROTECT_UNKNOWN: u8 = 0;
+#[cfg(feature = "usb-storage-write")]
+const PROTECT_NO: u8 = 1;
+#[cfg(feature = "usb-storage-write")]
+const PROTECT_YES: u8 = 2;
+
+#[cfg(feature = "usb-storage-write")]
+impl WriteState {
+    const fn new() -> Self {
+        WriteState {
+            probed: AtomicBool::new(false),
+            sync_ok: AtomicBool::new(false),
+            protect: AtomicU8::new(PROTECT_UNKNOWN),
+            writes: AtomicU64::new(0),
+            syncs: AtomicU64::new(0),
+            mode_senses: AtomicU64::new(0),
+        }
+    }
+
+    fn write_protected(&self) -> Option<bool> {
+        match self.protect.load(Ordering::Acquire) {
+            PROTECT_NO => Some(false),
+            PROTECT_YES => Some(true),
+            _ => None,
+        }
+    }
+}
+
+/// OT-100 R2: write-class commands sent to the usb-storage device registered
+/// as `name`: (WRITE(10), SYNCHRONIZE CACHE(10), MODE SENSE(6)). Test use.
+#[cfg(feature = "usb-storage-write")]
+#[allow(dead_code)]
+pub fn write_command_counts(device: &dyn BlockDevice) -> Option<(u64, u64, u64)> {
+    let name = device.identity().name;
+    let disks = ALL_DISKS.lock();
+    let disk = disks.iter().find(|d| d.identity.name == name)?;
+    Some((
+        disk.write.writes.load(Ordering::Acquire),
+        disk.write.syncs.load(Ordering::Acquire),
+        disk.write.mode_senses.load(Ordering::Acquire),
+    ))
+}
+
+/// OT-100 R2: every disk this driver bound, for [`write_command_counts`].
+#[cfg(feature = "usb-storage-write")]
+static ALL_DISKS: SwitchMutex<alloc::vec::Vec<Arc<MscDisk>>> =
+    SwitchMutex::new(alloc::vec::Vec::new());
+
+#[cfg(feature = "usb-storage-write")]
+impl MscDisk {
+    /// REQUEST SENSE through the write path's deadline.
+    fn sense(t: &mut Transport) -> Option<msc_logic::Sense> {
+        t.sense()
+    }
+
+    /// A pause of about `ms` on the timer tick (NOT READY's back-off).
+    fn pause(ms: u64) {
+        use crate::arch::x86_64::timer::TICKS;
+        let end = TICKS
+            .load(Ordering::Relaxed)
+            .saturating_add(ms.div_ceil(MS_PER_TICK));
+        // A backstop for a tick that does not move: about `ms` of spinning
+        // at the poll loop's pace.
+        for _ in 0..ms.saturating_mul(100) {
+            if TICKS.load(Ordering::Relaxed) >= end {
+                return;
+            }
+            for _ in 0..20_000 {
+                core::hint::spin_loop();
+            }
+        }
+    }
+
+    /// One WRITE(10) chunk, with THINK §3.4's sense handling. `Ok` only when
+    /// the device took every byte.
+    fn write_chunk(
+        &self,
+        t: &mut Transport,
+        at: u32,
+        blocks: u16,
+        bytes: &[u8],
+    ) -> BlockResult<()> {
+        let mut attentions = 0;
+        let mut not_ready = 0;
+        let mut resets = 0;
+        loop {
+            if self.gone.load(Ordering::Acquire) {
+                crate::serial_println!("usb-msc: device gone during WRITE lba={}", at);
+                return Err(BlockError::NoDevice);
+            }
+            self.write.writes.fetch_add(1, Ordering::AcqRel);
+            let outcome = t.run_dir(
+                &msc_logic::cdb_write_10(at, blocks),
+                msc_logic::Data::Out(bytes),
+                WRITE_DEADLINE_MS,
+            );
+            match outcome {
+                Outcome::Passed { len } if len == bytes.len() => return Ok(()),
+                Outcome::Passed { len } | Outcome::Failed { len } => {
+                    let sense = Self::sense(t);
+                    match sense.map(msc_logic::write_action) {
+                        Some(msc_logic::WriteAction::Retry) if attentions == 0 => attentions += 1,
+                        Some(msc_logic::WriteAction::Wait) if not_ready < NOT_READY_TRIES => {
+                            not_ready += 1;
+                            Self::pause(250);
+                        }
+                        Some(msc_logic::WriteAction::WriteProtected) => {
+                            self.write.protect.store(PROTECT_YES, Ordering::Release);
+                            crate::serial_println!(
+                                "usb-msc: DATA PROTECT lba={} ; persistence read-only",
+                                at
+                            );
+                            return Err(BlockError::WriteRefused);
+                        }
+                        _ => {
+                            let s = sense.unwrap_or(msc_logic::Sense {
+                                key: 0xff,
+                                asc: 0xff,
+                                ascq: 0xff,
+                            });
+                            crate::serial_println!(
+                                "usb-msc: WRITE(10) lba={} blocks={} FAIL took={} sense={:x}/{:02x}/{:02x}",
+                                at,
+                                blocks,
+                                len,
+                                s.key,
+                                s.asc,
+                                s.ascq
+                            );
+                            return Err(BlockError::Io);
+                        }
+                    }
+                }
+                Outcome::Reset { reason, recovered } => {
+                    if self.gone.load(Ordering::Acquire) {
+                        crate::serial_println!("usb-msc: device gone during WRITE lba={}", at);
+                        return Err(BlockError::NoDevice);
+                    }
+                    resets += 1;
+                    crate::serial_println!(
+                        "usb-msc: reset recovery #{} after WRITE(10) lba={} blocks={} reason={:?} recovered={}",
+                        resets,
+                        at,
+                        blocks,
+                        reason,
+                        u8::from(recovered)
+                    );
+                    if reason == msc_logic::ResetReason::NotAllowed || resets > 1 || !recovered {
+                        return Err(BlockError::Io);
+                    }
+                }
+            }
+        }
+    }
+
+    /// SYNCHRONIZE CACHE(10) once. ILLEGAL REQUEST latches "unsupported".
+    fn sync_once(&self, t: &mut Transport) -> crate::drivers::block::SyncSupport {
+        use crate::drivers::block::SyncSupport;
+        self.write.syncs.fetch_add(1, Ordering::AcqRel);
+        match t.run_dir(
+            &msc_logic::cdb_synchronize_cache_10(),
+            msc_logic::Data::None,
+            SYNC_DEADLINE_MS,
+        ) {
+            Outcome::Passed { .. } => SyncSupport::Ok,
+            Outcome::Failed { .. } => match Self::sense(t).map(msc_logic::write_action) {
+                Some(msc_logic::WriteAction::Unsupported) => SyncSupport::Unsupported,
+                _ => SyncSupport::Failed,
+            },
+            Outcome::Reset { .. } => SyncSupport::Failed,
+        }
+    }
 }
 
 impl BlockDevice for MscDisk {
@@ -296,6 +618,16 @@ impl BlockDevice for MscDisk {
             .checked_add(count)
             .is_none_or(|end| end > self.geometry.block_count)
         {
+            return Err(BlockError::InvalidRequest);
+        }
+        // OT-100 R2 (THINK §3.2): a read reaching past READ(10)'s 32-bit LBA
+        // is refused before any command; `next_read` would stop short there.
+        if msc_logic::read_past_32_bits(lba, count) {
+            crate::serial_println!(
+                "usb-msc: READ refused lba={} blocks={}: past READ(10)'s 32-bit LBA",
+                lba,
+                count
+            );
             return Err(BlockError::InvalidRequest);
         }
         if self.gone.load(Ordering::Acquire) {
@@ -357,9 +689,193 @@ impl BlockDevice for MscDisk {
         Ok(())
     }
 
+    #[cfg(not(feature = "usb-storage-write"))]
     fn write_block(&self, _lba: u64, _buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         // L3u is read-only; the write guard would refuse an unmarked stick too.
         Err(BlockError::Unsupported)
+    }
+
+    /// OT-100 R2: WRITE(10) in chunks of at most the bounce buffer, the data
+    /// copied into the fenced bounce, never handed over from the caller. The
+    /// guard (`GuardedDevice`) has already judged the range; this device
+    /// also refuses a range READ/WRITE(10) can't address, before any
+    /// command.
+    #[cfg(feature = "usb-storage-write")]
+    fn write_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
+        let block = u64::from(self.geometry.logical_block_size);
+        let bytes: u64 = buffers.iter().map(|b| b.len() as u64).sum();
+        if block == 0 || bytes == 0 || !bytes.is_multiple_of(block) {
+            return Err(BlockError::InvalidRequest);
+        }
+        let count = bytes / block;
+        if lba
+            .checked_add(count)
+            .is_none_or(|end| end > self.geometry.block_count)
+        {
+            return Err(BlockError::InvalidRequest);
+        }
+        if msc_logic::read_past_32_bits(lba, count) {
+            crate::serial_println!(
+                "usb-msc: WRITE refused lba={} blocks={}: past WRITE(10)'s 32-bit LBA",
+                lba,
+                count
+            );
+            return Err(BlockError::InvalidRequest);
+        }
+        if self.write.protect.load(Ordering::Acquire) == PROTECT_YES {
+            return Err(BlockError::WriteRefused);
+        }
+        if self.gone.load(Ordering::Acquire) {
+            return Err(BlockError::NoDevice);
+        }
+        let mut data = alloc::vec::Vec::with_capacity(bytes as usize);
+        for buffer in buffers {
+            // SAFETY: the caller's buffers are not part of any device request
+            // (the device only ever sees the bounce buffer).
+            data.extend_from_slice(unsafe { buffer.as_slice() });
+        }
+        let mut t = self.transport.lock();
+        let per_command =
+            (BOUNCE_LEN as u64 / block).clamp(1, u64::from(msc_logic::MAX_WRITE_BLOCKS)) as u16;
+        let mut done = 0u64;
+        loop {
+            let (at, blocks) = match msc_logic::next_write(lba, count, done, per_command) {
+                Ok(Some(part)) => part,
+                Ok(None) => break,
+                Err(msc_logic::OutOfRange) => return Err(BlockError::InvalidRequest),
+            };
+            let from = (done * block) as usize;
+            let len = blocks as usize * block as usize;
+            self.write_chunk(&mut t, at, blocks, &data[from..from + len])?;
+            done += u64::from(blocks);
+        }
+        drop(t);
+        if self.gone.load(Ordering::Acquire) {
+            return Err(BlockError::NoDevice);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "usb-storage-write")]
+    fn supports_flush(&self) -> bool {
+        self.write.sync_ok.load(Ordering::Acquire)
+    }
+
+    /// SYNCHRONIZE CACHE(10), only once the probe has shown it works (so
+    /// nothing reaches a device the guard has not armed: the probe runs only
+    /// through the guard). Two retries; ILLEGAL REQUEST latches it off.
+    #[cfg(feature = "usb-storage-write")]
+    fn flush(&self) -> BlockResult<()> {
+        use crate::drivers::block::SyncSupport;
+        if !self.write.sync_ok.load(Ordering::Acquire) {
+            return Err(BlockError::Unsupported);
+        }
+        if self.gone.load(Ordering::Acquire) {
+            return Err(BlockError::NoDevice);
+        }
+        let mut t = self.transport.lock();
+        for attempt in 0..3 {
+            match self.sync_once(&mut t) {
+                SyncSupport::Ok => return Ok(()),
+                SyncSupport::Unsupported => {
+                    self.write.sync_ok.store(false, Ordering::Release);
+                    crate::serial_println!(
+                        "usb-msc: SYNCHRONIZE CACHE now refused (ILLEGAL REQUEST); no durable flush"
+                    );
+                    return Err(BlockError::Unsupported);
+                }
+                SyncSupport::Failed => {
+                    if self.gone.load(Ordering::Acquire) {
+                        return Err(BlockError::NoDevice);
+                    }
+                    crate::serial_println!(
+                        "usb-msc: SYNCHRONIZE CACHE failed attempt={}",
+                        attempt + 1
+                    );
+                }
+            }
+        }
+        Err(BlockError::Io)
+    }
+
+    #[cfg(feature = "usb-storage-write")]
+    fn write_protected(&self) -> Option<bool> {
+        self.write.write_protected()
+    }
+
+    /// THINK §3.5: MODE SENSE(6) header for write-protect, TEST UNIT READY,
+    /// one SYNCHRONIZE CACHE(10); once, then the cached answer. Reached only
+    /// through `GuardedDevice::write_probe`, which refuses an unarmed device.
+    #[cfg(feature = "usb-storage-write")]
+    fn write_probe(&self) -> Option<crate::drivers::block::WriteProbe> {
+        use crate::drivers::block::{SyncSupport, WriteProbe};
+        if self.gone.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut t = self.transport.lock();
+        if self.write.probed.load(Ordering::Acquire) {
+            let sync = if self.write.sync_ok.load(Ordering::Acquire) {
+                SyncSupport::Ok
+            } else {
+                SyncSupport::Unsupported
+            };
+            return Some(WriteProbe {
+                write_protected: self.write.write_protected(),
+                sync,
+            });
+        }
+        let mut header = [0u8; msc_logic::MODE_SENSE_HEADER_LEN as usize];
+        self.write.mode_senses.fetch_add(1, Ordering::AcqRel);
+        let wp = match t.run_dir(
+            &msc_logic::cdb_mode_sense_6_header(),
+            msc_logic::Data::In(&mut header),
+            WRITE_DEADLINE_MS,
+        ) {
+            Outcome::Passed { len } => msc_logic::mode_sense_write_protected(&header[..len]),
+            Outcome::Failed { .. } => {
+                // Clear the device's pending sense; unknown is the answer.
+                let _ = Self::sense(&mut t);
+                None
+            }
+            Outcome::Reset { .. } => None,
+        };
+        if let Some(wp) = wp {
+            self.write
+                .protect
+                .store(if wp { PROTECT_YES } else { PROTECT_NO }, Ordering::Release);
+        }
+        // A command after MODE SENSE that leaves the device ready again
+        // (some report UNIT ATTENTION after a refused MODE SENSE).
+        if let Outcome::Failed { .. } = t.run(&msc_logic::cdb_test_unit_ready(), &mut []) {
+            let _ = Self::sense(&mut t);
+        }
+        let sync = self.sync_once(&mut t);
+        self.write
+            .sync_ok
+            .store(sync == SyncSupport::Ok, Ordering::Release);
+        self.write.probed.store(true, Ordering::Release);
+        drop(t);
+        let per_command = (BOUNCE_LEN as u64 / u64::from(self.geometry.logical_block_size))
+            .clamp(1, u64::from(msc_logic::MAX_WRITE_BLOCKS));
+        crate::serial_println!(
+            "usb-msc: write probe dev={} wp={} sync={} max_blocks={}",
+            self.identity.name,
+            match self.write.write_protected() {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "unknown",
+            },
+            match sync {
+                SyncSupport::Ok => "ok",
+                SyncSupport::Unsupported => "unsupported",
+                SyncSupport::Failed => "failed",
+            },
+            per_command
+        );
+        Some(WriteProbe {
+            write_protected: self.write.write_protected(),
+            sync,
+        })
     }
 }
 
@@ -445,6 +961,8 @@ fn bind_inner(
         tag: 0,
         lun: 0,
         gone: Arc::new(AtomicBool::new(false)),
+        #[cfg(feature = "usb-storage-write")]
+        deadline_ms: None,
     };
     crate::serial_println!("msc: maxlun={} using lun=0", max_lun);
 
@@ -558,8 +1076,12 @@ fn bind_inner(
         },
         transport: SwitchMutex::new(t),
         gone,
+        #[cfg(feature = "usb-storage-write")]
+        write: WriteState::new(),
     };
     let disk = Arc::new(disk);
+    #[cfg(feature = "usb-storage-write")]
+    ALL_DISKS.lock().push(disk.clone());
     let index = crate::drivers::block::register_device(disk.clone());
     crate::serial_println!("msc: registered block device index={}", index);
     #[cfg(feature = "usb-hotplug")]
