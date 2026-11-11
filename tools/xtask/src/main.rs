@@ -9054,9 +9054,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // L1a.3: the worker is the terminal (and, spawned by it with a stdio,
         // its test child).
         Some("desktop-terminal-shell-boot-test") => vec!["terminal-app"],
-        Some("desktop-terminal-echo-boot-test") | Some("lock-terminal-test") => {
-            vec!["terminal-test-echo"]
-        }
+        Some("desktop-terminal-echo-boot-test") => vec!["terminal-test-echo"],
+        // The login VM's WM has `desktop-resize` (`desktop-full`), so the
+        // terminal's buffer is the size it imports.
+        Some("lock-terminal-test") => vec!["terminal-test-echo", "desktop-resize"],
         Some("desktop-terminal-flood-boot-test") => vec!["terminal-test-flood"],
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
