@@ -443,3 +443,290 @@ pub fn command(pipe: &mut impl Pipe, tag: u32, lun: u8, cdb: &[u8], data: &mut [
         CswVerdict::Failed { .. } => Outcome::Failed { len: got },
     }
 }
+
+// ---------------------------------------------------------------------------
+// OT-100 R2: the write path (`docs/THINK-2026-11-10-ot100-usb-persistence.md`
+// §3). Only `usb-storage-write` kernels call anything below; [`command`] and
+// [`ALLOWED_OPCODES`] above are the read-only driver's, unchanged.
+// ---------------------------------------------------------------------------
+
+/// A command's data stage, by direction (BOT §5.1: `bmCBWFlags` bit 7).
+pub enum Data<'a> {
+    /// No data stage.
+    None,
+    /// Device-to-host into the slice.
+    In(&'a mut [u8]),
+    /// Host-to-device from the slice.
+    Out(&'a [u8]),
+}
+
+/// A data stage's direction, as the write allowlist names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dir {
+    None,
+    In,
+    Out,
+}
+
+impl Data<'_> {
+    pub fn dir(&self) -> Dir {
+        match self {
+            Data::None => Dir::None,
+            Data::In(_) => Dir::In,
+            Data::Out(_) => Dir::Out,
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Data::None => 0,
+            Data::In(b) => b.len(),
+            Data::Out(b) => b.len(),
+        }
+    }
+}
+
+/// The write path's allowlist (THINK §3.1): every opcode with the one
+/// direction it may run in. Today's six keep theirs; WRITE(10) runs only
+/// host-to-device, SYNCHRONIZE CACHE(10) with no data, MODE SENSE(6) only
+/// device-to-host. A known opcode in the wrong direction is refused like an
+/// unknown one, before a byte reaches the device.
+pub const WRITE_PATH_COMMANDS: [(u8, Dir); 9] = [
+    (0x12, Dir::In),   // INQUIRY
+    (0x00, Dir::None), // TEST UNIT READY
+    (0x03, Dir::In),   // REQUEST SENSE
+    (0x25, Dir::In),   // READ CAPACITY(10)
+    (0x9e, Dir::In),   // SERVICE ACTION IN(16): READ CAPACITY(16)
+    (0x28, Dir::In),   // READ(10)
+    (0x2a, Dir::Out),  // WRITE(10)
+    (0x35, Dir::None), // SYNCHRONIZE CACHE(10)
+    (0x1a, Dir::In),   // MODE SENSE(6)
+];
+
+pub const OP_WRITE_10: u8 = 0x2a;
+pub const OP_SYNCHRONIZE_CACHE_10: u8 = 0x35;
+pub const OP_MODE_SENSE_6: u8 = 0x1a;
+
+/// Whether `cdb`'s opcode may run with a data stage in `dir`.
+pub fn cdb_allowed_dir(cdb: &[u8], dir: Dir) -> bool {
+    cdb.first().is_some_and(|op| {
+        WRITE_PATH_COMMANDS
+            .iter()
+            .any(|&(o, d)| o == *op && d == dir)
+    })
+}
+
+/// WRITE(10) (`0x2a`): `blocks` blocks at `lba`, both big-endian. FUA (byte
+/// 1 bit 3) and every other flag stay 0 (Linux `BROKEN_FUA`).
+pub fn cdb_write_10(lba: u32, blocks: u16) -> [u8; 10] {
+    let mut c = [0u8; 10];
+    c[0] = OP_WRITE_10;
+    c[2..6].copy_from_slice(&lba.to_be_bytes());
+    c[7..9].copy_from_slice(&blocks.to_be_bytes());
+    c
+}
+
+/// SYNCHRONIZE CACHE(10) (`0x35`) of the whole medium: LBA 0, 0 blocks (SBC:
+/// "all logical blocks from the LBA to the end").
+pub fn cdb_synchronize_cache_10() -> [u8; 10] {
+    [OP_SYNCHRONIZE_CACHE_10, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+}
+
+/// MODE SENSE(6)'s allocation length: the 4-byte header only (THINK §3.1;
+/// Linux `sd` asks USB devices for little, as large page-0x3f reads hang
+/// some of them).
+pub const MODE_SENSE_HEADER_LEN: u8 = 4;
+
+/// MODE SENSE(6) (`0x1a`): DBD set (no block descriptors), page 0x3f (all),
+/// the header only.
+pub fn cdb_mode_sense_6_header() -> [u8; 6] {
+    [OP_MODE_SENSE_6, 0x08, 0x3f, 0, MODE_SENSE_HEADER_LEN, 0]
+}
+
+/// The write-protect bit of a MODE SENSE(6) reply: byte 2 (device-specific
+/// parameter) bit 7. `None` if fewer than 3 bytes arrived.
+pub fn mode_sense_write_protected(reply: &[u8]) -> Option<bool> {
+    reply.get(2).map(|b| b & 0x80 != 0)
+}
+
+/// WRITE(10)'s per-command cap in blocks: the bounce buffer, as for reads.
+pub const MAX_WRITE_BLOCKS: u16 = MAX_READ_BLOCKS;
+
+/// An LBA a 32-bit command cannot address.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OutOfRange;
+
+/// The next WRITE(10) of a split write: `(lba, blocks)` for the part of
+/// `count` blocks from `lba` starting `done` blocks in, at most `max`
+/// blocks (clamped to 1..=[`MAX_WRITE_BLOCKS`]). `Ok(None)` when done;
+/// `Err(OutOfRange)` when the part's first or last block does not fit 32
+/// bits, so nothing is sent for it (THINK §3.2).
+pub fn next_write(
+    lba: u64,
+    count: u64,
+    done: u64,
+    max: u16,
+) -> Result<Option<(u32, u16)>, OutOfRange> {
+    if done >= count {
+        return Ok(None);
+    }
+    let max = max.clamp(1, MAX_WRITE_BLOCKS);
+    let at = lba.checked_add(done).ok_or(OutOfRange)?;
+    let at = u32::try_from(at).map_err(|_| OutOfRange)?;
+    let blocks = (count - done).min(u64::from(max)) as u16;
+    at.checked_add(u32::from(blocks) - 1).ok_or(OutOfRange)?;
+    Ok(Some((at, blocks)))
+}
+
+/// Whether a split read of `count` blocks from `lba` reaches a block past
+/// READ(10)'s 32 bits: such a read is refused before any command (THINK
+/// §3.2: [`next_read`] stops there, which would leave a short read).
+pub fn read_past_32_bits(lba: u64, count: u64) -> bool {
+    count != 0
+        && lba
+            .checked_add(count - 1)
+            .is_none_or(|last| last > u64::from(u32::MAX))
+}
+
+pub const SENSE_KEY_DATA_PROTECT: u8 = 0x7;
+pub const SENSE_KEY_ILLEGAL_REQUEST: u8 = 0x5;
+pub const SENSE_KEY_MEDIUM_ERROR: u8 = 0x3;
+pub const SENSE_KEY_HARDWARE_ERROR: u8 = 0x4;
+
+/// What to do after a WRITE(10) or SYNCHRONIZE CACHE failed with `sense`
+/// (THINK §3.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteAction {
+    /// UNIT ATTENTION: retry once.
+    Retry,
+    /// NOT READY: retry after a pause, a few times.
+    Wait,
+    /// DATA PROTECT: the medium is write-protected; latch it.
+    WriteProtected,
+    /// ILLEGAL REQUEST: the device does not do this command (for SYNCHRONIZE
+    /// CACHE: latch `sync_unsupported`, Haiku's `sync_support = 0`).
+    Unsupported,
+    /// MEDIUM ERROR, HARDWARE ERROR, anything else: an I/O error.
+    Fail,
+}
+
+pub fn write_action(sense: Sense) -> WriteAction {
+    match sense.key {
+        SENSE_KEY_UNIT_ATTENTION => WriteAction::Retry,
+        SENSE_KEY_NOT_READY => WriteAction::Wait,
+        SENSE_KEY_DATA_PROTECT => WriteAction::WriteProtected,
+        SENSE_KEY_ILLEGAL_REQUEST => WriteAction::Unsupported,
+        _ => WriteAction::Fail,
+    }
+}
+
+/// Run one command on the write path (THINK §3.2; BOT §6.7's host cases):
+/// the data stage's direction is `data`'s, the CBW's flag follows it, and
+/// the pair must be in [`WRITE_PATH_COMMANDS`].
+///
+/// - `In`: as [`command`].
+/// - `Out`: a bulk-OUT of the slice. A stall clears the bulk-out halt and
+///   still reads the CSW (BOT §6.7.3); a transport error is reset recovery.
+///   The CSW's residue must not claim more was taken than was sent; a
+///   passed status with a non-zero residue is a short write, reported as
+///   `Failed` with the bytes the device took.
+pub fn command_dir(pipe: &mut impl Pipe, tag: u32, lun: u8, cdb: &[u8], data: Data<'_>) -> Outcome {
+    let dir = data.dir();
+    let data_len = data.len() as u32;
+    let reset = |pipe: &mut _, reason| Outcome::Reset {
+        reason,
+        recovered: reset_recovery(pipe),
+    };
+    if !cdb_allowed_dir(cdb, dir) || (dir != Dir::None && data_len == 0) {
+        return Outcome::Reset {
+            reason: ResetReason::NotAllowed,
+            recovered: true,
+        };
+    }
+    let Some(cbw) = encode_cbw(tag, data_len, dir == Dir::In, lun, cdb) else {
+        return Outcome::Reset {
+            reason: ResetReason::Cbw,
+            recovered: true,
+        };
+    };
+    match pipe.bulk_out(&cbw) {
+        Xfer::Done(n) if n == CBW_LEN => {}
+        _ => return reset(pipe, ResetReason::Cbw),
+    }
+    // Bytes moved in the data stage, if the transport knows (a stall does
+    // not say how many went).
+    let mut moved: Option<usize> = Some(0);
+    match data {
+        Data::None => {}
+        Data::In(buf) => match pipe.bulk_in(buf) {
+            Xfer::Done(n) => moved = Some(n.min(buf.len())),
+            Xfer::Stall => {
+                if !pipe.clear_halt_in() {
+                    return reset(pipe, ResetReason::Data);
+                }
+            }
+            Xfer::Error => return reset(pipe, ResetReason::Data),
+        },
+        Data::Out(buf) => match pipe.bulk_out(buf) {
+            Xfer::Done(n) => moved = Some(n.min(buf.len())),
+            Xfer::Stall => {
+                if !pipe.clear_halt_out() {
+                    return reset(pipe, ResetReason::Data);
+                }
+                moved = None;
+            }
+            Xfer::Error => return reset(pipe, ResetReason::Data),
+        },
+    }
+    let mut csw = [0u8; CSW_LEN];
+    let mut csw_len = None;
+    for _ in 0..2 {
+        match pipe.bulk_in(&mut csw) {
+            Xfer::Done(n) => {
+                csw_len = Some(n);
+                break;
+            }
+            Xfer::Stall => {
+                if !pipe.clear_halt_in() {
+                    break;
+                }
+            }
+            Xfer::Error => break,
+        }
+    }
+    // A 0-length CSW (a stray zero-length packet after the data): read once
+    // more (Linux `transport.c`).
+    if csw_len == Some(0) {
+        csw_len = match pipe.bulk_in(&mut csw) {
+            Xfer::Done(n) => Some(n),
+            _ => None,
+        };
+    }
+    let Some(n) = csw_len else {
+        return reset(pipe, ResetReason::Csw);
+    };
+    let (passed, residue) = match check_csw(&csw[..n.min(CSW_LEN)], tag, data_len) {
+        CswVerdict::PhaseError(why) => return reset(pipe, ResetReason::Phase(why)),
+        CswVerdict::Passed { residue } => (true, residue),
+        CswVerdict::Failed { residue } => (false, residue),
+    };
+    let taken = (data_len - residue) as usize;
+    match (dir, moved) {
+        // More arrived than the device says it sent.
+        (Dir::In, Some(got)) if taken < got => reset(pipe, ResetReason::ResidueMismatch),
+        // The device says it took more than was sent.
+        (Dir::Out, Some(sent)) if taken > sent => reset(pipe, ResetReason::ResidueMismatch),
+        (Dir::In, got) => {
+            let len = got.unwrap_or(0);
+            if passed {
+                Outcome::Passed { len }
+            } else {
+                Outcome::Failed { len }
+            }
+        }
+        (Dir::Out, _) if passed && residue == 0 => Outcome::Passed { len: taken },
+        (Dir::Out, _) => Outcome::Failed { len: taken },
+        (Dir::None, _) if passed => Outcome::Passed { len: 0 },
+        (Dir::None, _) => Outcome::Failed { len: 0 },
+    }
+}
