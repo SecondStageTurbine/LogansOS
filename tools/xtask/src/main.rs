@@ -9481,6 +9481,10 @@ fn neo_crt_cc_env(cmd: &mut Command, cxx_extra: &[&str], with_cflags: bool) -> R
         "-nostdinc".into(),
         "-nostdinc++".into(),
         "-D_XOPEN_SOURCE=700".into(),
+        // libc++'s locale headers (on since #88's localization) call musl's
+        // strto*_l and vasprintf, which musl declares only under _GNU_SOURCE;
+        // neo-crt's own build and generator/neo-cc pass it too.
+        "-D_GNU_SOURCE".into(),
         format!("-I{}", root.join("userland/neo-crt/cxx").display()),
         format!("-I{}", crt.join("libcxx/include").display()),
         format!("-I{}", crt.join("musl-generated").display()),
