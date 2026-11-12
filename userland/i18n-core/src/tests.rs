@@ -85,6 +85,39 @@ fn fill_is_positional_and_leaves_a_missing_argument_visible() {
     );
 }
 
+/// `{N}` takes argument `N`, so a language can order them its own way (the
+/// date); text braces that are neither slot stay text.
+#[test]
+fn indexed_slots_reorder_and_count() {
+    let args = ["miércoles", "octubre", "21", "2026"];
+    assert_eq!(
+        fill(text(Lang::Es, Msg::DateLong), &args),
+        "miércoles 21 de octubre de 2026"
+    );
+    assert_eq!(
+        fill(
+            text(Lang::En, Msg::DateLong),
+            &["Wednesday", "October", "21", "2026"]
+        ),
+        "Wednesday, October 21, 2026"
+    );
+    assert_eq!(arg_count("{0} {2} de {1} de {3}"), 4);
+    assert_eq!(arg_count("{} and {}"), 2);
+    assert_eq!(arg_count("{x} {"), 0);
+    assert_eq!(fill("{x} {", &["a"]), "{x} {");
+    assert_eq!(fill("{1}{0}", &["a"]), "{}a");
+    assert_eq!(fill("é{}ñ", &["x"]), "éxñ");
+    assert_eq!(
+        pieces("a{}b{1}").collect::<Vec<_>>(),
+        [
+            Piece::Text("a"),
+            Piece::Arg(0),
+            Piece::Text("b"),
+            Piece::Arg(1)
+        ]
+    );
+}
+
 // ---- 2. English is pinned ----
 
 /// S6a's English table, as shipped (the literals the code printed before S6b
@@ -193,15 +226,19 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             .unwrap()
     };
     let time = format!("12:59{}", longest(&[Am, Pm]));
-    let date = format!(
-        "{}, {} 30, 2026",
-        longest(&[
-            Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday,
-        ]),
-        longest(&[
-            January, February, March, April, May, June, July, August, September, October, November,
-            December,
-        ])
+    let date = fill(
+        t(DateLong),
+        &[
+            longest(&[
+                Sunday, Monday, Tuesday, Wednesday, Thursday, Friday, Saturday,
+            ]),
+            longest(&[
+                January, February, March, April, May, June, July, August, September, October,
+                November, December,
+            ]),
+            "30",
+            "2026",
+        ],
     );
     let on_off = longest(&[On, Off]);
     let args: Vec<String> = match m {
@@ -233,6 +270,12 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             date,
         ],
         PowerError => vec!["-38".into()],
+        DateLong => vec![
+            "miércoles".into(),
+            "septiembre".into(),
+            "30".into(),
+            "2026".into(),
+        ],
         ZoneRowNow => vec![ZONE.into(), OFFSET.into()],
         // The test field at `setup_core::keyboard::FIELD_MAX` (24) of the
         // widest Latin capital.

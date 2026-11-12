@@ -127,6 +127,7 @@ the card.
 | `December` | December | diciembre |  |
 | `Am` |  AM |  a. m. | "a. m." / "p. m." with the RAE spacing, each with the leading space the clock writes. |
 | `Pm` |  PM |  p. m. | See Am. |
+| `DateLong` | {0}, {1} {2}, {3} | {0} {2} de {1} de {3} | S6b. The arguments by index: weekday, month, day, year, so Spanish puts the day first: "miércoles 21 de octubre de 2026". Weekday and month stay lower case, as Spanish writes them. |
 | `PowerAskShutDown` | Shut down this computer? | ¿Apagar esta computadora? |  |
 | `PowerShutDown` | Shut down | Apagar |  |
 | `PowerAskRestart` | Restart this computer? | ¿Reiniciar esta computadora? |  |

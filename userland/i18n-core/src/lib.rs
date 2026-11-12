@@ -9,8 +9,8 @@
 //!   language.
 //! - [`text`]: the lookup, with a fallback to English for an empty entry.
 //!   [`lookup`] says whether the fallback was taken.
-//! - [`fill`]: positional `{}` arguments, the only formatting the strings
-//!   need. There are no plurals.
+//! - [`fill`]: `{}` arguments in order, or `{0}`..`{9}` by index where a
+//!   language orders them differently (the date). There are no plurals.
 //!
 //! **S6b** moved the literals to these ids: `setup-core`, `neo-atrium`'s
 //! intro, power and clock cards, `libneo::civil` and Home's clock verbs draw
@@ -289,6 +289,9 @@ catalog! {
     /// The 12-hour clock's suffixes, with their leading space.
     Am = " AM", " a. m.";
     Pm = " PM", " p. m.";
+    /// S6b: the long date (`libneo::civil`). The arguments, by index, are
+    /// the weekday, the month, the day and the year.
+    DateLong = "{0}, {1} {2}, {3}", "{0} {2} de {1} de {3}";
 
     // ---- Home's verbs: the power card (`neo-atrium` power) ----
     PowerAskShutDown = "Shut down this computer?", "¿Apagar esta computadora?";
@@ -369,27 +372,78 @@ pub const fn text(lang: Lang, msg: Msg) -> &'static str {
     lookup(lang, msg).0
 }
 
-/// How many `{}` arguments `template` takes.
-pub fn arg_count(template: &str) -> usize {
-    template.matches("{}").count()
+/// One piece of a template: literal text, or an argument slot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Piece<'a> {
+    Text(&'a str),
+    /// The argument with this index: `{}` takes the next in order, `{N}`
+    /// (one digit) takes argument `N`.
+    Arg(usize),
 }
 
-/// `template` with each `{}` replaced by the next of `args`, in order. A
-/// `{}` with no argument left stays as it is; spare arguments are ignored
-/// (a KAT holds every table's counts equal, so neither happens).
+/// The pieces of `template`, in order (no allocation: `libneo::civil` fills
+/// a fixed buffer with them). A `{` that starts neither `{}` nor `{N}` is
+/// text.
+pub fn pieces(template: &str) -> impl Iterator<Item = Piece<'_>> {
+    let mut rest = template;
+    let mut next = 0usize;
+    core::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let b = rest.as_bytes();
+        if b[0] == b'{' {
+            if b.get(1) == Some(&b'}') {
+                rest = &rest[2..];
+                next += 1;
+                return Some(Piece::Arg(next - 1));
+            }
+            if b.len() >= 3 && b[1].is_ascii_digit() && b[2] == b'}' {
+                rest = &rest[3..];
+                return Some(Piece::Arg(usize::from(b[1] - b'0')));
+            }
+        }
+        // Text up to the next `{` after the first character (which may be a
+        // `{` that starts no slot, or a multi-byte character).
+        let first = rest.chars().next().map_or(1, char::len_utf8);
+        let end = rest[first..].find('{').map_or(rest.len(), |i| i + first);
+        let (text, tail) = rest.split_at(end);
+        rest = tail;
+        Some(Piece::Text(text))
+    })
+}
+
+/// How many arguments `template` takes: one per `{}`, and one past the
+/// highest `{N}`.
+pub fn arg_count(template: &str) -> usize {
+    let (mut seq, mut max) = (0usize, 0usize);
+    let mut rest = template;
+    while let Some(at) = rest.find('{') {
+        let b = &rest.as_bytes()[at..];
+        if b.get(1) == Some(&b'}') {
+            seq += 1;
+        } else if b.len() >= 3 && b[1].is_ascii_digit() && b[2] == b'}' {
+            max = max.max(usize::from(b[1] - b'0') + 1);
+        }
+        rest = &rest[at + 1..];
+    }
+    seq.max(max)
+}
+
+/// `template` with each slot replaced by its argument. A slot with no
+/// argument stays as it is (`{}`); spare arguments are ignored (a KAT holds
+/// every table's counts equal, so neither happens).
 pub fn fill(template: &str, args: &[&str]) -> String {
     let mut out = String::with_capacity(template.len() + 16);
-    let mut rest = template;
-    let mut next = args.iter();
-    while let Some(at) = rest.find("{}") {
-        out.push_str(&rest[..at]);
-        match next.next() {
-            Some(a) => out.push_str(a),
-            None => out.push_str("{}"),
+    for piece in pieces(template) {
+        match piece {
+            Piece::Text(t) => out.push_str(t),
+            Piece::Arg(i) => match args.get(i) {
+                Some(a) => out.push_str(a),
+                None => out.push_str("{}"),
+            },
         }
-        rest = &rest[at + 2..];
     }
-    out.push_str(rest);
     out
 }
 

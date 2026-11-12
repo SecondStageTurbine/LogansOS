@@ -102,6 +102,7 @@ November	November
 December	December
 Am	 AM
 Pm	 PM
+DateLong	{0}, {1} {2}, {3}
 PowerAskShutDown	Shut down this computer?
 PowerShutDown	Shut down
 PowerAskRestart	Restart this computer?

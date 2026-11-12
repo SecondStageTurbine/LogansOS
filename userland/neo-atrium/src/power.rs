@@ -6,6 +6,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use i18n_core::{Lang, Msg, text};
 
 /// What the line asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,15 +65,20 @@ pub fn power_command(line: &[u8]) -> Option<PowerCommand> {
 /// The confirm card's rows; the last is the button row
 /// ([`crate::intro::button_row`]), whose first label confirms.
 pub fn confirm_lines(cmd: PowerCommand) -> Vec<String> {
+    confirm_lines_in(crate::lang::get(), cmd)
+}
+
+/// S6b: [`confirm_lines`] in `lang`. The trigger words stay as typed.
+pub fn confirm_lines_in(lang: Lang, cmd: PowerCommand) -> Vec<String> {
     let (ask, go) = match cmd {
-        PowerCommand::ShutDown => ("Shut down this computer?", "Shut down"),
-        PowerCommand::Restart => ("Restart this computer?", "Restart"),
+        PowerCommand::ShutDown => (Msg::PowerAskShutDown, Msg::PowerShutDown),
+        PowerCommand::Restart => (Msg::PowerAskRestart, Msg::PowerRestart),
     };
     alloc::vec![
-        String::from(ask),
-        String::from("Open apps close first; anything they haven't saved is lost."),
-        String::from("Enter to go ahead; any other key goes back."),
-        crate::intro::button_row(go),
+        String::from(text(lang, ask)),
+        String::from(text(lang, Msg::PowerWarning)),
+        String::from(text(lang, Msg::PowerConfirmHint)),
+        crate::intro::button_row_in(lang, text(lang, go)),
     ]
 }
 
@@ -89,22 +95,35 @@ pub const CONFIRM_BUTTON_ROW: usize = 3;
 
 /// The card once the call has been made.
 pub fn going_lines(cmd: PowerCommand) -> Vec<String> {
-    alloc::vec![String::from(match cmd {
-        PowerCommand::ShutDown => "Shutting down...",
-        PowerCommand::Restart => "Restarting...",
-    })]
+    going_lines_in(crate::lang::get(), cmd)
+}
+
+/// S6b: [`going_lines`] in `lang`.
+pub fn going_lines_in(lang: Lang, cmd: PowerCommand) -> Vec<String> {
+    alloc::vec![String::from(text(
+        lang,
+        match cmd {
+            PowerCommand::ShutDown => Msg::PowerShuttingDown,
+            PowerCommand::Restart => Msg::PowerRestarting,
+        }
+    ))]
 }
 
 /// The card when the kernel refused (`errno`, negative): this computer
 /// can't be powered off from here, or a shutdown is already under way.
 pub fn refused_lines(errno: i64) -> Vec<String> {
+    refused_lines_in(crate::lang::get(), errno)
+}
+
+/// S6b: [`refused_lines`] in `lang`.
+pub fn refused_lines_in(lang: Lang, errno: i64) -> Vec<String> {
     let why = match errno {
-        -16 => "It's already shutting down.",
-        -38 => "This system can't do that from here.",
-        _ => "That didn't work.",
+        -16 => Msg::PowerBusy,
+        -38 => Msg::PowerUnsupported,
+        _ => Msg::PowerFailed,
     };
     alloc::vec![
-        String::from(why),
-        alloc::format!("(error {errno}) Press any key."),
+        String::from(text(lang, why)),
+        i18n_core::format(lang, Msg::PowerError, &[&alloc::format!("{errno}")]),
     ]
 }

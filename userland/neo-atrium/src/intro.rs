@@ -8,8 +8,13 @@
 //! line; a deterministic help card the WM answers, never the model). Register:
 //! `docs/VISION-arthur-persona.md` (no exclamations or emoji, economy, the
 //! exit always offered). Every line is checked by the persona KAT in
-//! `tests.rs`: ASCII only, no `!`, the length bounds, each row inside the
-//! card, and the model-state sentences exactly B1b's.
+//! `tests.rs`: every character in the face, no `!` (nor `¡`), the length
+//! bounds, each row inside the card, and the model-state sentences exactly
+//! B1b's.
+//!
+//! **S6b:** the words are `i18n-core`'s catalog; the constants below are its
+//! English entries. Each function has an `_in(lang, ..)` form; the plain form
+//! takes the session's language ([`crate::lang`]).
 //!
 //! Pure: the WM decides the variant and draws the rows with
 //! [`crate::BaseScene::set_card`]; nothing here touches the system.
@@ -17,43 +22,64 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use i18n_core::{Lang, Msg, text};
+
+const fn en(m: Msg) -> &'static str {
+    text(Lang::En, m)
+}
 
 /// Line 1 (variant A): Bible 29.1's name, read as part of the greeting.
-pub const GREETING: &str =
-    "Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.";
+pub const GREETING: &str = en(Msg::IntroGreeting);
 /// `desktop-clock` (OT-85): with a wall clock the greeting moves to its own
 /// row with the time ([`crate::clock::greeting_row`]), and the name follows
 /// as this row. (One row would be 93 bytes, past the 90 the variant-A
 /// greeting is allowed; split, both rows are within the 80 of new rows.)
-pub const NAME: &str =
-    "I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.";
+pub const NAME: &str = en(Msg::IntroName);
 /// Line 2: the household side named as what Arthur is for, not promised.
-pub const HOUSEHOLD: &str =
-    "The household side comes later; for now, I look after this computer for you.";
+pub const HOUSEHOLD: &str = en(Msg::IntroHousehold);
 /// Line 3 (PL Q2 option b): a description of Arthur's behaviour.
-pub const PRIVACY: &str =
-    "I work entirely on this machine, and I don't send what you tell me anywhere.";
+pub const PRIVACY: &str = en(Msg::IntroPrivacy);
 /// DECISION D5: on a USB-only machine nothing persists, so the intro repeats.
-pub const USB_ONLY: &str = "On this machine I can't keep anything once it's switched off, not yet.";
-pub const ASK: &str = "Ask in your own words: \"What does a CPU do?\", for instance.";
-pub const LIST: &str = "\"list /\" shows you the files on this machine.";
+pub const USB_ONLY: &str = en(Msg::IntroUsbOnly);
+pub const ASK: &str = en(Msg::IntroAsk);
+pub const LIST: &str = en(Msg::IntroList);
 /// The no-model variants: the Lens is the one thing that needs no model.
-pub const LIST_STILL: &str = "\"list /\" still shows you the files on this machine.";
+pub const LIST_STILL: &str = en(Msg::IntroListStill);
 /// The exit (persona rule 9): the help card, and Esc back to Home.
-pub const EXIT: &str = "Type help for what you can do yourself. Esc always brings you back here.";
+pub const EXIT: &str = en(Msg::IntroExit);
 
 /// The help card: only what is true of the 0.1 desktop without the model.
 pub const HELP: [&str; 6] = [
-    "What you can do yourself, without asking me:",
-    "Esc sets me aside and brings you back to Home.",
-    "\"list /\" opens the Lens: a read-only view of the files on this machine.",
-    "The chips on the left switch between me and the Lens; Tab reaches them.",
-    "Drag a window by its title bar to move it, or by an edge to resize it.",
-    "Start typing to ask me something, or press Esc to close this card.",
+    en(Msg::HelpTitle),
+    en(Msg::HelpEsc),
+    en(Msg::HelpList),
+    en(Msg::HelpChips),
+    en(Msg::HelpDrag),
+    en(Msg::HelpType),
 ];
 
+/// The help card's ids, in [`HELP`]'s order.
+const HELP_MSGS: [Msg; 6] = [
+    Msg::HelpTitle,
+    Msg::HelpEsc,
+    Msg::HelpList,
+    Msg::HelpChips,
+    Msg::HelpDrag,
+    Msg::HelpType,
+];
+
+/// S6b: Home's hint in `lang`.
+pub const fn hint_in(lang: Lang) -> &'static str {
+    text(lang, Msg::IntroHint)
+}
+
+/// Home's hint in the session's language.
+pub fn hint() -> &'static str {
+    hint_in(crate::lang::get())
+}
+
 /// The visible affordance on Home while no card shows (typed or clicked).
-pub const HINT: &str = "Type help, or click here, for what you can do yourself.";
+pub const HINT: &str = en(Msg::IntroHint);
 
 /// The word that opens the help card from the intent field.
 pub const HELP_COMMAND: &str = "help";
@@ -75,57 +101,63 @@ pub enum ModelState {
 /// so the card never disagrees with Arthur's later reply). `None` with a
 /// model, or for B2's state (its own rows).
 pub const fn state_row(state: ModelState) -> Option<&'static str> {
+    state_row_in(Lang::En, state)
+}
+
+/// S6b: [`state_row`] in `lang`.
+pub const fn state_row_in(lang: Lang, state: ModelState) -> Option<&'static str> {
     match state {
         ModelState::Ready | ModelState::TooLittleMemory { .. } => None,
-        ModelState::Absent => Some(
-            "I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with.",
-        ),
-        ModelState::Damaged => Some(
-            "My model file is damaged, so I won't use it. Re-create the USB from the original image.",
-        ),
-        ModelState::LoadFailed => {
-            Some("My model didn't load, so I'm running without it. The details are in /model.")
-        }
+        ModelState::Absent => Some(text(lang, Msg::IntroModelAbsent)),
+        ModelState::Damaged => Some(text(lang, Msg::IntroModelDamaged)),
+        ModelState::LoadFailed => Some(text(lang, Msg::IntroModelLoadFailed)),
     }
 }
 
-/// The introduction's rows for `model`; `usb_only` adds the D5 line.
+/// The introduction's rows for `model`, in the session's language;
+/// `usb_only` adds the D5 line.
 pub fn intro_lines(model: ModelState, usb_only: bool) -> Vec<String> {
+    intro_lines_in(crate::lang::get(), model, usb_only)
+}
+
+/// S6b: [`intro_lines`] in `lang`.
+pub fn intro_lines_in(lang: Lang, model: ModelState, usb_only: bool) -> Vec<String> {
     let mut rows: Vec<String> = Vec::new();
+    let t = |m: Msg| text(lang, m);
     let mut push = |s: &str| rows.push(String::from(s));
-    push(GREETING);
-    push(HOUSEHOLD);
+    push(t(Msg::IntroGreeting));
+    push(t(Msg::IntroHousehold));
     match model {
         ModelState::Ready => {
-            push(PRIVACY);
+            push(t(Msg::IntroPrivacy));
             if usb_only {
-                push(USB_ONLY);
+                push(t(Msg::IntroUsbOnly));
             }
-            push(ASK);
-            push(LIST);
+            push(t(Msg::IntroAsk));
+            push(t(Msg::IntroList));
         }
         ModelState::TooLittleMemory { have_gb, need_gb } => {
             if usb_only {
-                push(USB_ONLY);
+                push(t(Msg::IntroUsbOnly));
             }
-            rows.push(format!(
-                "This computer has {have_gb} GB of memory; my smallest brain needs {need_gb} GB."
+            push(&i18n_core::format(
+                lang,
+                Msg::IntroTooLittleMemory,
+                &[&format!("{have_gb}"), &format!("{need_gb}")],
             ));
-            rows.push(String::from(
-                "I can't think yet, but \"list /\" still shows you the files on this machine.",
-            ));
+            push(t(Msg::IntroCantThink));
         }
         _ => {
             if usb_only {
-                push(USB_ONLY);
+                push(t(Msg::IntroUsbOnly));
             }
-            if let Some(row) = state_row(model) {
+            if let Some(row) = state_row_in(lang, model) {
                 push(row);
             }
-            push(LIST_STILL);
+            push(t(Msg::IntroListStill));
         }
     }
-    rows.push(String::from(EXIT));
+    push(t(Msg::IntroExit));
     rows
 }
 
@@ -138,15 +170,33 @@ pub fn intro_lines_now(
     usb_only: bool,
     now: &crate::clock::Now<'_>,
 ) -> Vec<String> {
-    let mut rows = intro_lines(model, usb_only);
-    rows[0] = crate::clock::greeting_row(now);
-    rows.insert(1, String::from(NAME));
+    intro_lines_now_in(crate::lang::get(), model, usb_only, now)
+}
+
+/// S6b: [`intro_lines_now`] in `lang` (`now`'s texts already in it).
+pub fn intro_lines_now_in(
+    lang: Lang,
+    model: ModelState,
+    usb_only: bool,
+    now: &crate::clock::Now<'_>,
+) -> Vec<String> {
+    let mut rows = intro_lines_in(lang, model, usb_only);
+    rows[0] = crate::clock::greeting_row_in(lang, now);
+    rows.insert(1, String::from(text(lang, Msg::IntroName)));
     rows
 }
 
-/// The help card's rows.
+/// The help card's rows, in the session's language.
 pub fn help_lines() -> Vec<String> {
-    HELP.iter().map(|s| String::from(*s)).collect()
+    help_lines_in(crate::lang::get())
+}
+
+/// S6b: [`help_lines`] in `lang`.
+pub fn help_lines_in(lang: Lang) -> Vec<String> {
+    HELP_MSGS
+        .iter()
+        .map(|&m| String::from(text(lang, m)))
+        .collect()
 }
 
 /// Whether the intro shows this session: always on a machine that cannot
@@ -169,10 +219,17 @@ pub fn is_help(line: &[u8]) -> bool {
 }
 
 /// A card's button row: `[ go ]`, then `[ Back ]` from column 27 (at
-/// least 16 spaces after `go`'s label), drawn as one line. Its labels are
-/// what [`crate::BaseScene::card_buttons`] hit-tests.
+/// least 16 spaces after `go`'s label), drawn as one line, in the session's
+/// language. Its labels are what [`crate::BaseScene::card_buttons`]
+/// hit-tests.
 pub fn button_row(go: &str) -> String {
+    button_row_in(crate::lang::get(), go)
+}
+
+/// S6b: [`button_row`] with `lang`'s Back (`[ Volver ]`). Columns count
+/// characters, so a label with an accent lines up as an ASCII one does.
+pub fn button_row_in(lang: Lang, go: &str) -> String {
     let label = format!("[ {go} ]");
-    let gap = 27usize.saturating_sub(label.len()).max(16);
-    format!("{label}{:gap$}[ Back ]", "")
+    let gap = 27usize.saturating_sub(label.chars().count()).max(16);
+    format!("{label}{:gap$}{}", "", text(lang, Msg::ButtonBack))
 }
