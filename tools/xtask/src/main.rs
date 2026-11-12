@@ -16219,6 +16219,12 @@ fn run_qemu_test_invocation(
         }
         qemu.arg("-D").arg(&trace);
         qemu.arg("-trace").arg("scsi_req_parsed");
+        // The kernel's xHCI bring-up resets the controller (HCRST); the
+        // firmware's own USB-disk probe (SeaBIOS: INQUIRY, READ CAPACITY,
+        // MODE SENSE(10) for geometry, boot-sector reads) comes before it.
+        // The oracle holds only what follows the last reset to the kernel's
+        // allowlist.
+        qemu.arg("-trace").arg("usb_xhci_reset");
     }
 
     if scenario.name == "usb_storage_read" || scenario.name == "usb_storage_off" {
@@ -17999,10 +18005,14 @@ const USB_MSC_WRITE_CLASS_OPCODES: [u32; 3] = [0x2a, 0x35, 0x1a];
 ///   scratch sector unchanged in its last 512 bytes, and zero everywhere
 ///   else;
 /// - the unmarked image is still all zero;
-/// - QEMU's SCSI trace shows only allowed opcodes, and its WRITE(10),
+/// - QEMU's SCSI trace, from the kernel's xHCI reset on (the last
+///   `usb_xhci_reset`; what comes before it is the firmware's own probe,
+///   e.g. SeaBIOS's MODE SENSE(10) geometry query, and is only reported),
+///   shows only the kernel's allowed opcodes, and its WRITE(10),
 ///   SYNCHRONIZE CACHE(10) and MODE SENSE(6) counts equal the marked
 ///   stick's own counts, while the driver says the unmarked stick was sent
-///   none: so the unmarked stick received no write-class command.
+///   none: so the unmarked stick received no write-class command. No reset
+///   in the trace is a failure: the two could not be told apart.
 fn check_usb_msc_write(
     serial: &str,
     marked: &[u8],
@@ -18060,7 +18070,17 @@ fn check_usb_msc_write(
         ));
     }
     let mut seen: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
-    for line in trace.lines().filter(|l| l.contains("scsi_req_parsed")) {
+    let lines: Vec<&str> = trace.lines().collect();
+    let kernel_from = lines
+        .iter()
+        .rposition(|l| l.contains("usb_xhci_reset"))
+        .ok_or(
+            "QEMU's trace has no usb_xhci_reset: firmware and kernel commands can't be told apart",
+        )?;
+    for line in lines[kernel_from..]
+        .iter()
+        .filter(|l| l.contains("scsi_req_parsed"))
+    {
         let op: u32 = line
             .split_once("command ")
             .and_then(|(_, rest)| rest.split_whitespace().next())
@@ -27798,7 +27818,18 @@ mod tests {
         let line = |op: u32| {
             format!("4242@1.0:scsi_req_parsed target 0 lun 0 tag 1 command {op} dir 0 length 0\n")
         };
-        let mut trace = String::new();
+        // The firmware's probe (SeaBIOS: INQUIRY, TEST UNIT READY, READ
+        // CAPACITY, MODE SENSE(10) for geometry, a boot-sector READ, even a
+        // stray WRITE(10) here to prove it is not counted), then the
+        // kernel's xHCI reset, then the kernel's own commands.
+        let reset = "4242@0.9:usb_xhci_reset \n";
+        let mut firmware = String::from(reset);
+        for op in [
+            0x12, 0x00, 0x25, 0x5a, 0x28, 0x12, 0x00, 0x25, 0x5a, 0x28, 0x2a,
+        ] {
+            firmware.push_str(&line(op));
+        }
+        let mut trace = format!("{firmware}{reset}");
         for op in [
             0x12, 0x00, 0x25, 0x28, 0x12, 0x00, 0x25, 0x28, 0x1a, 0x00, 0x35, 0x2a, 0x2a, 0x2a,
             0x35, 0x28,
@@ -27809,6 +27840,12 @@ mod tests {
             check_usb_msc_write(serial, &marked, &unmarked, &trace),
             Ok(())
         );
+        // MODE SENSE(10) after the kernel's reset is the kernel's: refused.
+        let extra = format!("{trace}{}", line(0x5a));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        // No reset at all: the firmware's commands can't be set apart.
+        let no_reset = trace.replace(reset, "");
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &no_reset).is_err());
 
         // A pattern byte wrong, a byte outside the region, the scratch sector
         // changed, the unmarked stick touched.
