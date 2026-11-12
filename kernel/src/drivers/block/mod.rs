@@ -180,6 +180,14 @@ pub trait BlockDevice: Send + Sync {
         None
     }
 
+    /// OT-100 R3 (THINK §4.2): the class of this device's last failed write
+    /// or flush, for the NeoFS drain worker's classifier. `None`: none
+    /// recorded, or a device that doesn't record (only a partition view does).
+    #[cfg(feature = "usb-persistence")]
+    fn last_failure(&self) -> Option<crate::persist_logic::BlockFailure> {
+        None
+    }
+
     fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         self.submit(BlockRequest {
             op: BlockOp::Read,

@@ -88,6 +88,19 @@ impl NeoFs {
         self.report
     }
 
+    /// OT-100 R3 (THINK §4.2): why this mount went read-only, if it did.
+    #[cfg(feature = "usb-persistence")]
+    pub fn lost(&self) -> Option<crate::persist_logic::Lost> {
+        self.state.lost()
+    }
+
+    /// OT-100 R3 (THINK §2.3, §4.2): the "try" switch: drain what is dirty,
+    /// then go read-only for the rest of this boot (`Lost::User`).
+    #[cfg(feature = "usb-persistence")]
+    pub fn switch_read_only(&self) {
+        self.state.switch_read_only();
+    }
+
     pub fn lookup(&self, path: &str) -> Result<Arc<dyn Inode>, VfsError> {
         let normalized = normalize_relative_path(path)?;
         if normalized.is_empty() {

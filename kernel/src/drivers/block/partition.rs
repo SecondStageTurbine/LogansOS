@@ -33,6 +33,10 @@ pub struct PartitionDevice {
     /// 1-based entry number, for the logs.
     index: u32,
     identity: BlockDeviceIdentity,
+    /// OT-100 R3: the last failed write or flush's class
+    /// (`persist_logic::BlockFailure` code; 0 none), for the drain worker.
+    #[cfg(feature = "usb-persistence")]
+    failure: core::sync::atomic::AtomicU8,
 }
 
 impl PartitionDevice {
@@ -52,6 +56,8 @@ impl PartitionDevice {
             lba_count: entry.lba_count,
             index: entry.index,
             identity,
+            #[cfg(feature = "usb-persistence")]
+            failure: core::sync::atomic::AtomicU8::new(0),
         })
     }
 
@@ -78,11 +84,32 @@ impl PartitionDevice {
             lba_count,
             index: entry.index,
             identity,
+            #[cfg(feature = "usb-persistence")]
+            failure: core::sync::atomic::AtomicU8::new(0),
         })
     }
 
     pub fn entry_index(&self) -> u32 {
         self.index
+    }
+
+    /// OT-100 R3: note a failed write (`flush` false) or flush, and pass the
+    /// result on unchanged.
+    #[cfg(feature = "usb-persistence")]
+    fn note(&self, flush: bool, result: BlockResult<()>) -> BlockResult<()> {
+        use crate::persist_logic::BlockFailure;
+        if let Err(error) = result {
+            let failure = match (flush, error) {
+                (_, super::BlockError::WriteRefused) => BlockFailure::WriteRefused,
+                (_, super::BlockError::NoDevice) => BlockFailure::NoDevice,
+                (true, _) => BlockFailure::Flush,
+                (false, super::BlockError::Io) => BlockFailure::Io,
+                (false, _) => BlockFailure::Other,
+            };
+            self.failure
+                .store(failure.code(), core::sync::atomic::Ordering::Release);
+        }
+        result
     }
 
     pub fn first_lba(&self) -> u64 {
@@ -124,9 +151,16 @@ impl BlockDevice for PartitionDevice {
 
     fn submit(&self, request: BlockRequest<'_>) -> BlockResult<()> {
         if request.op == BlockOp::Flush {
+            #[cfg(feature = "usb-persistence")]
+            return self.note(true, self.inner.submit(request));
+            #[cfg(not(feature = "usb-persistence"))]
             return self.inner.submit(request);
         }
         let lba = self.map(request.lba, request.buffers)?;
+        #[cfg(feature = "usb-persistence")]
+        if request.op == BlockOp::Write {
+            return self.note(false, self.inner.submit(BlockRequest { lba, ..request }));
+        }
         self.inner.submit(BlockRequest { lba, ..request })
     }
 
@@ -135,7 +169,17 @@ impl BlockDevice for PartitionDevice {
     }
 
     fn flush(&self) -> BlockResult<()> {
+        #[cfg(feature = "usb-persistence")]
+        return self.note(true, self.inner.flush());
+        #[cfg(not(feature = "usb-persistence"))]
         self.inner.flush()
+    }
+
+    #[cfg(feature = "usb-persistence")]
+    fn last_failure(&self) -> Option<crate::persist_logic::BlockFailure> {
+        crate::persist_logic::BlockFailure::from_code(
+            self.failure.load(core::sync::atomic::Ordering::Acquire),
+        )
     }
 
     #[cfg(feature = "usb-storage-write")]
@@ -155,6 +199,9 @@ impl BlockDevice for PartitionDevice {
 
     fn write_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         let lba = self.map(lba, buffers)?;
+        #[cfg(feature = "usb-persistence")]
+        return self.note(false, self.inner.write_block(lba, buffers));
+        #[cfg(not(feature = "usb-persistence"))]
         self.inner.write_block(lba, buffers)
     }
 }
