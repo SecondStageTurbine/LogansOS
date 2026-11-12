@@ -53,6 +53,8 @@ check fixtures/desktop-dm1/motion_digests.rs python3 $d/scene_oracle.py motion-f
 check fixtures/desktop-intro/intro.rs python3 $d/intro_oracle.py fixture
 check fixtures/desktop-clock/clock.rs python3 $d/clock_oracle.py fixture
 check fixtures/desktop-setup/setup.rs python3 $d/setup_oracle.py fixture
+check fixtures/desktop-setup/setup_lang_es.rs python3 $d/setup_oracle.py fixture es
+check fixtures/desktop-setup/setup_lang_en.rs python3 $d/setup_oracle.py fixture en
 
 # Every fixture under fixtures/desktop-* must be covered above.
 covered=$(grep -c '^check ' "$0")
