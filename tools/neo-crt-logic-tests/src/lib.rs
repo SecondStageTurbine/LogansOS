@@ -19,6 +19,9 @@
 #[path = "../../../userland/neo-crt/src/seqcond.rs"]
 mod seqcond;
 
+#[path = "../../../userland/neo-crt/src/thread_record.rs"]
+mod thread_record;
+
 #[cfg(test)]
 mod tests {
     use super::seqcond::{Cv, SeqCond};
@@ -245,5 +248,75 @@ mod tests {
         let sc = SeqCond::new(Condvar::new());
         assert_eq!(sc.wait(|| Err::<(), i32>(1), None), Err(1));
         assert_eq!(*sc.seq.lock().unwrap(), 0);
+    }
+}
+
+/// OT-61 C3c-2: `thread_record.rs`, the counts the SpiderMonkey smoke's
+/// helper-thread checks read (THINK C3c-2 §4.1).
+#[cfg(test)]
+mod thread_record_tests {
+    use super::thread_record::{ThreadCounts, ThreadRecord};
+    use std::sync::Arc;
+    use std::thread;
+
+    #[test]
+    fn starts_at_zero() {
+        assert_eq!(ThreadRecord::new().counts(), ThreadCounts::default());
+    }
+
+    #[test]
+    fn each_event_moves_its_own_count() {
+        let r = ThreadRecord::new();
+        r.created();
+        r.created();
+        r.exited();
+        r.joined();
+        let c = r.counts();
+        assert_eq!((c.created, c.exited, c.joined), (2, 1, 1));
+        assert_eq!((c.wakes, c.timeouts), (0, 0));
+    }
+
+    /// The discriminator's split: a signalled return is a wake, a deadline
+    /// is a timeout (never a wake: CP-58), and a thread pthread_create
+    /// didn't make isn't counted at all.
+    #[test]
+    fn condvar_returns_split_by_cause_and_owner() {
+        let r = ThreadRecord::new();
+        r.cond_returned(true, false);
+        r.cond_returned(true, true);
+        r.cond_returned(true, true);
+        r.cond_returned(false, false);
+        r.cond_returned(false, true);
+        let c = r.counts();
+        assert_eq!((c.wakes, c.timeouts), (1, 2));
+        assert_eq!((c.created, c.exited, c.joined), (0, 0, 0));
+    }
+
+    /// Counts from several threads at once add up exactly.
+    #[test]
+    fn concurrent_updates_are_exact() {
+        const THREADS: u64 = 8;
+        const EACH: u64 = 10_000;
+        let r = Arc::new(ThreadRecord::new());
+        let hs: Vec<_> = (0..THREADS)
+            .map(|_| {
+                let r = r.clone();
+                thread::spawn(move || {
+                    for i in 0..EACH {
+                        r.created();
+                        r.cond_returned(true, i % 4 == 0);
+                        r.exited();
+                    }
+                })
+            })
+            .collect();
+        for h in hs {
+            h.join().unwrap();
+        }
+        let c = r.counts();
+        assert_eq!(c.created, THREADS * EACH);
+        assert_eq!(c.exited, THREADS * EACH);
+        assert_eq!(c.timeouts, THREADS * EACH / 4);
+        assert_eq!(c.wakes, THREADS * EACH - THREADS * EACH / 4);
     }
 }
