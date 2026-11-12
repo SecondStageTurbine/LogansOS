@@ -174,6 +174,13 @@ pub(super) struct NeoFsBlockCache {
     /// stops without its own (unbounded) `drain_all`.
     #[cfg(feature = "power-clean")]
     shutdown_drained: core::sync::atomic::AtomicBool,
+    /// OT-100 R3 (THINK §4.2): why the volume went read-only
+    /// (`persist_logic::Lost` code; 0: it hasn't). Stored once, by the drain
+    /// worker on a fatal error or by the user's switch, with `Release`; every
+    /// `is_writable()` loads it with `Acquire`, so every mutation entry point
+    /// starts refusing the moment it is set.
+    #[cfg(feature = "usb-persistence")]
+    lost: core::sync::atomic::AtomicU8,
 }
 
 pub(super) struct WriteBackPauseGuard<'a> {
@@ -197,6 +204,8 @@ impl NeoFsBlockCache {
             durable_generation: Arc::new(AtomicU64::new(mounted_generation)),
             #[cfg(feature = "power-clean")]
             shutdown_drained: core::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "usb-persistence")]
+            lost: core::sync::atomic::AtomicU8::new(0),
             inner: IrqSafeMutex::new(CacheInner {
                 blocks: Vec::new(),
                 hits: 0,
@@ -568,8 +577,9 @@ impl NeoFsBlockCache {
         }
     }
 
-    /// OT-90 P3a: the blocks dirty now.
-    #[cfg(feature = "power-clean")]
+    /// OT-90 P3a: the blocks dirty now (also OT-100 R3's "unsaved blocks
+    /// dropped" count).
+    #[cfg(any(feature = "power-clean", feature = "usb-persistence"))]
     pub(super) fn dirty_count(&self) -> u64 {
         self.inner
             .lock()
@@ -750,11 +760,61 @@ pub(super) fn spawn_writeback_worker(cache: Arc<NeoFsBlockCache>) -> KthreadHand
                 };
             }
             if cache.drain_worker_cycle().is_err() {
+                // OT-100 R3: the volume is lost; it goes read-only.
+                #[cfg(feature = "usb-persistence")]
+                cache.lose_to_failure();
                 return KthreadExitState::Failed(2);
             }
             cache.park_worker_if_idle(&stop);
         },
     )
+}
+
+#[cfg(feature = "usb-persistence")]
+impl NeoFsBlockCache {
+    /// Why the volume went read-only, if it did.
+    pub(super) fn lost(&self) -> Option<crate::persist_logic::Lost> {
+        crate::persist_logic::Lost::from_code(self.lost.load(Ordering::Acquire))
+    }
+
+    /// THINK §4.2: the drain hit a fatal error. Classify it from the
+    /// device's last failure and flip the mount read-only: store the reason
+    /// first (`Release`), then report once. No superblock is written: the
+    /// stick keeps its last committed generation, which the next boot mounts.
+    pub(super) fn lose_to_failure(&self) {
+        let failure = self
+            .device
+            .last_failure()
+            .unwrap_or(crate::persist_logic::BlockFailure::Other);
+        self.lose(crate::persist_logic::classify(failure));
+    }
+
+    /// The "try" switch (THINK §2.3, §4.2): drain first, so the flip is
+    /// clean, then go read-only with the user's reason.
+    pub(super) fn lose_by_user(&self) {
+        let _ = self.drain_all();
+        self.lose(crate::persist_logic::Lost::User);
+    }
+
+    fn lose(&self, lost: crate::persist_logic::Lost) {
+        if self
+            .lost
+            .compare_exchange(0, lost.code(), Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        let dropped = self.dirty_count();
+        crate::serial_println!(
+            "persist: volume lost ({}); read-only - {} unsaved blocks dropped",
+            lost.reason(),
+            dropped
+        );
+        crate::serial_println!(
+            "persist: notice: Your changes could not be saved: {}. LogansOS is now read-only until you restart.",
+            lost.notice()
+        );
+    }
 }
 
 pub(super) fn stop_writeback_worker(

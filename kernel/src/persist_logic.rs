@@ -179,8 +179,10 @@ pub fn rw_decision(f: &RwFacts) -> Result<(), RwRefusal> {
 }
 
 /// A block-layer failure, as the NeoFS cache records it (a copy of the
-/// kernel's `BlockError` variants this rule names).
+/// kernel's `BlockError` variants this rule names). The codes are what a
+/// device stores (0 is "none").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum BlockFailure {
     /// The guard or the device refused the write (DATA PROTECT).
     WriteRefused,
@@ -192,6 +194,29 @@ pub enum BlockFailure {
     Flush,
     /// Anything else.
     Other,
+}
+
+impl BlockFailure {
+    pub const fn code(self) -> u8 {
+        match self {
+            BlockFailure::WriteRefused => 1,
+            BlockFailure::NoDevice => 2,
+            BlockFailure::Io => 3,
+            BlockFailure::Flush => 4,
+            BlockFailure::Other => 5,
+        }
+    }
+
+    pub const fn from_code(code: u8) -> Option<BlockFailure> {
+        match code {
+            1 => Some(BlockFailure::WriteRefused),
+            2 => Some(BlockFailure::NoDevice),
+            3 => Some(BlockFailure::Io),
+            4 => Some(BlockFailure::Flush),
+            5 => Some(BlockFailure::Other),
+            _ => None,
+        }
+    }
 }
 
 /// Why a mounted volume went read-only (THINK §4.2). The code is what the
