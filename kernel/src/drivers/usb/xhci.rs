@@ -931,6 +931,13 @@ static RT_BASE: AtomicU64 = AtomicU64::new(0);
 /// Pull the next pending event of `ty`, polling (and draining, in poll mode
 /// or as the storm backstop) under a budget. Process context only.
 fn wait_event(ty: TrbType) -> Option<Trb> {
+    wait_event_until(ty, None)
+}
+
+/// [`wait_event`], also ending at the timer tick `until` when one is given
+/// (OT-100 R2, relay 393 F1: the MSC write path's recovery waits share their
+/// command's absolute deadline). `None` is [`wait_event`] exactly.
+fn wait_event_until(ty: TrbType, until: Option<u64>) -> Option<Trb> {
     #[cfg(feature = "mt7601u")]
     if !charge_operation(ChargeKind::WaitCall) {
         note_operation_no_event_exhaustion();
@@ -956,6 +963,10 @@ fn wait_event(ty: TrbType) -> Option<Trb> {
         if budget == 0 {
             #[cfg(feature = "mt7601u")]
             note_operation_no_event_exhaustion();
+            return None;
+        }
+        if until.is_some_and(|end| crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed) >= end)
+        {
             return None;
         }
         core::hint::spin_loop();
@@ -1021,6 +1032,11 @@ pub fn debug_flood_route(slot: u8, dci_value: u8, count: usize) -> (usize, u64) 
 
 /// Submit one command TRB and wait for its completion event (F4 counters).
 fn submit_command(trb: Trb) -> Option<Trb> {
+    submit_command_until(trb, None)
+}
+
+/// [`submit_command`], its waits also ending at the tick `until`.
+fn submit_command_until(trb: Trb, until: Option<u64>) -> Option<Trb> {
     let cmd_phys;
     {
         let mut guard = CONTROLLER.lock();
@@ -1040,7 +1056,7 @@ fn submit_command(trb: Trb) -> Option<Trb> {
     }
     let mut budget: u32 = 64;
     loop {
-        let event = wait_event(TrbType::CmdCompletionEvent)?;
+        let event = wait_event_until(TrbType::CmdCompletionEvent, until)?;
         if event.parameter == cmd_phys {
             CMDS_COMPLETED.fetch_add(1, Ordering::Relaxed);
             return Some(event);
@@ -1082,21 +1098,28 @@ impl EndpointRecovery {
 /// CB-2: Reset Endpoint Command (xHCI §4.6.8) — Halted → Stopped. Returns the
 /// completion code (1 = success; 19 = Context State Error ⇒ the EP was not
 /// Halted), or `None` if no completion arrived within `submit_command`'s budget.
-fn cmd_reset_endpoint(slot_id: u8, dci: u8) -> Option<u32> {
-    submit_command(ring::reset_endpoint_trb(slot_id, dci)).map(|e| e.completion_code())
+fn cmd_reset_endpoint(slot_id: u8, dci: u8, until: Option<u64>) -> Option<u32> {
+    submit_command_until(ring::reset_endpoint_trb(slot_id, dci), until).map(|e| e.completion_code())
 }
 
 #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 /// CB-2: Stop Endpoint Command (xHCI §4.6.9) — any state → Stopped.
-fn cmd_stop_endpoint(slot_id: u8, dci: u8) -> Option<u32> {
-    submit_command(ring::stop_endpoint_trb(slot_id, dci, false)).map(|e| e.completion_code())
+fn cmd_stop_endpoint(slot_id: u8, dci: u8, until: Option<u64>) -> Option<u32> {
+    submit_command_until(ring::stop_endpoint_trb(slot_id, dci, false), until)
+        .map(|e| e.completion_code())
 }
 
 #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
 /// CB-2: Set TR Dequeue Pointer Command (xHCI §4.6.10) — repoint the transfer
 /// ring's dequeue + Dequeue Cycle State after a Reset/Stop.
-fn cmd_set_tr_dequeue(slot_id: u8, dci: u8, deq_ptr: u64, dcs: bool) -> Option<u32> {
-    submit_command(ring::set_tr_dequeue_trb(slot_id, dci, deq_ptr, dcs))
+fn cmd_set_tr_dequeue(
+    slot_id: u8,
+    dci: u8,
+    deq_ptr: u64,
+    dcs: bool,
+    until: Option<u64>,
+) -> Option<u32> {
+    submit_command_until(ring::set_tr_dequeue_trb(slot_id, dci, deq_ptr, dcs), until)
         .map(|e| e.completion_code())
 }
 
@@ -2009,6 +2032,19 @@ impl ClaimedDevice {
     /// every command wait is bounded by `submit_command`'s budget.
     #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
     pub fn recover_endpoint(&self, pipe: &mut EndpointPipe, enabled: bool) -> EndpointRecovery {
+        self.recover_endpoint_until(pipe, enabled, None)
+    }
+
+    /// [`Self::recover_endpoint`], its command waits also ending at the timer
+    /// tick `until` (OT-100 R2's write path: relay 393 F1). `None` is
+    /// [`Self::recover_endpoint`] exactly.
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
+    pub fn recover_endpoint_until(
+        &self,
+        pipe: &mut EndpointPipe,
+        enabled: bool,
+        until: Option<u64>,
+    ) -> EndpointRecovery {
         let state_before = self.endpoint_state(pipe.dci);
         let reset_or_stop_ok = match ring::recovery_action(enabled, state_before) {
             // Kill-switch disabled: submit nothing — prior behavior, bit-for-bit.
@@ -2019,8 +2055,12 @@ impl ClaimedDevice {
                     set_dequeue_ok: false,
                 };
             }
-            ring::RecoveryAction::Reset => cmd_reset_endpoint(self.slot_id, pipe.dci) == Some(1),
-            ring::RecoveryAction::Stop => cmd_stop_endpoint(self.slot_id, pipe.dci) == Some(1),
+            ring::RecoveryAction::Reset => {
+                cmd_reset_endpoint(self.slot_id, pipe.dci, until) == Some(1)
+            }
+            ring::RecoveryAction::Stop => {
+                cmd_stop_endpoint(self.slot_id, pipe.dci, until) == Some(1)
+            }
             // Already Stopped: no Reset/Stop command (the xHC rejects re-Stopping
             // a Stopped EP as Context State Error — the ch14 silicon bug). The EP
             // is already in the state Set-TR-Dequeue needs.
@@ -2035,6 +2075,7 @@ impl ClaimedDevice {
             pipe.dci,
             pipe.ring_addr.phys(),
             pipe.state.cycle,
+            until,
         ) == Some(1);
         EndpointRecovery {
             state_before,
@@ -2051,10 +2092,21 @@ impl ClaimedDevice {
     /// `ep_num | (dir_in << 7)`.
     #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
     pub fn clear_endpoint_halt(&mut self, dci: u8) -> Result<(), &'static str> {
+        self.clear_endpoint_halt_until(dci, None)
+    }
+
+    /// [`Self::clear_endpoint_halt`], its wait also ending at the timer tick
+    /// `until` (relay 393 F1). `None` is [`Self::clear_endpoint_halt`] exactly.
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
+    pub fn clear_endpoint_halt_until(
+        &mut self,
+        dci: u8,
+        until: Option<u64>,
+    ) -> Result<(), &'static str> {
         let ep_addr = (u16::from(dci) >> 1) | (u16::from(dci & 1) << 7);
         // bmRequestType=0x02 (host→device | standard | endpoint),
         // bRequest=CLEAR_FEATURE(1), wValue=ENDPOINT_HALT(0), wIndex=ep address.
-        self.control_no_data(0x02, 0x01, 0x0000, ep_addr)
+        self.control_no_data_until(0x02, 0x01, 0x0000, ep_addr, until)
     }
 
     /// One control IN transfer on EP0; the payload is copied into `out`
@@ -2098,6 +2150,20 @@ impl ClaimedDevice {
         w_value: u16,
         w_index: u16,
     ) -> Result<(), &'static str> {
+        self.control_no_data_until(bm_request_type, b_request, w_value, w_index, None)
+    }
+
+    /// [`Self::control_no_data`], its wait also ending at the timer tick
+    /// `until` (relay 393 F1: the MSC write path's Bulk-Only reset). `None` is
+    /// [`Self::control_no_data`] exactly.
+    pub fn control_no_data_until(
+        &mut self,
+        bm_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        until: Option<u64>,
+    ) -> Result<(), &'static str> {
         control_no_data(
             self.db,
             self.slot_id,
@@ -2108,6 +2174,7 @@ impl ClaimedDevice {
             b_request,
             w_value,
             w_index,
+            until,
         )
     }
 
@@ -2319,6 +2386,7 @@ fn control_no_data(
     b_request: u8,
     w_value: u16,
     w_index: u16,
+    until: Option<u64>,
 ) -> Result<(), &'static str> {
     let setup_param = (bm_request_type as u64)
         | ((b_request as u64) << 8)
@@ -2352,7 +2420,8 @@ fn control_no_data(
     mmio_write32(db, (slot_id as u64) * 4, 1);
     let mut tolerance: u32 = 8;
     loop {
-        let event = wait_event(TrbType::TransferEvent).ok_or("control transfer: no event (F5)")?;
+        let event = wait_event_until(TrbType::TransferEvent, until)
+            .ok_or("control transfer: no event (F5)")?;
         let code = event.completion_code();
         if event.parameter == status_phys {
             return match code {

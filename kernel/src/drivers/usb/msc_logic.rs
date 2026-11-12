@@ -730,3 +730,537 @@ pub fn command_dir(pipe: &mut impl Pipe, tag: u32, lun: u8, cdb: &[u8], data: Da
         (Dir::None, _) => Outcome::Failed { len: 0 },
     }
 }
+
+// ---------------------------------------------------------------------------
+// OT-100 R2 (relay 393 F1–F3): the write path's time bounds, retry policy,
+// latches and diagnostics, as pure logic over a [`WritePort`], so a host test
+// drives them with a controlled clock. The kernel's port is `msc.rs`'s.
+// ---------------------------------------------------------------------------
+
+/// The timer tick's period in ms (the kernel's 100 Hz `TICKS`).
+pub const MS_PER_TICK: u64 = 10;
+/// One WRITE(10) attempt's bound: its CBW, data and CSW, its REQUEST SENSE
+/// and any reset recovery, all together.
+pub const WRITE_ATTEMPT_MS: u64 = 10_000;
+/// One SYNCHRONIZE CACHE(10) attempt's bound, the same way.
+pub const SYNC_ATTEMPT_MS: u64 = 30_000;
+/// The write probe's MODE SENSE(6) and TEST UNIT READY, each.
+pub const PROBE_ATTEMPT_MS: u64 = 10_000;
+/// NOT READY on a WRITE: retried this many times, after a pause each.
+pub const NOT_READY_TRIES: u32 = 4;
+pub const NOT_READY_PAUSE_MS: u64 = 250;
+/// A WRITE chunk's attempts, at most: the first, one UNIT ATTENTION retry,
+/// the NOT READY retries, one retry after a recovered reset. A passed
+/// deadline ends the chunk at once.
+pub const WRITE_MAX_ATTEMPTS: u32 = 1 + 1 + NOT_READY_TRIES + 1;
+/// `flush`'s SYNCHRONIZE CACHE attempts, at most.
+pub const SYNC_MAX_ATTEMPTS: u32 = 3;
+
+/// A WRITE chunk's worst case in ms: every attempt to its deadline, plus the
+/// NOT READY pauses.
+pub const fn write_chunk_bound_ms() -> u64 {
+    WRITE_MAX_ATTEMPTS as u64 * WRITE_ATTEMPT_MS + NOT_READY_TRIES as u64 * NOT_READY_PAUSE_MS
+}
+
+/// An absolute deadline on the tick clock. One is made per attempt, and every
+/// wait in that attempt (its transfers, its sense, its recovery) stops at the
+/// same tick: a slow stage leaves less time for the next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Deadline {
+    /// The first tick at which the attempt has run out of time.
+    pub end: u64,
+}
+
+impl Deadline {
+    /// `ms` from `now`, rounded up to whole ticks, plus one tick (the current
+    /// tick may be almost over).
+    pub fn after(now: u64, ms: u64) -> Self {
+        Deadline {
+            end: now.saturating_add(ms.div_ceil(MS_PER_TICK) + 1),
+        }
+    }
+
+    pub fn passed(&self, now: u64) -> bool {
+        now >= self.end
+    }
+}
+
+/// One look at a transfer: done with `(completion code, residue)`, still
+/// pending, or the device is gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Poll {
+    Done(u32, u32),
+    Pending,
+    Gone,
+}
+
+/// How a [`wait_by`] ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Waited {
+    Done(u32, u32),
+    /// The deadline passed.
+    TimedOut,
+    /// The device is gone.
+    Gone,
+    /// The poll backstop ran out with the clock not reaching the deadline
+    /// (a tick that does not advance).
+    Backstop,
+}
+
+/// Wait for one transfer until `deadline`: `poll` looks, `idle` pauses
+/// between looks, `now` reads the tick. At most `backstop` looks, for a tick
+/// that does not advance (interrupts off).
+pub fn wait_by(
+    deadline: Deadline,
+    backstop: u64,
+    mut now: impl FnMut() -> u64,
+    mut poll: impl FnMut() -> Poll,
+    mut idle: impl FnMut(),
+) -> Waited {
+    for _ in 0..backstop {
+        match poll() {
+            Poll::Done(code, residue) => return Waited::Done(code, residue),
+            Poll::Gone => return Waited::Gone,
+            Poll::Pending => {}
+        }
+        if deadline.passed(now()) {
+            return Waited::TimedOut;
+        }
+        idle();
+    }
+    Waited::Backstop
+}
+
+/// Which write-path command an event is about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    Write,
+    Sync,
+}
+
+/// What the write path reports (the kernel prints each as one serial line;
+/// the host tests collect them). These are the PR's trap-bank discriminators.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteEvent {
+    /// The device went away during `op`.
+    Gone { op: Op, lba: u32 },
+    /// UNIT ATTENTION; the command is retried once (`INITIAL_READ10`).
+    UnitAttention {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        sense: Sense,
+    },
+    /// NOT READY; retry `attempt` after a pause.
+    NotReady {
+        op: Op,
+        lba: u32,
+        sense: Sense,
+        attempt: u32,
+    },
+    /// DATA PROTECT: write-protect is now latched.
+    DataProtect { op: Op, lba: u32 },
+    /// SYNCHRONIZE CACHE refused with ILLEGAL REQUEST: flushing is now off.
+    SyncUnsupported,
+    /// A failed status that ends the command: the device took `took` bytes;
+    /// the sense, if one came back.
+    Failed {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        took: usize,
+        sense: Option<Sense>,
+    },
+    /// Reset recovery ran (the `n`th in this chunk).
+    Reset {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        n: u32,
+        reason: ResetReason,
+        recovered: bool,
+    },
+    /// The attempt's deadline passed (`MAX_SECTORS_*`): `stage` is where the
+    /// command stood (`None`: in its REQUEST SENSE), after `elapsed` ticks.
+    Deadline {
+        op: Op,
+        lba: u32,
+        blocks: u16,
+        ms: u64,
+        stage: Option<ResetReason>,
+        elapsed: u64,
+    },
+}
+
+/// The device side of the write path.
+pub trait WritePort {
+    /// The tick clock.
+    fn now(&mut self) -> u64;
+    /// The device was unplugged.
+    fn gone(&self) -> bool;
+    /// One write-path command ([`command_dir`]); every wait in it, recovery
+    /// included, stops at `by`.
+    fn command(&mut self, cdb: &[u8], data: Data<'_>, by: Deadline) -> Outcome;
+    /// REQUEST SENSE through the write path, stopping at `by` (the failed
+    /// command's own deadline). `None` if no sense came back.
+    fn sense(&mut self, by: Deadline) -> Option<Sense>;
+    /// Wait about `ms` (NOT READY's back-off).
+    fn pause(&mut self, ms: u64);
+    fn event(&mut self, event: WriteEvent);
+}
+
+/// What the probe and the writes have learned, shared by every path that
+/// reads it (`write_protected()`, `supports_flush()`, the write gate).
+pub struct WriteLatches {
+    /// 0 unknown, 1 not write-protected, 2 write-protected.
+    protect: core::sync::atomic::AtomicU8,
+    sync_ok: core::sync::atomic::AtomicBool,
+}
+
+const PROTECT_UNKNOWN: u8 = 0;
+const PROTECT_NO: u8 = 1;
+const PROTECT_YES: u8 = 2;
+
+impl Default for WriteLatches {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WriteLatches {
+    pub const fn new() -> Self {
+        WriteLatches {
+            protect: core::sync::atomic::AtomicU8::new(PROTECT_UNKNOWN),
+            sync_ok: core::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn write_protected(&self) -> Option<bool> {
+        use core::sync::atomic::Ordering;
+        match self.protect.load(Ordering::Acquire) {
+            PROTECT_NO => Some(false),
+            PROTECT_YES => Some(true),
+            _ => None,
+        }
+    }
+
+    /// MODE SENSE's answer. Never clears a latched write-protect.
+    pub fn note_mode_sense(&self, write_protected: bool) {
+        use core::sync::atomic::Ordering;
+        let new = if write_protected {
+            PROTECT_YES
+        } else {
+            PROTECT_NO
+        };
+        let _ = self.protect.fetch_max(new, Ordering::AcqRel);
+    }
+
+    /// DATA PROTECT from any write-path command: latched for good.
+    pub fn latch_write_protected(&self) {
+        use core::sync::atomic::Ordering;
+        self.protect.store(PROTECT_YES, Ordering::Release);
+    }
+
+    pub fn sync_ok(&self) -> bool {
+        self.sync_ok.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn set_sync_ok(&self, ok: bool) {
+        self.sync_ok
+            .store(ok, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// How a WRITE chunk ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkResult {
+    /// The device took every byte.
+    Written,
+    NoDevice,
+    /// DATA PROTECT (now latched); refuse.
+    WriteProtected,
+    Io,
+}
+
+/// One WRITE(10) chunk of `blocks` blocks at `lba` (THINK §3.4): each attempt
+/// has one deadline for its command, its sense and its recovery; at most
+/// [`WRITE_MAX_ATTEMPTS`] attempts; a passed deadline is final.
+pub fn write_chunk(
+    port: &mut impl WritePort,
+    latches: &WriteLatches,
+    lba: u32,
+    blocks: u16,
+    bytes: &[u8],
+) -> ChunkResult {
+    let op = Op::Write;
+    let mut attentions = 0;
+    let mut not_ready = 0;
+    let mut resets = 0;
+    for _ in 0..WRITE_MAX_ATTEMPTS {
+        if port.gone() {
+            port.event(WriteEvent::Gone { op, lba });
+            return ChunkResult::NoDevice;
+        }
+        let start = port.now();
+        let by = Deadline::after(start, WRITE_ATTEMPT_MS);
+        let deadline = |port: &mut _, stage| {
+            let elapsed = WritePort::now(port).saturating_sub(start);
+            WritePort::event(
+                port,
+                WriteEvent::Deadline {
+                    op,
+                    lba,
+                    blocks,
+                    ms: WRITE_ATTEMPT_MS,
+                    stage,
+                    elapsed,
+                },
+            );
+            ChunkResult::Io
+        };
+        match port.command(&cdb_write_10(lba, blocks), Data::Out(bytes), by) {
+            Outcome::Passed { len } if len == bytes.len() => return ChunkResult::Written,
+            Outcome::Passed { len } | Outcome::Failed { len } => {
+                let sense = port.sense(by);
+                if sense.is_none() && port.gone() {
+                    port.event(WriteEvent::Gone { op, lba });
+                    return ChunkResult::NoDevice;
+                }
+                if sense.is_none() && by.passed(port.now()) {
+                    return deadline(port, None);
+                }
+                match sense.map(write_action) {
+                    Some(WriteAction::Retry) if attentions == 0 => {
+                        attentions += 1;
+                        port.event(WriteEvent::UnitAttention {
+                            op,
+                            lba,
+                            blocks,
+                            sense: sense.unwrap_or(NO_SENSE),
+                        });
+                    }
+                    Some(WriteAction::Wait) if not_ready < NOT_READY_TRIES => {
+                        not_ready += 1;
+                        port.event(WriteEvent::NotReady {
+                            op,
+                            lba,
+                            sense: sense.unwrap_or(NO_SENSE),
+                            attempt: not_ready,
+                        });
+                        port.pause(NOT_READY_PAUSE_MS);
+                    }
+                    Some(WriteAction::WriteProtected) => {
+                        latches.latch_write_protected();
+                        port.event(WriteEvent::DataProtect { op, lba });
+                        return ChunkResult::WriteProtected;
+                    }
+                    _ => {
+                        port.event(WriteEvent::Failed {
+                            op,
+                            lba,
+                            blocks,
+                            took: len,
+                            sense,
+                        });
+                        return ChunkResult::Io;
+                    }
+                }
+            }
+            Outcome::Reset { reason, recovered } => {
+                if port.gone() {
+                    port.event(WriteEvent::Gone { op, lba });
+                    return ChunkResult::NoDevice;
+                }
+                if by.passed(port.now()) {
+                    return deadline(port, Some(reason));
+                }
+                resets += 1;
+                port.event(WriteEvent::Reset {
+                    op,
+                    lba,
+                    blocks,
+                    n: resets,
+                    reason,
+                    recovered,
+                });
+                if reason == ResetReason::NotAllowed || resets > 1 || !recovered {
+                    return ChunkResult::Io;
+                }
+            }
+        }
+    }
+    port.event(WriteEvent::Failed {
+        op,
+        lba,
+        blocks,
+        took: 0,
+        sense: None,
+    });
+    ChunkResult::Io
+}
+
+/// Sense bytes for an event when none came back.
+const NO_SENSE: Sense = Sense {
+    key: 0xff,
+    asc: 0xff,
+    ascq: 0xff,
+};
+
+/// How one SYNCHRONIZE CACHE(10) ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncResult {
+    Synced,
+    /// ILLEGAL REQUEST: the device doesn't do it.
+    Unsupported,
+    /// DATA PROTECT (now latched).
+    WriteProtected,
+    NoDevice,
+    Failed,
+}
+
+/// One SYNCHRONIZE CACHE(10), with one deadline for the command, its sense
+/// and its recovery. DATA PROTECT latches write-protect here as on a WRITE.
+pub fn sync_once(port: &mut impl WritePort, latches: &WriteLatches) -> SyncResult {
+    let op = Op::Sync;
+    if port.gone() {
+        port.event(WriteEvent::Gone { op, lba: 0 });
+        return SyncResult::NoDevice;
+    }
+    let start = port.now();
+    let by = Deadline::after(start, SYNC_ATTEMPT_MS);
+    let deadline = |port: &mut _, stage| {
+        let elapsed = WritePort::now(port).saturating_sub(start);
+        WritePort::event(
+            port,
+            WriteEvent::Deadline {
+                op,
+                lba: 0,
+                blocks: 0,
+                ms: SYNC_ATTEMPT_MS,
+                stage,
+                elapsed,
+            },
+        );
+        SyncResult::Failed
+    };
+    match port.command(&cdb_synchronize_cache_10(), Data::None, by) {
+        Outcome::Passed { .. } => SyncResult::Synced,
+        Outcome::Failed { .. } => {
+            let sense = port.sense(by);
+            if sense.is_none() && port.gone() {
+                port.event(WriteEvent::Gone { op, lba: 0 });
+                return SyncResult::NoDevice;
+            }
+            if sense.is_none() && by.passed(port.now()) {
+                return deadline(port, None);
+            }
+            match sense.map(write_action) {
+                Some(WriteAction::Unsupported) => SyncResult::Unsupported,
+                Some(WriteAction::WriteProtected) => {
+                    latches.latch_write_protected();
+                    port.event(WriteEvent::DataProtect { op, lba: 0 });
+                    SyncResult::WriteProtected
+                }
+                _ => {
+                    port.event(WriteEvent::Failed {
+                        op,
+                        lba: 0,
+                        blocks: 0,
+                        took: 0,
+                        sense,
+                    });
+                    SyncResult::Failed
+                }
+            }
+        }
+        Outcome::Reset { reason, recovered } => {
+            if port.gone() {
+                port.event(WriteEvent::Gone { op, lba: 0 });
+                return SyncResult::NoDevice;
+            }
+            if by.passed(port.now()) {
+                return deadline(port, Some(reason));
+            }
+            port.event(WriteEvent::Reset {
+                op,
+                lba: 0,
+                blocks: 0,
+                n: 1,
+                reason,
+                recovered,
+            });
+            SyncResult::Failed
+        }
+    }
+}
+
+/// How a flush ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlushResult {
+    Flushed,
+    /// Flushing is off (never probed ok, or ILLEGAL REQUEST since).
+    Unsupported,
+    WriteProtected,
+    NoDevice,
+    Io,
+}
+
+/// `flush`: SYNCHRONIZE CACHE only once the probe showed it works, at most
+/// [`SYNC_MAX_ATTEMPTS`] times. ILLEGAL REQUEST latches flushing off; DATA
+/// PROTECT latches write-protect and ends it.
+pub fn flush(port: &mut impl WritePort, latches: &WriteLatches) -> FlushResult {
+    if !latches.sync_ok() {
+        return FlushResult::Unsupported;
+    }
+    for _ in 0..SYNC_MAX_ATTEMPTS {
+        match sync_once(port, latches) {
+            SyncResult::Synced => return FlushResult::Flushed,
+            SyncResult::Unsupported => {
+                latches.set_sync_ok(false);
+                port.event(WriteEvent::SyncUnsupported);
+                return FlushResult::Unsupported;
+            }
+            SyncResult::WriteProtected => return FlushResult::WriteProtected,
+            SyncResult::NoDevice => return FlushResult::NoDevice,
+            SyncResult::Failed => {}
+        }
+    }
+    FlushResult::Io
+}
+
+/// The write probe's answer (THINK §3.5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProbeResult {
+    pub write_protected: Option<bool>,
+    pub sync: SyncResult,
+}
+
+/// The write probe: MODE SENSE(6)'s header for write-protect, TEST UNIT READY
+/// (some devices report UNIT ATTENTION after a refused MODE SENSE), one
+/// SYNCHRONIZE CACHE(10). Each has its own deadline, and so does each sense.
+pub fn write_probe(port: &mut impl WritePort, latches: &WriteLatches) -> ProbeResult {
+    let mut header = [0u8; MODE_SENSE_HEADER_LEN as usize];
+    let by = Deadline::after(port.now(), PROBE_ATTEMPT_MS);
+    match port.command(&cdb_mode_sense_6_header(), Data::In(&mut header), by) {
+        Outcome::Passed { len } => {
+            if let Some(wp) = mode_sense_write_protected(&header[..len]) {
+                latches.note_mode_sense(wp);
+            }
+        }
+        // Clear the device's pending sense; unknown is the answer.
+        Outcome::Failed { .. } => {
+            let _ = port.sense(by);
+        }
+        Outcome::Reset { .. } => {}
+    }
+    let by = Deadline::after(port.now(), PROBE_ATTEMPT_MS);
+    if let Outcome::Failed { .. } = port.command(&cdb_test_unit_ready(), Data::None, by) {
+        let _ = port.sense(by);
+    }
+    let sync = sync_once(port, latches);
+    latches.set_sync_ok(sync == SyncResult::Synced);
+    ProbeResult {
+        write_protected: latches.write_protected(),
+        sync,
+    }
+}

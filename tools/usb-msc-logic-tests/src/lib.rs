@@ -20,6 +20,10 @@ mod msc_logic;
 #[cfg(test)]
 mod write_tests;
 
+// OT-100 R2, relay 393 F1–F3: deadlines, retries, latches, diagnostics.
+#[cfg(test)]
+mod policy_tests;
+
 #[cfg(test)]
 mod tests {
     use super::msc_logic::*;
