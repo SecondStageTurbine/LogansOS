@@ -58,3 +58,207 @@ pub fn c_string(bytes: &[u8]) -> Option<&[u8]> {
     let reach = &bytes[..bytes.len().min(CMDLINE_MAX)];
     reach.iter().position(|&b| b == 0).map(|n| &reach[..n])
 }
+
+/// A GPT disk GUID as GPT stores it.
+pub type DiskGuid = [u8; 16];
+
+/// Which registered device is the boot medium (THINK §4.1 item 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BootDevice {
+    /// Exactly one device carries the boot medium's disk GUID.
+    Identified(usize),
+    /// Not identified: no GUID (or an all-zero one: a medium with no GPT), no
+    /// device carries it, or two or more do (two sticks written from one
+    /// image share it). Nothing on USB is written.
+    NotIdentified { guid_known: bool, matches: usize },
+}
+
+/// Identify the boot device without guessing: `boot` is Limine's disk GUID
+/// for the medium the kernel came from; `devices` is each registered
+/// device's index and the disk GUID of its validated GPT, if it has one.
+pub fn identify(boot: Option<DiskGuid>, devices: &[(usize, Option<DiskGuid>)]) -> BootDevice {
+    let Some(guid) = boot.filter(|g| g.iter().any(|&b| b != 0)) else {
+        return BootDevice::NotIdentified {
+            guid_known: false,
+            matches: 0,
+        };
+    };
+    let mut found = None;
+    let mut matches = 0;
+    for &(index, disk) in devices {
+        if disk == Some(guid) {
+            matches += 1;
+            found = Some(index);
+        }
+    }
+    match (matches, found) {
+        (1, Some(index)) => BootDevice::Identified(index),
+        _ => BootDevice::NotIdentified {
+            guid_known: true,
+            matches,
+        },
+    }
+}
+
+/// What the read-write rule looks at for one LogansOS volume (THINK §4.1
+/// item 2). Gathered by the kernel; judged here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RwFacts {
+    /// The volume is on a `usb-storage` device.
+    pub usb: bool,
+    pub boot: BootDevice,
+    /// The registered index of the device carrying the volume.
+    pub device: usize,
+    pub persist: Persist,
+    /// The guard's arming of that device is exactly one NeoFS claim, equal to
+    /// the partition's span.
+    pub armed_exactly_the_partition: bool,
+    /// The write probe's answers (`None`: no probe came back).
+    pub write_protected: Option<bool>,
+    pub sync_ok: bool,
+}
+
+/// Why a USB volume mounts read-only: the first condition of the rule that
+/// failed, in the order the rule lists them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RwRefusal {
+    /// The boot medium could not be identified.
+    BootNotIdentified,
+    /// The volume is on a USB device that isn't the boot medium.
+    NotTheBootDevice,
+    /// The boot entry did not say `persist=on` (the "try" entry, or none).
+    PersistOff,
+    /// The guard arms something other than exactly this partition.
+    ArmingMismatch,
+    /// The stick reports write-protect.
+    WriteProtected,
+    /// No probe came back, or SYNCHRONIZE CACHE doesn't work.
+    NoDurableFlush,
+}
+
+impl RwRefusal {
+    pub const fn reason(self) -> &'static str {
+        match self {
+            RwRefusal::BootNotIdentified => "boot device not identified",
+            RwRefusal::NotTheBootDevice => "not the boot device",
+            RwRefusal::PersistOff => "persist=off",
+            RwRefusal::ArmingMismatch => "guard arming is not exactly the partition",
+            RwRefusal::WriteProtected => "write-protected",
+            RwRefusal::NoDurableFlush => "no durable flush",
+        }
+    }
+}
+
+/// The read-write rule (THINK §4.1 items 2 and 3). A volume that isn't on a
+/// USB device keeps today's selection (`Ok`): an installed system's own
+/// volume. A USB volume is read-write only when every condition holds.
+pub fn rw_decision(f: &RwFacts) -> Result<(), RwRefusal> {
+    if !f.usb {
+        return Ok(());
+    }
+    match f.boot {
+        BootDevice::NotIdentified { .. } => return Err(RwRefusal::BootNotIdentified),
+        BootDevice::Identified(index) if index != f.device => {
+            return Err(RwRefusal::NotTheBootDevice);
+        }
+        BootDevice::Identified(_) => {}
+    }
+    if f.persist != Persist::On {
+        return Err(RwRefusal::PersistOff);
+    }
+    if !f.armed_exactly_the_partition {
+        return Err(RwRefusal::ArmingMismatch);
+    }
+    if f.write_protected == Some(true) {
+        return Err(RwRefusal::WriteProtected);
+    }
+    if !f.sync_ok {
+        return Err(RwRefusal::NoDurableFlush);
+    }
+    Ok(())
+}
+
+/// A block-layer failure, as the NeoFS cache records it (a copy of the
+/// kernel's `BlockError` variants this rule names).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockFailure {
+    /// The guard or the device refused the write (DATA PROTECT).
+    WriteRefused,
+    /// The device is gone (pulled).
+    NoDevice,
+    /// An I/O error after the driver's own retries and deadline.
+    Io,
+    /// The device's flush failed after its retries.
+    Flush,
+    /// Anything else.
+    Other,
+}
+
+/// Why a mounted volume went read-only (THINK §4.2). The code is what the
+/// mount stores (0 is "not lost").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Lost {
+    WriteProtected = 1,
+    Removed = 2,
+    NotResponding = 3,
+    FlushFailed = 4,
+    /// The user switched to read-only ("Try").
+    User = 5,
+    Other = 6,
+}
+
+impl Lost {
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn from_code(code: u8) -> Option<Lost> {
+        match code {
+            1 => Some(Lost::WriteProtected),
+            2 => Some(Lost::Removed),
+            3 => Some(Lost::NotResponding),
+            4 => Some(Lost::FlushFailed),
+            5 => Some(Lost::User),
+            6 => Some(Lost::Other),
+            _ => None,
+        }
+    }
+
+    /// The reason in the `persist: volume lost (<reason>)` line.
+    pub const fn reason(self) -> &'static str {
+        match self {
+            Lost::WriteProtected => "write-protected",
+            Lost::Removed => "removed",
+            Lost::NotResponding => "not responding",
+            Lost::FlushFailed => "flush failed",
+            Lost::User => "switched to read-only by the user",
+            Lost::Other => "write failed",
+        }
+    }
+
+    /// The desktop notice's cause (THINK §4.2).
+    pub const fn notice(self) -> &'static str {
+        match self {
+            Lost::WriteProtected => "the stick is write-protected",
+            Lost::Removed => "the stick was removed",
+            Lost::NotResponding => "the stick stopped responding",
+            Lost::FlushFailed => "the stick stopped responding",
+            Lost::User => "you chose to try without saving",
+            Lost::Other => "the stick stopped responding",
+        }
+    }
+}
+
+/// The drain worker's classifier (THINK §4.2): every block failure that
+/// reaches NeoFS is fatal in v1 (transient ones, UNIT ATTENTION and NOT
+/// READY, are retried inside the driver and never get here).
+pub const fn classify(failure: BlockFailure) -> Lost {
+    match failure {
+        BlockFailure::WriteRefused => Lost::WriteProtected,
+        BlockFailure::NoDevice => Lost::Removed,
+        BlockFailure::Io => Lost::NotResponding,
+        BlockFailure::Flush => Lost::FlushFailed,
+        BlockFailure::Other => Lost::Other,
+    }
+}

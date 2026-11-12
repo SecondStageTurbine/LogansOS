@@ -739,6 +739,18 @@ pub fn writes_allowed(index: usize) -> Option<bool> {
     Some(device.writes_allowed())
 }
 
+/// OT-100 R3 (THINK §4.1, §5): registered device `index`'s arming, judged
+/// now if no write has judged it yet (reads only, in the caller's thread:
+/// the census and the mount force it at boot, before the drain kthread's
+/// first write; CP-82), as a copy. `None`: no such device.
+#[cfg(feature = "usb-persistence")]
+pub fn arming_report(index: usize) -> Option<write_guard_logic::Arming> {
+    let registry = REGISTRY.lock();
+    let device = registry.guards.get(index)?.clone();
+    drop(registry);
+    Some(device.arming().clone())
+}
+
 /// OT-90 K6: whether device `index` is armed, never judging it (see
 /// `GuardedDevice::armed_now`). A disk never written was never judged, so K6
 /// leaves it alone; nor does a judgement stuck on a dead disk hold K6.
