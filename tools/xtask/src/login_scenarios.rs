@@ -449,7 +449,10 @@ const SWITCH_LOCK: &[SerialScriptStep] = &[
     step(b"LOGIN session started view=home", b"open terminal\n"),
     step(b"DESKTOP apps sak hold ms=", &[HMP_SUPER_TAB, HMP_SUPER_L]),
     step(b"LOCK prompt=password", P1),
-    step(b"DESKTOP apps client resumed client=3", &[PAUSE, HMP_SUPER_TAB]),
+    step(
+        b"DESKTOP apps client resumed client=3",
+        &[PAUSE, HMP_SUPER_TAB],
+    ),
     step(
         b"DESKTOP apps front client=0 via=sak-tab",
         &[PAUSE, HMP_SUPER_L],
