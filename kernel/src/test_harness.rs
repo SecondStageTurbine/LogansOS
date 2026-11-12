@@ -541,6 +541,8 @@ const SCENARIO: &str = "login_lock_idle";
 const SCENARIO: &str = "login_lock_stall";
 #[cfg(feature = "neo-test-lock-park")]
 const SCENARIO: &str = "login_lock_park";
+#[cfg(feature = "neo-test-terminal-lock")]
+const SCENARIO: &str = "login_terminal_lock";
 #[cfg(feature = "neo-test-settings-store")]
 const SCENARIO: &str = "login_settings_store";
 #[cfg(feature = "neo-test-settings-refused")]
@@ -586,6 +588,13 @@ const SCENARIO: &str = "desktop_apps_boot";
 const SCENARIO: &str = "desktop_browser_boot";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]
 const SCENARIO: &str = "desktop_apps_fault_boot";
+/// L1a.3: the pointer session with the terminal window as a second client.
+#[cfg(feature = "neo-test-desktop-terminal-shell-boot")]
+const SCENARIO: &str = "desktop_terminal_shell_boot";
+#[cfg(feature = "neo-test-desktop-terminal-echo-boot")]
+const SCENARIO: &str = "desktop_terminal_echo_boot";
+#[cfg(feature = "neo-test-desktop-terminal-flood-boot")]
+const SCENARIO: &str = "desktop_terminal_flood_boot";
 #[cfg(feature = "neo-test-desktop-apps-hang-boot")]
 const SCENARIO: &str = "desktop_apps_hang_boot";
 #[cfg(feature = "neo-test-desktop-apps-stall-boot")]
@@ -667,6 +676,12 @@ const DESKTOP_PASS: &str =
 const DESKTOP_PASS: &str = "desktop_browser_boot=ok view=home clients=arthur,browser page=oracle_640x400 screen=hand_derived_frame";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
+#[cfg(feature = "neo-test-desktop-terminal-shell-boot")]
+const DESKTOP_PASS: &str = "desktop_terminal_shell_boot=ok view=home clients=arthur,terminal child=neo-shell stdio=pipes_and_term_page keys=front_client_only terminal_end=with_session";
+#[cfg(feature = "neo-test-desktop-terminal-echo-boot")]
+const DESKTOP_PASS: &str = "desktop_terminal_echo_boot=ok view=home clients=arthur,terminal mode=cooked_echo line=at_enter eof=ctrl_d terminal_end=with_session";
+#[cfg(feature = "neo-test-desktop-terminal-flood-boot")]
+const DESKTOP_PASS: &str = "desktop_terminal_flood_boot=ok view=home clients=arthur,terminal flood=10MiB end_process=mid_flood terminal=lives_on";
 #[cfg(feature = "neo-test-desktop-apps-fault-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_fault_boot=ok view=home clients=arthur,probe_app probe_app_exit=7 fault=ends_that_client_only front=back_to_arthur";
 #[cfg(feature = "neo-test-desktop-apps-hang-boot")]

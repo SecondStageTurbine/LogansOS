@@ -66,7 +66,37 @@ pub extern "C" fn _start() -> ! {
     sys_exit(run())
 }
 
+/// L1a.3 (`terminal-child`): this shell's stdio is a terminal's (its spawn
+/// chose a term page). The terminal starts every child cooked with echo
+/// (`docs/THINK-2026-10-31-l1a-terminal-window.md` §3.4, §4): it echoes and
+/// edits the line and delivers it at Enter, so the shell writes no echo of
+/// its own.
+#[cfg(feature = "terminal-child")]
+static ON_TERMINAL: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+#[cfg(feature = "terminal-child")]
+fn echoes() -> bool {
+    !ON_TERMINAL.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// An echo write: skipped on a terminal (`terminal-child`). Off, it is the
+/// write itself, so the shell builds as it did before (L1a.3's kill-switch).
+macro_rules! echo {
+    ($write:expr) => {{
+        #[cfg(feature = "terminal-child")]
+        if echoes() {
+            $write;
+        }
+        #[cfg(not(feature = "terminal-child"))]
+        $write;
+    }};
+}
+
 fn run() -> i32 {
+    #[cfg(feature = "terminal-child")]
+    if sys_stdio_info().is_ok_and(|info| info.term.is_some()) {
+        ON_TERMINAL.store(true, core::sync::atomic::Ordering::Relaxed);
+    }
     write_all(READY);
     #[cfg(feature = "v1-console-surface")]
     run_arthur();
@@ -1123,19 +1153,19 @@ fn read_line(out: &mut [u8]) -> Result<usize, ()> {
         let byte = read_stdin_byte();
         match byte {
             b'\r' | b'\n' => {
-                write_all(NEWLINE);
+                echo!(write_all(NEWLINE));
                 return if overflow { Err(()) } else { Ok(len) };
             }
             0x08 | 0x7f if len > 0 => {
                 len -= 1;
-                write_all(b"\x08 \x08");
+                echo!(write_all(b"\x08 \x08"));
             }
             0x08 | 0x7f => {}
             0x00..=0x1f => {}
             byte if len < out.len() => {
                 out[len] = byte;
                 len += 1;
-                write_byte(byte);
+                echo!(write_byte(byte));
             }
             _ => overflow = true,
         }

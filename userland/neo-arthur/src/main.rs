@@ -1272,6 +1272,11 @@ fn run_desktop_session(
                 let browser = &input[..input_len] == b"open browser";
                 #[cfg(not(feature = "atrium-apps-browser"))]
                 let browser = false;
+                // L1a.3: the Home intent that opens the terminal window.
+                #[cfg(feature = "atrium-terminal")]
+                let terminal = &input[..input_len] == b"open terminal";
+                #[cfg(not(feature = "atrium-terminal"))]
+                let terminal = false;
                 if handled {
                 } else if probe_app {
                     #[cfg(feature = "atrium-apps-probe")]
@@ -1279,6 +1284,9 @@ fn run_desktop_session(
                 } else if browser {
                     #[cfg(feature = "atrium-apps-browser")]
                     open_browser(surface, launch_cap);
+                } else if terminal {
+                    #[cfg(feature = "atrium-terminal")]
+                    open_terminal(surface, launch_cap);
                 } else if action {
                     #[cfg(feature = "desktop-lens")]
                     {
@@ -1329,10 +1337,11 @@ fn run_desktop_session(
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
-                // (Opening the probe app or the browser is not one of the
-                // boot test's answers: the second answer ends the session.)
+                // (Opening the probe app, the browser or the terminal is not
+                // one of the boot test's answers: the second answer ends the
+                // session.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                if !probe_app && !browser {
+                if !probe_app && !browser && !terminal {
                     answers += 1;
                 }
                 #[cfg(all(
@@ -1499,6 +1508,25 @@ fn open_probe_app(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Ha
         Err(_) => {
             stage_b_log_line(b"DESKTOP arthur probe app refused");
             surface.write_text(b"I could not open the probe app.");
+        }
+    }
+}
+
+/// L1a.3: launch the terminal window through the LaunchCap
+/// (`docs/THINK-2026-10-31-l1a-terminal-window.md` §2). The WM brings it to
+/// the front before it answers, so the next keys are the terminal's.
+#[cfg(feature = "atrium-terminal")]
+fn open_terminal(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Handle) {
+    const TOKEN: u64 = 0x5445_524D_4F50_4E54;
+    let module = libneo::atrium_launch::MODULE_TERMINAL;
+    match surface.launch(cap, module, TOKEN, Some(TOKEN)) {
+        Ok(()) => {
+            stage_b_log_line(b"DESKTOP arthur terminal opened");
+            surface.write_text(b"I opened the terminal.");
+        }
+        Err(_) => {
+            stage_b_log_line(b"DESKTOP arthur terminal refused");
+            surface.write_text(b"I could not open the terminal.");
         }
     }
 }

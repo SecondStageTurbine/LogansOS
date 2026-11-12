@@ -1928,6 +1928,8 @@ fn arthur_session_turns(
     let _ = settings::set_wm(scene, settings_core::Key::IdleLockMinutes.id(), 5);
     #[cfg(feature = "arthur-actions-test")]
     permission::note_client(process);
+    #[cfg(feature = "lock-terminal-test")]
+    lock::note_arthur(process);
     // Zenbook ask-freeze: between 'G' and 'M' Arthur loads its vocab and
     // model, so the WM polls for 'M' and keeps the pointer live meanwhile.
     if !recv_control(session, b'G') {
@@ -2075,8 +2077,29 @@ fn arthur_session_turns(
                     return code;
                 }
                 let front_activator = apps.front_activator(activator);
+                #[cfg(not(all(feature = "atrium-terminal", feature = "login")))]
                 if let Err(code) = scene.pointer_tick(front_activator, home_focus, &mut escaped) {
                     return code;
+                }
+                // L1a.3: the lock is served here, not from inside
+                // `pointer_tick` (whose 10 KB frame would sit under the
+                // password check, its repaint and the font parse): with the
+                // client table in this loop, that path overflowed the WM's
+                // 64 KiB stack at a wrong password (`login_terminal_lock`).
+                // Locked, the pointer tick is skipped, as `pointer_tick`
+                // itself returns at once; unlocked, its own call finds
+                // nothing due.
+                #[cfg(all(feature = "atrium-terminal", feature = "login"))]
+                match lock::service(scene) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        if let Err(code) =
+                            scene.pointer_tick(front_activator, home_focus, &mut escaped)
+                        {
+                            return code;
+                        }
+                    }
+                    Err(code) => return code,
                 }
             }
             #[cfg(feature = "atrium-apps")]
@@ -3574,6 +3597,10 @@ mod apps {
         index_of(module).is_some()
     }
 
+    // The browser and the terminal both take slot 2; no image builds both.
+    #[cfg(all(feature = "atrium-apps-browser", feature = "atrium-terminal"))]
+    compile_error!("atrium-apps-browser and atrium-terminal both take client slot 2");
+
     /// The table index a module's client takes (one instance per app).
     fn index_of(module: u32) -> Option<usize> {
         match module {
@@ -3581,6 +3608,9 @@ mod apps {
             // OT-61 L5: the browser.
             #[cfg(feature = "atrium-apps-browser")]
             libneo::atrium_launch::MODULE_BROWSER => Some(2),
+            // L1a.3: the terminal (THINK-2026-10-31-l1a §2).
+            #[cfg(feature = "atrium-terminal")]
+            libneo::atrium_launch::MODULE_TERMINAL => Some(2),
             _ => None,
         }
     }
@@ -3668,12 +3698,25 @@ mod apps {
                 },
                 spawn_browser,
             )),
+            #[cfg(feature = "atrium-terminal")]
+            libneo::atrium_launch::MODULE_TERMINAL => Some((
+                super::ClientIds {
+                    namespace: libneo::atrium_launch::TERMINAL_NAMESPACE,
+                    buffer_provenance: libneo::atrium_launch::TERMINAL_BUFFER_PROVENANCE,
+                },
+                // L1a.3: the same `neo-worker` binary built with
+                // `terminal-app`, spawned with its session channel only, as
+                // the probe app is; it makes its child's pipes and term page
+                // itself.
+                spawn_probe_app,
+            )),
             _ => None,
         }
     }
 
     /// Launch (or, if it is running, bring forward) `module`'s app (the
-    /// probe app, or under `atrium-apps-browser` the browser). Returns the
+    /// probe app, under `atrium-apps-browser` the browser, or under
+    /// `atrium-terminal` (L1a.3) the terminal). Returns the
     /// status for the launching client's reply: a failed spawn or handshake
     /// ends the new client only.
     pub fn open(
@@ -3758,6 +3801,10 @@ mod apps {
         arthur_activator: Handle,
         arthur_pixels: &SharedPixels,
     ) -> Result<(), i32> {
+        #[cfg(all(feature = "atrium-terminal", feature = "login"))]
+        if super::lock::take_resumed() && apps.front != ARTHUR {
+            resume_front(scene, apps, arthur_activator, arthur_pixels)?;
+        }
         let n = apps.others.len();
         apps.start = (apps.start + 1) % n.max(1);
         for k in 0..n {
@@ -4002,6 +4049,44 @@ mod apps {
         Ok(())
     }
 
+    /// L1a.3: an unlock gave the route back to the client in front
+    /// ([`super::lock::take_resumed`]). Its receive failed while locked, so it
+    /// parked for a turn's `K`; this is that turn's discard step, without the
+    /// swap (the unlock made it the route). What its queue held is discarded
+    /// by the client, as on any turn: nothing typed while locked reaches it
+    /// (THINK-2026-10-31-l1a §6). A client that doesn't answer is ended, as a
+    /// failed switch is.
+    #[cfg(all(feature = "atrium-terminal", feature = "login"))]
+    fn resume_front(
+        scene: &mut Scene,
+        apps: &mut Apps,
+        arthur_activator: Handle,
+        arthur_pixels: &SharedPixels,
+    ) -> Result<(), i32> {
+        let index = apps.front;
+        let Some(client) = apps
+            .others
+            .get(index.wrapping_sub(1))
+            .and_then(Option::as_ref)
+        else {
+            return Ok(());
+        };
+        let link = Link::within(DISCARD_NS);
+        if link.send(client.session, b"K") && link.recv_control(client.session, b'D') {
+            log_client(b"resumed", index, 0);
+            return Ok(());
+        }
+        log_client(b"discard-failed", index, 0);
+        end(scene, apps, index, arthur_activator, arthur_pixels)?;
+        fall_back(
+            scene,
+            apps,
+            arthur_activator,
+            arthur_pixels,
+            b"resume-failed",
+        )
+    }
+
     /// [`switch`]'s discard step failed: the client's fault, not the WM's.
     const DISCARD_FAILED: i32 = 144;
 
@@ -4229,6 +4314,9 @@ mod launch {
         // OT-61 L5: and to the browser.
         #[cfg(feature = "atrium-apps-browser")]
         let allowed = allowed | allow(libneo::atrium_launch::MODULE_BROWSER);
+        // L1a.3: and to the terminal (off, its id is never allowed: §7).
+        #[cfg(feature = "atrium-terminal")]
+        let allowed = allowed | allow(libneo::atrium_launch::MODULE_TERMINAL);
         if !broker.mint(surface_cap, allowed) {
             return Err(81);
         }
