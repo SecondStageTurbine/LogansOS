@@ -133,6 +133,10 @@ pub const HALO_ON: usize = 6;
 pub const HALO_PERIOD: usize = 10;
 /// The second Spine chip sits this far below the first.
 pub const CHIP2_GAP: usize = 22;
+/// A2 (`app-chips`): the app chips, below the Spine's others: Terminal, Files
+/// and Settings, in that order.
+#[cfg(feature = "app-chips")]
+pub const APP_CHIPS: usize = 3;
 
 /// DS-1c: the Lens instrument beside Arthur's window.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -186,6 +190,15 @@ pub struct Layout {
     pub chip3_label: Rect,
     #[cfg(feature = "install-chip")]
     pub chip3_glow: Rect,
+    /// A2 (`app-chips`): the app chips, their label boxes and the dot under
+    /// each (its look). A chip with no room above the screen's bottom is
+    /// empty, and so are its label box and dot.
+    #[cfg(feature = "app-chips")]
+    pub app_chip: [Rect; APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    pub app_label: [Rect; APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    pub app_dot: [Rect; APP_CHIPS],
     /// DS-1c: `None` when the output has no room for the Lens beside the
     /// window where it is (DL-1: a bloom first slides the window to
     /// [`Self::bloom_origin`]).
@@ -261,6 +274,25 @@ impl Layout {
         let chip2 = Rect::new(chip.x, chip.bottom() + CHIP2_GAP, CHIP, CHIP);
         #[cfg(feature = "install-chip")]
         let chip3 = Rect::new(chip.x, chip2.bottom() + CHIP2_GAP, CHIP, CHIP);
+        #[cfg(feature = "app-chips")]
+        let (app_chip, app_label, app_dot) = {
+            #[cfg(feature = "install-chip")]
+            let above = chip3;
+            #[cfg(not(feature = "install-chip"))]
+            let above = chip2;
+            let mut chips = [Rect::default(); APP_CHIPS];
+            let mut labels = [Rect::default(); APP_CHIPS];
+            let mut dots = [Rect::default(); APP_CHIPS];
+            for i in 0..APP_CHIPS {
+                let y = above.bottom() + CHIP2_GAP + i * (CHIP + CHIP2_GAP);
+                if y + CHIP + CHIP2_GAP <= screen_h {
+                    chips[i] = Rect::new(chip.x, y, CHIP, CHIP);
+                    labels[i] = chip_label_of(chips[i]);
+                    dots[i] = dot_of(chips[i]);
+                }
+            }
+            (chips, labels, dots)
+        };
         Some(Self {
             screen,
             bar,
@@ -279,7 +311,7 @@ impl Layout {
             field_text,
             field_glow,
             chip_glow: chip.grow(GLOW),
-            held_dot: Rect::new(chip.x + (CHIP - 8) / 2, chip.bottom() + 6, 8, 8),
+            held_dot: dot_of(chip),
             chip2,
             chip2_label: chip_label_of(chip2),
             chip2_glow: chip2.grow(GLOW),
@@ -289,6 +321,12 @@ impl Layout {
             chip3_label: chip_label_of(chip3),
             #[cfg(feature = "install-chip")]
             chip3_glow: chip3.grow(GLOW),
+            #[cfg(feature = "app-chips")]
+            app_chip,
+            #[cfg(feature = "app-chips")]
+            app_label,
+            #[cfg(feature = "app-chips")]
+            app_dot,
             lens: Self::lens(screen_w, screen_h, frame),
             lens_docked: false,
             intro: false,
@@ -658,6 +696,12 @@ fn docked_group(frame_w: usize, frame_h: usize) -> (usize, usize) {
         frame_w + LENS_GAP + lens_frame_w() + MIN_MARGIN,
         frame_h.max(lens_frame_h()),
     )
+}
+
+/// The 8 px dot under a chip: Arthur's "held" dot, and (A2) an app chip's
+/// look.
+const fn dot_of(chip: Rect) -> Rect {
+    Rect::new(chip.x + (CHIP - 8) / 2, chip.bottom() + 6, 8, 8)
 }
 
 /// A Spine chip's label box ("A" / "Arthur", "L" / "Lens", "I" / "Install").

@@ -19,6 +19,10 @@ app-icons = []
 # OT-87 R4.4b: the third Spine chip, Install LogansOS (`BaseScene::set_install`).
 # Off: no chip and no code for it, bit for bit. neo-init's `installer`.
 install-chip = []
+# A2: the app chips (Terminal, Files, Settings) below the Spine's others, each
+# with its look (not running, in front, in the background), and Arthur's
+# background dot. Off: today's Spine, bit for bit. neo-init's `atrium-apps`.
+app-chips = []
 # F11 S5: the keyboard layouts (`keys::decode` selects the table by the
 # session's layout id, `keys::set_layout`). Off: the one US table, the
 # decoder bit for bit. neo-init's `keyboard-layouts`.

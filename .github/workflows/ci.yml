@@ -1040,6 +1040,13 @@ jobs:
         run: cargo test -p neo-atrium --features install-chip
       - name: cargo test -p neo-atrium --features install-chip,app-icons (blocking)
         run: cargo test -p neo-atrium --features install-chip,app-icons
+      # A2: neo-atrium's `app-chips` (neo-init's `atrium-apps`): every digest
+      # above still holds with the feature compiled in (the chips are shown
+      # only when the WM asks), and the three looks' KATs.
+      - name: cargo test -p neo-atrium --features app-chips (blocking)
+        run: cargo test -p neo-atrium --features app-chips
+      - name: cargo test -p neo-atrium --features app-chips,app-icons,install-chip (blocking)
+        run: cargo test -p neo-atrium --features app-chips,app-icons,install-chip
       # F11 S2: the settings record with the setup menu's keys (6, 7).
       - name: cargo test -p settings-core --features setup-keys (blocking)
         run: cargo test -p settings-core --features setup-keys
