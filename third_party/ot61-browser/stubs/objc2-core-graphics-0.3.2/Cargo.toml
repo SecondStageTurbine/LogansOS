@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Zlib OR Apache-2.0 OR MIT
+# LogansOS stub, not the published crate (third_party/ot61-browser/VENDORED.md,
+# "The stubs for other platforms"). It exists only so Cargo can resolve the
+# lockfile: no LogansOS build compiles it (its dependents reach it only under
+# other targets' cfgs, or as dev/fuzz tooling), and if one ever did, the empty
+# crate would fail to compile rather than build wrong.
+[package]
+name = "objc2-core-graphics"
+version = "0.3.2"
+edition = "2021"
+license = "Zlib OR Apache-2.0 OR MIT"
+repository = "https://github.com/madsmtm/objc2"
+description = "LogansOS empty stand-in for objc2-core-graphics 0.3.2 (never compiled for LogansOS)"
+
+[lib]
+name = "objc2_core_graphics"
+path = "src/lib.rs"
+
+[features]
+"CGAffineTransform" = []
+"CGBase" = []
+"CGBitmapContext" = ["bitflags"]
+"CGColor" = []
+"CGColorConversionInfo" = []
+"CGColorSpace" = []
+"CGContext" = []
+"CGConvertColorDataWithFormat" = []
+"CGDataConsumer" = []
+"CGDataProvider" = []
+"CGDirectDisplay" = ["bitflags"]
+"CGDirectDisplayMetal" = []
+"CGDirectPalette" = []
+"CGDisplayConfiguration" = ["bitflags"]
+"CGDisplayFade" = []
+"CGDisplayStream" = []
+"CGEXRToneMappingGamma" = []
+"CGError" = []
+"CGEvent" = []
+"CGEventSource" = []
+"CGEventTypes" = ["bitflags"]
+"CGFont" = []
+"CGFunction" = []
+"CGGeometry" = []
+"CGGradient" = ["bitflags"]
+"CGITUToneMapping" = []
+"CGImage" = ["bitflags"]
+"CGLayer" = []
+"CGPDFArray" = []
+"CGPDFContentStream" = []
+"CGPDFContext" = []
+"CGPDFDictionary" = []
+"CGPDFDocument" = ["bitflags"]
+"CGPDFObject" = []
+"CGPDFOperatorTable" = []
+"CGPDFPage" = []
+"CGPDFScanner" = []
+"CGPDFStream" = []
+"CGPDFString" = []
+"CGPSConverter" = []
+"CGPath" = []
+"CGPattern" = []
+"CGRemoteOperation" = ["bitflags"]
+"CGRenderingBufferProvider" = []
+"CGSession" = []
+"CGShading" = []
+"CGToneMapping" = []
+"CGWindow" = ["bitflags"]
+"CGWindowLevel" = []
+"alloc" = []
+"bitflags" = []
+"block2" = []
+"default" = ["std", "CGAffineTransform", "CGBase", "CGBitmapContext", "CGColor", "CGColorConversionInfo", "CGColorSpace", "CGContext", "CGConvertColorDataWithFormat", "CGDataConsumer", "CGDataProvider", "CGDirectDisplay", "CGDirectDisplayMetal", "CGDirectPalette", "CGDisplayConfiguration", "CGDisplayFade", "CGDisplayStream", "CGEXRToneMappingGamma", "CGError", "CGEvent", "CGEventSource", "CGEventTypes", "CGFont", "CGFunction", "CGGeometry", "CGGradient", "CGITUToneMapping", "CGImage", "CGLayer", "CGPDFArray", "CGPDFContentStream", "CGPDFContext", "CGPDFDictionary", "CGPDFDocument", "CGPDFObject", "CGPDFOperatorTable", "CGPDFPage", "CGPDFScanner", "CGPDFStream", "CGPDFString", "CGPSConverter", "CGPath", "CGPattern", "CGRemoteOperation", "CGRenderingBufferProvider", "CGSession", "CGShading", "CGToneMapping", "CGWindow", "CGWindowLevel", "bitflags", "block2", "dispatch2", "libc", "objc2", "objc2-metal"]
+"dispatch2" = []
+"libc" = []
+"objc2" = []
+"objc2-io-surface" = []
+"objc2-metal" = []
+"std" = ["alloc"]
+"unstable-darwin-objc" = []

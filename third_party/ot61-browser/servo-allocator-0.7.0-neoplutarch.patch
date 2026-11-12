@@ -1,0 +1,67 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-allocator-0.7.0/Cargo.toml patched/servo-allocator-0.7.0/Cargo.toml
+--- vendor/servo-allocator-0.7.0/Cargo.toml
++++ patched/servo-allocator-0.7.0/Cargo.toml
+@@ -71,6 +71,9 @@
+ [target.'cfg(target_env = "ohos")'.dependencies.libc]
+ version = "0.2"
+ 
++[target.'cfg(target_os = "neoplutarch")'.dependencies.neo-std-pal]
++path = "../../../../userland/neo-std-pal"
++
+ [target."cfg(windows)".dependencies.windows-sys]
+ version = "0.61"
+ features = ["Win32_System_Memory"]
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-allocator-0.7.0/lib.rs patched/servo-allocator-0.7.0/lib.rs
+--- vendor/servo-allocator-0.7.0/lib.rs
++++ patched/servo-allocator-0.7.0/lib.rs
+@@ -153,7 +153,7 @@
+     }
+ }
+ 
+-#[cfg(all(not(windows), any(target_env = "ohos", not(feature = "use-jemalloc"))))]
++#[cfg(all(not(windows), not(target_os = "neoplutarch"), any(target_env = "ohos", not(feature = "use-jemalloc"))))]
+ mod platform {
+     pub use std::alloc::System as Allocator;
+     use std::os::raw::c_void;
+@@ -221,4 +221,41 @@
+     pub fn heap_reports() -> Vec<crate::HeapReport> {
+         Vec::new()
+     }
++}
++
++// LogansOS: neo-std-pal's `SyscallHeap` on target_os = "neoplutarch", not
++// std's `System`. `System` maps one region per allocation and never frees, and
++// a map is capped at 16 MiB, so SWGL's 2048x2048 RGBA texture (16 MiB plus
++// neo-crt's header) could not be allocated (OT-61 L3). `SyscallHeap` reuses
++// freed blocks and grows in joined 16 MiB maps. There is no usable-size query
++// here, so Servo's memory reports count 0 for heap blocks.
++#[cfg(target_os = "neoplutarch")]
++mod platform {
++    use std::alloc::{GlobalAlloc, Layout};
++    use std::os::raw::c_void;
++
++    static HEAP: neo_std_pal::SyscallHeap = neo_std_pal::SyscallHeap::new();
++
++    /// Forwards to the process's one `SyscallHeap`.
++    pub struct Allocator;
++
++    // SAFETY: every call forwards unchanged to `SyscallHeap`, which upholds
++    // the `GlobalAlloc` contract.
++    unsafe impl GlobalAlloc for Allocator {
++        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
++            unsafe { HEAP.alloc(layout) }
++        }
++        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
++            unsafe { HEAP.dealloc(ptr, layout) }
++        }
++    }
++
++    /// # Safety
++    /// Any pointer; the size is not known on this target.
++    pub unsafe extern "C" fn usable_size(_ptr: *const c_void) -> usize {
++        0
++    }
++    pub fn heap_reports() -> Vec<crate::HeapReport> {
++        Vec::new()
++    }
+ }

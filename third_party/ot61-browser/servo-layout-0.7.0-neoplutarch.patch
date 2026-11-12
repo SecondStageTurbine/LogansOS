@@ -1,0 +1,298 @@
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/Cargo.toml patched/servo-layout-0.7.0/Cargo.toml
+--- vendor/servo-layout-0.7.0/Cargo.toml
++++ patched/servo-layout-0.7.0/Cargo.toml
+@@ -153,9 +154,6 @@
+ [dependencies.rustc-hash]
+ version = "2.1.2"
+ 
+-[dependencies.script]
+-version = "=0.7.0"
+-package = "servo-script"
+ 
+ [dependencies.script_traits]
+ version = "=0.7.0"
+@@ -259,3 +257,13 @@
+     "cfg(llvm_pgo)",
+     "cfg(ohos_mock)",
+ ]
++
++# LogansOS OT-61 option A: `script` (and through it SpiderMonkey) on every
++# target but ours; on ours, the static-page host DOM (src: layout_dom.rs).
++[target.'cfg(not(target_os = "neoplutarch"))'.dependencies.script]
++version = "=0.7.0"
++package = "servo-script"
++
++[target.'cfg(target_os = "neoplutarch")'.dependencies.neo_layout_dom]
++package = "neo-layout-dom"
++path = "../../../../userland/neo-layout-dom"
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/accessibility/mod.rs patched/servo-layout-0.7.0/accessibility/mod.rs
+--- vendor/servo-layout-0.7.0/accessibility/mod.rs
++++ patched/servo-layout-0.7.0/accessibility/mod.rs
+@@ -20,7 +21,7 @@
+ use num_traits::ToPrimitive;
+ use paint_api::display_list::SpatialTreeNodeInfo;
+ use rustc_hash::{FxHashMap, FxHashSet};
+-use script::layout_dom::{ServoLayoutElement, ServoLayoutNode};
++use crate::layout_dom::{ServoLayoutElement, ServoLayoutNode};
+ use servo_base::Epoch;
+ use servo_base::print_tree::PrintTree;
+ use servo_config::opts::{self, DiagnosticsLogging, DiagnosticsLoggingOption};
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/context.rs patched/servo-layout-0.7.0/context.rs
+--- vendor/servo-layout-0.7.0/context.rs
++++ patched/servo-layout-0.7.0/context.rs
+@@ -18,7 +19,7 @@
+ use net_traits::request::InternalRequest;
+ use parking_lot::{Mutex, RwLock};
+ use pixels::RasterImage;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_base::id::PainterId;
+ use servo_url::{ImmutableOrigin, ServoUrl};
+ use style::context::SharedStyleContext;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/dom.rs patched/servo-layout-0.7.0/dom.rs
+--- vendor/servo-layout-0.7.0/dom.rs
++++ patched/servo-layout-0.7.0/dom.rs
+@@ -10,7 +11,7 @@
+     LayoutNodeType as ScriptLayoutNodeType, NodeRenderingType, SVGElementData,
+ };
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use servo_base::text::{AssumeUnder4GB, RangeAny, Utf32CodeUnits};
+ use smallvec::SmallVec;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/dom_traversal.rs patched/servo-layout-0.7.0/dom_traversal.rs
+--- vendor/servo-layout-0.7.0/dom_traversal.rs
++++ patched/servo-layout-0.7.0/dom_traversal.rs
+@@ -9,7 +10,7 @@
+ use layout_api::{
+     LayoutElement, LayoutElementType, LayoutNode, LayoutNodeType, PseudoElementChain,
+ };
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use style::dom::NodeInfo;
+ use style::properties::ComputedValues;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/flexbox/mod.rs patched/servo-layout-0.7.0/flexbox/mod.rs
+--- vendor/servo-layout-0.7.0/flexbox/mod.rs
++++ patched/servo-layout-0.7.0/flexbox/mod.rs
+@@ -1,10 +1,11 @@
++// SPDX-License-Identifier: MPL-2.0
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ use geom::{FlexAxis, MainStartCrossStart};
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use style::context::SharedStyleContext;
+ use style::logical_geometry::WritingMode;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/flow/inline/inline_box.rs patched/servo-layout-0.7.0/flow/inline/inline_box.rs
+--- vendor/servo-layout-0.7.0/flow/inline/inline_box.rs
++++ patched/servo-layout-0.7.0/flow/inline/inline_box.rs
+@@ -8,7 +9,7 @@
+ use fonts::FontRef;
+ use layout_api::LayoutNode;
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use style::Zero;
+ use style::computed_values::alignment_baseline::T as AlignmentBaseline;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/flow/inline/mod.rs patched/servo-layout-0.7.0/flow/inline/mod.rs
+--- vendor/servo-layout-0.7.0/flow/inline/mod.rs
++++ patched/servo-layout-0.7.0/flow/inline/mod.rs
+@@ -100,7 +101,7 @@
+     TextRunLineItem,
+ };
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use servo_base::text::{Utf8CodeUnits, Utf32CodeUnits};
+ use style::Zero;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/flow/mod.rs patched/servo-layout-0.7.0/flow/mod.rs
+--- vendor/servo-layout-0.7.0/flow/mod.rs
++++ patched/servo-layout-0.7.0/flow/mod.rs
+@@ -10,7 +11,7 @@
+ use layout_api::LayoutNode;
+ use malloc_size_of_derive::MallocSizeOf;
+ use rayon::iter::{IndexedParallelIterator, IntoParallelRefIterator, ParallelIterator};
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use style::Zero;
+ use style::computed_values::clear::T as StyleClear;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/flow/root.rs patched/servo-layout-0.7.0/flow/root.rs
+--- vendor/servo-layout-0.7.0/flow/root.rs
++++ patched/servo-layout-0.7.0/flow/root.rs
+@@ -8,7 +9,7 @@
+ use layout_api::{AxesOverflow, LayoutElement, LayoutNode};
+ use malloc_size_of_derive::MallocSizeOf;
+ use paint_api::display_list::AxesScrollSensitivity;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use style::values::computed::Overflow;
+ use style_traits::CSSPixel;
+ 
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/flow/same_formatting_context_block.rs patched/servo-layout-0.7.0/flow/same_formatting_context_block.rs
+--- vendor/servo-layout-0.7.0/flow/same_formatting_context_block.rs
++++ patched/servo-layout-0.7.0/flow/same_formatting_context_block.rs
+@@ -10,7 +11,7 @@
+ 
+ use app_units::Au;
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use style::Zero;
+ use style::context::SharedStyleContext;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/formatting_contexts.rs patched/servo-layout-0.7.0/formatting_contexts.rs
+--- vendor/servo-layout-0.7.0/formatting_contexts.rs
++++ patched/servo-layout-0.7.0/formatting_contexts.rs
+@@ -6,7 +7,7 @@
+ use atomic_refcell::AtomicRefCell;
+ use layout_api::LayoutNode;
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
++use crate::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
+ use servo_arc::Arc;
+ use style::context::SharedStyleContext;
+ use style::logical_geometry::Direction;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/fragment_tree/base_fragment.rs patched/servo-layout-0.7.0/fragment_tree/base_fragment.rs
+--- vendor/servo-layout-0.7.0/fragment_tree/base_fragment.rs
++++ patched/servo-layout-0.7.0/fragment_tree/base_fragment.rs
+@@ -11,7 +12,7 @@
+ use malloc_size_of_derive::MallocSizeOf;
+ use num_derive::FromPrimitive;
+ use num_traits::FromPrimitive;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use style::dom::OpaqueNode;
+ use style::selector_parser::PseudoElement;
+ use stylo_atoms::atom;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/layout_dom.rs patched/servo-layout-0.7.0/layout_dom.rs
+--- vendor/servo-layout-0.7.0/layout_dom.rs
++++ patched/servo-layout-0.7.0/layout_dom.rs
+@@ -0,0 +1,22 @@
++// SPDX-License-Identifier: MPL-2.0
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! The one place layout names its concrete DOM types (LogansOS OT-61, option A:
++//! `Plans/DECISION-2026-11-02-ot61-first-page-option-a.md`).
++//!
++//! Upstream, layout imports these straight from `script::layout_dom`. Every
++//! such import now goes through here instead, so a target without `script`
++//! can supply its own types implementing `layout_api`'s DOM traits. Only types
++//! move: on every other target these are script's types, unchanged.
++
++#[cfg(not(target_os = "neoplutarch"))]
++pub(crate) use script::layout_dom::{
++    ServoDangerousStyleDocument, ServoDangerousStyleElement, ServoLayoutElement, ServoLayoutNode,
++};
++
++#[cfg(target_os = "neoplutarch")]
++pub(crate) use neo_layout_dom::{
++    ServoDangerousStyleDocument, ServoDangerousStyleElement, ServoLayoutElement, ServoLayoutNode,
++};
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/layout_impl.rs patched/servo-layout-0.7.0/layout_impl.rs
+--- vendor/servo-layout-0.7.0/layout_impl.rs
++++ patched/servo-layout-0.7.0/layout_impl.rs
+@@ -40,7 +41,7 @@
+ };
+ use profile_traits::{path, time_profile};
+ use rustc_hash::{FxHashMap, FxHashSet};
+-use script::layout_dom::{
++use crate::layout_dom::{
+     ServoDangerousStyleDocument, ServoDangerousStyleElement, ServoLayoutElement, ServoLayoutNode,
+ };
+ use script_traits::{DrawAPaintImageResult, PaintWorkletError, Painter, ScriptThreadMessage};
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/layout_root.rs patched/servo-layout-0.7.0/layout_root.rs
+--- vendor/servo-layout-0.7.0/layout_root.rs
++++ patched/servo-layout-0.7.0/layout_root.rs
+@@ -1,8 +1,9 @@
++// SPDX-License-Identifier: MPL-2.0
+ /* This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ 
+ use crate::context::LayoutContext;
+ use crate::dom::{LayoutBox, NodeExt};
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/lib.rs patched/servo-layout-0.7.0/lib.rs
+--- vendor/servo-layout-0.7.0/lib.rs
++++ patched/servo-layout-0.7.0/lib.rs
+@@ -19,6 +20,7 @@
+ mod fragment_tree;
+ pub mod geom;
+ mod layout_box_base;
++mod layout_dom;
+ mod layout_impl;
+ mod taffy;
+ #[macro_use]
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/query.rs patched/servo-layout-0.7.0/query.rs
+--- vendor/servo-layout-0.7.0/query.rs
++++ patched/servo-layout-0.7.0/query.rs
+@@ -19,7 +20,7 @@
+     ScrollContainerQueryFlags, ScrollContainerResponse,
+ };
+ use paint_api::display_list::ScrollTree;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use servo_base::text::Utf32CodeUnits;
+ use servo_geometry::{FastLayoutTransform, au_rect_to_f32_rect, f32_rect_to_au_rect};
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/replaced.rs patched/servo-layout-0.7.0/replaced.rs
+--- vendor/servo-layout-0.7.0/replaced.rs
++++ patched/servo-layout-0.7.0/replaced.rs
+@@ -13,7 +14,7 @@
+ use malloc_size_of_derive::MallocSizeOf;
+ use net_traits::image_cache::{Image, ImageOrMetadataAvailable, VectorImage};
+ use net_traits::request::InternalRequest;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc as ServoArc;
+ use servo_base::id::{BrowsingContextId, PipelineId};
+ use servo_url::ServoUrl;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/table/mod.rs patched/servo-layout-0.7.0/table/mod.rs
+--- vendor/servo-layout-0.7.0/table/mod.rs
++++ patched/servo-layout-0.7.0/table/mod.rs
+@@ -76,7 +77,7 @@
+ pub use construct::TableBuilder;
+ use euclid::{Point2D, Size2D, UnknownUnit, Vector2D};
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
++use crate::layout_dom::{ServoDangerousStyleElement, ServoLayoutNode};
+ use servo_arc::Arc;
+ use style::context::SharedStyleContext;
+ use style::properties::ComputedValues;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/taffy/mod.rs patched/servo-layout-0.7.0/taffy/mod.rs
+--- vendor/servo-layout-0.7.0/taffy/mod.rs
++++ patched/servo-layout-0.7.0/taffy/mod.rs
+@@ -7,7 +8,7 @@
+ 
+ use app_units::Au;
+ use malloc_size_of_derive::MallocSizeOf;
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use servo_arc::Arc;
+ use style::Atom;
+ use style::context::SharedStyleContext;
+diff -ruN -I SPDX-License-Identifier -x .cargo-checksum.json -x .cargo-ok vendor/servo-layout-0.7.0/traversal.rs patched/servo-layout-0.7.0/traversal.rs
+--- vendor/servo-layout-0.7.0/traversal.rs
++++ patched/servo-layout-0.7.0/traversal.rs
+@@ -7,7 +8,7 @@
+ use layout_api::{
+     DangerousStyleElement, DangerousStyleNode, LayoutDamage, LayoutElement, LayoutNode,
+ };
+-use script::layout_dom::ServoLayoutNode;
++use crate::layout_dom::ServoLayoutNode;
+ use style::context::{SharedStyleContext, StyleContext};
+ use style::dom::{NodeInfo, TElement, TNode};
+ use style::selector_parser::RestyleDamage;
