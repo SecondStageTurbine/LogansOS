@@ -30218,7 +30218,7 @@ mod tests {
             table.get("b").unwrap(),
             &vec!["c".to_string(), "y/q".to_string()]
         );
-        assert!(table.get("d").is_none());
+        assert!(!table.contains_key("d"));
         assert!(feature_reaches(&table, &["a"], "c"));
         assert!(!feature_reaches(&table, &["c"], "a"));
         assert!(!feature_reaches(&table, &["a"], "z"));

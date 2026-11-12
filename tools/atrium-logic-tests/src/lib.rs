@@ -131,7 +131,7 @@ mod wait_abi_kats {
         let kernel_src = include_str!("../../../kernel/src/sched/wait_any.rs");
         assert!(kernel_src.contains("pub const ITEMS_MAX: usize = 16;"));
         // The readiness mask is a u64: bit 15 fits.
-        assert!(super::wait_abi::WAIT_ITEMS_MAX <= 64);
+        const _: () = assert!(super::wait_abi::WAIT_ITEMS_MAX <= 64);
     }
 
     /// The byte oracle: `WaitItem { handle: 0x04030201, kind: 2 }` is these
