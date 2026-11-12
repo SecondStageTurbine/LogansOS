@@ -59,20 +59,30 @@ What this rung borrows is **pattern only**:
 | 23 | The process's exit code and the kernel's frame count | 0, and every frame back (as C3c-1) |
 
 Check 21 is the one that tells "the pool started" apart from "the pool did work". A version where helper threads
-start but every task still runs on the main thread passes 20 and 22 and fails 21. **Control for it:** a smoke built
-with `JSGC_PARALLEL_MARKING_ENABLED` and compaction off, and an allocation pattern too small to need background
-sweeping, should show 0 wakes. If it doesn't, the wake count is measuring something else, and check 21 is redesigned
-before it's trusted (that's the falsification test for this discriminator).
+start but every task still runs on the main thread passes 20 and 22 and fails 21.
+
+**Check 26, the control for check 21** (an assertion in the scenario, not a printout). Parallel marking is
+**disabled** (`JSGC_PARALLEL_MARKING_ENABLED` = 0) and compaction is off (`JSGC_COMPACTING_ENABLED` = 0). The smoke
+then makes a hundred small objects, too few to start a GC, so no helper has a task. The scenario requires the
+helper-wake count to stay where it was: **0 new wakes**. Both counts are read once the thread record has stopped
+moving (no change over five reads 10 ms apart), so a helper still starting or settling can't land in the window.
+If check 26 fails, the wake count is measuring something other than tasks, and check 21 is redesigned before it's
+trusted (that's the falsification test for this discriminator). Both settings are restored afterwards. *(Corrected
+on review: the first draft said parallel marking "enabled", which would produce wakes.)*
 
 ### 4.2 The GC compacts
 
-1. Allocate about 8 MiB of objects, several chunks' worth, and keep every 16th (C3c-1's pattern, larger).
-2. Drop the references, then `PrepareForFullGC` + `NonIncrementalGC(cx, GCOptions::Shrink, GCReason::API)`.
-3. **Check 24:** `JSGC_TOTAL_CHUNKS` after the shrinking GC is below its value after a normal GC of the same
-   heap, and `JSGC_UNUSED_CHUNKS` is 0 (Shrink releases empty chunks).
-4. **Check 25:** every survivor still has its index and string. Compaction moves objects and rewrites every pointer
+1. Allocate about 8 MiB of objects and strings and keep every 16th (C3c-1's pattern, larger). Nearly every arena
+   then holds a few survivors, so a normal GC frees few arenas: only compaction can pack them.
+2. Drop the rest, then a normal full GC (`PrepareForFullGC` + `NonIncrementalGC(cx, GCOptions::Normal, ...)`), then
+   a shrinking one (`GCOptions::Shrink`).
+3. **Check 27:** `JSGC_COMPACTING_ENABLED` reads 1 (SpiderMonkey's default). The check fails, not skips, if it's off.
+4. **Check 24:** `JSGC_BYTES` (the heap in use) after the shrinking GC is below its value after the normal GC, and
+   `JSGC_UNUSED_CHUNKS` is 0 (Shrink releases empty chunks). The chunk totals are printed too. *(The first draft
+   compared `JSGC_TOTAL_CHUNKS`. Heap bytes are the direct measure: with survivors in nearly every arena, only a GC
+   that moved them can free arenas, while chunk counts can also fall from empty-chunk expiry alone.)*
+5. **Check 25:** every survivor still has its index and string. Compaction moves objects and rewrites every pointer
    to them, so a wrong pointer update shows up as a wrong value, not a crash later.
-5. `JSGC_COMPACTING_ENABLED` is read and printed; the check fails, not skips, if it's off.
 
 Compaction is also the helper threads' main customer here: relocation and pointer updating run as parallel GC
 tasks, so §4.2 is what gives check 21 something to count.
@@ -129,6 +139,6 @@ said.
 ## 8. What would prove this design wrong
 
 - Check 21's control (§4.1) showing wakes with no work to do: the wake count isn't a task count.
-- A shrinking GC on our target that never releases a chunk (check 24) while survivors are intact: compaction isn't
-  happening and something else (decommit) is giving memory back.
+- A shrinking GC on our target that leaves the heap's bytes where the normal GC left them (check 24), while
+  survivors are intact: compaction isn't happening.
 - `JS_ShutDown` returning with helper threads still counted live (check 22): the join isn't what we think it is.

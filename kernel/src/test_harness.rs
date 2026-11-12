@@ -173,6 +173,8 @@ const SCENARIO: &str = "servo_closure_smoke_avx";
 const SCENARIO: &str = "cxx_runtime_smoke";
 #[cfg(feature = "neo-test-mozjs-smoke")]
 const SCENARIO: &str = "mozjs_smoke";
+#[cfg(feature = "neo-test-mozjs-smoke-single")]
+const SCENARIO: &str = "mozjs_smoke_single";
 #[cfg(feature = "neo-test-swgl-smoke")]
 const SCENARIO: &str = "swgl_smoke";
 #[cfg(feature = "neo-test-layout-smoke")]
@@ -1400,6 +1402,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-stylo-smoke",
     feature = "neo-test-cxx-runtime-smoke",
     feature = "neo-test-mozjs-smoke",
+    feature = "neo-test-mozjs-smoke-single",
     feature = "neo-test-swgl-smoke",
     feature = "neo-test-layout-smoke",
     feature = "neo-test-webrender-smoke",
@@ -3489,13 +3492,25 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         );
     }
 
-    // OT-61 C3c-1: mozjs-smoke runs SpiderMonkey's interpreter on one thread
-    // and checks each script's value against a hand-written one; it exits 0
-    // only if every check passed, and every frame must come back.
-    #[cfg(feature = "neo-test-mozjs-smoke")]
+    // OT-61 C3c-1/C3c-2: mozjs-smoke runs SpiderMonkey's interpreter with its
+    // helper thread pool (C3c-2), mozjs-smoke-single with the pool switched
+    // off (the kill-switch). Each checks every script's value against a
+    // hand-written one and its threads through neo-crt's record; it exits 0
+    // only if every check passed, and every frame must come back, the helper
+    // threads' stacks included.
+    #[cfg(any(
+        feature = "neo-test-mozjs-smoke",
+        feature = "neo-test-mozjs-smoke-single"
+    ))]
     {
         use crate::sched::{self, process};
         const SMOKE_FRAMES: u64 = 256 * 256; // 256 MiB
+        const SINGLE: bool = cfg!(feature = "neo-test-mozjs-smoke-single");
+        let bin = if SINGLE {
+            "mozjs-smoke-single"
+        } else {
+            "mozjs-smoke"
+        };
         let fail_with = |why: &str, a: i64, b: i64| -> ! {
             serial_println!(
                 "NEO_TEST/1 event=FAIL name={} reason=mozjs_{} a={} b={}",
@@ -3512,9 +3527,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         }];
         let root = process::root_mem_account();
         let baseline = root.used();
-        let smoke = process::spawn_user_by_name_budgeted("mozjs-smoke", &handles, SMOKE_FRAMES)
+        let smoke = process::spawn_user_by_name_budgeted(bin, &handles, SMOKE_FRAMES)
             .unwrap_or_else(|_| fail_with("spawn", 0, 0));
-        serial_println!("[ kernel ] proc: mozjs-smoke pid={} (256 MiB)", smoke.0);
+        serial_println!("[ kernel ] proc: {} pid={} (256 MiB)", bin, smoke.0);
         while process::any_user_process() {
             sched::yield_now();
             sched::reap();
@@ -3522,7 +3537,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         let code = process::take_spawned_exit_code(smoke).unwrap_or(255);
         let (used, underflows) = (root.used(), root.underflows());
         serial_println!(
-            "[ kernel ] proc: mozjs-smoke exit {}, root used {} (baseline {})",
+            "[ kernel ] proc: {} exit {}, root used {} (baseline {})",
+            bin,
             code,
             used,
             baseline
@@ -3533,9 +3549,15 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         if used != baseline || underflows != 0 {
             fail_with("frames_not_returned", used as i64, baseline as i64);
         }
-        pass(
-            "mozjs_smoke=ran exit=0 mozjs=0.26.14 spidermonkey=153.6 eval=ok regexp=ok normalize=ok date=utc gc=ok frames_returned=1",
-        );
+        if SINGLE {
+            pass(
+                "mozjs_smoke_single=ran exit=0 mozjs=0.26.14 spidermonkey=153.6 helpers=off eval=ok gc=ok compact=ok frames_returned=1",
+            );
+        } else {
+            pass(
+                "mozjs_smoke=ran exit=0 mozjs=0.26.14 spidermonkey=153.6 helpers=pool,joined eval=ok regexp=ok normalize=ok date=utc gc=ok compact=ok frames_returned=1",
+            );
+        }
     }
 
     // OT-83: a ring-3 exception kills only its process. Spawn the probe for
