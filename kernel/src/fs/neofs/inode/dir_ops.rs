@@ -651,9 +651,8 @@ pub(in crate::fs::neofs) mod probe {
     pub(super) static CONTENDED: AtomicU64 = AtomicU64::new(0);
     /// Interleaved commits still to make, one per optimistic attempt.
     static INTERLEAVE: AtomicU32 = AtomicU32::new(0);
-    /// Device reads of F0 operations still to hold: during each, another
-    /// writer commits twice, as a writer on another CPU would while that
-    /// read's completion is pending.
+    /// Device reads of F0 operations at which another writer commits twice
+    /// (before the read is issued: the lock is free at the read boundary).
     static AT_READ: AtomicU32 = AtomicU32::new(0);
     static AT_READ_DONE: AtomicU64 = AtomicU64::new(0);
     /// The state the at-read writer commits on (set by `InOp::on`).
@@ -738,11 +737,11 @@ pub(in crate::fs::neofs) mod probe {
         }
     }
 
-    /// The held-completion leg: while this read is outstanding, another
-    /// writer takes `entries` and commits. It runs on this CPU, so if the
-    /// operation held `entries` here the writer would spin for ever: the
-    /// scenario's timeout is the witness. It counts only commits that
-    /// completed.
+    /// The read-boundary leg: before this read is issued, another writer
+    /// takes `entries` and commits. It runs on this CPU, so if the operation
+    /// held `entries` here the writer would spin for ever: the scenario's
+    /// timeout is the witness. No completion is held. It counts only
+    /// commits that completed.
     fn commit_at_read() {
         let state = STATE.load(Ordering::SeqCst);
         if state.is_null() || AT_READ.load(Ordering::SeqCst) == 0 {

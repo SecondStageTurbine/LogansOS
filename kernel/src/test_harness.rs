@@ -34188,11 +34188,13 @@ fn run_neofs_dir_ops() -> ! {
         fail_with_hex("reason=neofs_dir_ops_cold_root_contended count", contended);
     }
 
-    // #106 relay 403: a held completion. While one of a mkdir's device
-    // reads is outstanding, another writer takes `entries` and commits
-    // twice (a root mkdir, then its unlink). It runs on this CPU, so a writer that had to
-    // spin would never return: completing is the witness that it neither
-    // spins nor stalls. The mkdir sees the commits, reads again, and lands.
+    // #106 relay 403/405: the lock is released at the read boundary. At one
+    // of a mkdir's device reads (before the read is issued; no completion is
+    // held), another writer takes `entries` and commits twice (a root mkdir,
+    // then its unlink). It runs on this CPU, so it could not return if the
+    // mkdir held `entries` there. The mkdir sees the commits, reads again,
+    // and lands. The property itself (no device read under `entries`) is
+    // the held-read counters in the cold legs above.
     let _ = crate::fs::debug_neofs_commit_at_dir_op_reads(0);
     let _ = crate::fs::debug_neofs_dir_op_reads();
     cold();
@@ -34353,7 +34355,7 @@ fn run_neofs_dir_ops() -> ! {
         fail("reason=neofs_dir_ops_barrier_not_flushed");
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 contended=EAGAIN:interleaved_commits:8+reads:{}+retry_ok commit_reads_under_entries=0 held_completion=writer_commits:2 pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
+        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 contended=EAGAIN:interleaved_commits:8+reads:{}+retry_ok commit_reads_under_entries=0 read_boundary_writer=commits:2 pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
         SCENARIO,
         after_file,
         cold_reads,

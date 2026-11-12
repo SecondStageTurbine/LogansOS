@@ -87,7 +87,7 @@ pub fn debug_dir_op_reads() -> (u64, u64, u64, u64) {
     inode::dir_ops_probe::take()
 }
 
-/// F0's held-completion leg: see `dir_ops::probe::commit_at_reads`;
+/// F0's read-boundary leg: see `dir_ops::probe::commit_at_reads`;
 /// returns the commits made since the last call.
 #[cfg(feature = "neo-test-neofs-dir-ops")]
 pub fn debug_commit_at_dir_op_reads(reads: u32) -> u64 {
