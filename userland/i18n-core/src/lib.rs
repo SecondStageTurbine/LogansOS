@@ -18,10 +18,6 @@
 //! the language is English and every row is what shipped before S6b (the
 //! pinned table, `fixtures/en.txt`, and the crates' row KATs).
 //!
-//! **F1a** adds [`files`], the Files app's rows (`files-core`): its kinds,
-//! sizes, hints, confirmations and every F0 error, in English and Spanish
-//! only, in a catalog of their own so no binary in the image carries them.
-//!
 //! **Command words are not translated.** `help`, `list /`, `timezone
 //! Area/City`, `rtc utc` and `rtc local` are what the parsers read, so they
 //! appear unchanged inside the Spanish rows. The power verbs' trigger words
@@ -113,35 +109,6 @@ macro_rules! catalog {
 
         /// The Spanish table (neutral Latin American Spanish).
         const ES: [&str; MSG_COUNT] = [$($es,)*];
-
-        /// The table for `lang`.
-        const fn table(lang: $crate::Lang) -> &'static [&'static str; MSG_COUNT] {
-            match lang {
-                $crate::Lang::En => &EN,
-                $crate::Lang::Es => &ES,
-            }
-        }
-
-        /// `msg` in `lang`, and whether the English fallback was taken (an
-        /// empty entry). A KAT holds that no entry falls back today.
-        pub const fn lookup(lang: $crate::Lang, msg: Msg) -> (&'static str, bool) {
-            let s = table(lang)[msg as usize];
-            if s.is_empty() {
-                (EN[msg as usize], true)
-            } else {
-                (s, false)
-            }
-        }
-
-        /// `msg` in `lang`, falling back to English.
-        pub const fn text(lang: $crate::Lang, msg: Msg) -> &'static str {
-            lookup(lang, msg).0
-        }
-
-        /// [`fill`]($crate::fill) on `msg` in `lang`.
-        pub fn format(lang: $crate::Lang, msg: Msg, args: &[&str]) -> alloc::string::String {
-            $crate::fill(text(lang, msg), args)
-        }
     };
 }
 
@@ -392,7 +359,30 @@ catalog! {
     /// S6b: Home's readout, after the time while the zone isn't set (S6a
     /// missed it: the literal sat in neo-init's clock module).
     ClockReadoutZoneNotSet = " (zone not set)", " (zona sin definir)";
+}
 
+/// The table for `lang`.
+const fn table(lang: Lang) -> &'static [&'static str; MSG_COUNT] {
+    match lang {
+        Lang::En => &EN,
+        Lang::Es => &ES,
+    }
+}
+
+/// `msg` in `lang`, and whether the English fallback was taken (an empty
+/// entry). A KAT holds that no entry falls back today.
+pub const fn lookup(lang: Lang, msg: Msg) -> (&'static str, bool) {
+    let s = table(lang)[msg as usize];
+    if s.is_empty() {
+        (EN[msg as usize], true)
+    } else {
+        (s, false)
+    }
+}
+
+/// `msg` in `lang`, falling back to English.
+pub const fn text(lang: Lang, msg: Msg) -> &'static str {
+    lookup(lang, msg).0
 }
 
 /// One piece of a template: literal text, or an argument slot.
@@ -470,13 +460,76 @@ pub fn fill(template: &str, args: &[&str]) -> String {
     out
 }
 
-/// F1a: the Files app's rows (`files-core`), a catalog of its own so the
+/// [`fill`] on `msg` in `lang`.
+pub fn format(lang: Lang, msg: Msg, args: &[&str]) -> String {
+    fill(text(lang, msg), args)
+}
+
+/// F1a: the macro for [`files`], a catalog with its own tables and lookups.
+/// It sits here, after the main catalog, so the main catalog's source (and
+/// the image's binaries built from it) is unchanged.
+macro_rules! files_catalog {
+    ($($(#[$doc:meta])* $id:ident = $en:literal, $es:literal;)*) => {
+        /// One string Files shows. The variant's position is its index into
+        /// each table.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum Msg {
+            $($(#[$doc])* $id,)*
+        }
+
+        impl Msg {
+            /// Every id, in table order.
+            pub const ALL: &'static [Msg] = &[$(Msg::$id,)*];
+        }
+
+        /// How many ids there are.
+        pub const MSG_COUNT: usize = Msg::ALL.len();
+
+        /// The English table.
+        const EN: [&str; MSG_COUNT] = [$($en,)*];
+
+        /// The Spanish table (neutral Latin American Spanish).
+        const ES: [&str; MSG_COUNT] = [$($es,)*];
+
+        /// The table for `lang`.
+        const fn table(lang: $crate::Lang) -> &'static [&'static str; MSG_COUNT] {
+            match lang {
+                $crate::Lang::En => &EN,
+                $crate::Lang::Es => &ES,
+            }
+        }
+
+        /// `msg` in `lang`, and whether the English fallback was taken (an
+        /// empty entry). A KAT holds that no entry falls back.
+        pub const fn lookup(lang: $crate::Lang, msg: Msg) -> (&'static str, bool) {
+            let s = table(lang)[msg as usize];
+            if s.is_empty() {
+                (EN[msg as usize], true)
+            } else {
+                (s, false)
+            }
+        }
+
+        /// `msg` in `lang`, falling back to English.
+        pub const fn text(lang: $crate::Lang, msg: Msg) -> &'static str {
+            lookup(lang, msg).0
+        }
+
+        /// [`fill`]($crate::fill) on `msg` in `lang`.
+        pub fn format(lang: $crate::Lang, msg: Msg, args: &[&str]) -> alloc::string::String {
+            $crate::fill(text(lang, msg), args)
+        }
+    };
+}
+
+/// F1a: the Files app's rows (`files-core`), in English and Spanish only: its
+/// kinds, sizes, hints, confirmations and every F0 error. A catalog of its own so the
 /// image's binaries, which link the main catalog, don't carry them: only
 /// `files-core` (linked into no image until F1b) references this table. The
 /// same rules and KATs hold for it: both tables complete, English pinned in
 /// `fixtures/en.txt`, every row in the face and inside the card.
 pub mod files {
-    catalog! {
+    files_catalog! {
         FilesTitle = "Files", "Archivos";
         /// The kind column.
         FilesKindFolder = "Folder", "Carpeta";
