@@ -4502,7 +4502,8 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // overlay; every page, the intro card and the help card in Spanish,
         // against the oracle's renders; key 6 holds Spanish.
         name: "setup_menu_lang",
-        feature: "neo-test-desktop-intro-boot",
+        // Its kernel holds Home's hint, read back at the end, to Spanish.
+        feature: "neo-test-setup-lang-boot",
         user_feature: Some("i18n-catalog-boot-test"),
         ignored: false,
         limine_kaslr: None,

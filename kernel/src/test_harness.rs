@@ -43171,7 +43171,17 @@ fn desktop_glass_asserts() {
     // be, `.` must not be.
     #[cfg(feature = "neo-test-desktop-intro-boot")]
     {
-        for &((bx, by, bw, bh), thr, pattern) in intro::HINT_PATTERNS.iter() {
+        // F11 S6b: with Español chosen, the hint is Spanish.
+        #[cfg(feature = "neo-test-setup-lang-boot")]
+        #[allow(dead_code)]
+        mod hint_es {
+            include!("../../fixtures/desktop-setup/setup_lang_es.rs");
+        }
+        #[cfg(feature = "neo-test-setup-lang-boot")]
+        let hint_patterns = &hint_es::HINT_PATTERNS[..];
+        #[cfg(not(feature = "neo-test-setup-lang-boot"))]
+        let hint_patterns = &intro::HINT_PATTERNS[..];
+        for &((bx, by, bw, bh), thr, pattern) in hint_patterns.iter() {
             for (c, want) in pattern.bytes().enumerate().take(bw) {
                 let inked = (by..by + bh).any(|y| {
                     let px = crate::drivers::fb::read_pixel(bx + c, y).unwrap_or(0);

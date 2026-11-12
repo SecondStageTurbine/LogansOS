@@ -152,6 +152,10 @@ LANG_ES = {
         "Empieza a escribir para preguntarme algo, o presiona Esc para cerrar esta tarjeta.",
     ],
 }
+# Home's hint once the card closes, in Spanish: the intro kernel reads it
+# back at the end of `setup_menu_lang` (its `neo-test-setup-lang-boot`).
+HOME_HINT_ES = "Escribe help, o haz clic aquí, para ver lo que puedes hacer tú."
+
 # S6b's control (`setup_menu_lang_en`): English kept. Only the pages whose
 # numbering counts the Language page are new; the rest are today's.
 LANG_EN = {
@@ -217,6 +221,21 @@ def fixture_lang(lang):
     print("/// A text row: its band (x, y, w, h), green threshold, column pattern.")
     print("pub type Row = ((usize, usize, usize, usize), u8, &'static str);")
     emit(face, L, W, H, list(pages.items()))
+    if lang == "es":
+        # Home's hint, centred in its box under the field (intro_oracle's
+        # hint spec, with the Spanish words).
+        box = so.card_text(L, 1)
+        w = lo.measure(face, io.HINT_PX, HOME_HINT_ES)
+        x0 = box[0] + (box[2] - w) / 2.0
+        card = so.card_rect(L, 1)
+        spec = (HOME_HINT_ES, io.HINT_PX, x0, card[1] + 30, lo.SECONDARY, box)
+        rgb, _ = so.render(W, H, "glass", True, "home", card_rows=0)
+        band, thr, pat = io.pattern(face, rgb, spec)
+        print('pub const HINT: &str = "%s";' % io.esc(HOME_HINT_ES))
+        print("/// Home's hint row (the kernel's end check): band, threshold, pattern.")
+        print("pub const HINT_PATTERNS: [Row; 1] = [")
+        print("    ((%d, %d, %d, %d), %d, \"%s\")," % (band + (thr, pat)))
+        print("];")
 
 
 def fixture():
