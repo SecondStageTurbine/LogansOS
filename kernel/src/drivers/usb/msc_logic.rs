@@ -756,10 +756,28 @@ pub const WRITE_MAX_ATTEMPTS: u32 = 1 + 1 + NOT_READY_TRIES + 1;
 /// `flush`'s SYNCHRONIZE CACHE attempts, at most.
 pub const SYNC_MAX_ATTEMPTS: u32 = 3;
 
-/// A WRITE chunk's worst case in ms: every attempt to its deadline, plus the
-/// NOT READY pauses.
+/// An attempt of `ms`, in ticks: [`Deadline::after`]'s whole ticks plus its
+/// one extra tick.
+pub const fn attempt_ticks(ms: u64) -> u64 {
+    ms.div_ceil(MS_PER_TICK) + 1
+}
+
+/// A WRITE chunk's worst case in ticks: every attempt to its deadline (an
+/// expired deadline beats any completion, so no attempt runs past it), plus
+/// the NOT READY pauses.
+pub const fn write_chunk_bound_ticks() -> u64 {
+    WRITE_MAX_ATTEMPTS as u64 * attempt_ticks(WRITE_ATTEMPT_MS)
+        + NOT_READY_TRIES as u64 * NOT_READY_PAUSE_MS.div_ceil(MS_PER_TICK)
+}
+
+/// [`write_chunk_bound_ticks`] in ms: 71,070.
 pub const fn write_chunk_bound_ms() -> u64 {
-    WRITE_MAX_ATTEMPTS as u64 * WRITE_ATTEMPT_MS + NOT_READY_TRIES as u64 * NOT_READY_PAUSE_MS
+    write_chunk_bound_ticks() * MS_PER_TICK
+}
+
+/// A flush's worst case in ms: every SYNC attempt to its deadline, 90,030.
+pub const fn flush_bound_ms() -> u64 {
+    SYNC_MAX_ATTEMPTS as u64 * attempt_ticks(SYNC_ATTEMPT_MS) * MS_PER_TICK
 }
 
 /// An absolute deadline on the tick clock. One is made per attempt, and every
@@ -776,7 +794,7 @@ impl Deadline {
     /// tick may be almost over).
     pub fn after(now: u64, ms: u64) -> Self {
         Deadline {
-            end: now.saturating_add(ms.div_ceil(MS_PER_TICK) + 1),
+            end: now.saturating_add(attempt_ticks(ms)),
         }
     }
 
@@ -810,6 +828,11 @@ pub enum Waited {
 /// Wait for one transfer until `deadline`: `poll` looks, `idle` pauses
 /// between looks, `now` reads the tick. At most `backstop` looks, for a tick
 /// that does not advance (interrupts off).
+///
+/// An expired deadline beats a completion (relay 394 F1a): the tick is read
+/// before each look and again after a look that found one, so a completion
+/// that is ready only on or after the deadline's tick, or that a thread
+/// resumed after the deadline finds waiting, is `TimedOut`, never `Done`.
 pub fn wait_by(
     deadline: Deadline,
     backstop: u64,
@@ -818,17 +841,64 @@ pub fn wait_by(
     mut idle: impl FnMut(),
 ) -> Waited {
     for _ in 0..backstop {
-        match poll() {
-            Poll::Done(code, residue) => return Waited::Done(code, residue),
-            Poll::Gone => return Waited::Gone,
-            Poll::Pending => {}
-        }
         if deadline.passed(now()) {
             return Waited::TimedOut;
+        }
+        match poll() {
+            Poll::Done(code, residue) => {
+                if deadline.passed(now()) {
+                    return Waited::TimedOut;
+                }
+                return Waited::Done(code, residue);
+            }
+            Poll::Gone => return Waited::Gone,
+            Poll::Pending => {}
         }
         idle();
     }
     Waited::Backstop
+}
+
+/// The steps of clearing a halted bulk endpoint (BOT §6.7: the host's
+/// endpoint recovery, then the device's CLEAR_FEATURE(ENDPOINT_HALT)), each
+/// stopping its own waits at `until`, the attempt's deadline tick, if any.
+pub trait HaltClear {
+    fn now(&mut self) -> u64;
+    /// The host side's first command: Reset Endpoint or Stop Endpoint (or
+    /// nothing, if the endpoint is already stopped). True if it completed.
+    fn stop_endpoint(&mut self, until: Option<u64>) -> bool;
+    /// The host side's second: restart the ring and Set TR Dequeue Pointer.
+    fn set_dequeue(&mut self, until: Option<u64>) -> bool;
+    /// The device side: CLEAR_FEATURE(ENDPOINT_HALT) on EP0.
+    fn clear_feature(&mut self, until: Option<u64>) -> bool;
+}
+
+/// Clear a halted endpoint: true if Set TR Dequeue and CLEAR_FEATURE both
+/// worked (today's result; Reset/Stop's own result is not part of it). With a
+/// deadline, every step starts only while it hasn't passed (relay 394 F1b):
+/// a step that runs out the clock is the last one. `None` runs all three, as
+/// today.
+pub fn clear_halt_by(ops: &mut impl HaltClear, deadline: Option<Deadline>) -> bool {
+    fn live(ops: &mut impl HaltClear, deadline: Option<Deadline>) -> bool {
+        match deadline {
+            Some(d) => !d.passed(ops.now()),
+            None => true,
+        }
+    }
+    let until = deadline.map(|d| d.end);
+    if !live(ops, deadline) {
+        return false;
+    }
+    let _ = ops.stop_endpoint(until);
+    if !live(ops, deadline) {
+        return false;
+    }
+    let dequeued = ops.set_dequeue(until);
+    if !live(ops, deadline) {
+        return false;
+    }
+    let cleared = ops.clear_feature(until);
+    dequeued && cleared
 }
 
 /// Which write-path command an event is about.
@@ -1026,10 +1096,21 @@ pub fn write_chunk(
                     port.event(WriteEvent::Gone { op, lba });
                     return ChunkResult::NoDevice;
                 }
-                if sense.is_none() && by.passed(port.now()) {
+                let action = sense.map(write_action);
+                // DATA PROTECT is a refusal, never an advance: it latches
+                // even if the deadline passed while its sense came back.
+                if action == Some(WriteAction::WriteProtected) {
+                    latches.latch_write_protected();
+                    port.event(WriteEvent::DataProtect { op, lba });
+                    return ChunkResult::WriteProtected;
+                }
+                // A passed deadline beats whatever the sense says: a late
+                // UNIT ATTENTION or NOT READY authorizes no retry (relay 394
+                // F1a).
+                if by.passed(port.now()) {
                     return deadline(port, None);
                 }
-                match sense.map(write_action) {
+                match action {
                     Some(WriteAction::Retry) if attentions == 0 => {
                         attentions += 1;
                         port.event(WriteEvent::UnitAttention {
@@ -1048,11 +1129,6 @@ pub fn write_chunk(
                             attempt: not_ready,
                         });
                         port.pause(NOT_READY_PAUSE_MS);
-                    }
-                    Some(WriteAction::WriteProtected) => {
-                        latches.latch_write_protected();
-                        port.event(WriteEvent::DataProtect { op, lba });
-                        return ChunkResult::WriteProtected;
                     }
                     _ => {
                         port.event(WriteEvent::Failed {
@@ -1151,16 +1227,20 @@ pub fn sync_once(port: &mut impl WritePort, latches: &WriteLatches) -> SyncResul
                 port.event(WriteEvent::Gone { op, lba: 0 });
                 return SyncResult::NoDevice;
             }
-            if sense.is_none() && by.passed(port.now()) {
+            let action = sense.map(write_action);
+            // DATA PROTECT latches even if the deadline passed meanwhile; it
+            // is a refusal, not an advance.
+            if action == Some(WriteAction::WriteProtected) {
+                latches.latch_write_protected();
+                port.event(WriteEvent::DataProtect { op, lba: 0 });
+                return SyncResult::WriteProtected;
+            }
+            // A passed deadline beats a late sense (relay 394 F1a).
+            if by.passed(port.now()) {
                 return deadline(port, None);
             }
-            match sense.map(write_action) {
+            match action {
                 Some(WriteAction::Unsupported) => SyncResult::Unsupported,
-                Some(WriteAction::WriteProtected) => {
-                    latches.latch_write_protected();
-                    port.event(WriteEvent::DataProtect { op, lba: 0 });
-                    SyncResult::WriteProtected
-                }
                 _ => {
                     port.event(WriteEvent::Failed {
                         op,

@@ -104,6 +104,55 @@ fn a_pulled_device_ends_the_wait_at_once() {
     assert_eq!(out, Waited::Gone);
 }
 
+/// Relay 394 F1a: a completion that becomes ready on the deadline's own tick
+/// loses to the deadline; one tick earlier it wins.
+#[test]
+fn a_completion_ready_on_the_expired_tick_is_a_timeout() {
+    let by = Deadline::after(0, WRITE_ATTEMPT_MS);
+    let mut clock = 0;
+    assert_eq!(wait_on(&mut clock, by, by.end), Waited::TimedOut);
+    let mut clock = 0;
+    assert_eq!(wait_on(&mut clock, by, by.end - 1), Waited::Done(1, 0));
+}
+
+/// A thread resumed after the deadline finds a completion waiting: still a
+/// timeout, and it doesn't even look.
+#[test]
+fn a_waiting_completion_after_the_deadline_is_a_timeout() {
+    let mut looked = false;
+    let out = wait_by(
+        Deadline::after(0, WRITE_ATTEMPT_MS),
+        10,
+        || 5000,
+        || {
+            looked = true;
+            Poll::Done(1, 0)
+        },
+        || {},
+    );
+    assert_eq!(out, Waited::TimedOut);
+    assert!(!looked);
+}
+
+/// The tick moves past the deadline during the look that finds the
+/// completion: the deadline wins.
+#[test]
+fn a_completion_found_as_the_deadline_passes_is_a_timeout() {
+    let by = Deadline::after(0, WRITE_ATTEMPT_MS);
+    let clock = std::cell::Cell::new(by.end - 1);
+    let out = wait_by(
+        by,
+        10,
+        || clock.get(),
+        || {
+            clock.set(by.end);
+            Poll::Done(1, 0)
+        },
+        || {},
+    );
+    assert_eq!(out, Waited::TimedOut);
+}
+
 // ---------------------------------------------------------------------------
 // The policy over a mock port.
 // ---------------------------------------------------------------------------
@@ -158,6 +207,9 @@ struct Mock {
     sensed: Vec<Deadline>,
     pauses: Vec<u64>,
     events: Vec<WriteEvent>,
+    /// Deliver a sense even when it lands on or after the deadline (relay 394
+    /// F1a's "late successful sense"); otherwise a sense is cut at `by`.
+    late_senses: bool,
 }
 
 impl Mock {
@@ -204,7 +256,7 @@ impl WritePort for Mock {
     fn sense(&mut self, by: Deadline) -> Option<Sense> {
         self.sensed.push(by);
         let (t, sense) = self.senses.pop_front().expect("an unscripted sense");
-        if self.now + t >= by.end {
+        if self.now + t >= by.end && !self.late_senses {
             self.now = by.end;
             return None;
         }
@@ -350,34 +402,114 @@ fn not_ready_is_retried_a_bounded_number_of_times() {
     ));
 }
 
-/// The worst sequence the policy allows: a UNIT ATTENTION, every NOT READY
-/// retry, one recovered reset, then another reset. Exactly
-/// WRITE_MAX_ATTEMPTS WRITEs, within `write_chunk_bound_ms`.
+/// The bounds count `Deadline::after`'s extra tick (relay 394 F1a): an
+/// attempt is 1001 ticks, a chunk 7 of them plus 4 pauses, a flush 3 SYNC
+/// attempts of 3001 ticks.
+#[test]
+fn the_bounds_count_the_extra_tick() {
+    assert_eq!(attempt_ticks(WRITE_ATTEMPT_MS), 1001);
+    assert_eq!(
+        Deadline::after(0, WRITE_ATTEMPT_MS).end,
+        attempt_ticks(WRITE_ATTEMPT_MS)
+    );
+    assert_eq!(write_chunk_bound_ticks(), 7 * 1001 + 4 * 25);
+    assert_eq!(write_chunk_bound_ms(), 71_070);
+    assert_eq!(flush_bound_ms(), 90_030);
+}
+
+/// The worst sequence the policy allows, each step finishing on the last
+/// tick before its deadline: a UNIT ATTENTION, every NOT READY retry, one
+/// recovered reset, then a seventh attempt that runs to its deadline.
+/// Exactly WRITE_MAX_ATTEMPTS WRITEs, within `write_chunk_bound_ticks`.
 #[test]
 fn the_chunk_is_bounded_in_attempts_and_time() {
-    let attempt = ticks(WRITE_ATTEMPT_MS) - 1;
-    let mut steps = vec![failed(attempt / 2)];
-    let mut senses = vec![sense_reply(attempt / 2 - 1, 0x6, 0x29, 0)];
+    let last = attempt_ticks(WRITE_ATTEMPT_MS) - 1;
+    let mut steps = vec![failed(last / 2)];
+    let mut senses = vec![sense_reply(last - last / 2, 0x6, 0x29, 0)];
     for _ in 0..NOT_READY_TRIES {
-        steps.push(failed(attempt / 2));
-        senses.push(sense_reply(attempt / 2 - 1, 0x2, 0x04, 0x01));
+        steps.push(failed(last / 2));
+        senses.push(sense_reply(last - last / 2, 0x2, 0x04, 0x01));
     }
-    let reset = |t| {
-        step(
-            t,
-            Outcome::Reset {
-                reason: ResetReason::Csw,
-                recovered: true,
-            },
-        )
-    };
-    steps.push(reset(attempt - 1));
-    steps.push(reset(attempt - 1));
+    steps.push(step(
+        last,
+        Outcome::Reset {
+            reason: ResetReason::Csw,
+            recovered: true,
+        },
+    ));
+    steps.push(step(10 * last, Outcome::Passed { len: BYTES.len() }));
     let mut port = Mock::new(steps, senses);
     let latches = WriteLatches::new();
     assert_eq!(chunk(&mut port, &latches), ChunkResult::Io);
     assert_eq!(port.sent.len(), WRITE_MAX_ATTEMPTS as usize);
-    assert!(port.now * MS_PER_TICK <= write_chunk_bound_ms());
+    assert!(matches!(
+        port.events.last(),
+        Some(WriteEvent::Deadline {
+            stage: Some(ResetReason::Data),
+            ..
+        })
+    ));
+    assert!(port.now <= write_chunk_bound_ticks());
+}
+
+/// Relay 394 F1a: a successful sense that comes back on or after the failed
+/// command's deadline authorizes no retry. Janus's attempt 1: the WRITE
+/// fails on tick 1000, its UNIT ATTENTION sense lands on tick 1001. The chunk
+/// ends there, with the deadline line, after one WRITE.
+#[test]
+fn a_late_successful_sense_authorizes_no_retry() {
+    let mut port = Mock::new(
+        vec![failed(1000), passed(10, BYTES.len())],
+        vec![sense_reply(1, 0x6, 0x28, 0)],
+    );
+    port.late_senses = true;
+    let latches = WriteLatches::new();
+    assert_eq!(chunk(&mut port, &latches), ChunkResult::Io);
+    assert_eq!(port.opcodes(), vec![OP_WRITE_10]);
+    assert_eq!(port.now, 1001);
+    assert!(matches!(
+        port.events[..],
+        [WriteEvent::Deadline { stage: None, .. }]
+    ));
+}
+
+/// The same for a late NOT READY: no pause, no retry.
+#[test]
+fn a_late_not_ready_authorizes_no_retry() {
+    let mut port = Mock::new(vec![failed(1000)], vec![sense_reply(5, 0x2, 0x04, 0x01)]);
+    port.late_senses = true;
+    let latches = WriteLatches::new();
+    assert_eq!(chunk(&mut port, &latches), ChunkResult::Io);
+    assert!(port.pauses.is_empty());
+    assert_eq!(port.sent.len(), 1);
+}
+
+/// A late DATA PROTECT still latches: it refuses, it doesn't advance.
+#[test]
+fn a_late_data_protect_still_latches() {
+    let mut port = Mock::new(vec![failed(1000)], vec![sense_reply(5, 0x7, 0x27, 0)]);
+    port.late_senses = true;
+    let latches = WriteLatches::new();
+    assert_eq!(chunk(&mut port, &latches), ChunkResult::WriteProtected);
+    assert_eq!(latches.write_protected(), Some(true));
+}
+
+/// A late sense after a failed SYNC: the attempt is a deadline, not a
+/// retryable failure classified from the late sense.
+#[test]
+fn a_late_sense_after_a_failed_sync_is_a_deadline() {
+    let mut port = Mock::new(vec![failed(3000)], vec![sense_reply(5, 0x3, 0x11, 0)]);
+    port.late_senses = true;
+    let latches = WriteLatches::new();
+    assert_eq!(sync_once(&mut port, &latches), SyncResult::Failed);
+    assert!(matches!(
+        port.events[..],
+        [WriteEvent::Deadline {
+            op: Op::Sync,
+            stage: None,
+            ..
+        }]
+    ));
 }
 
 /// A WRITE refused with DATA PROTECT latches write-protect.
@@ -504,4 +636,367 @@ fn a_pulled_stick_is_not_written() {
     let latches = WriteLatches::new();
     assert_eq!(chunk(&mut port, &latches), ChunkResult::NoDevice);
     assert!(port.sent.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Relay 394 F1b: recovery submits nothing after its deadline.
+// ---------------------------------------------------------------------------
+
+/// A recovery step: which, and the `until` it was handed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HaltStep {
+    Stop(Option<u64>),
+    Dequeue(Option<u64>),
+    Clear(Option<u64>),
+}
+
+/// A halt-clear on a shared clock: each step advances it by its duration.
+struct Halt<'a> {
+    clock: &'a std::cell::Cell<u64>,
+    steps: &'a mut Vec<HaltStep>,
+    /// Ticks each of Stop, Dequeue, Clear takes.
+    took: [u64; 3],
+}
+
+impl HaltClear for Halt<'_> {
+    fn now(&mut self) -> u64 {
+        self.clock.get()
+    }
+    fn stop_endpoint(&mut self, until: Option<u64>) -> bool {
+        self.steps.push(HaltStep::Stop(until));
+        self.clock.set(self.clock.get() + self.took[0]);
+        true
+    }
+    fn set_dequeue(&mut self, until: Option<u64>) -> bool {
+        self.steps.push(HaltStep::Dequeue(until));
+        self.clock.set(self.clock.get() + self.took[1]);
+        true
+    }
+    fn clear_feature(&mut self, until: Option<u64>) -> bool {
+        self.steps.push(HaltStep::Clear(until));
+        self.clock.set(self.clock.get() + self.took[2]);
+        true
+    }
+}
+
+fn halt_clear(start: u64, took: [u64; 3], deadline: Option<Deadline>) -> (bool, Vec<HaltStep>) {
+    let clock = std::cell::Cell::new(start);
+    let mut steps = Vec::new();
+    let ok = clear_halt_by(
+        &mut Halt {
+            clock: &clock,
+            steps: &mut steps,
+            took,
+        },
+        deadline,
+    );
+    (ok, steps)
+}
+
+/// Janus's input: the data stage stalls on tick 1000 (deadline 1001) and
+/// Reset Endpoint runs out the clock. No Set TR Dequeue and no CLEAR_FEATURE
+/// follow.
+#[test]
+fn recovery_stops_when_reset_endpoint_runs_out_the_clock() {
+    let by = Deadline::after(0, WRITE_ATTEMPT_MS);
+    let (ok, steps) = halt_clear(1000, [1, 0, 0], Some(by));
+    assert!(!ok);
+    assert_eq!(steps, vec![HaltStep::Stop(Some(by.end))]);
+}
+
+/// Set TR Dequeue runs out the clock: no CLEAR_FEATURE follows.
+#[test]
+fn recovery_stops_when_set_dequeue_runs_out_the_clock() {
+    let by = Deadline::after(0, WRITE_ATTEMPT_MS);
+    let (ok, steps) = halt_clear(990, [5, 20, 0], Some(by));
+    assert!(!ok);
+    assert_eq!(
+        steps,
+        vec![
+            HaltStep::Stop(Some(by.end)),
+            HaltStep::Dequeue(Some(by.end))
+        ]
+    );
+}
+
+/// An expired deadline starts no recovery at all.
+#[test]
+fn an_expired_deadline_starts_no_recovery() {
+    let by = Deadline::after(0, WRITE_ATTEMPT_MS);
+    let (ok, steps) = halt_clear(by.end, [0, 0, 0], Some(by));
+    assert!(!ok);
+    assert!(steps.is_empty());
+}
+
+/// In time, all three run with the deadline's tick.
+#[test]
+fn recovery_in_time_runs_all_three_steps() {
+    let by = Deadline::after(0, WRITE_ATTEMPT_MS);
+    let (ok, steps) = halt_clear(0, [10, 10, 10], Some(by));
+    assert!(ok);
+    assert_eq!(
+        steps,
+        vec![
+            HaltStep::Stop(Some(by.end)),
+            HaltStep::Dequeue(Some(by.end)),
+            HaltStep::Clear(Some(by.end))
+        ]
+    );
+}
+
+/// No deadline (the read path): all three run, however long they take, with
+/// `None`, as before.
+#[test]
+fn without_a_deadline_recovery_is_unchanged() {
+    let (ok, steps) = halt_clear(1_000_000, [5000, 5000, 5000], None);
+    assert!(ok);
+    assert_eq!(
+        steps,
+        vec![
+            HaltStep::Stop(None),
+            HaltStep::Dequeue(None),
+            HaltStep::Clear(None)
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// End to end: the real `command_dir`, `wait_by` and `clear_halt_by` over a
+// clocked pipe, under the real `write_chunk`.
+// ---------------------------------------------------------------------------
+
+const CLOCK_TAG: u32 = 7;
+
+/// A CSW for `CLOCK_TAG`, laid out by hand: "USBS", tag, residue, status.
+fn clock_csw(residue: u32, status: u8) -> Vec<u8> {
+    let mut v = vec![0x55, 0x53, 0x42, 0x53];
+    v.extend_from_slice(&CLOCK_TAG.to_le_bytes());
+    v.extend_from_slice(&residue.to_le_bytes());
+    v.push(status);
+    v
+}
+
+/// One transfer: the tick it becomes ready, how it ends, the bytes of an In.
+struct Xf {
+    ready: u64,
+    xfer: Xfer,
+    bytes: Vec<u8>,
+}
+
+/// A pipe whose transfers complete at scripted ticks, waited for with the
+/// real `wait_by` under one deadline; halt clears go through the real
+/// `clear_halt_by`.
+struct ClockPipe<'a> {
+    clock: &'a std::cell::Cell<u64>,
+    by: Deadline,
+    xfers: &'a mut VecDeque<Xf>,
+    halts: &'a mut Vec<HaltStep>,
+    halt_took: [u64; 3],
+    resets: &'a mut u32,
+}
+
+impl ClockPipe<'_> {
+    fn transfer(&mut self, buf: Option<&mut [u8]>) -> Xfer {
+        let x = self.xfers.pop_front().expect("an unscripted transfer");
+        let clock = self.clock;
+        let waited = wait_by(
+            self.by,
+            1_000_000,
+            || clock.get(),
+            || {
+                if clock.get() >= x.ready {
+                    Poll::Done(1, 0)
+                } else {
+                    Poll::Pending
+                }
+            },
+            || clock.set(clock.get() + 1),
+        );
+        match waited {
+            Waited::Done(..) => {
+                if let Some(buf) = buf {
+                    buf[..x.bytes.len()].copy_from_slice(&x.bytes);
+                }
+                x.xfer
+            }
+            _ => Xfer::Error,
+        }
+    }
+
+    fn clear(&mut self) -> bool {
+        clear_halt_by(
+            &mut Halt {
+                clock: self.clock,
+                steps: self.halts,
+                took: self.halt_took,
+            },
+            Some(self.by),
+        )
+    }
+}
+
+impl Pipe for ClockPipe<'_> {
+    fn bulk_out(&mut self, _data: &[u8]) -> Xfer {
+        self.transfer(None)
+    }
+    fn bulk_in(&mut self, buf: &mut [u8]) -> Xfer {
+        self.transfer(Some(buf))
+    }
+    fn clear_halt_in(&mut self) -> bool {
+        self.clear()
+    }
+    fn clear_halt_out(&mut self) -> bool {
+        self.clear()
+    }
+    fn mass_storage_reset(&mut self) -> bool {
+        if self.by.passed(self.clock.get()) {
+            return false;
+        }
+        *self.resets += 1;
+        true
+    }
+}
+
+/// A port whose commands run the real `command_dir` over a [`ClockPipe`].
+struct ClockPort {
+    clock: std::cell::Cell<u64>,
+    xfers: VecDeque<Xf>,
+    halts: Vec<HaltStep>,
+    halt_took: [u64; 3],
+    resets: u32,
+    events: Vec<WriteEvent>,
+    commands: usize,
+}
+
+impl ClockPort {
+    fn new(xfers: Vec<Xf>, halt_took: [u64; 3]) -> Self {
+        ClockPort {
+            clock: std::cell::Cell::new(0),
+            xfers: xfers.into(),
+            halts: Vec::new(),
+            halt_took,
+            resets: 0,
+            events: Vec::new(),
+            commands: 0,
+        }
+    }
+}
+
+impl WritePort for ClockPort {
+    fn now(&mut self) -> u64 {
+        self.clock.get()
+    }
+    fn gone(&self) -> bool {
+        false
+    }
+    fn command(&mut self, cdb: &[u8], data: Data<'_>, by: Deadline) -> Outcome {
+        self.commands += 1;
+        let mut pipe = ClockPipe {
+            clock: &self.clock,
+            by,
+            xfers: &mut self.xfers,
+            halts: &mut self.halts,
+            halt_took: self.halt_took,
+            resets: &mut self.resets,
+        };
+        command_dir(&mut pipe, CLOCK_TAG, 0, cdb, data)
+    }
+    fn sense(&mut self, _by: Deadline) -> Option<Sense> {
+        panic!("no sense is scripted")
+    }
+    fn pause(&mut self, _ms: u64) {}
+    fn event(&mut self, event: WriteEvent) {
+        self.events.push(event);
+    }
+}
+
+fn xf(ready: u64, xfer: Xfer) -> Xf {
+    Xf {
+        ready,
+        xfer,
+        bytes: Vec::new(),
+    }
+}
+
+/// Janus's F1a input: CBW and data complete; a valid, passed CSW becomes
+/// ready on tick 1001, the deadline's tick. Not `Written`: the chunk ends
+/// with the deadline line at the CSW, after one WRITE, and recovery (already
+/// past the deadline) sends nothing.
+#[test]
+fn a_csw_ready_on_the_expired_tick_is_not_a_write() {
+    let end = Deadline::after(0, WRITE_ATTEMPT_MS).end;
+    let mut csw = xf(end, Xfer::Done(CSW_LEN));
+    csw.bytes = clock_csw(0, 0);
+    let mut port = ClockPort::new(
+        vec![
+            xf(100, Xfer::Done(CBW_LEN)),
+            xf(200, Xfer::Done(BYTES.len())),
+            csw,
+        ],
+        [0, 0, 0],
+    );
+    let latches = WriteLatches::new();
+    assert_eq!(
+        write_chunk(&mut port, &latches, LBA, BLOCKS, &BYTES),
+        ChunkResult::Io
+    );
+    assert_eq!(port.commands, 1);
+    assert!(port.halts.is_empty());
+    assert_eq!(port.resets, 0);
+    assert!(matches!(
+        port.events[..],
+        [WriteEvent::Deadline {
+            stage: Some(ResetReason::Csw),
+            ..
+        }]
+    ));
+}
+
+/// The control: the same CSW one tick earlier is a write.
+#[test]
+fn a_csw_ready_before_the_deadline_is_a_write() {
+    let end = Deadline::after(0, WRITE_ATTEMPT_MS).end;
+    let mut csw = xf(end - 1, Xfer::Done(CSW_LEN));
+    csw.bytes = clock_csw(0, 0);
+    let mut port = ClockPort::new(
+        vec![
+            xf(100, Xfer::Done(CBW_LEN)),
+            xf(200, Xfer::Done(BYTES.len())),
+            csw,
+        ],
+        [0, 0, 0],
+    );
+    let latches = WriteLatches::new();
+    assert_eq!(
+        write_chunk(&mut port, &latches, LBA, BLOCKS, &BYTES),
+        ChunkResult::Written
+    );
+    assert!(port.events.is_empty());
+}
+
+/// Janus's F1b input end to end: the bulk-OUT data stalls on tick 1000;
+/// Reset Endpoint takes the last tick. No Set TR Dequeue, no CLEAR_FEATURE,
+/// no class reset follow; the chunk ends with the deadline line at the data
+/// stage.
+#[test]
+fn a_stalled_write_whose_recovery_runs_out_sends_nothing_more() {
+    let end = Deadline::after(0, WRITE_ATTEMPT_MS).end;
+    let mut port = ClockPort::new(
+        vec![xf(100, Xfer::Done(CBW_LEN)), xf(end - 1, Xfer::Stall)],
+        [1, 0, 0],
+    );
+    let latches = WriteLatches::new();
+    assert_eq!(
+        write_chunk(&mut port, &latches, LBA, BLOCKS, &BYTES),
+        ChunkResult::Io
+    );
+    assert_eq!(port.halts, vec![HaltStep::Stop(Some(end))]);
+    assert_eq!(port.resets, 0);
+    assert!(matches!(
+        port.events[..],
+        [WriteEvent::Deadline {
+            stage: Some(ResetReason::Data),
+            ..
+        }]
+    ));
 }

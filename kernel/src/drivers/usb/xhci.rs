@@ -934,9 +934,18 @@ fn wait_event(ty: TrbType) -> Option<Trb> {
     wait_event_until(ty, None)
 }
 
+/// Whether the timer tick has reached `until` (relay 394: an expired
+/// deadline beats a completion and stops a submission). `None` never has,
+/// and reads no clock.
+fn until_passed(until: Option<u64>) -> bool {
+    until.is_some_and(|end| crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed) >= end)
+}
+
 /// [`wait_event`], also ending at the timer tick `until` when one is given
 /// (OT-100 R2, relay 393 F1: the MSC write path's recovery waits share their
-/// command's absolute deadline). `None` is [`wait_event`] exactly.
+/// command's absolute deadline). An expired `until` beats a pending event:
+/// the event is left queued and the wait ends (relay 394 F1a). `None` is
+/// [`wait_event`] exactly.
 fn wait_event_until(ty: TrbType, until: Option<u64>) -> Option<Trb> {
     #[cfg(feature = "mt7601u")]
     if !charge_operation(ChargeKind::WaitCall) {
@@ -945,9 +954,15 @@ fn wait_event_until(ty: TrbType, until: Option<u64>) -> Option<Trb> {
     }
     let mut budget = WAIT_BUDGET.load(Ordering::Acquire);
     loop {
+        if until_passed(until) {
+            return None;
+        }
         {
             let mut pending = PENDING.lock();
             if let Some(pos) = pending.iter().position(|t| t.trb_type() == ty as u32) {
+                if until_passed(until) {
+                    return None;
+                }
                 return Some(pending.remove(pos));
             }
         }
@@ -965,8 +980,7 @@ fn wait_event_until(ty: TrbType, until: Option<u64>) -> Option<Trb> {
             note_operation_no_event_exhaustion();
             return None;
         }
-        if until.is_some_and(|end| crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed) >= end)
-        {
+        if until_passed(until) {
             return None;
         }
         core::hint::spin_loop();
@@ -1035,8 +1049,12 @@ fn submit_command(trb: Trb) -> Option<Trb> {
     submit_command_until(trb, None)
 }
 
-/// [`submit_command`], its waits also ending at the tick `until`.
+/// [`submit_command`], its waits also ending at the tick `until`. Nothing is
+/// submitted once `until` has passed (relay 394 F1b).
 fn submit_command_until(trb: Trb, until: Option<u64>) -> Option<Trb> {
+    if until_passed(until) {
+        return None;
+    }
     let cmd_phys;
     {
         let mut guard = CONTROLLER.lock();
@@ -2045,16 +2063,49 @@ impl ClaimedDevice {
         enabled: bool,
         until: Option<u64>,
     ) -> EndpointRecovery {
+        let (state_before, reset_or_stop_ok) =
+            match self.recover_endpoint_stop(pipe, enabled, until) {
+                Ok(stopped) => stopped,
+                // Kill-switch disabled: submitted nothing — prior behavior, bit-for-bit.
+                Err(state_before) => {
+                    return EndpointRecovery {
+                        state_before,
+                        reset_or_stop_ok: false,
+                        set_dequeue_ok: false,
+                    };
+                }
+            };
+        // A deadline that Reset/Stop ran out starts no Set TR Dequeue and
+        // leaves the ring as it was (relay 394 F1b). `None` never stops here.
+        if until_passed(until) {
+            return EndpointRecovery {
+                state_before,
+                reset_or_stop_ok,
+                set_dequeue_ok: false,
+            };
+        }
+        let set_dequeue_ok = self.recover_endpoint_requeue(pipe, until);
+        EndpointRecovery {
+            state_before,
+            reset_or_stop_ok,
+            set_dequeue_ok,
+        }
+    }
+
+    /// Endpoint recovery's first step: Reset Endpoint (Halted) or Stop
+    /// Endpoint (Running), or nothing (already Stopped). `Ok((state before,
+    /// command ok))`, or `Err(state before)` when the kill switch says skip
+    /// (nothing sent).
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
+    pub fn recover_endpoint_stop(
+        &self,
+        pipe: &EndpointPipe,
+        enabled: bool,
+        until: Option<u64>,
+    ) -> Result<(u8, bool), u8> {
         let state_before = self.endpoint_state(pipe.dci);
-        let reset_or_stop_ok = match ring::recovery_action(enabled, state_before) {
-            // Kill-switch disabled: submit nothing — prior behavior, bit-for-bit.
-            ring::RecoveryAction::Skip => {
-                return EndpointRecovery {
-                    state_before,
-                    reset_or_stop_ok: false,
-                    set_dequeue_ok: false,
-                };
-            }
+        let ok = match ring::recovery_action(enabled, state_before) {
+            ring::RecoveryAction::Skip => return Err(state_before),
             ring::RecoveryAction::Reset => {
                 cmd_reset_endpoint(self.slot_id, pipe.dci, until) == Some(1)
             }
@@ -2066,22 +2117,24 @@ impl ClaimedDevice {
             // is already in the state Set-TR-Dequeue needs.
             ring::RecoveryAction::Requeue => true,
         };
-        // Restart the transfer ring at a fresh lap and point the xHC's dequeue
-        // there with the matching cycle; the next submit() rings the doorbell.
+        Ok((state_before, ok))
+    }
+
+    /// Endpoint recovery's second step: restart the transfer ring at a fresh
+    /// lap and point the xHC's dequeue there with the matching cycle (Set TR
+    /// Dequeue Pointer); the next submit() rings the doorbell. True if the
+    /// command completed.
+    #[cfg(any(feature = "mt7601u", feature = "usb-storage"))]
+    pub fn recover_endpoint_requeue(&self, pipe: &mut EndpointPipe, until: Option<u64>) -> bool {
         pipe.state = ProducerRing::new(RING_TRBS);
         arm_link_trb(&pipe.ring, pipe.ring_addr, pipe.state.cycle);
-        let set_dequeue_ok = cmd_set_tr_dequeue(
+        cmd_set_tr_dequeue(
             self.slot_id,
             pipe.dci,
             pipe.ring_addr.phys(),
             pipe.state.cycle,
             until,
-        ) == Some(1);
-        EndpointRecovery {
-            state_before,
-            reset_or_stop_ok,
-            set_dequeue_ok,
-        }
+        ) == Some(1)
     }
 
     /// Clear a device-side endpoint halt via ClearFeature(ENDPOINT_HALT) on EP0
@@ -2388,6 +2441,11 @@ fn control_no_data(
     w_index: u16,
     until: Option<u64>,
 ) -> Result<(), &'static str> {
+    // Nothing is published once the caller's deadline has passed (relay 394
+    // F1b). `None` never refuses.
+    if until_passed(until) {
+        return Err("control transfer: deadline passed before submission");
+    }
     let setup_param = (bm_request_type as u64)
         | ((b_request as u64) << 8)
         | ((w_value as u64) << 16)

@@ -265,38 +265,22 @@ fn classify(done: Option<(u32, u32)>, asked: usize) -> Xfer {
 
 impl Transport {
     /// Clear a halted endpoint on both sides: the host ring (Reset Endpoint,
-    /// then Set TR Dequeue) and the device (ClearFeature(ENDPOINT_HALT)). On the
-    /// write path, every wait in it stops at the attempt's deadline, and a
-    /// passed deadline starts nothing (relay 393 F1).
+    /// then Set TR Dequeue) and the device (ClearFeature(ENDPOINT_HALT)),
+    /// sequenced by `msc_logic::clear_halt_by`. On the write path every step
+    /// starts only while the attempt's deadline hasn't passed, and its waits
+    /// stop there (relay 393 F1, relay 394 F1b); off it, all three run, as
+    /// before.
     fn clear(&mut self, inbound: bool) -> bool {
-        let until = self.until();
-        if until == Some(0) {
-            return false;
-        }
-        let pipe = if inbound {
-            &mut self.bulk_in
-        } else {
-            &mut self.bulk_out
-        };
-        let host = self.claimed.recover_endpoint_until(pipe, true, until);
-        let dci = pipe.dci;
-        let device = self.claimed.clear_endpoint_halt_until(dci, until).is_ok();
-        host.set_dequeue_ok && device
+        let deadline = self.deadline();
+        msc_logic::clear_halt_by(&mut HaltOps { t: self, inbound }, deadline)
     }
 
-    /// The xHCI waits' tick bound: `None` off the write path (today's spin
-    /// budget only); the attempt's deadline on it; `Some(0)` once that
-    /// deadline has passed (so recovery starts nothing).
-    fn until(&self) -> Option<u64> {
+    /// The write-path attempt's deadline, if one is running; `None` off the
+    /// write path (today's spin budgets only).
+    fn deadline(&self) -> Option<msc_logic::Deadline> {
         #[cfg(feature = "usb-storage-write")]
-        if let Some(deadline) = self.deadline {
-            let now = crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed);
-            return Some(if deadline.passed(now) {
-                0
-            } else {
-                deadline.end
-            });
-        }
+        return self.deadline;
+        #[cfg(not(feature = "usb-storage-write"))]
         None
     }
 
@@ -364,6 +348,55 @@ impl Transport {
             Outcome::Passed { len } => msc_logic::decode_sense(&buf[..len]),
             _ => None,
         }
+    }
+}
+
+/// The timer tick.
+fn ticks_now() -> u64 {
+    crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed)
+}
+
+/// One bulk endpoint's halt-clear steps on the real controller
+/// (`msc_logic::HaltClear`).
+struct HaltOps<'a> {
+    t: &'a mut Transport,
+    inbound: bool,
+}
+
+impl msc_logic::HaltClear for HaltOps<'_> {
+    fn now(&mut self) -> u64 {
+        ticks_now()
+    }
+
+    fn stop_endpoint(&mut self, until: Option<u64>) -> bool {
+        let dci_pipe = if self.inbound {
+            &self.t.bulk_in
+        } else {
+            &self.t.bulk_out
+        };
+        matches!(
+            self.t.claimed.recover_endpoint_stop(dci_pipe, true, until),
+            Ok((_, true))
+        )
+    }
+
+    fn set_dequeue(&mut self, until: Option<u64>) -> bool {
+        let t = &mut *self.t;
+        let pipe = if self.inbound {
+            &mut t.bulk_in
+        } else {
+            &mut t.bulk_out
+        };
+        t.claimed.recover_endpoint_requeue(pipe, until)
+    }
+
+    fn clear_feature(&mut self, until: Option<u64>) -> bool {
+        let dci = if self.inbound {
+            self.t.bulk_in.dci
+        } else {
+            self.t.bulk_out.dci
+        };
+        self.t.claimed.clear_endpoint_halt_until(dci, until).is_ok()
     }
 }
 
@@ -435,10 +468,11 @@ impl Pipe for PipeView<'_> {
         if self.0.gone.load(Ordering::Acquire) {
             return false;
         }
-        let until = self.0.until();
-        if until == Some(0) {
+        let deadline = self.0.deadline();
+        if deadline.is_some_and(|d| d.passed(ticks_now())) {
             return false;
         }
+        let until = deadline.map(|d| d.end);
         let iface = u16::from(self.0.interface);
         // bmRequestType 0x21: host-to-device, class, interface.
         self.0
