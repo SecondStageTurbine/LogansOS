@@ -151,6 +151,7 @@ it is never pruned). The one-line CLAUDE.md rule this doc proposes:
 | CP-110 | **Inline asm that saves a register around an instruction and lets the allocator pick it for an output** (found 2026-11-02, the product-kernel witness). `push rbx; cpuid; mov {out:e}, ebx; pop rbx` with `out = lateout(reg)`: at opt-level 3 the allocator chose rbx for `out`, so `pop rbx` threw CPUID's EBX away and the caller read whatever rbx held (a stack address). An AP then computed a 2 GiB XSAVE need. Three copies (`fpu`, `cpuid_leaf7_ebx` (SMEP/SMAP), `tlb_shootdown`) | Any CPUID read | **Was EXPOSED → fixed:** `core::arch::x86_64::__cpuid_count` everywhere; no hand-written CPUID asm with an EBX output remains | **Yes (`product-xsave-boot.sh witness`: the opt-level-3 product kernel must admit the AP; the defective asm left it offline)** |
 | CP-111 | **A last reference dropped under a global lock, when its `Drop` waits, locks or does I/O** (standing rule, 2026-11-08, from J.c.'s architecture read). The general form of CP-91 and CP-92, and CP-56's `Drop` blind spot at a global lock: cleanup that waits on another CPU (a shootdown), takes another lock, or does I/O, run inside the locked (often IF-off) section, can wait on what a CPU spinning for that lock must provide | Any global lock (`CAP_GRAPH` today; the tensor and model object paths next) | **Guard: the last reference is detached and released at a deferral point outside the locked section (the reaper, a post-unlock tail in the caller, or a work queue). A `Drop` that only decrements a count and returns is fine anywhere** | **Yes for its instances (CP-91, CP-92, CP-98 discriminators); every new object with drop-time teardown adds its own** |
 | CP-112 | **Per-process state a child must see from its first instruction, published after it can run** (L1a.1 step 2b, 2026-11-08). A field set on a `Process` after `spawn_user` returns (or after `try_push_ready`) races the child's first syscall: the child can act on the old value (stdio on the console instead of its pipe) | Spawn (`spawn_user_body!`): `Process.stdio` today; any future spawn-time attribute (a cwd, an environment, a budget the child reads) | **Guard: store it on the `Process` before `register` and `try_push_ready`, inside the spawn transaction (not afterwards, as `obj_spawn`'s parent-side charge may be)** | **Yes: `pipe_stdio` leg 1 plus `neo-test-pipe-stdio-late-control` (must fail: `pipe_stdio_prompt_not_in_pipe`, or `pipe_stdio_late_window_not_hit`)** |
+| CP-113 | **A mount's writable state flipped by one thread while mutations run on others** (OT-100 R3, 2026-11-12). The drain worker finds the volume lost (a pulled or write-protected stick, a failed flush) and clears `writable` while syscalls on other CPUs are mid-mutation: a check that reads a stale `true` enters the cache after the flip | NeoFS (`NeoFsBlockCache::lost`, `NeoFsState::is_writable`), the persistence volume's read-only flip (THINK-2026-11-10 §4.2) | **Guard: one code stored once (`compare_exchange` from 0, `Release`) and loaded with `Acquire` by every mutation entry point and `fsync`; a mutation that passed the check before the flip may reach the cache but is never committed (the worker is gone, and the next sync refuses); no superblock is written after the flip, so the last committed generation stands** | **Yes: `usb_persist_unplug_midwrite` (4 CPUs: lost exactly once, a later create and sync refused, boot 2 mounts the last commit), plus `persist-logic-tests` `the_classifier`** |
 
 Legend — **exposure:** *Exposed* = a real reachable defect existed/exists here; *Guarded* = a mechanism
 prevents it and there is (or should be) a discriminator; *N-A* = the construct doesn't exist in our kernel
@@ -4863,3 +4864,25 @@ threads on cpu0) determined whether the waker ran before the waiters parked.
   so the run proves nothing).
 - **Source.** L1a.1 step 2b's design (#72, Dexter relay 322 item 2: "the selection is set on the child before it can
   run").
+
+### CP-113 — A mount's writable state flipped by one thread while mutations run on others
+
+- **Trap.** A mount that can lose its device (a USB stick pulled, write-protected, or no longer flushing) has to stop
+  writing at some point in time chosen by another thread: the writeback worker, which is the one that sees the drain
+  fail. Mutations on other CPUs may be past their "is it writable?" check when the flip happens. With a plain `bool`
+  (or a check made once at entry and trusted for the whole operation), a mutation can enter the cache after the
+  volume is gone, and an `fsync` can report success for data that will never reach the stick.
+- **Where it applies.** NeoFS's persistence volume (OT-100 R3): `NeoFsBlockCache::lost` and
+  `NeoFsState::is_writable`. Any future mount that can change from writable to read-only while mounted.
+- **Guard.**
+  - The reason is one code, stored once: `compare_exchange(0, code)`, `Release`. Every mutation entry point and `fsync`
+    loads it with `Acquire` through `is_writable()`, so they start refusing from the moment it is set.
+  - A mutation that passed its check just before the flip may still land in the cache. It is never committed: the
+    worker has exited, the next mutation or sync is refused, and no superblock is written after the flip. The stick
+    keeps its last committed generation (the copy-on-write commit order publishes superblocks only after a flush).
+  - The line `persist: volume lost (...)` is printed by the one thread that won the `compare_exchange`, so exactly once.
+- **Discriminator.** `usb_persist_unplug_midwrite` on 4 CPUs: the stick is pulled mid-write; the line appears exactly
+  once, a later create and sync are both refused, and boot 2 (stick back) mounts read-write at the last commit with
+  boot 1's synced file. The classifier is pinned by `persist-logic-tests` `the_classifier`.
+- **Source.** `docs/THINK-2026-11-10-ot100-usb-persistence.md` §4.2 and §5.1 ("new seam, no CP entry yet"), Dexter's
+  relay 385 F2.
