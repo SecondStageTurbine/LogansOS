@@ -1928,6 +1928,8 @@ fn arthur_session_turns(
     let _ = settings::set_wm(scene, settings_core::Key::IdleLockMinutes.id(), 5);
     #[cfg(feature = "arthur-actions-test")]
     permission::note_client(process);
+    #[cfg(feature = "lock-terminal-test")]
+    lock::note_arthur(process);
     // Zenbook ask-freeze: between 'G' and 'M' Arthur loads its vocab and
     // model, so the WM polls for 'M' and keeps the pointer live meanwhile.
     if !recv_control(session, b'G') {
