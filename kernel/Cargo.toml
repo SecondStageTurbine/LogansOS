@@ -252,6 +252,10 @@ desktop = [
     "usb-hotplug",
     "rtc-epoch",
     "rtc-offset",
+    # A3p (OT-88 THINK §2.3 item 9): SYS_WAIT_ANY, so the WM's loop parks
+    # (its `desktop-park`, xtask's default for the intro WM) in image A and
+    # every desktop kernel. Without the WM's `desktop-park` nothing calls it.
+    "wait-multiplex",
     # F10 (J.c., 2026-11-02): held keys repeat, in every desktop kernel the
     # gate boots as in the product image.
     "key-autorepeat",

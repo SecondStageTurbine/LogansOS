@@ -452,7 +452,24 @@ impl Scene {
             };
             n += 2;
         }
-        if libneo::sys_wait_any(&items[..n], deadline_ns) == libneo::EAGAIN {
+        let rc = libneo::sys_wait_any(&items[..n], deadline_ns);
+        // A3p: the first park says the loop parks (rc >= 0: an item was
+        // ready; ETIMEDOUT: the deadline), or why it can't (ENOSYS: a kernel
+        // without `wait-multiplex`), once.
+        #[cfg(feature = "desktop-session-boot-test")]
+        {
+            use core::sync::atomic::{AtomicBool, Ordering};
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, Ordering::Relaxed) {
+                Line::new()
+                    .s(b"DESKTOP loop parked rc=")
+                    .s(if rc < 0 { b"-" as &[u8] } else { b"" })
+                    .n(rc.unsigned_abs())
+                    .s(b"\n")
+                    .emit();
+            }
+        }
+        if rc == libneo::EAGAIN {
             core::hint::spin_loop();
         }
     }
@@ -2125,32 +2142,57 @@ fn arthur_session_turns(
             }
             // OT-22: park on Arthur's surface channel, the route, the SAK
             // latch, and (escaped) the WM's own focus.
-            // (With other clients live, the loop polls: their channels are not
-            // in this wait set.)
-            // (Nor while a reply to Arthur is owed: his parking in his
-            // receive fires no wait, so the retry must keep polling.)
-            #[cfg(all(feature = "desktop-park", feature = "atrium-apps"))]
-            let park = !apps.live() && !apps::arthur_owed();
-            #[cfg(all(feature = "desktop-park", not(feature = "atrium-apps")))]
-            let park = true;
+            // A3p (OT-88 THINK §2.3 item 9): and on every other live
+            // client's session and surface channels, so the loop parks with
+            // apps open too (`apps::wait_items`). The wait is built afresh
+            // from the table after this turn's `turns`, so it never names a
+            // handle an ended client gave back (CP-61). A reply owed (the
+            // client's receive fires no wait) or a client being reaped (its
+            // exit fires none) bounds the park to a tick (`apps::needs_tick`):
+            // the retry still runs every tick, as the poll did, without
+            // spinning between.
             #[cfg(feature = "desktop-park")]
-            if park {
-                use libneo::{WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WaitItem};
-                let items = [
-                    WaitItem {
+            {
+                use libneo::{WAIT_ITEMS_MAX, WAIT_KIND_CHANNEL, WAIT_KIND_INPUT, WaitItem};
+                let mut items = [WaitItem::default(); WAIT_ITEMS_MAX];
+                let mut n = 0;
+                // While a reply to Arthur is owed his surface isn't read
+                // (his next request waits for it), so it isn't watched: the
+                // tick retries the reply instead (`apps::needs_tick`).
+                #[cfg(feature = "atrium-apps")]
+                let watch_arthur = !apps::arthur_owed();
+                #[cfg(not(feature = "atrium-apps"))]
+                let watch_arthur = true;
+                if watch_arthur {
+                    items[n] = WaitItem {
                         handle: surface.0,
                         kind: WAIT_KIND_CHANNEL,
-                    },
-                    WaitItem {
+                    };
+                    n += 1;
+                }
+                if escaped {
+                    items[n] = WaitItem {
                         handle: home_focus.events.0,
                         kind: WAIT_KIND_INPUT,
-                    },
-                ];
+                    };
+                    n += 1;
+                }
+                // `Scene::park` adds the route and the SAK latch.
+                #[cfg(feature = "atrium-apps")]
+                {
+                    n += apps::wait_items(&apps, &mut items[n..WAIT_ITEMS_MAX - 2]);
+                }
                 #[cfg(feature = "desktop-busy")]
                 let deadline = scene.busy_deadline();
                 #[cfg(not(feature = "desktop-busy"))]
                 let deadline = u64::MAX;
-                scene.park(&items[..if escaped { 2 } else { 1 }], deadline);
+                #[cfg(feature = "atrium-apps")]
+                let deadline = if apps::needs_tick(&apps) {
+                    deadline.min(monotonic_ns().saturating_add(apps::PARK_TICK_NS))
+                } else {
+                    deadline
+                };
+                scene.park(&items[..n], deadline);
             }
             #[cfg(not(feature = "desktop-park"))]
             core::hint::spin_loop();
@@ -3259,6 +3301,56 @@ mod apps {
         })
     }
 
+    /// A3p: the parked session loop's longest park while it must retry on
+    /// its own (a tick: 10 ms).
+    #[cfg(feature = "desktop-park")]
+    pub const PARK_TICK_NS: u64 = 10_000_000;
+
+    /// A3p (THINK §2.3 item 9): the other clients' part of the parked loop's
+    /// wait set: each live client's surface channel (its requests, which
+    /// [`turns`] serves; left out while a reply to it is owed) and session
+    /// channel (closed when it ends), written
+    /// into `out` in slot order; returns how many. Five clients are ten
+    /// items; with Arthur's surface, Home's focus, the route and the SAK latch
+    /// the set is at most 14 of the kernel's 16. `turns` has already ended and
+    /// removed any client whose channel failed this turn, so every handle
+    /// named here is a live client's (CP-61).
+    ///
+    /// A client that sends on its session unprompted breaks the protocol;
+    /// its session then stays ready, and the loop polls (as before A3p)
+    /// until the client ends. That costs CPU, never a missed request.
+    #[cfg(feature = "desktop-park")]
+    pub fn wait_items(apps: &Apps, out: &mut [libneo::WaitItem]) -> usize {
+        use libneo::{WAIT_KIND_CHANNEL, WaitItem};
+        let mut n = 0;
+        for (client, owed) in apps.clients() {
+            // An owed reply's client isn't read this turn (`turns`): its
+            // surface stays out, and the tick retries the reply.
+            let surface = (!owed).then_some(client.surface);
+            for handle in surface.into_iter().chain([client.session]) {
+                if n == out.len() {
+                    return n;
+                }
+                out[n] = WaitItem {
+                    handle: handle.0,
+                    kind: WAIT_KIND_CHANNEL,
+                };
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// A3p: the parked loop must come back on its own within a tick: a reply
+    /// is owed (to Arthur or another client: the client's receive fires no
+    /// wait), or an ended client is being reaped (its exit fires none).
+    #[cfg(feature = "desktop-park")]
+    pub fn needs_tick(apps: &Apps) -> bool {
+        arthur_owed()
+            || apps.pending.iter().any(Option::is_some)
+            || apps.dying.iter().any(Option::is_some)
+    }
+
     /// Whether a reply to Arthur is still owed (his next request waits).
     pub fn arthur_owed() -> bool {
         ARTHUR_OWED.with(|owed| owed.is_some())
@@ -3527,6 +3619,16 @@ mod apps {
     impl Apps<'_> {
         pub fn live(&self) -> bool {
             self.others.iter().any(Option::is_some)
+        }
+
+        /// A3p: the live clients with whether a reply to each is owed, in
+        /// slot order (at most `MAX_CLIENTS - 1`).
+        #[cfg(feature = "desktop-park")]
+        fn clients(&self) -> impl Iterator<Item = (&Client, bool)> {
+            self.others
+                .iter()
+                .zip(self.pending.iter())
+                .filter_map(|(c, p)| c.as_ref().map(|c| (c, p.is_some())))
         }
 
         /// The activator of the client in front.

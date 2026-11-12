@@ -9114,7 +9114,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-arthur-hang-boot-test")
         | Some("desktop-apps-arthur-yield-hang-boot-test")
         | Some("desktop-apps-grab-boot-test") => {
-            vec!["atrium-apps", "desktop-home-boot-test"]
+            // A3p: parked, so every A1a leg (hang, drop, flood, grab, the
+            // reused slot of CP-61) runs the client table's wait set.
+            vec!["atrium-apps", "desktop-home-boot-test", "desktop-park"]
         }
         // OT-61 L5: the same, with the browser's slot.
         Some("desktop-browser-boot-test") => {
@@ -9696,6 +9698,16 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         init_features.push("cap-rooted-open");
         shell_features.push("cap-rooted-open");
     }
+    // A3p (OT-88 THINK §2.3 item 9): the parked loop is image A's default:
+    // every WM build that includes `desktop-intro` (the product's base: the
+    // image, the intro, setup and login scenarios) gets `desktop-park`, unless
+    // it names the `desktop-poll` marker (the kill-switch).
+    if !init_features.contains(&"desktop-park")
+        && !init_features.contains(&"desktop-poll")
+        && neo_init_reaches(&init_features, "desktop-intro")?
+    {
+        init_features.push("desktop-park");
+    }
     // L7.1: `iso --with-model --boot-time`.
     let mut arthur_features = arthur_features;
     if boot_time_image() && feature == Some("desktop-with-model") {
@@ -9709,6 +9721,119 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         arthur_features.as_slice(),
         feature == Some("arthur-real-brain-boot-qwen35"),
     )
+}
+
+/// A3p: a scenario whose WM is intro-based (the product's base) runs it
+/// parked by default: its first park must have reached the kernel (no
+/// `ENOSYS`). Only where the scenario's user feature is a neo-init feature
+/// that reaches both `desktop-intro` and the boot-test log, and not the
+/// `desktop-poll` marker.
+fn require_parked_by_default(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let Some(feature) = scenario.user_feature else {
+        return Ok(());
+    };
+    let path = workspace_root().join("userland/neo-init/Cargo.toml");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let table = parse_features(&text);
+    // The A1a scenarios' WM is built parked too (their client-table wait set).
+    let a1a = scenario.name.starts_with("desktop_apps_");
+    if !a1a
+        && (!table.contains_key(feature)
+            || !feature_reaches(&table, &[feature], "desktop-intro")
+            || !feature_reaches(&table, &[feature], "desktop-session-boot-test")
+            || feature_reaches(&table, &[feature], "desktop-poll"))
+    {
+        return Ok(());
+    }
+    let serial = read_serial(observed)?;
+    match serial
+        .lines()
+        .find_map(|l| l.split("DESKTOP loop parked rc=").nth(1))
+    {
+        Some(rc) if !rc.trim().starts_with('-') || rc.trim() == "-110" => Ok(()),
+        Some(rc) => Err(format!(
+            "`{}`: the WM's first park failed (rc={}): an intro-based WM parks by default (A3p)",
+            scenario.name,
+            rc.trim()
+        )),
+        None => Err(format!(
+            "`{}`: no `DESKTOP loop parked` line: an intro-based WM parks by default (A3p)",
+            scenario.name
+        )),
+    }
+}
+
+/// A3p: whether neo-init built with `features` has `target` on, through
+/// its own `[features]` table (`userland/neo-init/Cargo.toml`, read
+/// line by line: `name = [..]`, arrays may span lines; `dep:` and
+/// `crate/feature` entries are other crates' and are skipped).
+fn neo_init_reaches(features: &[&str], target: &str) -> Result<bool, String> {
+    let path = workspace_root().join("userland/neo-init/Cargo.toml");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok(feature_reaches(&parse_features(&text), features, target))
+}
+
+/// The `[features]` table of a Cargo.toml: each feature and its entries.
+fn parse_features(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut table = std::collections::BTreeMap::new();
+    let mut in_features = false;
+    let mut current: Option<(String, String)> = None;
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if current.is_none() && line.starts_with('[') {
+            in_features = line == "[features]";
+            continue;
+        }
+        if !in_features || line.is_empty() {
+            continue;
+        }
+        let (name, mut body) = match current.take() {
+            Some((name, body)) => (name, body + " " + line),
+            None => match line.split_once('=') {
+                Some((name, rest)) => (name.trim().to_string(), rest.trim().to_string()),
+                None => continue,
+            },
+        };
+        if !body.contains(']') {
+            current = Some((name, body));
+            continue;
+        }
+        body = body.trim_start_matches('[').to_string();
+        let body = body.split(']').next().unwrap_or("");
+        let entries = body
+            .split(',')
+            .map(|e| e.trim().trim_matches('"').to_string())
+            .filter(|e| !e.is_empty())
+            .collect();
+        table.insert(name, entries);
+    }
+    table
+}
+
+/// Whether `target` is among `features` or reachable from them in `table`
+/// (entries naming another crate, `dep:x` or `x/y`, are skipped).
+fn feature_reaches(
+    table: &std::collections::BTreeMap<String, Vec<String>>,
+    features: &[&str],
+    target: &str,
+) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack: Vec<String> = features.iter().map(|f| (*f).to_string()).collect();
+    while let Some(f) = stack.pop() {
+        if f == target {
+            return true;
+        }
+        if f.contains(':') || f.contains('/') || !seen.insert(f.clone()) {
+            continue;
+        }
+        if let Some(entries) = table.get(&f) {
+            stack.extend(entries.iter().cloned());
+        }
+    }
+    false
 }
 
 /// Whether `NEO_TEST_EXTRA_FEATURES` names `feature`.
@@ -21069,6 +21194,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             observed.serial_log.display()
         ));
     }
+    require_parked_by_default(scenario, observed)?;
     require_observed_terminal_pass(scenario, observed)?;
     // OT-90 P2: the kill-switch build has no power module, so boot logs no plan.
     if scenario.name == "ot90_kill_switch_off" {
@@ -30078,6 +30204,43 @@ mod tests {
     /// The check is on the rows, not on "does the name appear anywhere in the
     /// file", so deleting one row fails even when the name is mentioned in a
     /// note. Falsified by deleting any non-test row: the missing list names it.
+    /// A3p: the feature resolver behind the parked default.
+    #[test]
+    fn feature_resolver_follows_neo_init_features() {
+        let table = parse_features(
+            "[package]\nname = \"x\"\n[features]\n# c\na = [\"b\", \"dep:z\"]\nb = [\n    \"c\", # tail\n    \"y/q\",\n]\nc = []\n[dependencies]\nd = \"1\"\n",
+        );
+        assert_eq!(
+            table.get("a").unwrap(),
+            &vec!["b".to_string(), "dep:z".to_string()]
+        );
+        assert_eq!(
+            table.get("b").unwrap(),
+            &vec!["c".to_string(), "y/q".to_string()]
+        );
+        assert!(table.get("d").is_none());
+        assert!(feature_reaches(&table, &["a"], "c"));
+        assert!(!feature_reaches(&table, &["c"], "a"));
+        assert!(!feature_reaches(&table, &["a"], "z"));
+        // The real table: the image and the intro-based scenarios park; the
+        // Home and session scenarios (no intro) keep polling.
+        for (list, parks) in [
+            (&["desktop-intro", "login"][..], true),
+            (&["login-boot-test"][..], true),
+            (&["setup-menu-boot-test"][..], true),
+            (&["desktop-intro-boot-test"][..], true),
+            (&["desktop-home-boot-test"][..], false),
+            (&["desktop-session-boot-test"][..], false),
+            (&["atrium-apps", "desktop-home-boot-test"][..], false),
+        ] {
+            assert_eq!(
+                neo_init_reaches(list, "desktop-intro").unwrap(),
+                parks,
+                "{list:?}"
+            );
+        }
+    }
+
     #[test]
     fn sdk_abi_doc_covers_every_kernel_syscall() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
