@@ -466,8 +466,10 @@ pub fn format(lang: Lang, msg: Msg, args: &[&str]) -> String {
 }
 
 /// F1a: the macro for [`files`], a catalog with its own tables and lookups.
-/// It sits here, after the main catalog, so the main catalog's source (and
-/// the image's binaries built from it) is unchanged.
+/// It sits here, after the main catalog, behind the `files` feature: only
+/// `files-core` turns it on, so the image's binaries (which link this crate
+/// through `libneo`) don't compile it, nor carry its debug info.
+#[cfg(feature = "files")]
 macro_rules! files_catalog {
     ($($(#[$doc:meta])* $id:ident = $en:literal, $es:literal;)*) => {
         /// One string Files shows. The variant's position is its index into
@@ -525,9 +527,11 @@ macro_rules! files_catalog {
 /// F1a: the Files app's rows (`files-core`), in English and Spanish only: its
 /// kinds, sizes, hints, confirmations and every F0 error. A catalog of its own so the
 /// image's binaries, which link the main catalog, don't carry them: only
-/// `files-core` (linked into no image until F1b) references this table. The
-/// same rules and KATs hold for it: both tables complete, English pinned in
-/// `fixtures/en.txt`, every row in the face and inside the card.
+/// `files-core` (linked into no image until F1b) turns on the `files`
+/// feature. The same rules and KATs hold for it (`files_tests.rs`): both
+/// tables complete, English pinned in `fixtures/en-files.txt`, every row in
+/// the face and inside the card.
+#[cfg(feature = "files")]
 pub mod files {
     files_catalog! {
         FilesTitle = "Files", "Archivos";
@@ -608,3 +612,6 @@ pub mod files {
             "Los modelos son de Arthur; ninguna app los abre.";
     }
 }
+
+#[cfg(all(test, feature = "files"))]
+mod files_tests;

@@ -45,21 +45,6 @@ fn every_id_has_an_entry_in_both_tables_and_none_falls_back() {
         assert_eq!(Lang::from_index(i), Some(*lang));
     }
     assert_eq!(Lang::from_index(LANGUAGE_COUNT), None);
-    // F1a: the Files catalog, by the same rules.
-    assert_eq!(files::Msg::ALL.len(), files::MSG_COUNT);
-    for (i, &m) in files::Msg::ALL.iter().enumerate() {
-        assert_eq!(m as usize, i, "{m:?} is out of table order");
-        for lang in Lang::ALL {
-            let (s, fell_back) = files::lookup(lang, m);
-            assert!(!fell_back, "{m:?} falls back to English in {lang:?}");
-            assert!(!s.is_empty(), "{m:?} is empty in {lang:?}");
-        }
-        assert_eq!(
-            arg_count(files::text(Lang::En, m)),
-            arg_count(files::text(Lang::Es, m)),
-            "{m:?}: the two tables take different argument counts"
-        );
-    }
 }
 
 #[test]
@@ -136,7 +121,7 @@ fn indexed_slots_reorder_and_count() {
 // ---- 2. English is pinned ----
 
 /// S6a's English table, as shipped (the literals the code printed before S6b
-/// moved them here), plus the rows S6b and F1a added: one `Id<TAB>text` line per id,
+/// moved them here), plus the rows S6b added: one `Id<TAB>text` line per id,
 /// in table order. Any English wording change edits this file on purpose.
 const EN_PINNED: &str = include_str!("../fixtures/en.txt");
 
@@ -144,9 +129,6 @@ fn en_table() -> String {
     let mut out = String::new();
     for &m in Msg::ALL {
         out.push_str(&format!("{m:?}\t{}\n", text(Lang::En, m)));
-    }
-    for &m in files::Msg::ALL {
-        out.push_str(&format!("{m:?}\t{}\n", files::text(Lang::En, m)));
     }
     out
 }
@@ -193,9 +175,6 @@ fn every_character_is_in_the_face_the_text_engine_draws_with() {
         for &m in Msg::ALL {
             check(format!("{lang:?} {m:?}"), text(lang, m));
         }
-        for &m in files::Msg::ALL {
-            check(format!("{lang:?} {m:?}"), files::text(lang, m));
-        }
     }
     assert!(
         missing.is_empty(),
@@ -211,13 +190,6 @@ fn spanish_uses_only_these_non_ascii_characters() {
     let mut seen: Vec<char> = Vec::new();
     for &m in Msg::ALL {
         for c in text(Lang::Es, m).chars().chain(Lang::Es.name().chars()) {
-            if !c.is_ascii() && !seen.contains(&c) {
-                seen.push(c);
-            }
-        }
-    }
-    for &m in files::Msg::ALL {
-        for c in files::text(Lang::Es, m).chars() {
             if !c.is_ascii() && !seen.contains(&c) {
                 seen.push(c);
             }
@@ -352,40 +324,6 @@ fn widest_row(lang: Lang, m: Msg) -> String {
     }
 }
 
-/// F1a: a Files row filled with its widest numbers (a size column, the
-/// limits, an errno). Files' window is at least the card's width, so the
-/// card is the bound for these rows too.
-fn files_widest_row(lang: Lang, m: files::Msg) -> String {
-    use files::Msg::*;
-    let t = |m: files::Msg| files::text(lang, m);
-    let args: Vec<String> = match m {
-        FilesSizeBytes => vec!["1023".into()],
-        FilesSizeKb | FilesSizeMb => vec![format!("9{}9", t(FilesDecimalMark))],
-        FilesItemsMany | FilesFolderFullNote | FilesErrFolderFull => vec!["64".into()],
-        FilesNameTooLong => vec!["47".into()],
-        FilesCopyTooBig => vec!["32".into()],
-        FilesErrOther => vec!["-116".into()],
-        _ => Vec::new(),
-    };
-    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let row = fill(t(m), &refs);
-    assert_eq!(arg_count(&row), 0, "{m:?}: an argument is left unfilled");
-    row
-}
-
-/// Every row of both catalogs, filled at its widest, with its id.
-fn all_widest_rows(lang: Lang) -> Vec<(String, String)> {
-    Msg::ALL
-        .iter()
-        .map(|&m| (format!("{m:?}"), widest_row(lang, m)))
-        .chain(
-            files::Msg::ALL
-                .iter()
-                .map(|&m| (format!("{m:?}"), files_widest_row(lang, m))),
-        )
-        .collect()
-}
-
 #[test]
 fn every_row_fits_the_card_in_both_languages() {
     use neo_atrium::Layout;
@@ -397,17 +335,18 @@ fn every_row_fits_the_card_in_both_languages() {
     for (w, h) in [(1920, 1080), (1280, 800)] {
         let room = Layout::new(w, h, 640, 400).expect("layout").card_text(1).w as f32;
         for lang in Lang::ALL {
-            for (m, row) in all_widest_rows(lang) {
+            for &m in Msg::ALL {
+                let row = widest_row(lang, m);
                 let px = measure(&font, CARD_TEXT_PX, &row);
                 if px / room > widest.0 {
                     widest = (
                         px / room,
-                        format!("{w}x{h} {lang:?} {m}: {px:.1} of {room} px"),
+                        format!("{w}x{h} {lang:?} {m:?}: {px:.1} of {room} px"),
                     );
                 }
                 if px > room {
                     over.push(format!(
-                        "{w}x{h} {lang:?} {m}: {px:.1} > {room} px: {row:?}"
+                        "{w}x{h} {lang:?} {m:?}: {px:.1} > {room} px: {row:?}"
                     ));
                 }
             }
@@ -429,14 +368,11 @@ fn report_widths() {
     use neo_text::layout::measure;
     let font = neo_text::Font::from_bytes(neo_text::fonts::INTER_REGULAR).unwrap();
     let room = Layout::new(1280, 800, 640, 400).unwrap().card_text(1).w as f32;
-    for ((m, en), (_, es)) in all_widest_rows(Lang::En)
-        .into_iter()
-        .zip(all_widest_rows(Lang::Es))
-    {
-        let en = measure(&font, CARD_TEXT_PX, &en);
-        let es = measure(&font, CARD_TEXT_PX, &es);
+    for &m in Msg::ALL {
+        let en = measure(&font, CARD_TEXT_PX, &widest_row(Lang::En, m));
+        let es = measure(&font, CARD_TEXT_PX, &widest_row(Lang::Es, m));
         std::println!(
-            "WIDTH {m} {:.0} {:.0} {:.1}",
+            "WIDTH {m:?} {:.0} {:.0} {:.1}",
             en / room * 100.0,
             es / room * 100.0,
             room

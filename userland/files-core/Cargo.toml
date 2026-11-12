@@ -13,5 +13,6 @@ path = "src/lib.rs"
 doctest = false
 
 [dependencies]
-# The message catalog: every string Files shows, in English and Spanish.
-i18n-core = { path = "../i18n-core" }
+# The message catalog: every string Files shows, in English and Spanish,
+# from its `files` catalog (a feature, so the image's binaries never build it).
+i18n-core = { path = "../i18n-core", features = ["files"] }

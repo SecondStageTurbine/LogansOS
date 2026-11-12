@@ -1059,6 +1059,9 @@ jobs:
           cargo test -p settings-core --features i18n-catalog
           cargo test -p setup-core --features i18n-catalog
           cargo test -p setup-core --features i18n-catalog,keyboard-layouts
+          # F1a: the Files catalog's KATs (`i18n_core::files`, the `files`
+          # feature, which only files-core turns on).
+          cargo test -p i18n-core --features files
 
       # Sharding coverage gate: prove the 4-way neo-test partition the QEMU
       # matrix uses is complete + pairwise-disjoint, so sharding can never
