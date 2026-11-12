@@ -258,6 +258,11 @@ const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_
 const DESKTOP_TERMINAL_SHELL_BOOT_CAPTURE_REL: &str = "target/neo-test/terminal_shell_boot.ppm";
 const DESKTOP_TERMINAL_ECHO_BOOT_CAPTURE_REL: &str = "target/neo-test/terminal_echo_boot.ppm";
 const DESKTOP_TERMINAL_FLOOD_BOOT_CAPTURE_REL: &str = "target/neo-test/terminal_flood_boot.ppm";
+/// A2: the launch scenarios' end views, and where the chip scenario's
+/// numbered captures (`HMP_CAPTURE_0` + n) go.
+const DESKTOP_LAUNCH_CHIP_BOOT_CAPTURE_REL: &str = "target/neo-test/launch_chip_boot.ppm";
+const DESKTOP_LAUNCH_HOME_BOOT_CAPTURE_REL: &str = "target/neo-test/launch_home_boot.ppm";
+const DESKTOP_LAUNCH_CHIP_CAPTURES_REL: &str = "target/neo-test/launch_chip_boot";
 const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
 const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
 const DESKTOP_APPS_DROP_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_drop_boot.ppm";
@@ -739,6 +744,98 @@ const DESKTOP_TERMINAL_FLOOD_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"TERM child ended", &[HMP_SUPER_TAB]),
     step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
 ];
+/// A2, `desktop_launch_chip_boot`: clicks on the Spine's chips. Each capture
+/// is taken with the cursor parked clear of the Spine:
+/// - cap0: Arthur in front, no app running (every app chip not running);
+/// - a click on Terminal's chip launches it; cap1: the terminal in front;
+/// - a click on Arthur's chip switches back; cap2: the terminal in the
+///   background;
+/// - a click on Terminal's chip switches to it (no second terminal);
+/// - a click on Files' chip: not available, nothing spawned; cap3: its "Not
+///   yet";
+/// - a click on Arthur's chip; his `open settings` is answered, not launched;
+///   his second answer ends the session (and the terminal).
+const DESKTOP_LAUNCH_CHIP_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        &[
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_PARK,
+            HMP_PAUSE_1S,
+            HMP_CAPTURE_0,
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_TERMINAL_CHIP,
+            0x03,
+            0x04,
+        ],
+    ),
+    step(
+        b"DESKTOP apps chip look app=terminal look=front",
+        &[
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_PARK,
+            HMP_PAUSE_1S,
+            HMP_CAPTURE_0 + 1,
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_ARTHUR_CHIP,
+            0x03,
+            0x04,
+        ],
+    ),
+    step(
+        b"DESKTOP apps chip look app=terminal look=background",
+        &[
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_PARK,
+            HMP_PAUSE_1S,
+            HMP_CAPTURE_0 + 2,
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_TERMINAL_CHIP,
+            0x03,
+            0x04,
+        ],
+    ),
+    step(
+        b"DESKTOP apps chip look app=terminal look=front",
+        &[HMP_TO_ORIGIN, HMP_ORIGIN_TO_FILES_CHIP, 0x03, 0x04],
+    ),
+    step(
+        b"DESKTOP apps chip unavailable app=files",
+        &[
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_PARK,
+            HMP_PAUSE_1S,
+            HMP_CAPTURE_0 + 3,
+            HMP_TO_ORIGIN,
+            HMP_ORIGIN_TO_ARTHUR_CHIP,
+            0x03,
+            0x04,
+        ],
+    ),
+    step(
+        b"DESKTOP apps chip look app=terminal look=background",
+        b"open settings\n",
+    ),
+    step(b"DESKTOP arthur app unavailable app=settings", b"again\n"),
+];
+/// A2, `desktop_launch_home_boot`: Home's `terminal` intent launches the
+/// terminal (Arthur, with the LaunchCap, as for `open terminal`); Super+Tab
+/// back to Arthur, whose two answers end the session.
+const DESKTOP_LAUNCH_HOME_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP home ready", b"terminal"),
+    step(b"DESKTOP home keystroke ascii=108\n", b"\n"),
+    step(
+        b"DESKTOP apps front client=3 via=launch",
+        &[HMP_PAUSE_1S, HMP_SUPER_TAB],
+    ),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"hello\n"),
+    step(
+        b"DESKTOP arthur line=hello",
+        &[HMP_PAUSE_1S, b'a', b'g', b'a', b'i', b'n', b'\n'],
+    ),
+];
 /// OT-88 A1a, per-client faults: the probe app exits 7 after its first key.
 /// The WM ends that client alone and gives the front back to Arthur, whose
 /// next line is exactly `again`.
@@ -1020,7 +1117,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 52] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 54] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1179,6 +1276,19 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 52] = [
         "desktop_apps_fault_boot",
         DESKTOP_APPS_FAULT_BOOT_HID_STEPS,
         DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    // A2: launching from the Spine's chips and from Home's intent.
+    desktop(
+        "desktop_launch_chip_boot",
+        DESKTOP_LAUNCH_CHIP_BOOT_HID_STEPS,
+        DESKTOP_LAUNCH_CHIP_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_launch_home_boot",
+        DESKTOP_LAUNCH_HOME_BOOT_HID_STEPS,
+        DESKTOP_LAUNCH_HOME_BOOT_CAPTURE_REL,
         b"again\n",
     ),
     // L1a.3: the terminal window.
@@ -4190,6 +4300,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_apps_boot",
         feature: "neo-test-desktop-apps-boot",
         user_feature: Some("desktop-apps-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A2: the Spine's chips launch and switch (Terminal), say "not yet"
+        // (Files), and show each app's look.
+        name: "desktop_launch_chip_boot",
+        feature: "neo-test-desktop-launch-chip-boot",
+        user_feature: Some("desktop-launch-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A2: Home's `terminal` intent launches the terminal.
+        name: "desktop_launch_home_boot",
+        feature: "neo-test-desktop-launch-home-boot",
+        user_feature: Some("desktop-launch-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8929,7 +9056,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // L1a.3: Home's WM with the terminal in its client table.
         Some("desktop-terminal-shell-boot-test")
         | Some("desktop-terminal-echo-boot-test")
-        | Some("desktop-terminal-flood-boot-test") => {
+        | Some("desktop-terminal-flood-boot-test")
+        | Some("desktop-launch-boot-test") => {
             vec!["atrium-terminal", "desktop-home-boot-test"]
         }
         // M2: neo-init drives the encrypted scenario, so it needs the marker
@@ -9086,7 +9214,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-apps-fault-boot-test") => vec!["probe-app-exit-after-key"],
         // L1a.3: the worker is the terminal (and, spawned by it with a stdio,
         // its test child).
-        Some("desktop-terminal-shell-boot-test") => vec!["terminal-app"],
+        Some("desktop-terminal-shell-boot-test") | Some("desktop-launch-boot-test") => {
+            vec!["terminal-app"]
+        }
         Some("desktop-terminal-echo-boot-test") => vec!["terminal-test-echo"],
         // The login VM's WM has `desktop-resize` (`desktop-full`), so the
         // terminal's buffer is the size it imports.
@@ -9160,7 +9290,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("arthur-real-brain-boot-3b") => vec!["arthur-real-brain-boot-3b"],
         Some("arthur-real-brain-boot-qwen35") => vec!["arthur-real-brain-boot-qwen35"],
         // L1a.3: the terminal's shell leaves the echo and the line to it.
-        Some("desktop-terminal-shell-boot-test") => vec!["terminal-child"],
+        Some("desktop-terminal-shell-boot-test") | Some("desktop-launch-boot-test") => {
+            vec!["terminal-child"]
+        }
         _ => Vec::new(),
     };
     let arthur_features: Vec<&str> = match feature {
@@ -9276,6 +9408,13 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-terminal",
+        ],
+        // A2: and Files' and Settings' "not available yet".
+        Some("desktop-launch-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-terminal",
+            "atrium-launcher",
         ],
         Some("desktop-apps-flood-boot-test") => vec![
             "desktop-session-boot-test",
@@ -16897,6 +17036,13 @@ fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
         });
     }
     if let Some(d) = desktop_scenario(scenario_name) {
+        // A2: the chip scenario's numbered captures (the login scenarios set
+        // and clear their own; scenarios run one at a time).
+        if scenario_name == "desktop_launch_chip_boot" {
+            let dir = workspace_root().join(DESKTOP_LAUNCH_CHIP_CAPTURES_REL);
+            let _ = fs::create_dir_all(&dir);
+            *HMP_CAPTURE_DIR.lock().expect("capture dir") = Some(dir);
+        }
         return Some(ScenarioScript {
             steps: d.steps,
             transport: ScriptTransport::HmpKeyboard,
@@ -17442,6 +17588,15 @@ const HMP_SUPER_TAB: u8 = 0x9D;
 /// L1a.3: the terminal's End process (Ctrl+Shift+C) and Ctrl+D.
 const HMP_CTRL_SHIFT_C: u8 = 0xB0;
 const HMP_CTRL_D: u8 = 0xB1;
+/// A2: the cursor to the screen's top-left (the WM clamps it there), then
+/// from there to a Spine chip's centre on a 1920x1080 desktop without the
+/// Install chip (Arthur's 42,78; the app chips' 42,234 / 42,312 / 42,390), or
+/// to a parking spot clear of the Spine (1200,900) for a capture.
+const HMP_TO_ORIGIN: u8 = 0xB2;
+const HMP_ORIGIN_TO_ARTHUR_CHIP: u8 = 0xB3;
+const HMP_ORIGIN_TO_TERMINAL_CHIP: u8 = 0xB4;
+const HMP_ORIGIN_TO_FILES_CHIP: u8 = 0xB5;
+const HMP_ORIGIN_TO_PARK: u8 = 0xB6;
 
 /// usb_hotplug: plug (root port 2), type, unplug, re-plug (behind the hub,
 /// port 1.1), type. Each prompt is printed
@@ -17563,6 +17718,11 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         HMP_FROM_INSTALL_CHIP => Some("mouse_move 794 383\n"),
         HMP_SUPER_L => Some("sendkey meta_l-l\n"),
         HMP_SUPER_ESCAPE => Some("sendkey meta_l-esc\n"),
+        HMP_TO_ORIGIN => Some("mouse_move -4000 -4000\n"),
+        HMP_ORIGIN_TO_ARTHUR_CHIP => Some("mouse_move 42 78\n"),
+        HMP_ORIGIN_TO_TERMINAL_CHIP => Some("mouse_move 42 234\n"),
+        HMP_ORIGIN_TO_FILES_CHIP => Some("mouse_move 42 312\n"),
+        HMP_ORIGIN_TO_PARK => Some("mouse_move 1200 900\n"),
         _ => None,
     }
 }
@@ -22002,6 +22162,12 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     ) {
         require_terminal_pass(scenario, observed)?;
     }
+    if scenario.name == "desktop_launch_chip_boot" {
+        launch_chip_checks(scenario, observed)?;
+    }
+    if scenario.name == "desktop_launch_home_boot" {
+        launch_home_checks(scenario, observed)?;
+    }
     if scenario.name == "desktop_scroll_boot" {
         let serial = read_serial(observed)?;
         check_scroll_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
@@ -24967,6 +25133,116 @@ fn require_lens_capture(
 /// L1a.3: the terminal scenarios' serial witness. The terminal reads its
 /// grid back as `TERM row=N |text|` lines (only the rows that changed); the
 /// child's own output never reaches serial, only the grid.
+/// A2's chip boxes on a 1920x1080 Spine without the Install chip (neo-atrium's
+/// layout): each chip, its label box (icon and name) and the dot under it.
+const LAUNCH_ARTHUR_DOT: (usize, usize, usize, usize) = (38, 112, 8, 8);
+const LAUNCH_APP_CHIP: [(usize, usize, usize, usize); 3] =
+    [(14, 206, 56, 56), (14, 284, 56, 56), (14, 362, 56, 56)];
+const LAUNCH_APP_DOT: [(usize, usize, usize, usize); 3] =
+    [(38, 268, 8, 8), (38, 346, 8, 8), (38, 424, 8, 8)];
+
+/// The pixels of `r` in a capture.
+fn capture_box(raster: &[u8], (x, y, w, h): (usize, usize, usize, usize)) -> Vec<u32> {
+    let mut out = Vec::with_capacity(w * h);
+    for yy in y..y + h {
+        for xx in x..x + w {
+            out.push(rgb(raster, xx, yy));
+        }
+    }
+    out
+}
+
+/// A2: the chips launch and switch, Files' says "not yet" and spawns nothing,
+/// Settings' intent is answered, and the captures show each look: the
+/// terminal's dot absent (cap0), front (cap1) and background (cap2), all
+/// three different, its chip otherwise unchanged; Arthur's grey dot only
+/// while the terminal is in front; Files' label changed only by its note
+/// (cap3), its dot never set; Settings' chip unchanged throughout.
+fn launch_chip_checks(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    let detail = "A2: the Spine's chips";
+    require_serial_sequence(
+        scenario,
+        observed,
+        &[
+            "DESKTOP arthur answer composited round=1",
+            "DESKTOP apps client connected client=3 value=1",
+            "DESKTOP apps front client=3 via=launch",
+            "DESKTOP apps chip app=terminal status=0",
+            "DESKTOP apps chip look app=terminal look=front",
+            "DESKTOP apps front client=0 via=chip",
+            "DESKTOP apps chip look app=terminal look=background",
+            "DESKTOP apps front client=3 via=launch",
+            "DESKTOP apps chip app=terminal status=0",
+            "DESKTOP apps chip look app=terminal look=front",
+            "DESKTOP apps chip unavailable app=files",
+            "DESKTOP apps front client=0 via=chip",
+            "DESKTOP arthur app unavailable app=settings",
+            "DESKTOP apps client ended client=3 value=0",
+        ],
+        detail,
+    )?;
+    let serial = read_serial(observed)?;
+    let spawned = serial.matches("DESKTOP apps client connected").count();
+    if spawned != 1 {
+        return Err(format!(
+            "`{}`: {spawned} clients connected; the terminal is spawned once (its running chip switches) and Files and Settings never: serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
+    }
+    let mut caps = Vec::new();
+    for n in 0..4 {
+        let rel = format!("{DESKTOP_LAUNCH_CHIP_CAPTURES_REL}/cap{n}.ppm");
+        let (_, raster) = load_capture(scenario, &rel, ("chip capture", "chip capture", ""))?;
+        caps.push(raster);
+    }
+    let fail = |what: &str| Err(format!("`{}`: {what} ({detail})", scenario.name));
+    let dot = |c: usize, i: usize| capture_box(&caps[c], LAUNCH_APP_DOT[i]);
+    let chip = |c: usize, i: usize| capture_box(&caps[c], LAUNCH_APP_CHIP[i]);
+    let arthur = |c: usize| capture_box(&caps[c], LAUNCH_ARTHUR_DOT);
+    if dot(0, 0) == dot(1, 0) || dot(1, 0) == dot(2, 0) || dot(0, 0) == dot(2, 0) {
+        return fail(
+            "the terminal chip's three looks must differ (not running, front, background)",
+        );
+    }
+    if dot(1, 0) != dot(3, 0) {
+        return fail("the terminal in front looks the same each time (cap1 and cap3)");
+    }
+    if chip(0, 0) != chip(1, 0) || chip(1, 0) != chip(2, 0) {
+        return fail("the terminal chip itself must not change with its look, only its dot");
+    }
+    if arthur(0) == arthur(1) || arthur(0) != arthur(2) || arthur(1) != arthur(3) {
+        return fail("Arthur's dot must show only while another client is in front");
+    }
+    if (0..3).any(|c| dot(c, 1) != dot(0, 1)) || dot(3, 1) != dot(0, 1) {
+        return fail("Files' dot must never show: nothing was spawned for it");
+    }
+    if (1..3).any(|c| chip(c, 1) != chip(0, 1)) || chip(3, 1) == chip(0, 1) {
+        return fail("Files' chip changes only when its note says it isn't available");
+    }
+    if (1..4).any(|c| chip(c, 2) != chip(0, 2) || dot(c, 2) != dot(0, 2)) {
+        return fail("Settings' chip must not change");
+    }
+    Ok(())
+}
+
+/// A2: Home's `terminal` intent launches the terminal through Arthur.
+fn launch_home_checks(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    require_serial_sequence(
+        scenario,
+        observed,
+        &[
+            "DESKTOP arthur line=terminal",
+            "DESKTOP apps client connected client=3 value=1",
+            "DESKTOP apps front client=3 via=launch",
+            "DESKTOP arthur terminal opened",
+            "DESKTOP apps front client=0 via=sak-tab",
+            "DESKTOP apps client ended client=3 value=0",
+        ],
+        "A2: Home's `terminal` intent",
+    )
+}
+
 fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
     let detail = "L1a.3: the terminal window";
     let middle: &[&str] = match scenario.name {

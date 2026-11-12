@@ -601,6 +601,10 @@ const SCENARIO: &str = "desktop_apps_fault_boot";
 /// L1a.3: the pointer session with the terminal window as a second client.
 #[cfg(feature = "neo-test-desktop-terminal-shell-boot")]
 const SCENARIO: &str = "desktop_terminal_shell_boot";
+#[cfg(feature = "neo-test-desktop-launch-chip-boot")]
+const SCENARIO: &str = "desktop_launch_chip_boot";
+#[cfg(feature = "neo-test-desktop-launch-home-boot")]
+const SCENARIO: &str = "desktop_launch_home_boot";
 #[cfg(feature = "neo-test-desktop-terminal-echo-boot")]
 const SCENARIO: &str = "desktop_terminal_echo_boot";
 #[cfg(feature = "neo-test-desktop-terminal-flood-boot")]
@@ -686,6 +690,11 @@ const DESKTOP_PASS: &str =
 const DESKTOP_PASS: &str = "desktop_browser_boot=ok view=home clients=arthur,browser page=oracle_640x400 screen=hand_derived_frame";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
+#[cfg(feature = "neo-test-desktop-launch-chip-boot")]
+const DESKTOP_PASS: &str = "desktop_launch_chip_boot=ok view=home clients=arthur,terminal chips=launch_switch_unavailable looks=capture_digests";
+#[cfg(feature = "neo-test-desktop-launch-home-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_launch_home_boot=ok view=home clients=arthur,terminal intent=home_terminal";
 #[cfg(feature = "neo-test-desktop-terminal-shell-boot")]
 const DESKTOP_PASS: &str = "desktop_terminal_shell_boot=ok view=home clients=arthur,terminal child=neo-shell stdio=pipes_and_term_page keys=front_client_only terminal_end=with_session";
 #[cfg(feature = "neo-test-desktop-terminal-echo-boot")]
