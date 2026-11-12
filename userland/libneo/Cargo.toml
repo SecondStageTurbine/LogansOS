@@ -43,6 +43,9 @@ atrium-yield = []
 atrium-launch = []
 # S2-F2: OP_COMMIT_DAMAGE (a commit that names its changed rect).
 atrium-damage = []
+# L1a.3: MODULE_TERMINAL names a spawn (`docs/THINK-2026-10-31-l1a-terminal-window.md`
+# §7: off, the terminal's module id names nothing).
+atrium-terminal = ["atrium-launch"]
 # DI-1b resize: the WM-to-client configure mailbox; the client acks with
 # OP_CONFIGURE (from dw2-scene-policy), and damage is bounded by the
 # configured size.

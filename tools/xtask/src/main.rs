@@ -272,6 +272,9 @@ const DESKTOP_BROWSER_BOOT_MID_REL: &str = "target/neo-test/desktop_browser_boot
 /// commit before it replies, and the browser logs this on the reply.
 const DESKTOP_BROWSER_FRONT_PROMPT: &[u8] = b"[ neo-browser ] ok(96) the WM took the page frame";
 const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_fault_boot.ppm";
+const DESKTOP_TERMINAL_SHELL_BOOT_CAPTURE_REL: &str = "target/neo-test/terminal_shell_boot.ppm";
+const DESKTOP_TERMINAL_ECHO_BOOT_CAPTURE_REL: &str = "target/neo-test/terminal_echo_boot.ppm";
+const DESKTOP_TERMINAL_FLOOD_BOOT_CAPTURE_REL: &str = "target/neo-test/terminal_flood_boot.ppm";
 const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
 const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
 const DESKTOP_APPS_DROP_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_drop_boot.ppm";
@@ -702,6 +705,57 @@ const DESKTOP_BROWSER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(DESKTOP_BROWSER_FRONT_PROMPT, &[HMP_SUPER_TAB]),
     step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
 ];
+/// L1a.3: the terminal window, opened from Home by Arthur's `open terminal`.
+/// Its `neo-shell` prompt is on the grid (`TERM row=` lines, the terminal's
+/// read-back); `echo hi` and Enter, typed into it, print `hi` and the next
+/// prompt. Super+Tab gives the front back to Arthur, whose next line is
+/// exactly `again` (none of the terminal's keys reached him); his second
+/// answer ends the session, and the terminal and its shell with it.
+const DESKTOP_TERMINAL_SHELL_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open terminal\n",
+    ),
+    step(b"TERM row=1 |neo>|", b"echo hi\n"),
+    step(b"TERM row=3 |neo>|", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
+];
+/// L1a.3: cooked mode with echo, every child's start (THINK §4). A plain
+/// child reports each line's bytes: `ab` shows at once (the terminal's echo)
+/// and reaches the child only at Enter, exactly `61 62 0a`; Ctrl+D on the
+/// empty line closes its stdin, and it reads EOF and exits 0.
+const DESKTOP_TERMINAL_ECHO_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open terminal\n",
+    ),
+    step(b"TERM row=0 |child ready|", b"ab\n"),
+    step(b"TERM row=2 |got=61620a|", &[HMP_CTRL_D]),
+    step(b"TERM child exited value=0", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
+];
+/// L1a.3, `terminal_output_flood` (THINK §3.3): the child writes 10 MiB; a
+/// second into the flood, End process (Ctrl+Shift+C) ends it, and the
+/// terminal lives on.
+const DESKTOP_TERMINAL_FLOOD_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open terminal\n",
+    ),
+    // `flood start` scrolls off before the first dump: the turn is the cue.
+    step(
+        b"TERM turn n=1",
+        &[HMP_PAUSE_1S, HMP_PAUSE_1S, HMP_CTRL_SHIFT_C],
+    ),
+    step(b"TERM child ended", &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
+];
 /// OT-88 A1a, per-client faults: the probe app exits 7 after its first key.
 /// The WM ends that client alone and gives the front back to Arthur, whose
 /// next line is exactly `again`.
@@ -989,7 +1043,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 51] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 54] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1148,6 +1202,25 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 51] = [
         "desktop_apps_fault_boot",
         DESKTOP_APPS_FAULT_BOOT_HID_STEPS,
         DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    // L1a.3: the terminal window.
+    desktop(
+        "desktop_terminal_shell_boot",
+        DESKTOP_TERMINAL_SHELL_BOOT_HID_STEPS,
+        DESKTOP_TERMINAL_SHELL_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_terminal_echo_boot",
+        DESKTOP_TERMINAL_ECHO_BOOT_HID_STEPS,
+        DESKTOP_TERMINAL_ECHO_BOOT_CAPTURE_REL,
+        b"again\n",
+    ),
+    desktop(
+        "desktop_terminal_flood_boot",
+        DESKTOP_TERMINAL_FLOOD_BOOT_HID_STEPS,
+        DESKTOP_TERMINAL_FLOOD_BOOT_CAPTURE_REL,
         b"again\n",
     ),
     desktop(
@@ -2755,6 +2828,7 @@ fn scenario_timeout(name: &str) -> Duration {
         | "login_lock_idle"
         | "login_lock_stall"
         | "login_lock_park"
+        | "login_terminal_lock"
         | "login_settings_store"
         | "login_settings_refused"
         | "login_arthur_permission" => Duration::from_secs(600),
@@ -4133,6 +4207,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // L1a.3 (terminal_lock_park): keys typed while the session is locked
+        // never reach the terminal window or its child.
+        name: login_scenarios::LOGIN_TERMINAL_LOCK_SCENARIO,
+        feature: "neo-test-terminal-lock",
+        user_feature: Some("lock-terminal-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // F11 S2: the setup menu over two boots. Boot 1 walks it (both
         // Comfort options on), each choice written to the store and read
         // back by digest, then makes the account; boot 2 finds the record,
@@ -4262,6 +4345,31 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "desktop_apps_boot",
         feature: "neo-test-desktop-apps-boot",
         user_feature: Some("desktop-apps-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1a.3: the terminal window from Home, its neo-shell on the grid,
+        // `echo hi` round-tripped, the front back to Arthur.
+        name: "desktop_terminal_shell_boot",
+        feature: "neo-test-desktop-terminal-shell-boot",
+        user_feature: Some("desktop-terminal-shell-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1a.3: cooked echo, the line delivered at Enter, Ctrl+D's EOF.
+        name: "desktop_terminal_echo_boot",
+        feature: "neo-test-desktop-terminal-echo-boot",
+        user_feature: Some("desktop-terminal-echo-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // L1a.3, terminal_output_flood: End process lands mid-flood.
+        name: "desktop_terminal_flood_boot",
+        feature: "neo-test-desktop-terminal-flood-boot",
+        user_feature: Some("desktop-terminal-flood-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8948,6 +9056,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("lock-spawn-test") => vec!["lock-spawn-test", "desktop-busy"],
         Some("lock-stall-test") => vec!["lock-stall-test", "desktop-busy"],
         Some("lock-park-test") => vec!["lock-park-test", "desktop-busy"],
+        // L1a.3: the lock with the terminal window in the client table.
+        Some("lock-terminal-test") => vec!["lock-terminal-test", "desktop-busy"],
         Some("settings-boot-test") => vec!["settings-boot-test", "desktop-busy"],
         Some("settings-refused-test") => vec!["settings-refused-test", "desktop-busy"],
         Some("settings-authority-control") => vec!["settings-authority-control", "desktop-busy"],
@@ -8988,6 +9098,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // OT-61 L5: the same, with the browser's slot.
         Some("desktop-browser-boot-test") => {
             vec!["atrium-apps-browser", "desktop-home-boot-test"]
+        }
+        // L1a.3: Home's WM with the terminal in its client table.
+        Some("desktop-terminal-shell-boot-test")
+        | Some("desktop-terminal-echo-boot-test")
+        | Some("desktop-terminal-flood-boot-test") => {
+            vec!["atrium-terminal", "desktop-home-boot-test"]
         }
         // M2: neo-init drives the encrypted scenario, so it needs the marker
         // feature that selects the falsifiable driver (arthur_memory_encrypted_tests).
@@ -9141,6 +9257,14 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-drag-cross-boot-test")
         | Some("desktop-drag-cross-control-boot-test") => vec!["probe-app"],
         Some("desktop-apps-fault-boot-test") => vec!["probe-app-exit-after-key"],
+        // L1a.3: the worker is the terminal (and, spawned by it with a stdio,
+        // its test child).
+        Some("desktop-terminal-shell-boot-test") => vec!["terminal-app"],
+        Some("desktop-terminal-echo-boot-test") => vec!["terminal-test-echo"],
+        // The login VM's WM has `desktop-resize` (`desktop-full`), so the
+        // terminal's buffer is the size it imports.
+        Some("lock-terminal-test") => vec!["terminal-test-echo", "desktop-resize"],
+        Some("desktop-terminal-flood-boot-test") => vec!["terminal-test-flood"],
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
         Some("desktop-apps-drop-boot-test") => vec!["probe-app-drop-reply"],
@@ -9207,6 +9331,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("arthur-real-brain-boot-15b") => vec!["arthur-real-brain-boot-15b"],
         Some("arthur-real-brain-boot-3b") => vec!["arthur-real-brain-boot-3b"],
         Some("arthur-real-brain-boot-qwen35") => vec!["arthur-real-brain-boot-qwen35"],
+        // L1a.3: the terminal's shell leaves the echo and the line to it.
+        Some("desktop-terminal-shell-boot-test") => vec!["terminal-child"],
         _ => Vec::new(),
     };
     let arthur_features: Vec<&str> = match feature {
@@ -9315,6 +9441,14 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-home",
             "atrium-apps-browser",
         ],
+        // L1a.3: Home's Arthur, who opens the terminal on `open terminal`.
+        Some("desktop-terminal-shell-boot-test")
+        | Some("desktop-terminal-echo-boot-test")
+        | Some("desktop-terminal-flood-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-terminal",
+        ],
         Some("desktop-apps-flood-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
@@ -9375,6 +9509,18 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "arthur-busy-emblem",
             "arthur-scrollback",
             "arthur-lock-park-test",
+        ],
+        // L1a.3: the lock's Arthur (the same build as the other lock tests',
+        // which the login image's WM expects: its buffer import is refused
+        // without `desktop-resize`), who opens the terminal on `open terminal`.
+        Some("lock-terminal-test") => vec![
+            "desktop-session",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "arthur-busy-emblem",
+            "arthur-scrollback",
+            "atrium-terminal",
         ],
         Some("settings-boot-test") | Some("settings-wm-only-control") => vec![
             "desktop-session",
@@ -12024,7 +12170,31 @@ fn print_serial_tail(err: &str) {
     for line in &lines[start..] {
         eprintln!("[serial] {line}");
     }
+    // L1a.3: the terminal's read-back and the WM's, Arthur's, the lock's and
+    // the login's lines from the whole log (bounded), which the tail cuts off.
+    let witness: Vec<&&str> = lines[..start]
+        .iter()
+        .filter(|l| {
+            ["TERM ", "DESKTOP ", "LOCK ", "LOGIN "]
+                .iter()
+                .any(|p| l.starts_with(p))
+        })
+        .collect();
+    if err.contains("terminal") {
+        let skip = witness.len().saturating_sub(SERIAL_WITNESS_LINES);
+        eprintln!(
+            "[xtask] neo-test: {} earlier TERM/DESKTOP/LOCK line(s) of {path}:",
+            witness.len() - skip
+        );
+        for line in &witness[skip..] {
+            eprintln!("[serial] {line}");
+        }
+    }
 }
+
+/// The earlier witness lines [`print_serial_tail`] adds for a terminal
+/// scenario.
+const SERIAL_WITNESS_LINES: usize = 150;
 
 fn run_aarch64_barrier_scenario_with_retries(scenario: TestScenario) -> Result<(), String> {
     let mut previous_error = None;
@@ -12094,6 +12264,19 @@ fn run_two_boot_scenario_with_retries(
                     "[xtask] neo-test: `{}` two-boot attempt {}/{} failed: {}",
                     scenario.name, attempt, attempts, err
                 );
+                if err.contains("serial=") {
+                    print_serial_tail(&err);
+                } else {
+                    // A timeout names no log: the first boot's (a hang is
+                    // usually there; best-effort).
+                    let boot1 = scenario_serial_log(&format!(
+                        "{}{}.attempt{}.boot1.serial.log",
+                        scenario.name,
+                        neo_test_run_id_suffix(),
+                        attempt
+                    ));
+                    print_serial_tail(&format!("{err}; serial={}", boot1.display()));
+                }
                 eprintln!(
                     "[xtask] neo-test: retrying `{}` with a freshly seeded persistence disk",
                     scenario.name
@@ -17325,6 +17508,9 @@ const HMP_CAPTURES: u8 = 5;
 static HMP_CAPTURE_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 /// OT-88 A1a: Super+Tab, the SAK's "next window" (Super first, as for 0x02).
 const HMP_SUPER_TAB: u8 = 0x9D;
+/// L1a.3: the terminal's End process (Ctrl+Shift+C) and Ctrl+D.
+const HMP_CTRL_SHIFT_C: u8 = 0xB0;
+const HMP_CTRL_D: u8 = 0xB1;
 
 /// usb_hotplug: plug (root port 2), type, unplug, re-plug (behind the hub,
 /// port 1.1), type. Each prompt is printed
@@ -17364,6 +17550,8 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
     match byte {
         0x02 => Some("sendkey meta_l-esc\n"),
         HMP_SUPER_TAB => Some("sendkey meta_l-tab\n"),
+        HMP_CTRL_SHIFT_C => Some("sendkey ctrl-shift-c\n"),
+        HMP_CTRL_D => Some("sendkey ctrl-d\n"),
         0x03 => Some("mouse_button 1\n"),
         0x04 => Some("mouse_button 0\n"),
         0x05 => Some("mouse_move 7 3\n"),
@@ -21855,6 +22043,14 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
         )?;
     }
+    if matches!(
+        scenario.name,
+        "desktop_terminal_shell_boot"
+            | "desktop_terminal_echo_boot"
+            | "desktop_terminal_flood_boot"
+    ) {
+        require_terminal_pass(scenario, observed)?;
+    }
     if scenario.name == "desktop_scroll_boot" {
         let serial = read_serial(observed)?;
         check_scroll_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
@@ -24901,6 +25097,110 @@ fn require_lens_capture(
             content_at_fixture: true,
         },
     )
+}
+
+/// L1a.3: the terminal scenarios' serial witness. The terminal reads its
+/// grid back as `TERM row=N |text|` lines (only the rows that changed); the
+/// child's own output never reaches serial, only the grid.
+fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    let detail = "L1a.3: the terminal window";
+    let middle: &[&str] = match scenario.name {
+        "desktop_terminal_shell_boot" => &[
+            "TERM row=0 |[ neo-shell ] ready|",
+            "TERM row=1 |neo>|",
+            "TERM row=1 |neo> echo hi|",
+            "TERM row=2 |hi|",
+            "TERM row=3 |neo>|",
+        ],
+        "desktop_terminal_echo_boot" => &[
+            "TERM row=0 |child ready|",
+            // The terminal's echo, before the line reaches the child.
+            "TERM row=1 |ab|",
+            // What reached the child's stdin: exactly `ab` and the newline.
+            "TERM row=2 |got=61620a|",
+            "TERM stdin closed",
+            // `child eof` is drawn at the commit of the wake that read it,
+            // which can be the wake that saw the exit (whose line comes
+            // first): it is checked present below, not ordered.
+            "TERM child exited value=0",
+            "TERM row=5 |[process exited 0]|",
+        ],
+        _ => &["TERM end-process wake=", "TERM child ended wake="],
+    };
+    // The WM's lines, in order.
+    require_serial_sequence(
+        scenario,
+        observed,
+        &[
+            "DESKTOP launchcap minted client=arthur",
+            "DESKTOP arthur line=open terminal",
+            "DESKTOP apps client connected client=2 value=1",
+            "DESKTOP apps front client=2 via=launch",
+            "DESKTOP apps front client=0",
+            // Exactly `again`: a key of the terminal's would be in it.
+            "DESKTOP arthur line=again\n",
+        ],
+        detail,
+    )?;
+    // The terminal's own lines, in order (another process's, so not ordered
+    // against the WM's).
+    let mut sequence = vec!["TERM ready cols=", "TERM turn n=1 discarded="];
+    sequence.extend_from_slice(middle);
+    require_serial_sequence(scenario, observed, &sequence, detail)?;
+    for needle in [
+        "TERM ready cols=",
+        "DESKTOP arthur terminal opened",
+        // The session's end closes the terminal, which exits 0.
+        "DESKTOP apps client ended client=2 value=0",
+    ] {
+        require_serial_contains(scenario, observed, needle, detail)?;
+    }
+    if scenario.name == "desktop_terminal_echo_boot" {
+        require_serial_contains(scenario, observed, "TERM row=3 |child eof|", detail)?;
+    }
+    // The child's stdio is the terminal's: its banner is on the grid only.
+    require_serial_absent(scenario, observed, "\n[ neo-shell ] ready", detail)?;
+    require_serial_absent(scenario, observed, "\nchild ready", detail)?;
+    if scenario.name == "desktop_terminal_flood_boot" {
+        let serial = read_serial(observed)?;
+        check_terminal_flood(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
+    }
+    require_framebuffer_capture(
+        scenario,
+        desktop_scenario(scenario.name).map_or(DESKTOP_HOME_BOOT_CAPTURE_REL, |d| d.capture),
+    )
+}
+
+/// `terminal_output_flood` (THINK §3.3): End process was served while the
+/// 10 MiB flood ran (the child never finished it), and the child was seen
+/// ended within two wakes of the kill.
+fn check_terminal_flood(serial: &str) -> Result<(), String> {
+    if serial.contains("flood done") {
+        return Err("the flood finished before End process: not run mid-flood".into());
+    }
+    let wake = |prefix: &str| -> Result<u64, String> {
+        let at = serial
+            .find(prefix)
+            .ok_or_else(|| format!("missing `{prefix}`"))?;
+        let digits: String = serial[at + prefix.len()..]
+            .chars()
+            .take_while(char::is_ascii_digit)
+            .collect();
+        digits
+            .parse()
+            .map_err(|_| format!("`{prefix}` has no wake count"))
+    };
+    let killed = wake("TERM end-process wake=")?;
+    let ended = wake("TERM child ended wake=")?;
+    if ended < killed || ended - killed > 2 {
+        return Err(format!(
+            "End process at wake {killed}, the child seen ended at wake {ended} (more than 2 wakes)"
+        ));
+    }
+    if !serial.contains("|[process exited: ended]|") {
+        return Err("the grid never showed `[process exited: ended]`".into());
+    }
+    Ok(())
 }
 
 fn read_serial(observed: &ObservedTest) -> Result<String, String> {

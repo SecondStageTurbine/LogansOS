@@ -35,6 +35,11 @@
 //! - `login_lock_park` (L2b, kernel `sak-lock-route`): Super+L while the WM
 //!   is parked in a send to Arthur locks the kernel's route at once; the key
 //!   typed after it never reaches Arthur, and the lock screen follows.
+//! - `login_terminal_lock` (L1a.3, `terminal_lock_park` in
+//!   THINK-2026-10-31-l1a §6): in the terminal window, cooked mode, the child
+//!   reporting what it reads: `ab`, Super+L, `x` and Enter (the lock's
+//!   password field: a wrong password), the password, unlock, `c` and Enter.
+//!   The child receives exactly `abc\n`.
 
 use super::*;
 
@@ -46,6 +51,7 @@ pub const LOGIN_LOCK_SESSION_SCENARIO: &str = "login_lock_session";
 pub const LOGIN_LOCK_IDLE_SCENARIO: &str = "login_lock_idle";
 pub const LOGIN_LOCK_STALL_SCENARIO: &str = "login_lock_stall";
 pub const LOGIN_LOCK_PARK_SCENARIO: &str = "login_lock_park";
+pub const LOGIN_TERMINAL_LOCK_SCENARIO: &str = "login_terminal_lock";
 pub const SETTINGS_STORE_SCENARIO: &str = "login_settings_store";
 pub const SETTINGS_CUT_SCENARIO: &str = "login_settings_cut";
 pub const SETTINGS_REFUSED_SCENARIO: &str = "login_settings_refused";
@@ -84,6 +90,7 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | LOGIN_LOCK_IDLE_SCENARIO
             | LOGIN_LOCK_STALL_SCENARIO
             | LOGIN_LOCK_PARK_SCENARIO
+            | LOGIN_TERMINAL_LOCK_SCENARIO
             | SETTINGS_STORE_SCENARIO
             | SETTINGS_CUT_SCENARIO
             | SETTINGS_REFUSED_SCENARIO
@@ -404,6 +411,28 @@ const LOCK_PARK: &[SerialScriptStep] = &[
     step(b"LOCK prompt=password", P1),
 ];
 
+/// `login_terminal_lock` (L1a.3): the account; `open terminal` from Home
+/// (Arthur opens it); `ab` into the terminal's cooked line, Super+L, then `x`
+/// and Enter into the lock's password field (wrong), the password; after the
+/// unlock gives the terminal its turn back, `c` and Enter. Then a second lock
+/// and unlock end the boot (`UNLOCKS` = 2).
+const TERMINAL_LOCK: &[SerialScriptStep] = &[
+    step(b"LOGIN prompt=name", b"ada\n"),
+    step(b"LOGIN prompt=choose", P1),
+    step(b"LOGIN prompt=again", P1),
+    step(b"LOGIN prompt=code", b"\n"),
+    step(b"LOGIN session started view=home", b"open terminal\n"),
+    step(
+        b"TERM row=0 |child ready|",
+        &[b'a', b'b', PAUSE, HMP_SUPER_L],
+    ),
+    step(b"LOCK prompt=password", b"x\n"),
+    step(b"LOCK prompt=password", P1),
+    step(b"DESKTOP apps client resumed client=2", b"c\n"),
+    step(b"TERM row=2 |got=6162630a|", &[PAUSE, HMP_SUPER_L]),
+    step(b"LOCK prompt=password", P1),
+];
+
 /// `login_settings_store` (OT-88 S1), boot 1: the account, then Arthur launched
 /// from Home sets its settings by itself (the boot test's stand-in for the
 /// settings app); the idle lock (5, set by the WM: 20 s in the boot test)
@@ -690,7 +719,8 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         LOGIN_LOCK_SESSION_SCENARIO
         | LOGIN_LOCK_IDLE_SCENARIO
         | LOGIN_LOCK_STALL_SCENARIO
-        | LOGIN_LOCK_PARK_SCENARIO => {
+        | LOGIN_LOCK_PARK_SCENARIO
+        | LOGIN_TERMINAL_LOCK_SCENARIO => {
             lock(scenario, attempt, &dir, &ovmf, &vars, &boot_disk, &data)?
         }
         SETTINGS_STORE_SCENARIO => {
@@ -1179,6 +1209,7 @@ fn lock(
     let session = scenario.name == LOGIN_LOCK_SESSION_SCENARIO;
     let stall = scenario.name == LOGIN_LOCK_STALL_SCENARIO;
     let park = scenario.name == LOGIN_LOCK_PARK_SCENARIO;
+    let terminal = scenario.name == LOGIN_TERMINAL_LOCK_SCENARIO;
     *HMP_CAPTURE_DIR.lock().expect("capture dir") = Some(dir.to_path_buf());
     let observed = boot(
         scenario,
@@ -1194,6 +1225,8 @@ fn lock(
             LOCK_STALL
         } else if park {
             LOCK_PARK
+        } else if terminal {
+            TERMINAL_LOCK
         } else {
             LOCK_IDLE
         }),
@@ -1206,6 +1239,8 @@ fn lock(
         lock_stall_checks(scenario, &observed)
     } else if park {
         lock_park_checks(scenario, &observed)
+    } else if terminal {
+        terminal_lock_checks(scenario, &observed)
     } else {
         lock_idle_checks(scenario, &observed)
     }
@@ -1710,6 +1745,45 @@ fn lock_park_checks(scenario: TestScenario, observed: &ObservedTest) -> Result<(
             "LOCK boot test done",
         ],
         "with the WM parked in a send to Arthur, Super+L must lock the kernel's route; the lock screen follows the park, then unlock returns the focus to Arthur",
+    )
+}
+
+/// L1a.3 (`terminal_lock_park`, THINK-2026-10-31-l1a §6): no key typed while
+/// locked reached the terminal or its child. The child reports each line it
+/// reads as `got=` and its bytes in hex; it read exactly one line, `abc\n`:
+/// `ab` from before the lock (kept in the terminal's cooked line), `c` and
+/// Enter from after the unlock, and nothing of the `x` typed while locked.
+fn terminal_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let lines: Vec<&str> = serial
+        .lines()
+        .filter_map(|l| l.split_once("|got=").map(|(_, rest)| rest))
+        .collect();
+    if lines != ["6162630a|"] {
+        return Err(format!(
+            "`{}`: the terminal's child must read exactly `abc\\n` (got=6162630a), not a key typed while locked: {lines:?}; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
+    }
+    require_serial_sequence(
+        scenario,
+        observed,
+        &[
+            "LOCK armed route=kernel",
+            "LOGIN session started view=home",
+            "DESKTOP apps front client=2 via=launch",
+            "TERM row=1 |ab|",
+            "LOCK locked reason=sak",
+            "LOCK prompt=password",
+            "LOCK unlocked failures=1 to=client",
+            "DESKTOP apps client resumed client=2",
+            "TERM row=1 |abc|",
+            "TERM row=2 |got=6162630a|",
+            "LOCK unlocked failures=0 to=client",
+            "LOCK boot test done",
+        ],
+        "L1a.3: what is typed while the session is locked never reaches the terminal or its child; the unlock gives the terminal its turn back",
     )
 }
 
