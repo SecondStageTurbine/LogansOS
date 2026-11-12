@@ -1197,6 +1197,12 @@ neo-test-desktop-drag-cross-control-boot = ["neo-test-desktop-pointer", "ipc-try
 # with it faulting; kernel-identical to desktop_pointer_boot (the WM's polling
 # loop needs SYS_TRY_RECV and the SAK), only the userland build differs.
 neo-test-desktop-apps-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+# OT-61 L5: the same session, with the browser (a real-std client,
+# /modules/neo-browser) as the client Arthur opens. browser-runtime: its
+# threads (SYS_THREAD_CREATE, a BrowserRuntime handle neo-init passes on);
+# kernel-rng: std's HashMap RandomState; mem-quota: the browser's own
+# bounded frame account (SYS_SPAWN_BUDGETED, 256 MiB, neo-init).
+neo-test-desktop-browser-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "browser-runtime", "kernel-rng", "mem-quota"]
 neo-test-desktop-apps-fault-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # The WM-liveness legs (app-model THINK §2.3 items 7, 8): a probe app that
 # never receives its reply, one that never finishes its handshake, and one

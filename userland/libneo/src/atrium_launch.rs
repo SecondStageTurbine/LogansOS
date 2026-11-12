@@ -35,6 +35,14 @@ pub const MODULE_LENS: u32 = 3;
 /// scenarios (`neo-worker` built with `probe-app`). Ids 4-7 are the apps'
 /// (`docs/THINK-2026-10-29-ot88-app-model.md` §2.3, item 5).
 pub const MODULE_PROBE_APP: u32 = 8;
+/// OT-61 L5: the browser, a real-std client (`/modules/neo-browser`, the
+/// `neo-browser` bin of `userland/layout-smoke`), one of the apps' ids 4-7.
+/// The kernel resolves its name like any module's (`/neo-<name>`).
+pub const MODULE_BROWSER: u32 = 5;
+/// The browser's surface namespace and buffer provenance ("BRWSAP" and
+/// "BRWSBU", as the probe app's spell PROBAP and PROBBU).
+pub const BROWSER_NAMESPACE: u64 = 0x4252_5753_4150_0001;
+pub const BROWSER_BUFFER_PROVENANCE: u64 = 0x4252_5753_4255_0001;
 /// The probe app's surface namespace and buffer provenance (the WM's
 /// registry for it, and the import it accepts, are keyed by these).
 pub const PROBE_APP_NAMESPACE: u64 = 0x5052_4F42_4150_0001;
@@ -50,6 +58,7 @@ pub const fn module_name(module_id: u32) -> Option<&'static str> {
     match module_id {
         MODULE_ARTHUR => Some("arthur"),
         MODULE_PROBE | MODULE_LENS | MODULE_PROBE_APP => Some("worker"),
+        MODULE_BROWSER => Some("browser"),
         _ => None,
     }
 }
