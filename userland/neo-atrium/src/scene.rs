@@ -535,6 +535,11 @@ impl BaseScene {
         self.arthur_background = on;
     }
 
+    #[cfg(feature = "app-chips")]
+    pub fn arthur_background(&self) -> bool {
+        self.arthur_background
+    }
+
     /// OT-87 R4.4b: show (or end) the Install chip, the third on the Spine.
     /// Only a scene built with Home has one; `false` otherwise. Off (the
     /// default) leaves every view as without it, bit for bit.

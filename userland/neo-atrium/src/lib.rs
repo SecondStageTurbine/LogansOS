@@ -215,4 +215,6 @@ mod tests;
 
 pub use layout::{Layout, Rect};
 pub use material::{Mode, TrustState};
+#[cfg(feature = "app-chips")]
+pub use scene::ChipLook;
 pub use scene::{BaseScene, View, glow_pixel};

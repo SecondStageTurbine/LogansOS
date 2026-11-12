@@ -1820,22 +1820,22 @@ fn terminal_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Resu
     )
 }
 
-/// A2 (Muse, #98): no client is signalled while the session is locked. The
-/// Super+Tab taken with Super+L is dropped once the lock is up, so no switch
-/// (whose discard step sends the new front its `K`) happens between the lock
-/// and the unlock; the terminal keeps the front through the unlock, and
-/// Super+Tab works again after it.
+/// A2 (Muse, #98): no client is signalled as the session locks or while it
+/// is locked. The Super+Tab taken with Super+L is dropped (the lock is due),
+/// so no switch (whose discard step sends the new front its `K`) happens
+/// between the take and the unlock; the terminal keeps the front through the
+/// unlock, and Super+Tab works again after it.
 fn switch_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
     let serial = read_serial(observed)?;
-    let locked_at = serial.find("LOCK locked reason=sak");
+    let hold_at = serial.find("DESKTOP apps sak hold ms=");
     let unlocked_at = serial.find("LOCK unlocked failures=0 to=client");
-    if let (Some(from), Some(to)) = (locked_at, unlocked_at) {
+    if let (Some(from), Some(to)) = (hold_at, unlocked_at) {
         if let Some(line) = serial[from..to]
             .lines()
             .find(|l| l.contains("DESKTOP apps front client="))
         {
             return Err(format!(
-                "`{}`: a client was switched to (and sent its `K`) while the session was locked: `{line}`; serial={}",
+                "`{}`: a client was switched to (and sent its `K`) as the session locked or while it was locked: `{line}`; serial={}",
                 scenario.name,
                 observed.serial_log.display()
             ));
@@ -1849,8 +1849,8 @@ fn switch_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Result
             "LOGIN session started view=home",
             "DESKTOP apps front client=3 via=launch",
             "DESKTOP apps sak hold ms=2000",
+            "DESKTOP apps switch dropped lock via=sak-tab",
             "LOCK locked reason=sak",
-            "DESKTOP apps switch dropped locked via=sak-tab",
             "LOCK prompt=password",
             "LOCK unlocked failures=0 to=client",
             "DESKTOP apps client resumed client=3",
@@ -1859,7 +1859,7 @@ fn switch_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Result
             "LOCK unlocked failures=0",
             "LOCK boot test done",
         ],
-        "A2 (Muse, #98): a Super+Tab due in the turn the lock engages is dropped; no client is signalled while locked",
+        "A2 (Muse, #98): a Super+Tab taken with Super+L is dropped; no client is signalled as the session locks or while it is locked",
     )
 }
 

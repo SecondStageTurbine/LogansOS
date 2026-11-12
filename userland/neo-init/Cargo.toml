@@ -89,7 +89,9 @@ desktop-pointer = ["desktop-home"]
 # beside Arthur. The probe app is launched through Arthur's LaunchCap, takes
 # its own turns, and Super+Tab moves the front between the clients. Off:
 # today's Arthur-only WM.
-atrium-apps = ["desktop-pointer"]
+# A2: the Spine's app chips (Terminal, Files, Settings) with their looks, a
+# click on a chip launching or switching to its app (neo-atrium's `app-chips`).
+atrium-apps = ["desktop-pointer", "neo-atrium/app-chips"]
 # OT-61 L5: the browser takes slot 2 of the client table (MODULE_BROWSER,
 # /modules/neo-browser), connected like the probe app.
 atrium-apps-browser = ["atrium-apps"]
