@@ -345,6 +345,142 @@ pub fn guard_arms_exactly(image: &[u8], found: &Found) -> Result<(), String> {
     Ok(())
 }
 
+/// The LogansOS entry's LBA span in `image`'s primary GPT, if it has one
+/// (no checks: the scenarios use it to find the area they corrupt).
+pub fn area_span(image: &[u8]) -> Option<(u64, u64)> {
+    let h = header(image, 1, "primary").ok()?;
+    let at = (h.entries_lba * SECTOR) as usize;
+    let entries = image.get(at..at + h.count as usize * h.entry_size as usize)?;
+    entries
+        .chunks_exact(h.entry_size as usize)
+        .find(|e| e[..16] == PERSIST_TYPE)
+        .map(|e| (u64_at(e, 32), u64_at(e, 40)))
+}
+
+/// `image` with a different GPT disk GUID in both headers (CRCs redone): a
+/// second stick written from another build.
+pub fn set_disk_guid(image: &mut [u8], guid: [u8; 16]) -> Result<(), String> {
+    let last = image.len() as u64 / SECTOR - 1;
+    header(image, 1, "primary")?;
+    header(image, last, "backup")?;
+    for lba in [1, last] {
+        let o = (lba * SECTOR) as usize;
+        image[o + 56..o + 72].copy_from_slice(&guid);
+        image[o + 16..o + 20].fill(0);
+        let crc = crc32(&image[o..o + 92]);
+        image[o + 16..o + 20].copy_from_slice(&crc.to_le_bytes());
+    }
+    Ok(())
+}
+
+/// A GUID string's bytes as GPT stores them.
+fn guid(s: &str) -> [u8; 16] {
+    let hex: Vec<u8> = s
+        .bytes()
+        .filter(|b| *b != b'-')
+        .collect::<Vec<_>>()
+        .chunks(2)
+        .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+        .collect();
+    let mut g = [0u8; 16];
+    g[..4].copy_from_slice(&[hex[3], hex[2], hex[1], hex[0]]);
+    g[4..6].copy_from_slice(&[hex[5], hex[4]]);
+    g[6..8].copy_from_slice(&[hex[7], hex[6]]);
+    g[8..].copy_from_slice(&hex[8..16]);
+    g
+}
+
+/// THINK §5's internal disk: a Windows-shaped GPT disk of `size` bytes (ESP,
+/// MSR, basic data, recovery), with `planted` (a sealed NEOFSv1 superblock)
+/// at the data partition's start and at 64 MiB, which lies inside it: the
+/// whole-disk NeoFS copy's place. A guard that believed either would arm
+/// Windows' data.
+pub fn windows_disk(size: u64, planted: &[u8; 512]) -> Vec<u8> {
+    const MIB: u64 = (1 << 20) / SECTOR;
+    let mut d = vec![0u8; size as usize];
+    let last = size / SECTOR - 1;
+    let parts = [
+        (
+            "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+            MIB,
+            17 * MIB - 1,
+            "EFI system partition",
+        ),
+        (
+            "E3C9E316-0B5C-4DB8-817D-F92DF00215AE",
+            17 * MIB,
+            33 * MIB - 1,
+            "Microsoft reserved partition",
+        ),
+        (
+            "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+            33 * MIB,
+            last - 33 - 16 * MIB,
+            "Basic data partition",
+        ),
+        (
+            "DE94BBA4-06D1-4D40-A16A-BFD50179D6AC",
+            last - 33 - 16 * MIB + 1,
+            last - 34,
+            "Recovery",
+        ),
+    ];
+    let mut entries = vec![0u8; 128 * 128];
+    for (i, (ty, first, end, name)) in parts.iter().enumerate() {
+        let e = &mut entries[i * 128..(i + 1) * 128];
+        e[..16].copy_from_slice(&guid(ty));
+        e[16..32].copy_from_slice(&[(i as u8) + 1; 16]);
+        e[32..40].copy_from_slice(&first.to_le_bytes());
+        e[40..48].copy_from_slice(&end.to_le_bytes());
+        for (k, c) in name.encode_utf16().enumerate() {
+            e[56 + 2 * k..58 + 2 * k].copy_from_slice(&c.to_le_bytes());
+        }
+    }
+    // The protective MBR.
+    d[446 + 4] = 0xee;
+    d[446 + 8..446 + 12].copy_from_slice(&1u32.to_le_bytes());
+    d[446 + 12..446 + 16].copy_from_slice(&(last.min(u64::from(u32::MAX)) as u32).to_le_bytes());
+    d[510] = 0x55;
+    d[511] = 0xaa;
+    let array_crc = crc32(&entries);
+    let mut put_header = |lba: u64, alt: u64, entries_lba: u64| {
+        let o = (lba * SECTOR) as usize;
+        let h = &mut d[o..o + 92];
+        h[..8].copy_from_slice(b"EFI PART");
+        h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        h[12..16].copy_from_slice(&92u32.to_le_bytes());
+        h[24..32].copy_from_slice(&lba.to_le_bytes());
+        h[32..40].copy_from_slice(&alt.to_le_bytes());
+        h[40..48].copy_from_slice(&34u64.to_le_bytes());
+        h[48..56].copy_from_slice(&(last - 33).to_le_bytes());
+        h[56..72].copy_from_slice(&[0x5d; 16]);
+        h[72..80].copy_from_slice(&entries_lba.to_le_bytes());
+        h[80..84].copy_from_slice(&128u32.to_le_bytes());
+        h[84..88].copy_from_slice(&128u32.to_le_bytes());
+        h[88..92].copy_from_slice(&array_crc.to_le_bytes());
+        let crc = crc32(h);
+        h[16..20].copy_from_slice(&crc.to_le_bytes());
+    };
+    put_header(1, last, 2);
+    put_header(last, 1, last - 32);
+    d[2 * SECTOR as usize..2 * SECTOR as usize + entries.len()].copy_from_slice(&entries);
+    let b = ((last - 32) * SECTOR) as usize;
+    d[b..b + entries.len()].copy_from_slice(&entries);
+    let data = (33 * MIB * SECTOR) as usize;
+    d[data..data + 512].copy_from_slice(planted);
+    let at = 64usize << 20;
+    d[at..at + 512].copy_from_slice(planted);
+    d
+}
+
+/// The guard's judgement of a disk image (the scenario holds the internal
+/// disk to "nothing armed").
+pub fn guard_claims(disk: &[u8]) -> usize {
+    write_guard_logic::judge_with_partitions(&Bytes(disk))
+        .claims
+        .len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +612,29 @@ mod tests {
         assert!(crate::refuse_persist_for_vm(&a(&["--persist-mib", "512"])).is_err());
         assert!(crate::refuse_persist_for_vm(&a(&["--persist-mib=512"])).is_err());
         assert!(crate::refuse_persist_for_vm(&a(&["--features", "x"])).is_ok());
+    }
+
+    /// The Windows-shaped disk is a valid GPT the guard never arms, even
+    /// with sealed superblocks planted inside its data partition (THINK §5).
+    #[test]
+    fn the_windows_disk_is_never_armed() {
+        let mut sb = [0u8; 512];
+        sb[..8].copy_from_slice(b"NEOFSv1\0");
+        sb[8] = 1;
+        sb[10] = 12;
+        sb[12] = 1;
+        sb[16..24].copy_from_slice(&256u64.to_le_bytes());
+        let seal = *blake3::hash(&sb[..480]).as_bytes();
+        sb[480..].copy_from_slice(&seal);
+        let disk = windows_disk(128 << 20, &sb);
+        let arming = write_guard_logic::judge_with_partitions(&Bytes(&disk));
+        assert_eq!(arming.table, "gpt");
+        assert!(arming.claims.is_empty(), "{:?}", arming.claims);
+        assert!(
+            arming.blocked_by_table >= 1,
+            "the planted copy is seen, then blocked"
+        );
+        assert_eq!(guid("EAA7A9D0-75C1-4385-9664-B2A74FC2622D"), PERSIST_TYPE);
     }
 
     /// The type GUID's bytes, laid out by hand from the string form.

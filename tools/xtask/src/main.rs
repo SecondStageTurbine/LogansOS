@@ -57,6 +57,8 @@ mod a4_gate;
 mod vm_image;
 // OT-100 R3: the persistent image's oracle and guard KAT.
 mod persist_image;
+// OT-100 R3: the persistence scenarios (THINK §10, R3's gate).
+mod persist_scenarios;
 // OT-90 P2: QMP, QEMU's own report of why it stopped (power scenarios).
 mod qmp;
 // OT-66 L1: the sign-in scenarios on the VM layout.
@@ -5897,6 +5899,64 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // OT-100 R3 (THINK §10): the persistent image as a usb-storage stick
+    // under OVMF; `persist_scenarios` runs and checks them.
+    TestScenario {
+        name: "usb_persist_two_boot",
+        feature: "neo-test-usb-persist-two-boot",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_never_internal",
+        feature: "neo-test-usb-persist-never-internal",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_unplug_midwrite",
+        feature: "neo-test-usb-persist-unplug",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_try",
+        feature: "neo-test-usb-persist-try",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_absent",
+        feature: "neo-test-usb-persist-absent",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_corrupt",
+        feature: "neo-test-usb-persist-corrupt",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_second_stick",
+        feature: "neo-test-usb-persist-second-stick",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_two_sticks",
+        feature: "neo-test-usb-persist-two-sticks",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // #30: the stick hot-plugged, bound, read, then pulled with a reader
     // running: every read after (and the one in flight) is NoDevice and the
     // block device leaves the registry.
@@ -11411,6 +11471,10 @@ fn cmd_persist_image_check(args: &[String]) -> Result<(), String> {
 /// OT-100 R3: the persistence area's size in MiB for this `iso` run; 0 is
 /// none (the image is today's).
 static ISO_PERSIST_MIB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// OT-100 R3: the persistent image boots its "try" entry by default (the
+/// `usb_persist_try` scenario; nothing interactive picks it in QEMU).
+static ISO_PERSIST_TRY_DEFAULT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 /// NeoFS's third superblock copy sits at 64 MiB, so the area is larger.
 const PERSIST_MIB_MIN: u32 = 65;
 /// A bound well inside a 30 GB stick and the image's GPT arithmetic.
@@ -12259,6 +12323,15 @@ fn run_test_scenario_with_retries(
             ));
         }
         return run_two_boot_scenario_with_retries(scenario, run_install_scenario);
+    }
+    if persist_scenarios::is_persist_scenario(scenario.name) {
+        if mode.is_bare_metal() {
+            return Err(format!(
+                "--bare-metal-mode is not supported for {}: it runs under OVMF",
+                scenario.name
+            ));
+        }
+        return run_two_boot_scenario_with_retries(scenario, persist_scenarios::run);
     }
     if scenario.name == VM_ONE_DISK_SCENARIO || scenario.name == VM_ONE_DISK_4K_SCENARIO {
         if mode.is_bare_metal() {
@@ -16535,7 +16608,11 @@ fn run_qemu_test_invocation(
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
     ])
     .arg("-smp")
-    .arg(smp_count())
+    .arg(
+        persist_scenarios::scenario_smp(scenario.name)
+            .map(str::to_string)
+            .unwrap_or_else(smp_count),
+    )
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
     // OT-90 P2: a restart scenario boots twice in one QEMU process, so the
@@ -17165,6 +17242,12 @@ fn serial_script_for_scenario(scenario_name: &str) -> Option<ScenarioScript> {
             screenshot_rel: None,
             screenshot_after_command: None,
         }),
+        "usb_persist_unplug_midwrite" => Some(ScenarioScript {
+            steps: USB_PERSIST_UNPLUG_HMP_STEPS,
+            transport: ScriptTransport::HmpKeyboard,
+            screenshot_rel: None,
+            screenshot_after_command: None,
+        }),
         "usb_storage_unplug" => Some(ScenarioScript {
             steps: USB_STORAGE_UNPLUG_HMP_STEPS,
             transport: ScriptTransport::HmpKeyboard,
@@ -17603,6 +17686,13 @@ const HMP_HOTPLUG_ADD_KBD_HUB: u8 = 0x88;
 /// usb_storage_unplug (#30): plug and pull the stick.
 const HMP_HOTPLUG_ADD_STICK: u8 = 0xA0;
 const HMP_HOTPLUG_DEL_STICK: u8 = 0xA1;
+
+/// OT-100 R3 `usb_persist_unplug_midwrite`: pull the boot stick (`hotstick`)
+/// once the harness is writing.
+const USB_PERSIST_UNPLUG_HMP_STEPS: &[SerialScriptStep] = &[SerialScriptStep {
+    prompt: b"USB_PERSIST unplug-ready",
+    command: &[HMP_HOTPLUG_DEL_STICK],
+}];
 
 /// usb_storage_unplug (#30): plug the stick, then pull it once a reader runs.
 const USB_STORAGE_UNPLUG_HMP_STEPS: &[SerialScriptStep] = &[
@@ -26295,6 +26385,9 @@ fn write_limine_conf(
     // OT-100 R3: last, so the "try" entry copies every module line above.
     if iso_persist_mib().is_some() {
         conf = persist_limine_conf(&conf)?;
+        if ISO_PERSIST_TRY_DEFAULT.load(std::sync::atomic::Ordering::SeqCst) {
+            conf = conf.replacen("default_entry: 1", "default_entry: 2", 1);
+        }
     }
     fs::write(dst, conf).map_err(|e| format!("write {}: {e}", dst.display()))
 }
