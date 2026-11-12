@@ -18,6 +18,9 @@
 //! the language is English and every row is what shipped before S6b (the
 //! pinned table, `fixtures/en.txt`, and the crates' row KATs).
 //!
+//! **F1a** adds the Files app's rows (`files-core`): its kinds, sizes,
+//! hints, confirmations and every F0 error, in English and Spanish only.
+//!
 //! **Command words are not translated.** `help`, `list /`, `timezone
 //! Area/City`, `rtc utc` and `rtc local` are what the parsers read, so they
 //! appear unchanged inside the Spanish rows. The power verbs' trigger words
@@ -359,6 +362,84 @@ catalog! {
     /// S6b: Home's readout, after the time while the zone isn't set (S6a
     /// missed it: the literal sat in neo-init's clock module).
     ClockReadoutZoneNotSet = " (zone not set)", " (zona sin definir)";
+
+    // ---- F1a: Files (`files-core`) ----
+    FilesTitle = "Files", "Archivos";
+    /// The kind column.
+    FilesKindFolder = "Folder", "Carpeta";
+    FilesKindFile = "File", "Archivo";
+    FilesKindModel = "Model", "Modelo";
+    FilesKindLink = "Link", "Enlace";
+    /// The size column; the argument is the number, already written with
+    /// [`Msg::FilesDecimalMark`].
+    FilesSizeBytes = "{} B", "{} B";
+    FilesSizeKb = "{} KB", "{} KB";
+    FilesSizeMb = "{} MB", "{} MB";
+    /// The decimal mark in a size (1.5 KB, 1,5 KB).
+    FilesDecimalMark = ".", ",";
+    /// A folder's size column: its entry count.
+    FilesItemsOne = "1 item", "1 elemento";
+    FilesItemsMany = "{} items", "{} elementos";
+    FilesEmpty = "This folder is empty.", "Esta carpeta está vacía.";
+    /// The argument is the limit (64).
+    FilesFolderFullNote = "This folder holds {} items, the most it can.",
+        "Esta carpeta tiene {} elementos, el máximo posible.";
+    /// The first new folder's name; later ones add " 2", " 3", ...
+    FilesNewFolderName = "New folder", "Carpeta nueva";
+    FilesHintBrowse = "Enter opens. Backspace goes up. N makes a folder. F2 renames.",
+        "Enter abre. Retroceso sube. N crea una carpeta. F2 cambia el nombre.";
+    FilesHintBrowse2 = "Del deletes. C copies. V pastes.", "Supr elimina. C copia. V pega.";
+    FilesRenameTitle = "Rename", "Cambiar nombre";
+    FilesHintNaming = "Type a name. Enter to save, Esc to cancel.",
+        "Escribe un nombre. Enter para guardar, Esc para cancelar.";
+    FilesConfirmDeleteFile = "Delete this file? This can't be undone.",
+        "¿Eliminar este archivo? No se puede deshacer.";
+    FilesConfirmDeleteFolder = "Delete this empty folder?", "¿Eliminar esta carpeta vacía?";
+    FilesConfirmHint = "Enter to delete; any other key goes back.",
+        "Enter para eliminar; cualquier otra tecla vuelve atrás.";
+    FilesNameEmpty = "A name can't be empty.", "El nombre no puede estar vacío.";
+    /// The argument is the limit (47).
+    FilesNameTooLong = "A name can be at most {} bytes long.",
+        "Un nombre puede tener como máximo {} bytes.";
+    FilesNameSlash = "A name can't contain /.", "Un nombre no puede contener /.";
+    FilesNameControl = "A name can't contain control characters.",
+        "Un nombre no puede contener caracteres de control.";
+    FilesNameDot = "A name can't be . or ..", "Un nombre no puede ser . ni ..";
+    FilesErrStale = "That folder moved or was removed. This is the nearest one above it.",
+        "Esa carpeta se movió o se eliminó. Esta es la más cercana por encima.";
+    FilesErrExists = "Something here already has that name.", "Ya hay algo aquí con ese nombre.";
+    FilesErrNotEmpty = "That folder isn't empty. Empty it first.",
+        "Esa carpeta no está vacía. Vacíala primero.";
+    FilesErrNoSpace = "There isn't enough space on the disk.",
+        "No hay espacio suficiente en el disco.";
+    FilesErrRefused = "That isn't allowed here.", "Eso no está permitido aquí.";
+    /// The argument is the limit (64).
+    FilesErrFolderFull = "This folder is full: {} items at most.",
+        "Esta carpeta está llena: {} elementos como máximo.";
+    FilesErrNotFound = "That item is gone; the list is up to date now.",
+        "Ese elemento ya no está; la lista ya está al día.";
+    FilesErrBusy = "The system needs that item, so it stays.",
+        "El sistema necesita ese elemento, así que se queda.";
+    FilesErrRetry = "The disk was busy. Try again.", "El disco estaba ocupado. Inténtalo de nuevo.";
+    FilesErrIo = "The disk couldn't do that.", "El disco no pudo hacerlo.";
+    FilesErrInvalid = "That can't be done here; the disk may be full.",
+        "Eso no se puede hacer aquí; puede que el disco esté lleno.";
+    /// The argument is the (negative) errno.
+    FilesErrOther = "That didn't work (error {}).", "No funcionó (error {}).";
+    FilesRootUnavailable = "Files can't read its folders right now.",
+        "Archivos no puede leer sus carpetas ahora.";
+    FilesCopied = "Copied. Open a folder and paste it there.",
+        "Copiado. Abre una carpeta y pégalo ahí.";
+    /// The argument is the limit in KB (32).
+    FilesCopyTooBig = "Only files up to {} KB copy for now. Nothing was copied.",
+        "Por ahora solo se copian archivos de hasta {} KB. No se copió nada.";
+    FilesCopyNotFile = "Only files copy for now, not folders.",
+        "Por ahora solo se copian archivos, no carpetas.";
+    FilesPasted = "Pasted.", "Pegado.";
+    FilesNothingToPaste = "Copy a file first.", "Copia un archivo primero.";
+    FilesNoApp = "No app opens this.", "Ninguna app abre esto.";
+    FilesModelArthur = "Models are Arthur's; no app opens them.",
+        "Los modelos son de Arthur; ninguna app los abre.";
 }
 
 /// The table for `lang`.

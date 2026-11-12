@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 //! S6b's drift KAT, half 2 (`Plans/DISPATCH-2026-11-12-seat-c-setup-s6b-language.md`):
-//! the code that draws the wizard, the intro, help, power and clock cards and
-//! Home's clock verbs holds no user-visible literal outside the catalog.
+//! the code that draws the wizard, the intro, help, power and clock cards,
+//! Home's clock verbs and (F1a) the Files app's core holds no user-visible
+//! literal outside the catalog.
 //!
 //! The scan reads each source file (`include_str!`) and lists every string
 //! literal outside comments, attributes and test modules. A literal is
@@ -27,6 +28,12 @@ const CLOCK: &str = include_str!("../../neo-atrium/src/clock.rs");
 const POWER: &str = include_str!("../../neo-atrium/src/power.rs");
 const SCENE: &str = include_str!("../../neo-atrium/src/scene.rs");
 const CIVIL: &str = include_str!("../../libneo/src/civil.rs");
+// F1a: Files' core, every module but the tests' fake volume.
+const FILES_FS: &str = include_str!("../../files-core/src/fs.rs");
+const FILES_NAME: &str = include_str!("../../files-core/src/name.rs");
+const FILES_OPEN_WITH: &str = include_str!("../../files-core/src/open_with.rs");
+const FILES_FILES: &str = include_str!("../../files-core/src/files.rs");
+const FILES_VIEW: &str = include_str!("../../files-core/src/view.rs");
 
 /// Literals that hold a word but are not the user's language, and why.
 const ALLOWED: &[(&str, &str)] = &[
@@ -78,6 +85,30 @@ const ALLOWED: &[(&str, &str)] = &[
     ("review", "the Time zone page's log state"),
     ("search", "the Time zone page's log state"),
     ("none", "the Network page's log value for no driver"),
+    // F1a: the extensions the editor opens (`files_core::open_with`): file
+    // names' suffixes, the same in every language.
+    ("txt", "a file extension the editor opens"),
+    ("md", "a file extension the editor opens"),
+    ("log", "a file extension the editor opens"),
+    ("csv", "a file extension the editor opens"),
+    ("json", "a file extension the editor opens"),
+    ("toml", "a file extension the editor opens"),
+    ("yaml", "a file extension the editor opens"),
+    ("yml", "a file extension the editor opens"),
+    ("ini", "a file extension the editor opens"),
+    ("conf", "a file extension the editor opens"),
+    ("cfg", "a file extension the editor opens"),
+    ("rs", "a file extension the editor opens"),
+    ("py", "a file extension the editor opens"),
+    ("sh", "a file extension the editor opens"),
+    ("js", "a file extension the editor opens"),
+    ("css", "a file extension the editor opens"),
+    ("html", "a file extension the editor opens"),
+    ("xml", "a file extension the editor opens"),
+    (
+        "neom",
+        "the model file extension (Arthur's, opened by no app)",
+    ),
 ];
 
 /// `src` with comments blanked (line comments, block comments), keeping
@@ -237,7 +268,7 @@ fn has_word(lit: &str) -> bool {
 
 #[test]
 fn no_user_visible_literal_outside_the_catalog() {
-    let sources: [(&str, &str); 10] = [
+    let sources: [(&str, &str); 15] = [
         ("setup-core/src/lib.rs", SETUP_CORE),
         ("setup-core/src/keyboard.rs", KEYBOARD),
         ("neo-init/src/desktop_session/setup.rs", SETUP_VIEW),
@@ -257,6 +288,11 @@ fn no_user_visible_literal_outside_the_catalog() {
             block(SCENE, "fn paint_intro_text("),
         ),
         ("libneo/src/civil.rs", CIVIL),
+        ("files-core/src/fs.rs", FILES_FS),
+        ("files-core/src/name.rs", FILES_NAME),
+        ("files-core/src/open_with.rs", FILES_OPEN_WITH),
+        ("files-core/src/files.rs", FILES_FILES),
+        ("files-core/src/view.rs", FILES_VIEW),
     ];
     let mut stray = Vec::new();
     for (name, src) in sources {

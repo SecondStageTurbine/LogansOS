@@ -19,6 +19,7 @@ members = [
     "userland/nmc1-client",
     "userland/settings-core",
     "userland/i18n-core",
+    "userland/files-core",
     "userland/setup-core",
     "userland/action-log-core",
     "userland/template-app",

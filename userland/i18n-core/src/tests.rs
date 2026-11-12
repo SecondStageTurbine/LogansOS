@@ -121,7 +121,7 @@ fn indexed_slots_reorder_and_count() {
 // ---- 2. English is pinned ----
 
 /// S6a's English table, as shipped (the literals the code printed before S6b
-/// moved them here), plus the rows S6b added: one `Id<TAB>text` line per id,
+/// moved them here), plus the rows S6b and F1a added: one `Id<TAB>text` line per id,
 /// in table order. Any English wording change edits this file on purpose.
 const EN_PINNED: &str = include_str!("../fixtures/en.txt");
 
@@ -295,6 +295,15 @@ fn widest_row(lang: Lang, m: Msg) -> String {
             .unwrap(),
         ],
         LeaseMinutes => vec!["59".into()],
+        // F1a: Files' numbers at their widest (a size column, the limits,
+        // an errno).
+        FilesSizeBytes => vec!["1023".into()],
+        FilesSizeKb | FilesSizeMb => vec![format!("9{}9", t(FilesDecimalMark))],
+        FilesItemsMany => vec!["64".into()],
+        FilesFolderFullNote | FilesErrFolderFull => vec!["64".into()],
+        FilesNameTooLong => vec!["47".into()],
+        FilesCopyTooBig => vec!["32".into()],
+        FilesErrOther => vec!["-116".into()],
         LeaseHours => vec!["23".into(), "59".into()],
         _ => Vec::new(),
     };
