@@ -545,6 +545,8 @@ const SCENARIO: &str = "login_lock_stall";
 const SCENARIO: &str = "login_lock_park";
 #[cfg(feature = "neo-test-terminal-lock")]
 const SCENARIO: &str = "login_terminal_lock";
+#[cfg(feature = "neo-test-switch-lock")]
+const SCENARIO: &str = "login_switch_lock";
 #[cfg(feature = "neo-test-settings-store")]
 const SCENARIO: &str = "login_settings_store";
 #[cfg(feature = "neo-test-settings-refused")]
@@ -593,6 +595,10 @@ const SCENARIO: &str = "desktop_apps_fault_boot";
 /// L1a.3: the pointer session with the terminal window as a second client.
 #[cfg(feature = "neo-test-desktop-terminal-shell-boot")]
 const SCENARIO: &str = "desktop_terminal_shell_boot";
+#[cfg(feature = "neo-test-desktop-launch-chip-boot")]
+const SCENARIO: &str = "desktop_launch_chip_boot";
+#[cfg(feature = "neo-test-desktop-launch-home-boot")]
+const SCENARIO: &str = "desktop_launch_home_boot";
 #[cfg(feature = "neo-test-desktop-terminal-echo-boot")]
 const SCENARIO: &str = "desktop_terminal_echo_boot";
 #[cfg(feature = "neo-test-desktop-terminal-flood-boot")]
@@ -678,6 +684,11 @@ const DESKTOP_PASS: &str =
 const DESKTOP_PASS: &str = "desktop_browser_boot=ok view=home clients=arthur,browser page=oracle_640x400 screen=hand_derived_frame";
 #[cfg(feature = "neo-test-desktop-apps-boot")]
 const DESKTOP_PASS: &str = "desktop_apps_boot=ok view=home clients=arthur,probe_app front=launch_then_sak_tab keys=front_client_only probe_app_end=with_session";
+#[cfg(feature = "neo-test-desktop-launch-chip-boot")]
+const DESKTOP_PASS: &str = "desktop_launch_chip_boot=ok view=home clients=arthur,terminal chips=launch_switch_unavailable looks=capture_digests";
+#[cfg(feature = "neo-test-desktop-launch-home-boot")]
+const DESKTOP_PASS: &str =
+    "desktop_launch_home_boot=ok view=home clients=arthur,terminal intent=home_terminal";
 #[cfg(feature = "neo-test-desktop-terminal-shell-boot")]
 const DESKTOP_PASS: &str = "desktop_terminal_shell_boot=ok view=home clients=arthur,terminal child=neo-shell stdio=pipes_and_term_page keys=front_client_only terminal_end=with_session";
 #[cfg(feature = "neo-test-desktop-terminal-echo-boot")]
@@ -43095,9 +43106,22 @@ fn desktop_glass_asserts() {
     let (material, want) = ("reduce_transparency", oracle::S3_RT_1920X1080_UNFOCUSED);
     #[cfg(all(
         feature = "neo-test-desktop-home",
-        not(feature = "neo-test-desktop-intro-boot")
+        not(feature = "neo-test-desktop-intro-boot"),
+        not(feature = "neo-test-app-chips")
     ))]
     let (material, want) = ("glass_home", oracle::DS1_HOME_GLASS_1920X1080_FOCUSED);
+    // A2: a client-table WM shows the app chips on Home's Spine. The oracle's
+    // digest of DS-1's Home with their box hashed as zero too (`scene_oracle.py
+    // app-chips-fixture`); everything else is DS-1's Home, exactly.
+    #[cfg(feature = "neo-test-app-chips")]
+    mod app_chips {
+        include!("../../fixtures/desktop-ds1/app_chips_digests.rs");
+    }
+    #[cfg(feature = "neo-test-app-chips")]
+    let (material, want) = (
+        "glass_home",
+        app_chips::DS1_HOME_GLASS_1920X1080_FOCUSED_APP_CHIPS,
+    );
     // desktop-intro: the Home end view shows the hint under the field.
     #[cfg(feature = "neo-test-desktop-intro-boot")]
     #[allow(dead_code)]
@@ -43142,8 +43166,17 @@ fn desktop_glass_asserts() {
     let boxes = oracle::S3_LABEL_BOXES_1920X1080;
     #[cfg(feature = "neo-test-desktop-home")]
     let boxes = oracle::DS1_HOME_LABEL_BOXES_1920X1080;
-    #[cfg(not(feature = "neo-test-desktop-intro-boot"))]
+    #[cfg(all(
+        not(feature = "neo-test-desktop-intro-boot"),
+        not(feature = "neo-test-app-chips")
+    ))]
     let got = crate::drivers::fb::pixel_digest_masked(&boxes);
+    // A2: the app chips' box is hashed as zero, as in the oracle's digest.
+    #[cfg(feature = "neo-test-app-chips")]
+    let got = {
+        let [a, b, c] = boxes;
+        crate::drivers::fb::pixel_digest_masked(&[a, b, c, app_chips::APP_CHIPS_BOX_1920X1080])
+    };
     #[cfg(all(
         feature = "neo-test-desktop-intro-boot",
         not(feature = "neo-test-desktop-clock-boot"),
@@ -43342,11 +43375,30 @@ fn desktop_glass_asserts() {
         }
         const EMPTY_FOCUSED: usize = 0;
         let (wx, wy, ww, wh) = field::WINDOWS[EMPTY_FOCUSED];
-        #[cfg(not(feature = "neo-test-desktop-intro-boot"))]
+        #[cfg(not(any(
+            feature = "neo-test-desktop-intro-boot",
+            feature = "neo-test-app-chips"
+        )))]
         let (masks, want) = (
             [boxes[0], boxes[2], (wx, wy, ww, wh)],
             field::DIGESTS[EMPTY_FOCUSED],
         );
+        // A2: and the app chips' box (`scene_oracle.py app-chips-fixture`).
+        #[cfg(feature = "neo-test-app-chips")]
+        let (masks, want) = {
+            if app_chips::FIELD_WINDOW != (wx, wy, ww, wh) {
+                fail("reason=desktop_app_chips_field_window_not_field_oracles");
+            }
+            (
+                [
+                    boxes[0],
+                    boxes[2],
+                    (wx, wy, ww, wh),
+                    app_chips::APP_CHIPS_BOX_1920X1080,
+                ],
+                app_chips::DS1_HOME_FIELD_EMPTY_FOCUSED_GLASS_1920X1080_APP_CHIPS,
+            )
+        };
         // desktop-intro: the same window, the hint box masked too.
         #[cfg(all(
             feature = "neo-test-desktop-intro-boot",

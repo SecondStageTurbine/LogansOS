@@ -345,6 +345,10 @@ struct Scene {
     /// session loop's next turn (`apps::turns`) to act on.
     #[cfg(feature = "atrium-apps")]
     next_client: Option<&'static [u8]>,
+    /// A2: a Spine chip the window view's pointer tick took a click on
+    /// ([`apps::CHIP_ARTHUR`] or an app chip), for `apps::turns` to act on.
+    #[cfg(feature = "atrium-apps")]
+    chip_click: Option<usize>,
 }
 
 impl Scene {
@@ -411,7 +415,12 @@ impl Scene {
             lock: lock::Screen::default(),
             #[cfg(feature = "atrium-apps")]
             next_client: None,
+            #[cfg(feature = "atrium-apps")]
+            chip_click: None,
         };
+        // A2: the app chips are on the Spine wherever the client table is.
+        #[cfg(feature = "atrium-apps")]
+        scene.chrome.set_app_chips(true);
         scene.repaint_chrome(geo.screen);
         Ok(scene)
     }
@@ -520,6 +529,20 @@ impl Scene {
             },
             #[cfg(feature = "desktop-intro")]
             home: false,
+            #[cfg(feature = "atrium-apps")]
+            app_chips: {
+                let apps = layout.app_chip;
+                [
+                    if self.chrome.arthur_background() {
+                        r(layout.chip)
+                    } else {
+                        Rect::default()
+                    },
+                    r(apps[0]),
+                    r(apps[1]),
+                    r(apps[2]),
+                ]
+            },
         };
         let (moved, press) = pointer_state.poll(&ctx);
         let at = pointer_state.position();
@@ -3597,10 +3620,6 @@ mod apps {
         index_of(module).is_some()
     }
 
-    // The browser and the terminal both take slot 2; no image builds both.
-    #[cfg(all(feature = "atrium-apps-browser", feature = "atrium-terminal"))]
-    compile_error!("atrium-apps-browser and atrium-terminal both take client slot 2");
-
     /// The table index a module's client takes (one instance per app).
     fn index_of(module: u32) -> Option<usize> {
         match module {
@@ -3608,9 +3627,12 @@ mod apps {
             // OT-61 L5: the browser.
             #[cfg(feature = "atrium-apps-browser")]
             libneo::atrium_launch::MODULE_BROWSER => Some(2),
-            // L1a.3: the terminal (THINK-2026-10-31-l1a §2).
+            // L1a.3: the terminal (THINK-2026-10-31-l1a §2). A2: a slot of
+            // its own, so one image can run it and the browser (each app has
+            // one slot: the browser 2, the terminal 3; Files and Settings will
+            // take 4 and 5, which fills MAX_CLIENTS).
             #[cfg(feature = "atrium-terminal")]
-            libneo::atrium_launch::MODULE_TERMINAL => Some(2),
+            libneo::atrium_launch::MODULE_TERMINAL => Some(3),
             _ => None,
         }
     }
@@ -3903,11 +3925,162 @@ mod apps {
             }
         }
         reap_dying(apps);
+        // A2 (Muse, #98): no client is signalled while the session is locked,
+        // or as it locks. A Super+Tab taken with Super+L (the lock asked for
+        // and not yet engaged: this turn runs before the `lock::service` that
+        // engages it) is dropped, not run after unlock: the user's last act
+        // was the lock, and unlock gives the front back to the client that
+        // had it.
+        #[cfg(feature = "login")]
+        if super::lock::locking()
+            && let Some(via) = scene.next_client.take()
+        {
+            Line::new()
+                .s(b"DESKTOP apps switch dropped lock via=")
+                .s(via)
+                .s(b"\n")
+                .emit();
+        }
         if let Some(via) = scene.next_client.take() {
             let next = next_live(apps);
             if next != apps.front {
                 switch(scene, apps, next, arthur_activator, arthur_pixels, via)?;
             }
+        }
+        // A2: a Spine chip clicked in the window view (dropped while locked,
+        // as a due switch is).
+        if let Some(chip) = scene.chip_click.take() {
+            #[cfg(feature = "login")]
+            let locked = super::lock::locking();
+            #[cfg(not(feature = "login"))]
+            let locked = false;
+            if locked {
+                log_chip(b"DESKTOP apps chip dropped lock chip=", chip);
+            } else {
+                chip_clicked(scene, apps, chip, arthur_activator, arthur_pixels)?;
+            }
+        }
+        refresh_chips(scene, apps).map_err(|c| 100 + c)?;
+        Ok(())
+    }
+
+    /// A2: the Spine chips' indices (the pointer's `Ctx::app_chips`).
+    pub const CHIP_ARTHUR: usize = 0;
+    pub const CHIP_APPS: usize = 1;
+    /// The app chips' names, in `neo_atrium::layout::APP_CHIPS` order.
+    const CHIP_NAMES: [&[u8]; 3] = [b"terminal", b"files", b"settings"];
+
+    /// A2: the module behind app chip `app`, or `None` for an app with no
+    /// module yet (Files until F1, Settings until S1: the one switch each
+    /// rung flips is its entry here).
+    fn chip_module(app: usize) -> Option<u32> {
+        match app {
+            #[cfg(feature = "atrium-terminal")]
+            0 => Some(libneo::atrium_launch::MODULE_TERMINAL),
+            _ => None,
+        }
+    }
+
+    fn log_chip(what: &[u8], chip: usize) {
+        Line::new().s(what).n(chip as u64).s(b"\n").emit();
+    }
+
+    /// A2: a click on a Spine chip. Arthur's (shown clickable only while
+    /// another client is in front) brings him to the front. An app chip
+    /// launches its app, or switches to it if it is running (`open`); one
+    /// with no module says "Not yet" on its chip and launches nothing.
+    fn chip_clicked(
+        scene: &mut Scene,
+        apps: &mut Apps,
+        chip: usize,
+        arthur_activator: Handle,
+        arthur_pixels: &SharedPixels,
+    ) -> Result<(), i32> {
+        for app in 0..CHIP_NAMES.len() {
+            scene.chrome.set_app_note(app, false);
+        }
+        if chip == CHIP_ARTHUR {
+            if apps.front != ARTHUR && !apps.arthur_gone {
+                switch(
+                    scene,
+                    apps,
+                    ARTHUR,
+                    arthur_activator,
+                    arthur_pixels,
+                    b"chip",
+                )?;
+            }
+        } else if let Some(app) = chip
+            .checked_sub(CHIP_APPS)
+            .filter(|&a| a < CHIP_NAMES.len())
+        {
+            match chip_module(app) {
+                Some(module) => {
+                    let status = open(scene, apps, module, arthur_activator, arthur_pixels)?;
+                    Line::new()
+                        .s(b"DESKTOP apps chip app=")
+                        .s(CHIP_NAMES[app])
+                        .s(b" status=")
+                        .n(u64::from(status))
+                        .s(b"\n")
+                        .emit();
+                }
+                None => {
+                    Line::new()
+                        .s(b"DESKTOP apps chip unavailable app=")
+                        .s(CHIP_NAMES[app])
+                        .s(b"\n")
+                        .emit();
+                    scene.chrome.set_app_note(app, true);
+                }
+            }
+        }
+        let spine = super::wm_rect(scene.chrome.layout.spine);
+        scene.repaint_chrome(spine);
+        scene.present(false, spine).map_err(|c| 100 + c)?;
+        Ok(())
+    }
+
+    /// A2: each chip's look follows the client table: an app in front, in
+    /// the background, or not running; Arthur's grey dot while another
+    /// client is in front. The Spine is repainted only when a look changed.
+    fn refresh_chips(scene: &mut Scene, apps: &Apps) -> Result<(), i32> {
+        use neo_atrium::ChipLook;
+        let mut changed = false;
+        for (app, name) in CHIP_NAMES.iter().enumerate() {
+            let look = match chip_module(app).and_then(index_of) {
+                Some(index) if apps.others[index - 1].is_some() => {
+                    if apps.front == index {
+                        ChipLook::Front
+                    } else {
+                        ChipLook::Background
+                    }
+                }
+                _ => ChipLook::NotRunning,
+            };
+            if scene.chrome.app_look(app) != look {
+                scene.chrome.set_app_look(app, look);
+                Line::new()
+                    .s(b"DESKTOP apps chip look app=")
+                    .s(name)
+                    .s(match look {
+                        ChipLook::NotRunning => b" look=not-running\n",
+                        ChipLook::Front => b" look=front\n",
+                        ChipLook::Background => b" look=background\n",
+                    })
+                    .emit();
+                changed = true;
+            }
+        }
+        let behind = apps.front != ARTHUR && !apps.arthur_gone;
+        if scene.chrome.arthur_background() != behind {
+            scene.chrome.set_arthur_background(behind);
+            changed = true;
+        }
+        if changed {
+            let spine = super::wm_rect(scene.chrome.layout.spine);
+            scene.repaint_chrome(spine);
+            scene.present(false, spine)?;
         }
         Ok(())
     }
@@ -4046,6 +4219,10 @@ mod apps {
             .s(via)
             .s(b"\n")
             .emit();
+        #[cfg(feature = "lock-switch-test")]
+        if index != ARTHUR && via == b"launch" {
+            super::pointer::hold_sak();
+        }
         Ok(())
     }
 
@@ -5761,6 +5938,15 @@ mod home {
                     if core::mem::take(&mut scene.intro.install_press) {
                         super::installer_view::run(scene, focus.events)?;
                     }
+                    // A2: a click on an app chip is that app's intent.
+                    #[cfg(all(feature = "atrium-apps", feature = "desktop-intro"))]
+                    if let Some(word) = scene.intro.app_press.take() {
+                        let mut intent = Line::default();
+                        for &b in word {
+                            intent.edit(Key::Char(b));
+                        }
+                        return Ok(intent);
+                    }
                     // OT-85: a new minute repaints the readout's box (and the
                     // intro card's time row) and nothing else.
                     #[cfg(feature = "desktop-clock")]
@@ -6138,6 +6324,10 @@ mod home {
                     Ok(())
                 },
                 present: || {
+                    // A2: the session's clients are gone; its chips' looks
+                    // with them (repainted with the view).
+                    #[cfg(feature = "atrium-apps")]
+                    scene.chrome.reset_app_chips();
                     scene.show_home(true, false);
                     scene.view_transition(Kind::Close, false)?;
                     #[cfg(feature = "desktop-session-boot-test")]
@@ -6221,6 +6411,12 @@ mod home {
                     }
                     #[cfg(all(feature = "installer", feature = "desktop-intro"))]
                     if chip3_label.contains(x, y) {
+                        continue;
+                    }
+                    // A2: the app chips' labels (icon and name), drawn over
+                    // the view as the other chips' are.
+                    #[cfg(feature = "atrium-apps")]
+                    if l.app_label.iter().any(|b| b.contains(x, y)) {
                         continue;
                     }
                     let want = neo_atrium::wide::dither(scene.chrome.view_pixel(x, y, view), x, y);
@@ -6341,6 +6537,11 @@ mod intro {
         /// OT-87 R4.4b: a press on the Install chip, for Home's loop.
         #[cfg(feature = "installer")]
         pub install_press: bool,
+        /// A2: a press on an app chip in Home: its app's intent word, which
+        /// Home's loop sends as the intent (Arthur launches it, or says it
+        /// isn't available yet).
+        #[cfg(feature = "atrium-apps")]
+        pub app_press: Option<&'static [u8]>,
         /// L7.1 (`boot-time`): the boot summary, read once as Home first
         /// shows, so the minute's re-wording keeps it.
         #[cfg(feature = "boot-time")]
@@ -6398,6 +6599,8 @@ mod intro {
             shown,
             #[cfg(feature = "installer")]
             install_press: false,
+            #[cfg(feature = "atrium-apps")]
+            app_press: None,
             #[cfg(feature = "boot-time")]
             boot_row: scene.intro.boot_row.take(),
         };
@@ -6618,6 +6821,18 @@ mod intro {
                 close(scene, b"click")?;
             }
             scene.intro.install_press = true;
+            return Ok(());
+        }
+        // A2: an app chip: its app's intent, which Home's loop sends.
+        #[cfg(feature = "atrium-apps")]
+        if let Some(app) = l.app_chip.iter().position(|r| r.contains(x, y)) {
+            const WORDS: [&[u8]; 3] = [b"terminal", b"files", b"settings"];
+            Line::new()
+                .s(b"DESKTOP home chip activated target=")
+                .s(WORDS[app])
+                .s(b" via=click\n")
+                .emit();
+            scene.intro.app_press = Some(WORDS[app]);
             return Ok(());
         }
         if scene.intro.card == Card::None && l.hint().contains(x, y) {
@@ -6886,6 +7101,10 @@ mod pointer {
         /// comes to the front (the session loop's `apps::turns` does it).
         #[cfg(feature = "atrium-apps")]
         NextClient(&'static [u8]),
+        /// A2: a click on Spine chip `n` (`apps::CHIP_ARTHUR` or an app
+        /// chip's `apps::CHIP_APPS + i`); `apps::turns` launches or switches.
+        #[cfg(feature = "atrium-apps")]
+        Chip(usize),
     }
 
     /// DI-1b: what a held drag is doing, and how far it has gone.
@@ -6922,6 +7141,11 @@ mod pointer {
         /// fresh press is reported as [`Action::HomePress`].
         #[cfg(feature = "desktop-intro")]
         pub home: bool,
+        /// A2: the Spine chips a click acts on, by `apps::CHIP_*` index:
+        /// Arthur's (only while another client is in front) and the app
+        /// chips. Empty in Home's ctx.
+        #[cfg(feature = "atrium-apps")]
+        pub app_chips: [Rect; 4],
     }
 
     impl Pointer {
@@ -7232,6 +7456,10 @@ mod pointer {
     /// Arthur's chip (while it does not hold the keyboard) back to Arthur.
     #[cfg(feature = "desktop-lens")]
     fn chip_action(ctx: &Ctx, x: usize, y: usize) -> Option<Action> {
+        #[cfg(feature = "atrium-apps")]
+        if let Some(chip) = app_chip_at(ctx, x, y) {
+            return Some(chip);
+        }
         if ctx.lens_chip.contains(x, y) {
             return Some(Action::SelectLens(b"click"));
         }
@@ -7243,12 +7471,61 @@ mod pointer {
 
     #[cfg(not(feature = "desktop-lens"))]
     fn chip_action(_ctx: &Ctx, _x: usize, _y: usize) -> Option<Action> {
+        #[cfg(feature = "atrium-apps")]
+        if let Some(chip) = app_chip_at(_ctx, _x, _y) {
+            return Some(chip);
+        }
         None
+    }
+
+    /// A2: a press on Arthur's chip while another client is in front, or on
+    /// an app chip (empty rects in Home's ctx).
+    #[cfg(feature = "atrium-apps")]
+    fn app_chip_at(ctx: &Ctx, x: usize, y: usize) -> Option<Action> {
+        ctx.app_chips
+            .iter()
+            .position(|r| r.contains(x, y))
+            .map(Action::Chip)
+    }
+
+    /// A2 (`login_switch_lock`): the SAK latch is left untaken until this
+    /// time, so Super+Tab and Super+L typed in it come out of one take, the
+    /// case where a switch would be due in the turn the lock engages.
+    #[cfg(feature = "lock-switch-test")]
+    static SAK_HOLD_UNTIL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    #[cfg(feature = "lock-switch-test")]
+    const SAK_HOLD_NS: u64 = 2_000_000_000;
+
+    /// The first launch to the front starts the hold (once).
+    #[cfg(feature = "lock-switch-test")]
+    pub fn hold_sak() {
+        use core::sync::atomic::Ordering;
+        let until = super::monotonic_ns().saturating_add(SAK_HOLD_NS);
+        if SAK_HOLD_UNTIL
+            .compare_exchange(0, until, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            super::Line::new()
+                .s(b"DESKTOP apps sak hold ms=")
+                .n(SAK_HOLD_NS / 1_000_000)
+                .s(b"\n")
+                .emit();
+        }
+    }
+
+    #[cfg(feature = "lock-switch-test")]
+    fn sak_held() -> bool {
+        let until = SAK_HOLD_UNTIL.load(core::sync::atomic::Ordering::Acquire);
+        until != 0 && super::monotonic_ns() < until
     }
 
     /// The SAK latch: Super+Escape / Super+Space escape to the Spine;
     /// Super+Tab toggles.
     pub fn take_sak(arthur_focused: bool) -> Option<Action> {
+        #[cfg(feature = "lock-switch-test")]
+        if sak_held() {
+            return None;
+        }
         let pending = sys_input_sak_take();
         if pending <= 0 {
             return None;
@@ -7389,6 +7666,11 @@ mod pointer {
                 #[cfg(feature = "atrium-apps")]
                 Action::NextClient(via) => {
                     scene.next_client = Some(via);
+                    return Ok(());
+                }
+                #[cfg(feature = "atrium-apps")]
+                Action::Chip(chip) => {
+                    scene.chip_click = Some(chip);
                     return Ok(());
                 }
             };

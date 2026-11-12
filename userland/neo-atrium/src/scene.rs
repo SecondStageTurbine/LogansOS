@@ -92,6 +92,21 @@ impl View {
     }
 }
 
+/// A2 (`app-chips`): an app chip's look. Not running: the chip alone. In
+/// front: the accent dot under it. In the background: a grey dot.
+#[cfg(feature = "app-chips")]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ChipLook {
+    #[default]
+    NotRunning,
+    Front,
+    Background,
+}
+
+/// A2: the background dot's grey.
+#[cfg(feature = "app-chips")]
+const BACKGROUND_DOT: u32 = 0x0080_868C;
+
 pub struct BaseScene {
     pub layout: Layout,
     pub mode: Mode,
@@ -137,6 +152,26 @@ pub struct BaseScene {
     chip3_inner: RoundRect,
     #[cfg(feature = "install-chip")]
     install: bool,
+    /// A2 (`app-chips`): the app chips' shapes, their dots' shapes, each
+    /// app's look and whether its name reads "Not yet" (a click on an app
+    /// with no module); and whether Arthur runs in the background (another
+    /// client in front: his chip gets the grey dot).
+    #[cfg(feature = "app-chips")]
+    app_shape: [RoundRect; crate::layout::APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    app_inner: [RoundRect; crate::layout::APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    app_dot_shape: [RoundRect; crate::layout::APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    app_look: [ChipLook; crate::layout::APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    app_note: [bool; crate::layout::APP_CHIPS],
+    #[cfg(feature = "app-chips")]
+    arthur_background: bool,
+    /// A2: the app chips are on the Spine (off by default, which is today's
+    /// Spine bit for bit with the feature compiled in).
+    #[cfg(feature = "app-chips")]
+    apps_shown: bool,
     #[cfg(feature = "install-chip")]
     install_selected: bool,
     /// `desktop-intro`: the card's rows (empty: the hint shows instead,
@@ -274,6 +309,12 @@ impl BaseScene {
         let chip3_shape = shape(layout.chip3, CHIP_RADIUS);
         #[cfg(feature = "install-chip")]
         let chip3_inner = chip3_shape.inset1();
+        #[cfg(feature = "app-chips")]
+        let app_shape = layout.app_chip.map(|r| shape(r, CHIP_RADIUS));
+        #[cfg(feature = "app-chips")]
+        let app_inner = app_shape.clone().map(|s| s.inset1());
+        #[cfg(feature = "app-chips")]
+        let app_dot_shape = layout.app_dot.map(|r| shape(r, r.w / 2));
         let lens_frame = layout.lens.map(|l| l.frame).unwrap_or_default();
         let lens_shape = shape(lens_frame, WINDOW_RADIUS);
         let lens_inner = lens_shape.inset1();
@@ -327,6 +368,20 @@ impl BaseScene {
             install: false,
             #[cfg(feature = "install-chip")]
             install_selected: false,
+            #[cfg(feature = "app-chips")]
+            app_shape,
+            #[cfg(feature = "app-chips")]
+            app_inner,
+            #[cfg(feature = "app-chips")]
+            app_dot_shape,
+            #[cfg(feature = "app-chips")]
+            app_look: [ChipLook::NotRunning; crate::layout::APP_CHIPS],
+            #[cfg(feature = "app-chips")]
+            app_note: [false; crate::layout::APP_CHIPS],
+            #[cfg(feature = "app-chips")]
+            arthur_background: false,
+            #[cfg(feature = "app-chips")]
+            apps_shown: false,
             card: Vec::new(),
             card_shape: round_rect(Rect::default(), FIELD_RADIUS),
             card_inner: round_rect(Rect::default(), FIELD_RADIUS),
@@ -442,6 +497,56 @@ impl BaseScene {
 
     pub fn lens_selected(&self) -> bool {
         self.lens_selected
+    }
+
+    /// A2: put the app chips on the Spine (`true`), or take them off. Off
+    /// (the default) is today's Spine, bit for bit.
+    #[cfg(feature = "app-chips")]
+    pub fn set_app_chips(&mut self, on: bool) {
+        self.apps_shown = on;
+    }
+
+    /// A2: app chip `app`'s look (`layout::APP_CHIPS` order: Terminal,
+    /// Files, Settings). The caller repaints the Spine.
+    #[cfg(feature = "app-chips")]
+    pub fn set_app_look(&mut self, app: usize, look: ChipLook) {
+        if let Some(slot) = self.app_look.get_mut(app) {
+            *slot = look;
+        }
+    }
+
+    #[cfg(feature = "app-chips")]
+    pub fn app_look(&self, app: usize) -> ChipLook {
+        self.app_look.get(app).copied().unwrap_or_default()
+    }
+
+    /// A2: app chip `app`'s name reads "Not yet" (`true`: its app has no
+    /// module and was clicked) or its name.
+    #[cfg(feature = "app-chips")]
+    pub fn set_app_note(&mut self, app: usize, on: bool) {
+        if let Some(slot) = self.app_note.get_mut(app) {
+            *slot = on;
+        }
+    }
+
+    /// A2: Arthur runs with another client in front (his chip's grey dot).
+    #[cfg(feature = "app-chips")]
+    pub fn set_arthur_background(&mut self, on: bool) {
+        self.arthur_background = on;
+    }
+
+    #[cfg(feature = "app-chips")]
+    pub fn arthur_background(&self) -> bool {
+        self.arthur_background
+    }
+
+    /// A2: the session's client table is gone (back to Home): every app not
+    /// running, no note, Arthur not in the background. The caller repaints.
+    #[cfg(feature = "app-chips")]
+    pub fn reset_app_chips(&mut self) {
+        self.app_look = [ChipLook::NotRunning; crate::layout::APP_CHIPS];
+        self.app_note = [false; crate::layout::APP_CHIPS];
+        self.arthur_background = false;
     }
 
     /// OT-87 R4.4b: show (or end) the Install chip, the third on the Spine.
@@ -717,6 +822,39 @@ impl BaseScene {
             let c = self.held_shape.coverage(x, y);
             out = mix(widen(ELECTRIC_BLUE), out, c);
         }
+        #[cfg(feature = "app-chips")]
+        if self.apps_shown && !held && self.arthur_background && l.held_dot.contains(x, y) {
+            let c = self.held_shape.coverage(x, y);
+            out = mix(widen(BACKGROUND_DOT), out, c);
+        }
+        #[cfg(feature = "app-chips")]
+        for i in 0..crate::layout::APP_CHIPS {
+            if !self.apps_shown {
+                break;
+            }
+            if l.app_chip[i].contains(x, y) {
+                out = self.apply_panel(
+                    out,
+                    x,
+                    y,
+                    CHIP2,
+                    &self.app_shape[i],
+                    &self.app_inner[i],
+                    CHIP_FROST,
+                );
+            }
+            let dot = match self.app_look[i] {
+                ChipLook::NotRunning => None,
+                ChipLook::Front => Some(ELECTRIC_BLUE),
+                ChipLook::Background => Some(BACKGROUND_DOT),
+            };
+            if let Some(colour) = dot
+                && l.app_dot[i].contains(x, y)
+            {
+                let c = self.app_dot_shape[i].coverage(x, y);
+                out = mix(widen(colour), out, c);
+            }
+        }
         if self.lens && l.chip2.contains(x, y) {
             out = self.apply_panel(
                 out,
@@ -929,7 +1067,15 @@ impl BaseScene {
         } else {
             Rect::default()
         };
-        #[cfg(not(feature = "install-chip"))]
+        #[cfg(feature = "app-chips")]
+        let app_labels = if self.apps_shown {
+            l.app_label
+        } else {
+            [Rect::default(); crate::layout::APP_CHIPS]
+        };
+        // (Without `app-chips`, these two checks are exactly today's: the
+        // feature's boxes are chained on only when it is compiled in.)
+        #[cfg(all(not(feature = "install-chip"), not(feature = "app-chips")))]
         if boxes
             .iter()
             .chain([lens_title, chip2_label, intro_box, clock_box].iter())
@@ -937,10 +1083,28 @@ impl BaseScene {
         {
             return;
         }
-        #[cfg(feature = "install-chip")]
+        #[cfg(all(feature = "install-chip", not(feature = "app-chips")))]
         if boxes
             .iter()
             .chain([lens_title, chip2_label, chip3_label, intro_box, clock_box].iter())
+            .all(|b| b.intersect(&clip).is_empty())
+        {
+            return;
+        }
+        #[cfg(all(not(feature = "install-chip"), feature = "app-chips"))]
+        if boxes
+            .iter()
+            .chain([lens_title, chip2_label, intro_box, clock_box].iter())
+            .chain(app_labels.iter())
+            .all(|b| b.intersect(&clip).is_empty())
+        {
+            return;
+        }
+        #[cfg(all(feature = "install-chip", feature = "app-chips"))]
+        if boxes
+            .iter()
+            .chain([lens_title, chip2_label, chip3_label, intro_box, clock_box].iter())
+            .chain(app_labels.iter())
             .all(|b| b.intersect(&clip).is_empty())
         {
             return;
@@ -973,6 +1137,16 @@ impl BaseScene {
                     l.chip3,
                     chip3_label.intersect(&clip),
                     crate::icons::INSTALL,
+                );
+            }
+            #[cfg(feature = "app-chips")]
+            for (i, blob) in crate::icons::APPS.iter().enumerate() {
+                crate::icons::paint(
+                    dst,
+                    stride,
+                    l.app_chip[i],
+                    app_labels[i].intersect(&clip),
+                    blob,
                 );
             }
         }
@@ -1033,6 +1207,17 @@ impl BaseScene {
             let chip3_clip = to(chip3_label);
             if !chip3_clip.is_empty() {
                 chip_text(&mut canvas, &mut font, l.chip3, "I", "Install", chip3_clip);
+            }
+        }
+        #[cfg(feature = "app-chips")]
+        for (i, (letter, name)) in [("T", "Terminal"), ("F", "Files"), ("S", "Settings")]
+            .into_iter()
+            .enumerate()
+        {
+            let clip_i = to(app_labels[i]);
+            if !clip_i.is_empty() {
+                let name = if self.app_note[i] { "Not yet" } else { name };
+                chip_text(&mut canvas, &mut font, l.app_chip[i], letter, name, clip_i);
             }
         }
         let intro_clip = to(intro_box);

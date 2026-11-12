@@ -167,6 +167,14 @@ pub fn locked() -> bool {
     LOCKED.load(Ordering::Acquire)
 }
 
+/// A2 (Muse, #98): locked, or Super+L taken and the lock not engaged yet
+/// (the next `service` engages it). A client switch due now is dropped: the
+/// client table runs before that `service`, so a switch taken with Super+L
+/// would otherwise signal its client just as the lock comes up.
+pub fn locking() -> bool {
+    LOCKED.load(Ordering::Acquire) || REQUESTED.load(Ordering::Acquire)
+}
+
 /// `pointer::take_sak`'s bits: Super+L asks to lock; any chord or produced
 /// event restarts the idle time.
 pub fn note_sak(bits: u8) {

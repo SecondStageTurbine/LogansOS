@@ -101,6 +101,10 @@ atrium-apps-probe = ["desktop-home"]
 atrium-apps-browser = ["desktop-home"]
 # L1a.3: the `open terminal` line launches the terminal window (module 4).
 atrium-terminal = ["desktop-home", "libneo/atrium-terminal"]
+# A2: Home's `files` and `settings` intents (and `open files` / `open
+# settings`) are answered "not available yet" and launch nothing, until F1 and
+# S1 add those modules.
+atrium-launcher = ["desktop-home"]
 # PR #15 review item 3 boot test: once the probe app is open, Arthur commits
 # back to back for a while (each commit waits for its reply), so his channel
 # is never quiet; the probe app's turns must still come.

@@ -32,6 +32,15 @@ pub static LENS: &[u8; SIZE * SIZE * 4] = include_bytes!("../assets/icons/lens-4
 #[cfg(feature = "install-chip")]
 pub static INSTALL: &[u8; SIZE * SIZE * 4] = include_bytes!("../assets/icons/install-40.rgba");
 
+/// A2 (`app-chips`): the app chips' icons, in `layout::APP_CHIPS` order
+/// (#185's blobs).
+#[cfg(feature = "app-chips")]
+pub static APPS: [&[u8; SIZE * SIZE * 4]; crate::layout::APP_CHIPS] = [
+    include_bytes!("../assets/icons/terminal-40.rgba"),
+    include_bytes!("../assets/icons/files-40.rgba"),
+    include_bytes!("../assets/icons/settings-40.rgba"),
+];
+
 /// The icon's 40×40 box on `chip`.
 pub const fn rect(chip: Rect) -> Rect {
     Rect::new(chip.x + 8, chip.y + 6, SIZE, SIZE)

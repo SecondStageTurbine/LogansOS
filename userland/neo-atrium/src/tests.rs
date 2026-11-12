@@ -3431,3 +3431,189 @@ mod power {
         assert!(refused_lines(-38)[0].contains("can't"));
     }
 }
+
+/// A2 (`app-chips`): the app chips on the Spine and their three looks.
+#[cfg(feature = "app-chips")]
+mod app_chip_tests {
+    use crate::layout::{APP_CHIPS, Layout, Rect};
+    use crate::material::Mode;
+    use crate::scene::{BaseScene, ChipLook};
+
+    fn paint(scene: &BaseScene) -> Vec<u32> {
+        let (w, h) = (scene.layout.screen.w, scene.layout.screen.h);
+        let mut buf = vec![0u32; w * h];
+        let view = crate::View::Home {
+            focused: true,
+            held: false,
+            chip_selected: false,
+        };
+        scene.paint_home_view(&mut buf, w, view, "", scene.layout.screen);
+        buf
+    }
+
+    fn region(buf: &[u32], w: usize, r: Rect) -> Vec<u32> {
+        let mut out = Vec::new();
+        for y in r.y..r.bottom() {
+            out.extend_from_slice(&buf[y * w + r.x..y * w + r.right()]);
+        }
+        out
+    }
+
+    /// The chips sit in the Spine, one pitch apart below the Lens's (and the
+    /// Install chip's), each with a label box inside it and a dot under it.
+    #[test]
+    fn app_chips_are_spine_rows() {
+        let l = Layout::new(1280, 800, 640, 400).unwrap();
+        #[cfg(feature = "install-chip")]
+        let first_y = 284;
+        #[cfg(not(feature = "install-chip"))]
+        let first_y = 206;
+        for i in 0..APP_CHIPS {
+            let chip = l.app_chip[i];
+            assert_eq!(chip, Rect::new(14, first_y + 78 * i, 56, 56), "chip {i}");
+            assert!(l.spine.contains(chip.x, chip.y) && chip.bottom() <= l.spine.bottom());
+            assert!(chip.contains(l.app_label[i].x, l.app_label[i].y));
+            assert_eq!(l.app_dot[i], Rect::new(38, chip.bottom() + 6, 8, 8));
+        }
+    }
+
+    /// A screen too short for a chip leaves it (and its label and dot) empty.
+    #[test]
+    fn a_chip_without_room_is_empty() {
+        let l = Layout::new(1280, 400, 320, 200).unwrap();
+        let last = APP_CHIPS - 1;
+        if l.app_chip[last].is_empty() {
+            assert!(l.app_label[last].is_empty() && l.app_dot[last].is_empty());
+        } else {
+            assert!(l.app_chip[last].bottom() + 22 <= 400);
+        }
+    }
+
+    /// Off (the default) is today's Spine, bit for bit; on changes only the
+    /// Spine.
+    #[test]
+    fn off_is_todays_spine_and_on_stays_in_the_spine() {
+        for mode in [Mode::Glass, Mode::ReduceTransparency] {
+            let plain = paint(&BaseScene::with_home(1280, 800, 640, 400, mode).unwrap());
+            let mut scene = BaseScene::with_home(1280, 800, 640, 400, mode).unwrap();
+            scene.set_app_look(0, ChipLook::Front);
+            scene.set_arthur_background(true);
+            assert_eq!(paint(&scene), plain, "{mode:?}: looks set, chips not shown");
+            scene.set_app_chips(true);
+            let shown = paint(&scene);
+            assert_ne!(shown, plain, "{mode:?}: the chips show");
+            let l = scene.layout;
+            for y in 0..800 {
+                for x in 0..1280 {
+                    if plain[y * 1280 + x] != shown[y * 1280 + x] {
+                        assert!(
+                            l.spine.contains(x, y),
+                            "{mode:?} ({x},{y}) outside the Spine"
+                        );
+                    }
+                }
+            }
+            scene.set_app_chips(false);
+            assert_eq!(paint(&scene), plain, "{mode:?}: off again");
+        }
+    }
+
+    /// The three looks: no dot (not running), the accent dot (in front), the
+    /// grey dot (in the background). Each is different, the dot is the only
+    /// thing that changes, and each chip's look is its own.
+    #[test]
+    fn the_three_looks_differ_only_in_the_dot() {
+        let mut scene = BaseScene::with_home(1280, 800, 640, 400, Mode::Glass).unwrap();
+        scene.set_app_chips(true);
+        let l = scene.layout;
+        let w = 1280;
+        let mut dots = Vec::new();
+        let mut rest = Vec::new();
+        for look in [ChipLook::NotRunning, ChipLook::Front, ChipLook::Background] {
+            scene.set_app_look(0, look);
+            let buf = paint(&scene);
+            dots.push(region(&buf, w, l.app_dot[0]));
+            let mut others = buf.clone();
+            for y in l.app_dot[0].y..l.app_dot[0].bottom() {
+                for x in l.app_dot[0].x..l.app_dot[0].right() {
+                    others[y * w + x] = 0;
+                }
+            }
+            rest.push(others);
+        }
+        assert_ne!(dots[0], dots[1]);
+        assert_ne!(dots[1], dots[2]);
+        assert_ne!(dots[0], dots[2]);
+        assert_eq!(rest[0], rest[1], "only the dot changes");
+        assert_eq!(rest[1], rest[2], "only the dot changes");
+        // Chip 0 in front leaves chips 1 and 2 not running.
+        scene.set_app_look(0, ChipLook::Front);
+        let buf = paint(&scene);
+        let fresh = {
+            let mut s = BaseScene::with_home(1280, 800, 640, 400, Mode::Glass).unwrap();
+            s.set_app_chips(true);
+            paint(&s)
+        };
+        for i in 1..APP_CHIPS {
+            assert_eq!(
+                region(&buf, w, l.app_dot[i]),
+                region(&fresh, w, l.app_dot[i])
+            );
+        }
+    }
+
+    /// A click on an app with no module: its name reads "Not yet" (the label
+    /// box changes, nothing else), until the note is cleared.
+    #[test]
+    fn the_not_yet_note_changes_only_the_label() {
+        let mut scene = BaseScene::with_home(1280, 800, 640, 400, Mode::Glass).unwrap();
+        scene.set_app_chips(true);
+        let before = paint(&scene);
+        scene.set_app_note(1, true);
+        let noted = paint(&scene);
+        assert_ne!(before, noted);
+        let label = scene.layout.app_label[1];
+        for y in 0..800 {
+            for x in 0..1280 {
+                if before[y * 1280 + x] != noted[y * 1280 + x] {
+                    assert!(label.contains(x, y), "({x},{y}) outside Files' label box");
+                }
+            }
+        }
+        scene.set_app_note(1, false);
+        assert_eq!(paint(&scene), before);
+    }
+
+    /// Back to Home: the reset is the chips' first state, bit for bit.
+    #[test]
+    fn reset_is_the_first_state() {
+        let mut scene = BaseScene::with_home(1280, 800, 640, 400, Mode::Glass).unwrap();
+        scene.set_app_chips(true);
+        let first = paint(&scene);
+        scene.set_app_look(0, ChipLook::Background);
+        scene.set_app_note(1, true);
+        scene.set_arthur_background(true);
+        assert_ne!(paint(&scene), first);
+        scene.reset_app_chips();
+        assert_eq!(paint(&scene), first);
+    }
+
+    /// Arthur in the background: the grey dot under his chip, and only that.
+    #[test]
+    fn arthur_background_is_his_dot() {
+        let mut scene = BaseScene::with_home(1280, 800, 640, 400, Mode::Glass).unwrap();
+        scene.set_app_chips(true);
+        let before = paint(&scene);
+        scene.set_arthur_background(true);
+        let after = paint(&scene);
+        assert_ne!(before, after);
+        let dot = scene.layout.held_dot;
+        for y in 0..800 {
+            for x in 0..1280 {
+                if before[y * 1280 + x] != after[y * 1280 + x] {
+                    assert!(dot.contains(x, y), "({x},{y}) outside Arthur's dot");
+                }
+            }
+        }
+    }
+}

@@ -22,6 +22,8 @@ mod desktop_action_logic;
 mod desktop_actions;
 #[cfg(all(feature = "arthur-act", not(feature = "agentic-actions")))]
 mod intent_logic;
+#[cfg(feature = "atrium-launcher")]
+mod launcher_logic;
 #[cfg(any(feature = "arthur-memory-encryption", feature = "arthur-reversibility"))]
 #[cfg_attr(feature = "arthur-reversibility", allow(dead_code))]
 mod memory_crypto;
@@ -1272,12 +1274,28 @@ fn run_desktop_session(
                 let browser = &input[..input_len] == b"open browser";
                 #[cfg(not(feature = "atrium-apps-browser"))]
                 let browser = false;
-                // L1a.3: the Home intent that opens the terminal window.
+                // L1a.3: the Home intent that opens the terminal window. A2:
+                // the bare word too (Home's `terminal` intent, or its Spine
+                // chip clicked in Home, which the WM sends as that intent).
                 #[cfg(feature = "atrium-terminal")]
-                let terminal = &input[..input_len] == b"open terminal";
+                let terminal = matches!(
+                    input[..input_len].trim_ascii(),
+                    b"open terminal" | b"terminal"
+                );
                 #[cfg(not(feature = "atrium-terminal"))]
                 let terminal = false;
+                // A2: Files and Settings have no module until F1 and S1; their
+                // intents are answered, and nothing is launched.
+                #[cfg(feature = "atrium-launcher")]
+                let unavailable = launcher_logic::unavailable(&input[..input_len]);
+                #[cfg(not(feature = "atrium-launcher"))]
+                let unavailable: Option<&[u8]> = None;
                 if handled {
+                } else if let Some(app) = unavailable {
+                    #[cfg(feature = "atrium-launcher")]
+                    app_unavailable(surface, app);
+                    #[cfg(not(feature = "atrium-launcher"))]
+                    let _ = app;
                 } else if probe_app {
                     #[cfg(feature = "atrium-apps-probe")]
                     open_probe_app(surface, launch_cap);
@@ -1337,11 +1355,11 @@ fn run_desktop_session(
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
-                // (Opening the probe app, the browser or the terminal is not
-                // one of the boot test's answers: the second answer ends the
-                // session.)
+                // (Opening the probe app, the browser or the terminal, or
+                // (A2) an app that isn't available yet, is not one of the boot
+                // test's answers: the second answer ends the session.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                if !probe_app && !browser && !terminal {
+                if !probe_app && !browser && !terminal && unavailable.is_none() {
                     answers += 1;
                 }
                 #[cfg(all(
@@ -1529,6 +1547,19 @@ fn open_terminal(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Han
             surface.write_text(b"I could not open the terminal.");
         }
     }
+}
+
+/// A2: an app with no module yet (Files before F1, Settings before S1). The
+/// intent is answered and nothing is spawned.
+#[cfg(feature = "atrium-launcher")]
+fn app_unavailable(surface: &mut showcase_surface::ArthurSurface, app: &[u8]) {
+    let mut line = [0u8; 64];
+    let head = b"DESKTOP arthur app unavailable app=";
+    line[..head.len()].copy_from_slice(head);
+    let n = app.len().min(line.len() - head.len());
+    line[head.len()..head.len() + n].copy_from_slice(&app[..n]);
+    stage_b_log_line(&line[..head.len() + n]);
+    surface.write_text(launcher_logic::unavailable_reply(app));
 }
 
 /// PR #15 review item 3 boot test: commit back to back for `FLOOD_NS`, each

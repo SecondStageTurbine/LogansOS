@@ -15,6 +15,8 @@ mod conversation_logic;
 mod desktop_action_logic;
 #[path = "../../../userland/neo-arthur/src/intent_logic.rs"]
 mod intent_logic;
+#[path = "../../../userland/neo-arthur/src/launcher_logic.rs"]
+mod launcher_logic;
 #[path = "../../../userland/neo-arthur/src/memory_logic.rs"]
 mod memory_logic;
 // The REAL M2 crypto core (no libneo, no MemoryType deps), mounted so the
@@ -29,6 +31,41 @@ mod reversibility_logic;
 mod showcase_logic;
 #[path = "../../../userland/neo-arthur/src/showcase_text.rs"]
 mod showcase_text;
+
+/// A2: Files' and Settings' intents are answered and launch nothing until F1
+/// and S1 add their modules; only the bare word or `open <word>` counts.
+#[cfg(test)]
+mod launcher_tests {
+    use super::launcher_logic::{unavailable, unavailable_reply};
+
+    #[test]
+    fn files_and_settings_are_unavailable() {
+        assert_eq!(unavailable(b"files"), Some(&b"files"[..]));
+        assert_eq!(unavailable(b"  settings "), Some(&b"settings"[..]));
+        assert_eq!(unavailable(b"open files"), Some(&b"files"[..]));
+        assert_eq!(unavailable(b"open  settings"), Some(&b"settings"[..]));
+        assert_eq!(unavailable_reply(b"files"), b"Files isn't available yet.");
+        assert_eq!(
+            unavailable_reply(b"settings"),
+            b"Settings isn't available yet."
+        );
+    }
+
+    #[test]
+    fn other_lines_are_not() {
+        for line in [
+            &b"terminal"[..],
+            b"open terminal",
+            b"where are my files",
+            b"files please",
+            b"Files",
+            b"open",
+            b"",
+        ] {
+            assert_eq!(unavailable(line), None, "{:?}", core::str::from_utf8(line));
+        }
+    }
+}
 
 /// L1.3a: a desktop action is an explicit command line only; chat that
 /// merely mentions a verb or a path is not one.

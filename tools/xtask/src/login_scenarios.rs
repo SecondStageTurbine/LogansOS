@@ -52,6 +52,7 @@ pub const LOGIN_LOCK_IDLE_SCENARIO: &str = "login_lock_idle";
 pub const LOGIN_LOCK_STALL_SCENARIO: &str = "login_lock_stall";
 pub const LOGIN_LOCK_PARK_SCENARIO: &str = "login_lock_park";
 pub const LOGIN_TERMINAL_LOCK_SCENARIO: &str = "login_terminal_lock";
+pub const LOGIN_SWITCH_LOCK_SCENARIO: &str = "login_switch_lock";
 pub const SETTINGS_STORE_SCENARIO: &str = "login_settings_store";
 pub const SETTINGS_CUT_SCENARIO: &str = "login_settings_cut";
 pub const SETTINGS_REFUSED_SCENARIO: &str = "login_settings_refused";
@@ -91,6 +92,7 @@ pub fn is_login_vm_scenario(name: &str) -> bool {
             | LOGIN_LOCK_STALL_SCENARIO
             | LOGIN_LOCK_PARK_SCENARIO
             | LOGIN_TERMINAL_LOCK_SCENARIO
+            | LOGIN_SWITCH_LOCK_SCENARIO
             | SETTINGS_STORE_SCENARIO
             | SETTINGS_CUT_SCENARIO
             | SETTINGS_REFUSED_SCENARIO
@@ -428,8 +430,33 @@ const TERMINAL_LOCK: &[SerialScriptStep] = &[
     ),
     step(b"LOCK prompt=password", b"x\n"),
     step(b"LOCK prompt=password", P1),
-    step(b"DESKTOP apps client resumed client=2", b"c\n"),
+    step(b"DESKTOP apps client resumed client=3", b"c\n"),
     step(b"TERM row=2 |got=6162630a|", &[PAUSE, HMP_SUPER_L]),
+    step(b"LOCK prompt=password", P1),
+];
+
+/// `login_switch_lock` (A2, Muse's #98 observation): the account; `open
+/// terminal` from Home; while the WM holds the SAK latch (2 s from the
+/// terminal's launch), Super+Tab and Super+L, so both come out of one take and
+/// the switch is due in the turn the lock engages. It is dropped, not run while
+/// locked. The password; the unlock gives the terminal its turn back; Super+Tab
+/// then switches to Arthur as usual; a second lock and unlock end the boot.
+const SWITCH_LOCK: &[SerialScriptStep] = &[
+    step(b"LOGIN prompt=name", b"ada\n"),
+    step(b"LOGIN prompt=choose", P1),
+    step(b"LOGIN prompt=again", P1),
+    step(b"LOGIN prompt=code", b"\n"),
+    step(b"LOGIN session started view=home", b"open terminal\n"),
+    step(b"DESKTOP apps sak hold ms=", &[HMP_SUPER_TAB, HMP_SUPER_L]),
+    step(b"LOCK prompt=password", P1),
+    step(
+        b"DESKTOP apps client resumed client=3",
+        &[PAUSE, HMP_SUPER_TAB],
+    ),
+    step(
+        b"DESKTOP apps front client=0 via=sak-tab",
+        &[PAUSE, HMP_SUPER_L],
+    ),
     step(b"LOCK prompt=password", P1),
 ];
 
@@ -720,7 +747,8 @@ pub fn run_login_vm_scenario(scenario: TestScenario, attempt: usize) -> Result<(
         | LOGIN_LOCK_IDLE_SCENARIO
         | LOGIN_LOCK_STALL_SCENARIO
         | LOGIN_LOCK_PARK_SCENARIO
-        | LOGIN_TERMINAL_LOCK_SCENARIO => {
+        | LOGIN_TERMINAL_LOCK_SCENARIO
+        | LOGIN_SWITCH_LOCK_SCENARIO => {
             lock(scenario, attempt, &dir, &ovmf, &vars, &boot_disk, &data)?
         }
         SETTINGS_STORE_SCENARIO => {
@@ -1210,6 +1238,7 @@ fn lock(
     let stall = scenario.name == LOGIN_LOCK_STALL_SCENARIO;
     let park = scenario.name == LOGIN_LOCK_PARK_SCENARIO;
     let terminal = scenario.name == LOGIN_TERMINAL_LOCK_SCENARIO;
+    let switch = scenario.name == LOGIN_SWITCH_LOCK_SCENARIO;
     *HMP_CAPTURE_DIR.lock().expect("capture dir") = Some(dir.to_path_buf());
     let observed = boot(
         scenario,
@@ -1227,6 +1256,8 @@ fn lock(
             LOCK_PARK
         } else if terminal {
             TERMINAL_LOCK
+        } else if switch {
+            SWITCH_LOCK
         } else {
             LOCK_IDLE
         }),
@@ -1241,6 +1272,8 @@ fn lock(
         lock_park_checks(scenario, &observed)
     } else if terminal {
         terminal_lock_checks(scenario, &observed)
+    } else if switch {
+        switch_lock_checks(scenario, &observed)
     } else {
         lock_idle_checks(scenario, &observed)
     }
@@ -1772,18 +1805,60 @@ fn terminal_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Resu
         &[
             "LOCK armed route=kernel",
             "LOGIN session started view=home",
-            "DESKTOP apps front client=2 via=launch",
+            "DESKTOP apps front client=3 via=launch",
             "TERM row=1 |ab|",
             "LOCK locked reason=sak",
             "LOCK prompt=password",
             "LOCK unlocked failures=1 to=client",
-            "DESKTOP apps client resumed client=2",
+            "DESKTOP apps client resumed client=3",
             "TERM row=1 |abc|",
             "TERM row=2 |got=6162630a|",
             "LOCK unlocked failures=0 to=client",
             "LOCK boot test done",
         ],
         "L1a.3: what is typed while the session is locked never reaches the terminal or its child; the unlock gives the terminal its turn back",
+    )
+}
+
+/// A2 (Muse, #98): no client is signalled as the session locks or while it
+/// is locked. The Super+Tab taken with Super+L is dropped (the lock is due),
+/// so no switch (whose discard step sends the new front its `K`) happens
+/// between the take and the unlock; the terminal keeps the front through the
+/// unlock, and Super+Tab works again after it.
+fn switch_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Result<(), String> {
+    let serial = read_serial(observed)?;
+    let hold_at = serial.find("DESKTOP apps sak hold ms=");
+    let unlocked_at = serial.find("LOCK unlocked failures=0 to=client");
+    if let (Some(from), Some(to)) = (hold_at, unlocked_at)
+        && let Some(line) = serial[from..to]
+            .lines()
+            .find(|l| l.contains("DESKTOP apps front client="))
+    {
+        return Err(format!(
+            "`{}`: a client was switched to (and sent its `K`) as the session locked or while it was locked: `{line}`; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
+    }
+    require_serial_sequence(
+        scenario,
+        observed,
+        &[
+            "LOCK armed route=kernel",
+            "LOGIN session started view=home",
+            "DESKTOP apps front client=3 via=launch",
+            "DESKTOP apps sak hold ms=2000",
+            "DESKTOP apps switch dropped lock via=sak-tab",
+            "LOCK locked reason=sak",
+            "LOCK prompt=password",
+            "LOCK unlocked failures=0 to=client",
+            "DESKTOP apps client resumed client=3",
+            "DESKTOP apps front client=0 via=sak-tab",
+            "LOCK locked reason=sak",
+            "LOCK unlocked failures=0",
+            "LOCK boot test done",
+        ],
+        "A2 (Muse, #98): a Super+Tab taken with Super+L is dropped; no client is signalled as the session locks or while it is locked",
     )
 }
 
