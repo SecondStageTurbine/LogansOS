@@ -134,6 +134,12 @@ pub enum VfsError {
     /// B1c: a pinned boot module failed its digest check (`EBADMSG`).
     #[cfg(feature = "model-boot-module")]
     Integrity,
+    /// F0: `unlink_at` of a directory with entries (`ENOTEMPTY`).
+    #[cfg(feature = "neofs-dir-ops")]
+    NotEmpty,
+    /// F0: a rename between two volumes (`EXDEV`).
+    #[cfg(feature = "neofs-dir-ops")]
+    CrossDevice,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +170,39 @@ pub trait Inode: Send + Sync {
     #[cfg(feature = "neofs-file-replace")]
     fn replace(&self, _bytes: &[u8]) -> Result<(), VfsError> {
         Err(VfsError::Unsupported)
+    }
+    /// F0: a new empty directory `name` in this directory.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn mkdir_at(&self, _name: &str) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported)
+    }
+    /// F0: remove `name` (a file, or an empty directory) from this directory.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn unlink_at(&self, _name: &str) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported)
+    }
+    /// F0: move `name` here to `to_name` in `to`, on the same volume, never
+    /// replacing.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn rename_at(&self, _name: &str, _to: &dyn Inode, _to_name: &str) -> Result<(), VfsError> {
+        Err(VfsError::Unsupported)
+    }
+    /// F0: `name`'s kind, flags and size.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn stat_at(&self, _name: &str) -> Result<neofs::dir_ops_logic::StatAtV1, VfsError> {
+        Err(VfsError::Unsupported)
+    }
+    /// F0: after this directory's own commit, read its new version; returns
+    /// the generation a handle on it now holds.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn reload_dir(&self) -> Result<Option<u32>, VfsError> {
+        self.current_generation()
+    }
+    /// F0: the NeoFS volume this directory is on (an identity) and its path
+    /// there (`None`: the volume's root). `None` off NeoFS.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn neofs_volume(&self) -> Option<(usize, Option<&str>)> {
+        None
     }
     /// File length in bytes, when the inode knows it (a regular/model file on a
     /// backing FS). `None` for inodes with no fixed length. Used by readers that
@@ -549,6 +588,104 @@ impl OpenFile {
         self.inode.replace(bytes)?;
         *self.offset.lock() = bytes.len();
         self.refresh_generation()
+    }
+
+    /// F0: a new empty directory `name` here. `handle` is the rights of the
+    /// file handle naming this OpenFile (see [`Self::dir_op_check`]).
+    #[cfg(feature = "neofs-dir-ops")]
+    pub fn mkdir_at(&self, name: &[u8], handle: FileRights) -> Result<(), VfsError> {
+        let name = self.dir_op_check(name, handle, true)?;
+        let result = self.inode.mkdir_at(name);
+        self.after_dir_op(result)
+    }
+
+    /// F0: remove `name`, a regular file or an empty directory.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub fn unlink_at(&self, name: &[u8], handle: FileRights) -> Result<(), VfsError> {
+        let name = self.dir_op_check(name, handle, true)?;
+        let result = self.inode.unlink_at(name);
+        self.after_dir_op(result)
+    }
+
+    /// F0: move `name` here to `to_name` in `to`. Both handles need the
+    /// mutation's rights; both directories must be on one volume
+    /// (`CrossDevice` otherwise), and the destination name free.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub fn rename_at(
+        &self,
+        name: &[u8],
+        handle: FileRights,
+        to: &OpenFile,
+        to_name: &[u8],
+        to_handle: FileRights,
+    ) -> Result<(), VfsError> {
+        let name = self.dir_op_check(name, handle, true)?;
+        let to_name = to.dir_op_check(to_name, to_handle, true)?;
+        if self.mount_id != to.mount_id {
+            return Err(VfsError::CrossDevice);
+        }
+        let result = self.inode.rename_at(name, &*to.inode, to_name);
+        let reloaded = self.after_dir_op(result);
+        if !core::ptr::eq(self, to) {
+            to.after_dir_op(reloaded)
+        } else {
+            reloaded
+        }
+    }
+
+    /// F0: `name`'s kind, flags and size. LOOKUP only.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub fn stat_at(
+        &self,
+        name: &[u8],
+        handle: FileRights,
+    ) -> Result<neofs::dir_ops_logic::StatAtV1, VfsError> {
+        let name = self.dir_op_check(name, handle, false)?;
+        self.inode.stat_at(name)
+    }
+
+    /// F0's checks, in `mount_child`'s order: the inode is a directory, then
+    /// the rights, then the name.
+    ///
+    /// - Every operation needs LOOKUP on both this OpenFile and the handle.
+    /// - A mutation (`mutate`) needs WRITE on the handle. A directory's
+    ///   OpenFile never holds WRITE: a scope's file rights are its handle's
+    ///   (OT-66 K1b, `open_root_temporary`), so a handle narrowed by a derive
+    ///   without WRITE can look but not change.
+    ///
+    /// No generation check: a directory handle names a path (K1b scopes
+    /// authorize paths), and its generation moves on any change beneath it.
+    /// The filesystem resolves the path under its namespace lock; a
+    /// directory that is gone is `Stale` there.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn dir_op_check<'a>(
+        &self,
+        name: &'a [u8],
+        handle: FileRights,
+        mutate: bool,
+    ) -> Result<&'a str, VfsError> {
+        if self.inode.kind() != InodeKind::Directory {
+            return Err(VfsError::NotDirectory);
+        }
+        if !self
+            .rights
+            .intersection(handle)
+            .contains(FileRights::LOOKUP)
+            || (mutate && !handle.contains(FileRights::WRITE))
+        {
+            return Err(VfsError::InsufficientRights);
+        }
+        neofs::dir_ops_logic::check_name(name).map_err(|_| VfsError::Invalid)
+    }
+
+    /// After a directory operation through this handle: on success, the
+    /// handle holds the new version, so its readdir lists what it just did.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn after_dir_op(&self, result: Result<(), VfsError>) -> Result<(), VfsError> {
+        result?;
+        let generation = self.inode.reload_dir()?;
+        *self.generation.lock() = generation;
+        Ok(())
     }
 
     /// One directory entry, through a file handle whose rights are `handle`:
@@ -1498,13 +1635,19 @@ pub fn debug_neofs_replace_before_publish(path: &str, bytes: &[u8]) -> Result<()
 
 /// W1's byte oracle: `path`'s inode block and its 256 bytes on the device,
 /// and any block's 4096 bytes on the device (the cache drained first).
-#[cfg(feature = "neo-test-neofs-file-replace")]
+#[cfg(any(
+    feature = "neo-test-neofs-file-replace",
+    feature = "neo-test-neofs-dir-ops"
+))]
 pub fn debug_neofs_raw_inode(path: &str) -> Result<(u64, alloc::vec::Vec<u8>), VfsError> {
     let rest = path.strip_prefix("/neofs/").ok_or(VfsError::Invalid)?;
     mounted_neofs_for_debug()?.debug_raw_inode(rest)
 }
 
-#[cfg(feature = "neo-test-neofs-file-replace")]
+#[cfg(any(
+    feature = "neo-test-neofs-file-replace",
+    feature = "neo-test-neofs-dir-ops"
+))]
 pub fn debug_neofs_raw_block(block: u64) -> Result<alloc::vec::Vec<u8>, VfsError> {
     mounted_neofs_for_debug()?.debug_raw_block(block)
 }
@@ -1513,7 +1656,8 @@ pub fn debug_neofs_raw_block(block: u64) -> Result<alloc::vec::Vec<u8>, VfsError
 /// written and flushed, no superblock (`NeoFsBlockCache::debug_drain_to_barrier`).
 #[cfg(any(
     feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-    feature = "neo-test-neofs-file-replace"
+    feature = "neo-test-neofs-file-replace",
+    feature = "neo-test-neofs-dir-ops"
 ))]
 pub fn debug_neofs_drain_to_barrier() -> Result<u64, VfsError> {
     mounted_neofs_for_debug()?.debug_drain_to_barrier()
@@ -1526,7 +1670,8 @@ pub fn debug_neofs_write_invalid_superblock_copy(slot: usize) -> Result<(), VfsE
 
 #[cfg(any(
     feature = "neo-test-phase3-neofs-3c",
-    feature = "neo-test-neofs-file-replace"
+    feature = "neo-test-neofs-file-replace",
+    feature = "neo-test-neofs-dir-ops"
 ))]
 pub fn debug_neofs_free_map_stats() -> Result<neofs::FreeMapStats, VfsError> {
     mounted_neofs_for_debug()?.debug_free_map_stats()

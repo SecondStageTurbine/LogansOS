@@ -1206,7 +1206,7 @@ jobs:
   #   - SPDX headers and the monolithic-identity guard (seconds);
   #   - OT-78: the feature set that ships is a blocking build, not an
   #     operator-only command;
-  #   - OT-69: the 13 feature-gated kernel clippy configurations (below).
+  #   - OT-69: the 14 feature-gated kernel clippy configurations (below).
   build-checks:
     name: Build Checks (product build, feature clippy, SPDX, identity)
     needs: nightly-skip
@@ -1463,7 +1463,7 @@ jobs:
     # feature sets (real-lm, inference-stack) that the single neo-test step in
     # host-checks never compiles, and B1c's scenario landed clippy-red unseen.
     #
-    # Feature matrix design (7 subsystem builds covering every non-default feature, plus 6 scenario builds):
+    # Feature matrix design (7 subsystem builds covering every non-default feature, plus 7 scenario builds):
     #   wifi-usb:     mt7601u,wpa3-sae          -> mt7601u, wifi, usb-host, wpa3-sae, kernel-rng
     #   gpu-iommu:    accel-intel,vtd           -> accel-intel, vtd (ACPI/DMAR)
     #   atrium-ai:    atrium-compositor-g1,threaded-matmul,forward-perf,ot16-graph-walker,phase9-data-driven-config
@@ -1485,6 +1485,7 @@ jobs:
     #                 base scenario's features)
     #   real-lm-generate: B1c's real generation scenario (real-lm)
     #   preemptible-liveness: the inference-preemptible liveness probe
+    #   neofs-dir-ops: F0's scenario (neofs-dir-ops, and cap-rooted-open under it)
     #
     # -A dead_code is deliberate: cross-feature scaffolding gated at the umbrella
     # level is "never used" when only a subset of features is enabled in one build.
@@ -1507,6 +1508,7 @@ jobs:
             "real-lm-generate|neo-test-real-lm-generate"
             "kill-ipc-park-control|neo-test-ipc-park-kill-control"
             "preemptible-liveness|neo-test-inference-preemptible-liveness"
+            "neofs-dir-ops|neo-test-neofs-dir-ops"
           )
           failed=()
           for entry in "${configs[@]}"; do

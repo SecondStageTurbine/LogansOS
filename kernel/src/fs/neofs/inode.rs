@@ -33,6 +33,12 @@ use super::format::{
     parse_directory_entries, parse_inode, write_dir_entry, write_inode, write_superblock,
 };
 
+// F0: mkdir_at, unlink_at, rename_at, stat_at.
+#[cfg(feature = "neofs-dir-ops")]
+mod dir_ops;
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub(super) use dir_ops::STOP_NEXT_BEFORE_PUBLISH;
+
 struct NeoFsMetadata {
     superblock: Superblock,
     free_map: Option<FreeMapState>,
@@ -858,7 +864,10 @@ impl NeoFsState {
     }
 
     /// W1's byte oracle reads the device: everything cached is written first.
-    #[cfg(feature = "neo-test-neofs-file-replace")]
+    #[cfg(any(
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
+    ))]
     pub(super) fn debug_drain_all(&self) -> Result<(), NeoFsError> {
         let _entries = self.entries.lock();
         self.cache.drain_all()?;
@@ -1252,7 +1261,8 @@ impl NeoFsState {
         feature = "neo-test-neofs-large-write",
         feature = "neo-test-neofs-overwrite-frees",
         feature = "neo-test-neofs-grow-write",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub(super) fn debug_free_map_stats(&self) -> Result<FreeMapStats, NeoFsError> {
         let metadata = self.metadata.lock();
@@ -1466,7 +1476,8 @@ impl NeoFsState {
     /// debug_drain_to_barrier`). Returns the flushes it issued.
     #[cfg(any(
         feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub(super) fn debug_drain_to_barrier(&self) -> Result<u64, NeoFsError> {
         self.cache.debug_drain_to_barrier()
@@ -1956,6 +1967,36 @@ impl Inode for NeoInode {
             Some(name) => self.state.current_child_generation(name).map(Some),
             None => Ok(Some(self.state.root_snapshot().1.generation)),
         }
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn mkdir_at(&self, name: &str) -> Result<(), VfsError> {
+        dir_ops::mkdir(self, name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn unlink_at(&self, name: &str) -> Result<(), VfsError> {
+        dir_ops::unlink(self, name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn rename_at(&self, name: &str, to: &dyn Inode, to_name: &str) -> Result<(), VfsError> {
+        dir_ops::rename(self, name, to, to_name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn stat_at(&self, name: &str) -> Result<super::dir_ops_logic::StatAtV1, VfsError> {
+        dir_ops::stat(self, name)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn reload_dir(&self) -> Result<Option<u32>, VfsError> {
+        dir_ops::reload(self)
+    }
+
+    #[cfg(feature = "neofs-dir-ops")]
+    fn neofs_volume(&self) -> Option<(usize, Option<&str>)> {
+        Some((Arc::as_ptr(&self.state) as usize, self.name.as_deref()))
     }
 
     fn fsync(&self) -> Result<(), VfsError> {

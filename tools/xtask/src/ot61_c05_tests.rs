@@ -598,6 +598,7 @@ const EXPECTED_KINDS: &[(&str, i32, &str)] = &[
     ("EFAULT", 14, "InvalidInput"),
     ("EBUSY", 16, "ResourceBusy"),
     ("EEXIST", 17, "AlreadyExists"),
+    ("EXDEV", 18, "CrossesDevices"),
     ("ENOTDIR", 20, "NotADirectory"),
     ("EISDIR", 21, "IsADirectory"),
     ("EINVAL", 22, "InvalidInput"),

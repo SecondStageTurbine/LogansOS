@@ -6987,6 +6987,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // F0: mkdir_at, unlink_at, rename_at, stat_at. Directory blocks on
+        // the device against hand-laid ones, rights, refusals; a rename across
+        // directories cut before its publish leaves the old tree for boot 2.
+        name: "neofs_dir_ops",
+        feature: "neo-test-neofs-dir-ops",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "neofs_truncate",
         feature: "neo-test-neofs-truncate",
         user_feature: None,
@@ -11770,6 +11780,7 @@ fn is_reboot_persistence_scenario(scenario: TestScenario) -> bool {
         || scenario.name == "phase3_neofs_crash_mid_overwrite_recovery"
         || scenario.name == "neofs_overwrite_frees"
         || scenario.name == "neofs_file_replace"
+        || scenario.name == "neofs_dir_ops"
         || scenario.name == "phase3_neofs_superblock_rotation_recovery"
         || scenario.name == "phase3_neofs_crash_mid_create_recovery"
         || scenario.name == "phase3_neofs_gc_reboot_persistence"
@@ -17986,6 +17997,7 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         "neofs_rejects_doubled_block" => Some("doubled-block"),
         NEOFS_GROW_WRITE_SCENARIO => Some("normal"),
         "neofs_file_replace" => Some("normal"),
+        "neofs_dir_ops" => Some("normal"),
         "neofs_read_recheck" => Some("normal"),
         "neofs_truncate" => Some("normal"),
         "model_load_cascade" => Some("normal"),

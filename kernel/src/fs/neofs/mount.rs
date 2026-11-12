@@ -293,7 +293,10 @@ impl NeoFs {
     }
 
     /// The inode block `path` resolves to, and its bytes read from the device.
-    #[cfg(feature = "neo-test-neofs-file-replace")]
+    #[cfg(any(
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
+    ))]
     pub fn debug_raw_inode(&self, path: &str) -> Result<(u64, alloc::vec::Vec<u8>), VfsError> {
         let (block, _record) = self.state.resolve_path(path).map_err(neofs_to_vfs)?;
         let bytes = self.debug_raw_block(block)?;
@@ -301,7 +304,10 @@ impl NeoFs {
     }
 
     /// `block`'s bytes on the device, after draining the cache.
-    #[cfg(feature = "neo-test-neofs-file-replace")]
+    #[cfg(any(
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
+    ))]
     pub fn debug_raw_block(&self, block: u64) -> Result<alloc::vec::Vec<u8>, VfsError> {
         self.state.debug_drain_all().map_err(neofs_to_vfs)?;
         let bytes = super::inode::read_fs_block(&self.state.device, block).map_err(neofs_to_vfs)?;
@@ -310,7 +316,8 @@ impl NeoFs {
 
     #[cfg(any(
         feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub fn debug_drain_to_barrier(&self) -> Result<u64, VfsError> {
         self.state.debug_drain_to_barrier().map_err(neofs_to_vfs)
@@ -328,7 +335,8 @@ impl NeoFs {
         feature = "neo-test-neofs-large-write",
         feature = "neo-test-neofs-overwrite-frees",
         feature = "neo-test-neofs-grow-write",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub fn debug_free_map_stats(&self) -> Result<super::FreeMapStats, VfsError> {
         self.state.debug_free_map_stats().map_err(neofs_to_vfs)

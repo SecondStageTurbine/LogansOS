@@ -121,6 +121,18 @@ const _: () = assert!(SYS_POWER == crate::acpi::power_abi::SYS_POWER);
 /// OT-67 W1: a file's whole content replaced in one commit.
 #[cfg(feature = "neofs-file-replace")]
 pub const SYS_FILE_REPLACE: u64 = 24;
+/// F0: `SYS_MKDIR_AT(dir_fd, name, name_len)`, a new empty directory.
+#[cfg(feature = "neofs-dir-ops")]
+pub const SYS_MKDIR_AT: u64 = 26;
+/// F0: `SYS_UNLINK_AT(dir_fd, name, name_len)`, a file or an empty directory.
+#[cfg(feature = "neofs-dir-ops")]
+pub const SYS_UNLINK_AT: u64 = 27;
+/// F0: `SYS_RENAME_AT(dir_fd, name, name_len, to_fd, to_name, to_name_len)`.
+#[cfg(feature = "neofs-dir-ops")]
+pub const SYS_RENAME_AT: u64 = 28;
+/// F0: `SYS_STAT_AT(dir_fd, name, name_len, out, out_len)`, a `StatAtV1`.
+#[cfg(feature = "neofs-dir-ops")]
+pub const SYS_STAT_AT: u64 = 29;
 // OT-61 browser C1 host-runtime block (0x40..0x4F). C1.0 uses the LOW end
 // (VM + clock); 0x44..0x4F is RESERVED for C1.1/C1.2 (futex/thread/TLS) so a
 // later cross-check amending those shapes cannot renumber C1.0.
@@ -1234,6 +1246,23 @@ extern "C" fn syscall_dispatch(
         SYS_POWER => sys_power_impl(a0, a1),
         #[cfg(feature = "neofs-file-replace")]
         SYS_FILE_REPLACE => sys_file_replace_impl(a0 as u32, a1 as *const u8, a2 as usize),
+        #[cfg(feature = "neofs-dir-ops")]
+        SYS_MKDIR_AT => sys_mkdir_at_impl(a0 as u32, a1 as *const u8, a2 as usize),
+        #[cfg(feature = "neofs-dir-ops")]
+        SYS_UNLINK_AT => sys_unlink_at_impl(a0 as u32, a1 as *const u8, a2 as usize),
+        #[cfg(feature = "neofs-dir-ops")]
+        SYS_RENAME_AT => sys_rename_at_impl(
+            (a0 as u32, a1 as *const u8, a2 as usize),
+            (a3 as u32, a4 as *const u8, a5 as usize),
+        ),
+        #[cfg(feature = "neofs-dir-ops")]
+        SYS_STAT_AT => sys_stat_at_impl(
+            a0 as u32,
+            a1 as *const u8,
+            a2 as usize,
+            a3 as *mut u8,
+            a4 as usize,
+        ),
         SYS_TENSOR_CREATE => sys_tensor_create_impl(a0 as *const u8, a1 as usize),
         SYS_TENSOR_QUERY => sys_tensor_query_impl(a0 as u32, a1 as *mut u8, a2 as usize),
         SYS_TENSOR_SHARE => sys_tensor_share_impl(a0 as u32),
@@ -7866,6 +7895,180 @@ pub fn debug_sys_file_replace_for_test(fd: u32, data: &[u8]) -> i64 {
     file_replace_body(&file, data)
 }
 
+/// F0: a directory operation's name from user memory: 1 to 47 bytes
+/// (`dir_ops_logic::NAME_MAX`), checked before any copy. The rest of the
+/// name rules (`/`, NUL, `.`, `..`, UTF-8) are the VFS's, after the rights.
+#[cfg(feature = "neofs-dir-ops")]
+fn dir_op_user_name(ptr: *const u8, len: usize) -> Result<alloc::vec::Vec<u8>, i64> {
+    if len == 0 || len > crate::fs::neofs::dir_ops_logic::NAME_MAX {
+        return Err(EINVAL);
+    }
+    validate_user_buf(ptr as u64, len)?;
+    copy_user_bytes(ptr, len)
+}
+
+/// F0: the directory handle `fd`, its handle rights, and the `.system`
+/// check on `name` beneath it: a name under a mount's `.system/` is the
+/// sign-in store's, `EPERM` without the `SystemStore` cap, as `sys_open`
+/// refuses (L1). The handle's scope is the directory's path.
+#[cfg(feature = "neofs-dir-ops")]
+fn dir_op_handle(fd: u32, name: &[u8]) -> Result<(alloc::sync::Arc<OpenFile>, FileRights), i64> {
+    let (file, rights) = file_lookup_with_rights(fd)?;
+    #[cfg(feature = "system-store")]
+    {
+        let mut path = alloc::string::String::from("/");
+        if let Some(scope) = file.scope().filter(|scope| !scope.is_empty()) {
+            path.push_str(scope);
+            path.push('/');
+        }
+        path.push_str(core::str::from_utf8(name).map_err(|_| EINVAL)?);
+        let proc = current_process_for_syscall()?;
+        system_store_check(&proc, &path)?;
+    }
+    #[cfg(not(feature = "system-store"))]
+    let _ = name;
+    Ok((file, rights))
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn sys_mkdir_at_impl(fd: u32, name: *const u8, len: usize) -> i64 {
+    match dir_op_user_name(name, len) {
+        Ok(name) => mkdir_at_body(fd, &name),
+        Err(e) => e,
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn mkdir_at_body(fd: u32, name: &[u8]) -> i64 {
+    let (file, rights) = match dir_op_handle(fd, name) {
+        Ok(found) => found,
+        Err(e) => return e,
+    };
+    match vfs_body_if_on(|| file.mkdir_at(name, rights)) {
+        Ok(()) => 0,
+        Err(e) => vfs_errno(e),
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn sys_unlink_at_impl(fd: u32, name: *const u8, len: usize) -> i64 {
+    match dir_op_user_name(name, len) {
+        Ok(name) => unlink_at_body(fd, &name),
+        Err(e) => e,
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn unlink_at_body(fd: u32, name: &[u8]) -> i64 {
+    let (file, rights) = match dir_op_handle(fd, name) {
+        Ok(found) => found,
+        Err(e) => return e,
+    };
+    match vfs_body_if_on(|| file.unlink_at(name, rights)) {
+        Ok(()) => 0,
+        Err(e) => vfs_errno(e),
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn sys_rename_at_impl(
+    (fd, name, len): (u32, *const u8, usize),
+    (to_fd, to_name, to_len): (u32, *const u8, usize),
+) -> i64 {
+    let name = match dir_op_user_name(name, len) {
+        Ok(name) => name,
+        Err(e) => return e,
+    };
+    match dir_op_user_name(to_name, to_len) {
+        Ok(to_name) => rename_at_body((fd, &name), (to_fd, &to_name)),
+        Err(e) => e,
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn rename_at_body((fd, name): (u32, &[u8]), (to_fd, to_name): (u32, &[u8])) -> i64 {
+    let (file, rights) = match dir_op_handle(fd, name) {
+        Ok(found) => found,
+        Err(e) => return e,
+    };
+    let (to, to_rights) = match dir_op_handle(to_fd, to_name) {
+        Ok(found) => found,
+        Err(e) => return e,
+    };
+    match vfs_body_if_on(|| file.rename_at(name, rights, &to, to_name, to_rights)) {
+        Ok(()) => 0,
+        Err(e) => vfs_errno(e),
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn sys_stat_at_impl(fd: u32, name: *const u8, len: usize, out: *mut u8, out_len: usize) -> i64 {
+    use crate::fs::neofs::dir_ops_logic::STAT_AT_V1_LEN;
+    if out_len != STAT_AT_V1_LEN {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(out as u64, out_len) {
+        return e;
+    }
+    let name = match dir_op_user_name(name, len) {
+        Ok(name) => name,
+        Err(e) => return e,
+    };
+    match stat_at_body(fd, &name) {
+        Ok(bytes) => match copy_kernel_bytes_to_user(out, &bytes) {
+            Ok(()) => 0,
+            Err(e) => e,
+        },
+        Err(e) => e,
+    }
+}
+
+#[cfg(feature = "neofs-dir-ops")]
+fn stat_at_body(
+    fd: u32,
+    name: &[u8],
+) -> Result<[u8; crate::fs::neofs::dir_ops_logic::STAT_AT_V1_LEN], i64> {
+    let (file, rights) = dir_op_handle(fd, name)?;
+    vfs_body_if_on(|| file.stat_at(name, rights))
+        .map(|stat| stat.encode())
+        .map_err(vfs_errno)
+}
+
+/// F0's scenario: each operation's body with a kernel-resident name (the
+/// user copy is the only part skipped), and the real entries for the
+/// user-memory checks.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub mod dir_ops_for_test {
+    use super::*;
+
+    pub fn mkdir_at(fd: u32, name: &[u8]) -> i64 {
+        mkdir_at_body(fd, name)
+    }
+
+    pub fn unlink_at(fd: u32, name: &[u8]) -> i64 {
+        unlink_at_body(fd, name)
+    }
+
+    pub fn rename_at(fd: u32, name: &[u8], to_fd: u32, to_name: &[u8]) -> i64 {
+        rename_at_body((fd, name), (to_fd, to_name))
+    }
+
+    pub fn stat_at(fd: u32, name: &[u8]) -> Result<[u8; 16], i64> {
+        stat_at_body(fd, name)
+    }
+
+    /// The real entry with a name that is not user memory (a kernel
+    /// address), one over the name cap, and a stat reply of the wrong size:
+    /// `EFAULT`, `EINVAL`, `EINVAL`, before anything is read.
+    pub fn bad_args(fd: u32, kernel_va: *const u8) -> (i64, i64, i64) {
+        (
+            sys_mkdir_at_impl(fd, kernel_va, 4),
+            sys_mkdir_at_impl(fd, core::ptr::null(), 48),
+            sys_stat_at_impl(fd, core::ptr::null(), 1, core::ptr::null_mut(), 15),
+        )
+    }
+}
+
 fn encode_dirent_v1(entry: &VfsDirEntry, out: &mut [u8]) -> Result<usize, VfsError> {
     let name = entry.name.as_bytes();
     let name_len = u16::try_from(name.len()).map_err(|_| VfsError::Invalid)?;
@@ -8011,6 +8214,10 @@ pub(crate) fn vfs_errno(e: VfsError) -> i64 {
         VfsError::Io => crate::errno::EIO,
         #[cfg(feature = "model-boot-module")]
         VfsError::Integrity => crate::errno::EBADMSG,
+        #[cfg(feature = "neofs-dir-ops")]
+        VfsError::NotEmpty => crate::errno::ENOTEMPTY,
+        #[cfg(feature = "neofs-dir-ops")]
+        VfsError::CrossDevice => crate::errno::EXDEV,
     }
 }
 

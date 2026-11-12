@@ -1329,6 +1329,8 @@ const SCENARIO: &str = "neofs_rejects_doubled_block";
 const SCENARIO: &str = "neofs_grow_write";
 #[cfg(feature = "neo-test-neofs-file-replace")]
 const SCENARIO: &str = "neofs_file_replace";
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+const SCENARIO: &str = "neofs_dir_ops";
 #[cfg(feature = "neo-test-neofs-read-recheck")]
 const SCENARIO: &str = "neofs_read_recheck";
 #[cfg(feature = "neo-test-neofs-truncate")]
@@ -1622,6 +1624,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-neofs-rejects-doubled-block",
     feature = "neo-test-neofs-grow-write",
     feature = "neo-test-neofs-file-replace",
+    feature = "neo-test-neofs-dir-ops",
     feature = "neo-test-neofs-read-recheck",
     feature = "neo-test-neofs-truncate",
     // Rule-4 consolidation: the nine per-slice atrium entries collapse to the
@@ -5834,6 +5837,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
     run_neofs_grow_write();
     #[cfg(feature = "neo-test-neofs-file-replace")]
     run_neofs_file_replace();
+
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    run_neofs_dir_ops();
 
     #[cfg(feature = "neo-test-neofs-read-recheck")]
     run_neofs_read_recheck();
@@ -33397,6 +33403,469 @@ fn run_neofs_file_replace() -> ! {
         used_small,
         used_back,
         used_after,
+        flushes
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// F0 (`neofs-dir-ops`, Plans/DISPATCH-2026-11-11-seat-e-f0-neofs-dir-ops.md).
+/// Boot 1, through the four syscalls' bodies on scope handles:
+/// - each operation's directory block on the device, before and after,
+///   against blocks laid out here by hand from docs/specs/neofs-format.md
+///   §4/§5 (not by the writer);
+/// - the rights (no WRITE: no change; no LOOKUP: no stat), the refusals,
+///   free space back after an unlink, a stale handle, `EXDEV`;
+/// - last, a rename across two directories cut after the barrier, before its
+///   superblocks.
+///
+/// Boot 2: the tree is the one before the cut rename, and mounts.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+fn run_neofs_dir_ops() -> ! {
+    use crate::arch::x86_64::syscall::debug_sys_readdir_kernel_buf_for_test;
+    use crate::arch::x86_64::syscall::dir_ops_for_test as ops;
+    use crate::errno::{
+        EACCES, EBUSY, EEXIST, EFAULT, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY, ESTALE, EXDEV,
+    };
+    use crate::fs::neofs::dir_ops_logic::{KIND_DIRECTORY, KIND_REGULAR, STAT_EMPTY_DIRECTORY};
+    use crate::fs::{
+        FileRights, OPEN_CREATE_REGULAR, OPEN_ROOT_TEMPORARY, OPEN_SCOPE_DIR, open_root_temporary,
+    };
+    const NOTE: &[u8] = b"F0: a file inside a moved folder.\n";
+    const DIR: u8 = 1;
+    const REG: u8 = 0;
+    let rights =
+        |bits: &[FileRights]| FileRights::from_bits(bits.iter().fold(0, |a, r| a | r.bits()));
+    let lrw = rights(&[FileRights::LOOKUP, FileRights::READDIR, FileRights::WRITE]);
+    let scope = |path: &str, handle: FileRights| -> u32 {
+        let file = open_root_temporary(path, OPEN_SCOPE_DIR, handle)
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_scope_open_failed", e));
+        neofs_4a_install_file_handle(file, handle)
+    };
+    let expect = |rc: i64, want: i64, reason: &str| {
+        if rc != want {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason={} rc={} want={}",
+                SCENARIO,
+                reason,
+                rc,
+                want
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    };
+    let stat = |fd: u32, name: &[u8]| -> (u32, u32, u64) {
+        match ops::stat_at(fd, name) {
+            // StatAtV1 read field by field at its offsets (dir_ops_logic).
+            Ok(b) => (
+                u32::from_le_bytes(b[0..4].try_into().unwrap()),
+                u32::from_le_bytes(b[4..8].try_into().unwrap()),
+                u64::from_le_bytes(b[8..16].try_into().unwrap()),
+            ),
+            Err(rc) => {
+                serial_println!(
+                    "NEO_TEST/1 event=FAIL name={} reason=neofs_dir_ops_stat_failed rc={}",
+                    SCENARIO,
+                    rc
+                );
+                debug_exit(EXIT_FAILURE);
+            }
+        }
+    };
+    let read_all = |path: &str| -> alloc::vec::Vec<u8> {
+        let file = open_root_temporary(path, OPEN_ROOT_TEMPORARY, FileRights::READ)
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_open_file_failed", e));
+        let mut out = alloc::vec::Vec::new();
+        let mut buf = [0u8; 256];
+        loop {
+            let n = file
+                .read(&mut buf)
+                .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_read_failed", e));
+            if n == 0 {
+                break out;
+            }
+            out.extend_from_slice(&buf[..n]);
+        }
+    };
+    let u64_at = |b: &[u8], at: usize| u64::from_le_bytes(b[at..at + 8].try_into().unwrap());
+    let inode_block = |path: &str| -> u64 {
+        crate::fs::debug_neofs_raw_inode(path)
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_raw_inode_failed", e))
+            .0
+    };
+    // The byte oracle. A directory's inode and its one data block on the
+    // device, against `entries` laid out by hand: per entry the name, NUL
+    // padding to byte 48, the child inode block (u64 LE) at 48, the kind at
+    // 56, zeros 57..64; the rest of the 4096-byte block zero (§5). The inode:
+    // magic, kind Directory (1) and version 1 at 8 and 9, size 64 per entry
+    // at 16, one block at 24, the entry count at 156, BLAKE3 of the entries
+    // at 104, and its checksum, BLAKE3 of bytes 0..224, at 224 (§4).
+    let oracle = |path: &str, entries: &[(&[u8], u64, u8)], reason: &str| {
+        let mut want = alloc::vec![0u8; 4096];
+        for (i, (name, child, kind)) in entries.iter().enumerate() {
+            let at = i * 64;
+            want[at..at + name.len()].copy_from_slice(name);
+            want[at + 48..at + 56].copy_from_slice(&child.to_le_bytes());
+            want[at + 56] = *kind;
+        }
+        let used = entries.len() * 64;
+        let (_block, raw) = crate::fs::debug_neofs_raw_inode(path)
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_raw_inode_failed", e));
+        let inode_ok = &raw[0..8] == b"NEOFSINO"
+            && raw[8] == DIR
+            && raw[9] == 1
+            && u64_at(&raw, 16) == used as u64
+            && u64_at(&raw, 24) == 1
+            && u32::from_le_bytes(raw[156..160].try_into().unwrap()) == entries.len() as u32
+            && raw[104..136] == *blake3::hash(&want[..used]).as_bytes()
+            && raw[224..256] == *blake3::hash(&raw[..224]).as_bytes();
+        if !inode_ok {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason={}_inode path={}",
+                SCENARIO,
+                reason,
+                path
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+        let block = crate::fs::debug_neofs_raw_block(u64_at(&raw, 32))
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_raw_block_failed", e));
+        if block != want {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason={}_block path={}",
+                SCENARIO,
+                reason,
+                path
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    };
+
+    let report = mount_neofs_rw_or_fail();
+    if open_root_temporary("/neofs/f0", OPEN_ROOT_TEMPORARY, FileRights::LOOKUP).is_ok() {
+        // Boot 2: the cut rename was never published. `inner` is still in
+        // `c` with its file; `a` holds no `back`.
+        let c_fd = scope("/neofs/f0/c", lrw);
+        let a_fd = scope("/neofs/f0/a", lrw);
+        if stat(c_fd, b"inner") != (KIND_DIRECTORY, 0, 1) {
+            fail("reason=neofs_dir_ops_cut_moved_inner");
+        }
+        expect(
+            ops::stat_at(a_fd, b"back").err().unwrap_or(0),
+            ENOENT,
+            "neofs_dir_ops_cut_published_back",
+        );
+        if read_all("/neofs/f0/c/inner/n.txt") != NOTE {
+            fail("reason=neofs_dir_ops_cut_note_changed");
+        }
+        serial_println!(
+            "NEO_TEST/1 event=PASS name={} stage=readback neofs_dir_ops=ok cut_before_publish=old_tree selected_superblock={} generation={}",
+            SCENARIO,
+            report.selected_superblock_slot,
+            report.generation
+        );
+        debug_exit(EXIT_SUCCESS);
+    }
+
+    let used = || {
+        let s = crate::fs::debug_neofs_free_map_stats()
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_no_free_map", e));
+        s.next_free_block - s.free_blocks
+    };
+
+    // Boot 1. mkdir at the volume's root.
+    let root_fd = scope("/neofs", lrw);
+    if stat(root_fd, b"hello.txt").0 != KIND_REGULAR {
+        fail("reason=neofs_dir_ops_stat_hello_not_regular");
+    }
+    expect(ops::mkdir_at(root_fd, b"f0"), 0, "neofs_dir_ops_mkdir_f0");
+    expect(
+        ops::mkdir_at(root_fd, b"f0"),
+        EEXIST,
+        "neofs_dir_ops_mkdir_twice",
+    );
+    if stat(root_fd, b"f0") != (KIND_DIRECTORY, STAT_EMPTY_DIRECTORY, 0) {
+        fail("reason=neofs_dir_ops_stat_new_dir");
+    }
+    oracle("/neofs/f0", &[], "neofs_dir_ops_oracle_mkdir_empty");
+
+    // mkdir inside it, one entry, then two: f0's block before and after.
+    let f0_fd = scope("/neofs/f0", lrw);
+    expect(ops::mkdir_at(f0_fd, b"a"), 0, "neofs_dir_ops_mkdir_a");
+    let a_block = inode_block("/neofs/f0/a");
+    oracle(
+        "/neofs/f0",
+        &[(b"a", a_block, DIR)],
+        "neofs_dir_ops_oracle_mkdir_a",
+    );
+    expect(ops::mkdir_at(f0_fd, b"b"), 0, "neofs_dir_ops_mkdir_b");
+    let a_block = inode_block("/neofs/f0/a");
+    let b_block = inode_block("/neofs/f0/b");
+    oracle(
+        "/neofs/f0",
+        &[(b"a", a_block, DIR), (b"b", b_block, DIR)],
+        "neofs_dir_ops_oracle_mkdir_b",
+    );
+    oracle("/neofs/f0/b", &[], "neofs_dir_ops_oracle_b_empty");
+
+    // Rename in place: the entry keeps its slot and its inode block.
+    expect(
+        ops::rename_at(f0_fd, b"b", f0_fd, b"c"),
+        0,
+        "neofs_dir_ops_rename_b_c",
+    );
+    let a_block = inode_block("/neofs/f0/a");
+    oracle(
+        "/neofs/f0",
+        &[(b"a", a_block, DIR), (b"c", b_block, DIR)],
+        "neofs_dir_ops_oracle_rename_in_place",
+    );
+    expect(
+        ops::stat_at(f0_fd, b"b").err().unwrap_or(0),
+        ENOENT,
+        "neofs_dir_ops_old_name_still_there",
+    );
+
+    // A file, created and unlinked: the entry goes, and its blocks are free.
+    let before_file = used();
+    let x = open_root_temporary("/neofs/f0/x.txt", OPEN_CREATE_REGULAR, neofs_2c_rw_rights())
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_create_x_failed", e));
+    x.write(b"to be removed")
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_write_x_failed", e));
+    let x_reader = open_root_temporary("/neofs/f0/x.txt", OPEN_ROOT_TEMPORARY, FileRights::READ)
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_open_x_failed", e));
+    let a_block = inode_block("/neofs/f0/a");
+    let c_block = inode_block("/neofs/f0/c");
+    let x_block = inode_block("/neofs/f0/x.txt");
+    oracle(
+        "/neofs/f0",
+        &[
+            (b"a", a_block, DIR),
+            (b"c", c_block, DIR),
+            (b"x.txt", x_block, REG),
+        ],
+        "neofs_dir_ops_oracle_before_unlink",
+    );
+    if stat(f0_fd, b"x.txt") != (KIND_REGULAR, 0, 13) {
+        fail("reason=neofs_dir_ops_stat_file");
+    }
+    expect(ops::unlink_at(f0_fd, b"x.txt"), 0, "neofs_dir_ops_unlink_x");
+    oracle(
+        "/neofs/f0",
+        &[(b"a", a_block, DIR), (b"c", c_block, DIR)],
+        "neofs_dir_ops_oracle_after_unlink",
+    );
+    let mut buf = [0u8; 8];
+    match x_reader.read(&mut buf) {
+        Err(crate::fs::VfsError::Stale) => {}
+        Ok(_) => fail("reason=neofs_dir_ops_unlinked_file_still_read"),
+        Err(e) => neofs_2c_fail_vfs("neofs_dir_ops_unlinked_reader_wrong_error", e),
+    }
+    expect(ops::mkdir_at(f0_fd, b"tmp"), 0, "neofs_dir_ops_mkdir_tmp");
+    expect(
+        ops::unlink_at(f0_fd, b"tmp"),
+        0,
+        "neofs_dir_ops_unlink_empty_dir",
+    );
+    let after_file = used();
+    if after_file != before_file {
+        fail_with_hex("reason=neofs_dir_ops_unlink_leaked used", after_file);
+    }
+
+    // A folder with a file in it, moved across directories (committed): it
+    // keeps its inode block; `a` is left empty and `c` names it.
+    let a_fd = scope("/neofs/f0/a", lrw);
+    let c_fd = scope("/neofs/f0/c", lrw);
+    expect(
+        ops::mkdir_at(a_fd, b"inner"),
+        0,
+        "neofs_dir_ops_mkdir_inner",
+    );
+    let note = open_root_temporary(
+        "/neofs/f0/a/inner/n.txt",
+        OPEN_CREATE_REGULAR,
+        neofs_2c_rw_rights(),
+    )
+    .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_create_note_failed", e));
+    note.write(NOTE)
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_write_note_failed", e));
+    let inner_fd = scope("/neofs/f0/a/inner", lrw);
+    let inner_block = inode_block("/neofs/f0/a/inner");
+    expect(
+        ops::unlink_at(a_fd, b"inner"),
+        ENOTEMPTY,
+        "neofs_dir_ops_unlink_non_empty",
+    );
+    expect(
+        ops::rename_at(a_fd, b"inner", c_fd, b"inner"),
+        0,
+        "neofs_dir_ops_rename_across",
+    );
+    oracle("/neofs/f0/a", &[], "neofs_dir_ops_oracle_across_source");
+    oracle(
+        "/neofs/f0/c",
+        &[(b"inner", inner_block, DIR)],
+        "neofs_dir_ops_oracle_across_destination",
+    );
+    let a_block = inode_block("/neofs/f0/a");
+    let c_block = inode_block("/neofs/f0/c");
+    oracle(
+        "/neofs/f0",
+        &[(b"a", a_block, DIR), (b"c", c_block, DIR)],
+        "neofs_dir_ops_oracle_across_parent",
+    );
+    if read_all("/neofs/f0/c/inner/n.txt") != NOTE {
+        fail("reason=neofs_dir_ops_moved_note_changed");
+    }
+    if stat(c_fd, b"inner") != (KIND_DIRECTORY, 0, 1) {
+        fail("reason=neofs_dir_ops_stat_moved_dir");
+    }
+    // The handle on the moved folder's old path names nothing now.
+    expect(
+        ops::mkdir_at(inner_fd, b"z"),
+        ESTALE,
+        "neofs_dir_ops_moved_handle_not_stale",
+    );
+
+    // The handle lists what it just did (it reloads after its own commit).
+    let mut names = alloc::vec::Vec::new();
+    let mut cursor = 0u64;
+    loop {
+        let mut rec = [0u8; 80];
+        let n = debug_sys_readdir_kernel_buf_for_test(f0_fd, &mut rec, &mut cursor);
+        if n <= 0 {
+            expect(n, 0, "neofs_dir_ops_readdir_failed");
+            break;
+        }
+        let len = u16::from_le_bytes([rec[4], rec[5]]) as usize;
+        names.push(alloc::vec::Vec::from(&rec[16..16 + len]));
+    }
+    if names != [b"a".to_vec(), b"c".to_vec()] {
+        fail("reason=neofs_dir_ops_readdir_after_ops_wrong");
+    }
+
+    // Refusals.
+    expect(
+        ops::unlink_at(root_fd, b"hello.txt"),
+        EBUSY,
+        "neofs_dir_ops_unlink_pinned",
+    );
+    expect(
+        ops::unlink_at(root_fd, b"model.neom"),
+        EBUSY,
+        "neofs_dir_ops_unlink_model",
+    );
+    expect(
+        ops::rename_at(root_fd, b"model.neom", f0_fd, b"m"),
+        EBUSY,
+        "neofs_dir_ops_rename_pinned",
+    );
+    expect(
+        ops::rename_at(f0_fd, b"c", c_fd, b"x"),
+        EINVAL,
+        "neofs_dir_ops_rename_into_itself",
+    );
+    expect(
+        ops::rename_at(f0_fd, b"a", f0_fd, b"c"),
+        EEXIST,
+        "neofs_dir_ops_rename_replaces",
+    );
+    expect(
+        ops::unlink_at(f0_fd, b"nope"),
+        ENOENT,
+        "neofs_dir_ops_unlink_missing",
+    );
+    let long = [b'n'; 48];
+    let bad_names: [&[u8]; 6] = [b"..", b".", b"a/b", b"a\0", &long, &[0xff, 0xfe]];
+    for bad in bad_names {
+        expect(ops::mkdir_at(f0_fd, bad), EINVAL, "neofs_dir_ops_bad_name");
+    }
+    let (kernel, over, short) = ops::bad_args(f0_fd, run_neofs_dir_ops as *const u8);
+    expect(kernel, EFAULT, "neofs_dir_ops_kernel_name_not_efault");
+    expect(over, EINVAL, "neofs_dir_ops_long_name_not_einval");
+    expect(short, EINVAL, "neofs_dir_ops_short_stat_not_einval");
+    let hello = open_root_temporary("/neofs/hello.txt", OPEN_ROOT_TEMPORARY, FileRights::READ)
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_open_hello_failed", e));
+    let hello_fd = neofs_4a_install_file_handle(hello, FileRights::READ);
+    expect(
+        ops::mkdir_at(hello_fd, b"z"),
+        ENOTDIR,
+        "neofs_dir_ops_mkdir_on_file",
+    );
+    // A rename to another filesystem (the VFS root's test filesystem).
+    let vfs_root = scope("/", rights(&[FileRights::LOOKUP, FileRights::WRITE]));
+    expect(
+        ops::rename_at(f0_fd, b"a", vfs_root, b"a"),
+        EXDEV,
+        "neofs_dir_ops_cross_device",
+    );
+
+    // Rights. The same directory through a handle without WRITE (a derive
+    // narrows only the handle): it can stat, and change nothing.
+    let f0_file = open_root_temporary("/neofs/f0", OPEN_SCOPE_DIR, lrw)
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_reopen_failed", e));
+    let lr = rights(&[FileRights::LOOKUP, FileRights::READDIR]);
+    let ro_fd = neofs_4a_install_file_handle(f0_file.clone(), lr);
+    expect(
+        ops::mkdir_at(ro_fd, b"z"),
+        EACCES,
+        "neofs_dir_ops_mkdir_without_write",
+    );
+    expect(
+        ops::unlink_at(ro_fd, b"a"),
+        EACCES,
+        "neofs_dir_ops_unlink_without_write",
+    );
+    expect(
+        ops::rename_at(ro_fd, b"a", f0_fd, b"z"),
+        EACCES,
+        "neofs_dir_ops_rename_from_without_write",
+    );
+    expect(
+        ops::rename_at(f0_fd, b"a", ro_fd, b"z"),
+        EACCES,
+        "neofs_dir_ops_rename_to_without_write",
+    );
+    if stat(ro_fd, b"a").0 != KIND_DIRECTORY {
+        fail("reason=neofs_dir_ops_stat_without_write");
+    }
+    // Without LOOKUP: no stat, and no change even with WRITE.
+    let wd = rights(&[FileRights::READDIR, FileRights::WRITE]);
+    let nolookup_fd = neofs_4a_install_file_handle(f0_file, wd);
+    expect(
+        ops::stat_at(nolookup_fd, b"a").err().unwrap_or(0),
+        EACCES,
+        "neofs_dir_ops_stat_without_lookup",
+    );
+    expect(
+        ops::mkdir_at(nolookup_fd, b"z"),
+        EACCES,
+        "neofs_dir_ops_mkdir_without_lookup",
+    );
+    oracle(
+        "/neofs/f0",
+        &[(b"a", a_block, DIR), (b"c", c_block, DIR)],
+        "neofs_dir_ops_oracle_refusals_changed_nothing",
+    );
+
+    // The cut: `inner` back across, every block written and flushed, no
+    // superblock. Boot 2 must find the tree above.
+    crate::fs::debug_neofs_raw_block(1)
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_drain_failed", e));
+    crate::fs::neofs::debug_stop_next_dir_op_before_publish();
+    expect(
+        ops::rename_at(c_fd, b"inner", a_fd, b"back"),
+        0,
+        "neofs_dir_ops_cut_rename",
+    );
+    let flushes = crate::fs::debug_neofs_drain_to_barrier()
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_barrier_failed", e));
+    if flushes == 0 {
+        fail("reason=neofs_dir_ops_barrier_not_flushed");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_blocks:9 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
+        SCENARIO,
+        after_file,
         flushes
     );
     debug_exit(EXIT_SUCCESS);

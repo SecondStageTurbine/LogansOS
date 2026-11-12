@@ -12,6 +12,9 @@ mod cache;
 mod cache_logic;
 // The commit order on a write-back disk (pure; host-tested).
 mod commit_logic;
+// F0: the directory operations' rules (pure; host-tested).
+#[cfg(feature = "neofs-dir-ops")]
+pub mod dir_ops_logic;
 mod format;
 mod inode;
 mod mount;
@@ -52,6 +55,31 @@ pub enum NeoFsError {
     /// A writable mount needs a device that can flush its write cache: the
     /// commit order rests on flushes (`commit_logic`).
     NoDurableFlush,
+    /// F0: the name is taken (a rename never replaces).
+    #[cfg(feature = "neofs-dir-ops")]
+    Exists,
+    /// F0: `unlink_at` of a directory with entries.
+    #[cfg(feature = "neofs-dir-ops")]
+    NotEmpty,
+    /// F0: the directory a handle names is no longer the version it holds.
+    #[cfg(feature = "neofs-dir-ops")]
+    Stale,
+    /// F0: an entry mount requires (`dir_ops_logic::PINNED_AT_ROOT`).
+    #[cfg(feature = "neofs-dir-ops")]
+    Pinned,
+    /// F0: past the depth mount walks (`dir_ops_logic::MAX_DEPTH`).
+    #[cfg(feature = "neofs-dir-ops")]
+    TooDeep,
+    /// F0: a rename into itself or beneath itself.
+    #[cfg(feature = "neofs-dir-ops")]
+    IntoItself,
+}
+
+/// F0's cut: the next directory operation writes its whole commit but the
+/// superblocks (then the scenario drains to the barrier and ends the boot).
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_stop_next_dir_op_before_publish() {
+    inode::STOP_NEXT_BEFORE_PUBLISH.store(true, core::sync::atomic::Ordering::SeqCst);
 }
 
 /// NFS-W1: the next large write stops before its commit (the scenario's cut).

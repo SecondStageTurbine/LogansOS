@@ -64,6 +64,8 @@ pub mod clock_answer;
 pub mod grant_store;
 /// OT-61 C2.1: the `SYS_HANDLE_INFO` record (pure).
 pub mod handle_info;
+/// F0: the `SYS_STAT_AT` reply.
+pub mod stat_at;
 pub mod tz;
 /// Lane 2b: host-only image decode (`png` + `zune-jpeg`), bytes in, RGBA out.
 /// The implementation is the `neo-image-decode` crate; this re-export is the
@@ -163,6 +165,12 @@ pub const SYS_FTRUNCATE: u64 = 23;
 /// OT-67 W1: a file's whole content replaced in one commit (kernel feature
 /// `neofs-file-replace`; without it, the number is unknown).
 pub const SYS_FILE_REPLACE: u64 = 24;
+/// F0: directory operations through a directory handle (kernel feature
+/// `neofs-dir-ops`; without it, the numbers are unknown).
+pub const SYS_MKDIR_AT: u64 = 26;
+pub const SYS_UNLINK_AT: u64 = 27;
+pub const SYS_RENAME_AT: u64 = 28;
+pub const SYS_STAT_AT: u64 = 29;
 // OT-61 browser C1 host-runtime block (0x40..0x4F). C1.0 = VM + clock.
 pub const SYS_VM_MAP: u64 = 0x40;
 pub const SYS_VM_UNMAP: u64 = 0x41;
@@ -401,6 +409,8 @@ pub const EPIPE: i64 = -32;
 pub const ENOTCONN: i64 = -107;
 pub const ENOSYS: i64 = -38;
 pub const ENOTEMPTY: i64 = -39;
+/// `-EXDEV` — a rename between two volumes (F0).
+pub const EXDEV: i64 = -18;
 pub const ESTALE: i64 = -116;
 /// `-EBADMSG` — a boot-module model failed its pinned-digest check (B1b).
 pub const EBADMSG: i64 = -74;
@@ -1308,6 +1318,76 @@ pub fn sys_file_replace(handle: FileHandle, bytes: &[u8]) -> i64 {
             handle.0 as u64,
             bytes.as_ptr() as u64,
             bytes.len() as u64,
+        )
+    }
+}
+
+/// F0: a new, empty folder `name` in the directory `dir`. 0, or a negative
+/// errno: `EACCES` (the handle lacks WRITE or LOOKUP, or the volume is
+/// read-only), `EEXIST`, `EINVAL` (a bad name: empty, over 47 bytes, `/`,
+/// NUL, `.`, `..`, not UTF-8; the folder full at 64 entries; too deep),
+/// `ENOTDIR` (`dir` is a file), `ESTALE` (`dir` is gone), `EPERM` (under
+/// `.system`), `EFAULT`, `EIO`.
+#[inline]
+pub fn sys_mkdir_at(dir: FileHandle, name: &[u8]) -> i64 {
+    unsafe {
+        raw3(
+            SYS_MKDIR_AT,
+            dir.0 as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+        )
+    }
+}
+
+/// F0: remove `name` from `dir`: a file, or an empty folder. As
+/// [`sys_mkdir_at`], plus `ENOENT`, `ENOTEMPTY`, `EBUSY` (an entry the
+/// volume needs: the root's `hello.txt`, `model.neom`) and `EISDIR` (a model
+/// or a symlink).
+#[inline]
+pub fn sys_unlink_at(dir: FileHandle, name: &[u8]) -> i64 {
+    unsafe {
+        raw3(
+            SYS_UNLINK_AT,
+            dir.0 as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+        )
+    }
+}
+
+/// F0: move `name` in `dir` to `to_name` in `to` (the same handle for a
+/// rename in place). Never replaces: `EEXIST` when `to_name` is taken.
+/// `EXDEV` across volumes, `EINVAL` into itself, `EBUSY` for the root's
+/// `hello.txt` and `model.neom`; otherwise as [`sys_unlink_at`].
+#[inline]
+pub fn sys_rename_at(dir: FileHandle, name: &[u8], to: FileHandle, to_name: &[u8]) -> i64 {
+    unsafe {
+        raw6(
+            SYS_RENAME_AT,
+            dir.0 as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+            to.0 as u64,
+            to_name.as_ptr() as u64,
+            to_name.len() as u64,
+        )
+    }
+}
+
+/// F0: what `name` in `dir` is (LOOKUP only). The reply decodes with
+/// [`stat_at::StatAt::decode`].
+#[inline]
+pub fn sys_stat_at(dir: FileHandle, name: &[u8], out: &mut [u8; stat_at::LEN]) -> i64 {
+    unsafe {
+        raw6(
+            SYS_STAT_AT,
+            dir.0 as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+            out.as_mut_ptr() as u64,
+            out.len() as u64,
+            0,
         )
     }
 }

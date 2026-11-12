@@ -570,7 +570,8 @@ impl NeoFsBlockCache {
     /// superblock written. Returns the flushes it issued.
     #[cfg(any(
         feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub(super) fn debug_drain_to_barrier(&self) -> Result<u64, NeoFsError> {
         let _worker_pause = self.pause_worker();
