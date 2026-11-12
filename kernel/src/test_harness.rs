@@ -33736,7 +33736,20 @@ fn run_neofs_dir_ops() -> ! {
         "neofs_dir_ops_moved_handle_not_stale",
     );
 
-    // The handle lists what it just did (it reloads after its own commit).
+    // Readdir through `f0`'s handle. Its last own operation was before the
+    // writes through `a` and `c` beneath it, which gave `f0` a new
+    // generation: its listing is stale (the ancestor staleness the PR notes
+    // for R3). An operation through the handle itself reloads it, and then
+    // it lists what is there.
+    let mut first = [0u8; 80];
+    let mut at = 0u64;
+    expect(
+        debug_sys_readdir_kernel_buf_for_test(f0_fd, &mut first, &mut at),
+        ESTALE,
+        "neofs_dir_ops_ancestor_readdir_not_stale",
+    );
+    expect(ops::mkdir_at(f0_fd, b"r"), 0, "neofs_dir_ops_mkdir_r");
+    expect(ops::unlink_at(f0_fd, b"r"), 0, "neofs_dir_ops_unlink_r");
     let mut names = alloc::vec::Vec::new();
     let mut cursor = 0u64;
     loop {
@@ -33873,7 +33886,7 @@ fn run_neofs_dir_ops() -> ! {
         fail("reason=neofs_dir_ops_barrier_not_flushed");
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_blocks:9 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
+        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_blocks:9 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
         SCENARIO,
         after_file,
         flushes
