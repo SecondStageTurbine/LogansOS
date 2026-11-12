@@ -1122,6 +1122,15 @@ pub fn mount_neofs_from_device0_readonly() -> Result<neofs::MountReport, neofs::
 }
 
 pub fn mount_neofs_from_device0_readwrite() -> Result<neofs::MountReport, neofs::NeoFsError> {
+    // OT-100 R3: the census, the boot stick, and the read-write rule.
+    #[cfg(feature = "usb-persistence")]
+    return mount_persist();
+    #[cfg(not(feature = "usb-persistence"))]
+    mount_neofs_today_readwrite()
+}
+
+#[cfg_attr(feature = "usb-persistence", allow(dead_code))]
+fn mount_neofs_today_readwrite() -> Result<neofs::MountReport, neofs::NeoFsError> {
     let (device_index, device) = find_neofs_block_device()?;
     let ident = device.identity().clone();
     let fs = neofs::NeoFs::mount_readwrite(device)?;
@@ -1145,6 +1154,246 @@ pub fn mount_neofs_from_device0_readwrite() -> Result<neofs::MountReport, neofs:
         report.selected_superblock_slot,
         report.generation
     );
+    Ok(report)
+}
+
+/// OT-100 R3: the mounted persistence volume, for the try switch and the
+/// read-only status (THINK §2.3, §4.2).
+#[cfg(feature = "usb-persistence")]
+static PERSIST_MOUNT: SwitchMutex<Option<Arc<neofs::NeoFs>>> = SwitchMutex::new(None);
+
+/// OT-100 R3: the try switch (THINK §2.3): drain, then the mounted volume is
+/// read-only for the rest of this boot. False when nothing is mounted.
+#[cfg(feature = "usb-persistence")]
+#[allow(dead_code)] // the setup menu's caller lands with the button
+pub fn persist_switch_read_only() -> bool {
+    let mount = PERSIST_MOUNT.lock().clone();
+    match mount {
+        Some(fs) => {
+            fs.switch_read_only();
+            true
+        }
+        None => false,
+    }
+}
+
+/// OT-100 R3: why the mounted volume went read-only, if it did (THINK
+/// §4.2's status for the shell).
+#[cfg(feature = "usb-persistence")]
+#[allow(dead_code)]
+pub fn persist_lost() -> Option<crate::persist_logic::Lost> {
+    PERSIST_MOUNT.lock().as_ref().and_then(|fs| fs.lost())
+}
+
+/// OT-100 R3 (THINK §4.1, §5): one line per registered device naming what
+/// the guard arms on it, judged now (reads only, in the boot thread, before
+/// any writeback: CP-82).
+#[cfg(feature = "usb-persistence")]
+fn persist_census(count: usize) {
+    for index in 0..count {
+        let Some(device) = crate::drivers::block::get_device(index) else {
+            continue;
+        };
+        let ident = device.identity();
+        let Some(arming) = crate::drivers::block::arming_report(index) else {
+            continue;
+        };
+        let mut armed = String::new();
+        for claim in &arming.claims {
+            if !armed.is_empty() {
+                armed.push(',');
+            }
+            armed.push_str(&alloc::format!(
+                "{}:{:#x}..{:#x}",
+                claim.marker.name(),
+                claim.extent.start,
+                claim.extent.end
+            ));
+        }
+        if armed.is_empty() {
+            armed.push_str("none");
+        }
+        serial_println!(
+            "persist: guard census device={} driver={} index={} armed={} table={}",
+            ident.name,
+            ident.driver,
+            index,
+            armed,
+            arming.table
+        );
+    }
+}
+
+/// OT-100 R3: the boot mount under `usb-persistence` (THINK §4.1). The census;
+/// the boot device, identified without guessing; then the first LogansOS
+/// partition whose NeoFS probe passes, the boot device's first; read-write
+/// only when `persist_logic::rw_decision` allows it, else read-only with one
+/// line naming the first condition that failed.
+#[cfg(feature = "usb-persistence")]
+fn mount_persist() -> Result<neofs::MountReport, neofs::NeoFsError> {
+    use crate::drivers::block::gpt_logic::{ATTR_INCOMPLETE, LOGANSOS_NEOFS_TYPE_GUID};
+    use crate::drivers::block::partition::PartitionDevice;
+    use crate::drivers::block::write_guard_logic::{Extent, WriteMarker};
+    use crate::persist_logic::{self, BootDevice, Persist, RwFacts};
+
+    let count = crate::drivers::block::device_count();
+    if count == 0 {
+        return Err(neofs::NeoFsError::NoBlockDevice);
+    }
+    persist_census(count);
+    let mut gpts = Vec::new();
+    let mut guids = Vec::new();
+    for index in 0..count {
+        let gpt = crate::drivers::block::get_device(index)
+            .and_then(|device| crate::drivers::block::read_gpt(device.as_ref()));
+        guids.push((index, gpt.as_ref().map(|g| g.disk_guid)));
+        gpts.push(gpt);
+    }
+    let boot_guid = crate::boot_medium::boot_disk_guid();
+    let boot = persist_logic::identify(boot_guid, &guids);
+    match boot {
+        BootDevice::Identified(index) => {
+            serial_println!("persist: boot device identified index={}", index);
+        }
+        BootDevice::NotIdentified {
+            guid_known,
+            matches,
+        } => {
+            serial_println!(
+                "persist: boot device not identified (guid={}, matches={}); nothing on USB is written",
+                if guid_known { "known" } else { "none" },
+                matches
+            );
+        }
+    }
+    let persist = crate::boot_medium::persist();
+    serial_println!(
+        "persist: cmdline persist={}",
+        if persist == Persist::On { "on" } else { "off" }
+    );
+    // The boot device's partitions first, then everyone else's.
+    let mut order: Vec<usize> = (0..count).collect();
+    if let BootDevice::Identified(index) = boot {
+        order.retain(|&i| i != index);
+        order.insert(0, index);
+    }
+    for index in order {
+        let (Some(device), Some(gpt)) = (crate::drivers::block::get_device(index), &gpts[index])
+        else {
+            continue;
+        };
+        for entry in &gpt.entries {
+            if entry.type_guid != LOGANSOS_NEOFS_TYPE_GUID
+                || entry.attributes & ATTR_INCOMPLETE != 0
+            {
+                continue;
+            }
+            let Some(part) = PartitionDevice::new(device.clone(), gpt, entry) else {
+                continue;
+            };
+            let part: Arc<dyn crate::drivers::block::BlockDevice> = Arc::new(part);
+            if neofs::NeoFs::probe(&part).is_err() {
+                serial_println!(
+                    "persist: partition skipped index={} partition={} reason=probe",
+                    index,
+                    entry.index
+                );
+                continue;
+            }
+            let ident = device.identity().clone();
+            let usb = ident.driver == "usb-storage";
+            let block = u64::from(device.geometry().logical_block_size);
+            let span = Extent {
+                start: entry.first_lba * block,
+                end: (entry.last_lba + 1) * block,
+            };
+            let armed_exactly_the_partition = crate::drivers::block::arming_report(index)
+                .is_some_and(|a| {
+                    a.claims.len() == 1
+                        && a.claims[0].marker == WriteMarker::NeoFs
+                        && a.claims[0].extent == span
+                });
+            // Probe only the stick the rule could write: the identified boot
+            // device, with persist=on and the guard arming exactly this
+            // partition. Nothing else is asked anything but reads.
+            let mut facts = RwFacts {
+                usb,
+                boot,
+                device: index,
+                persist,
+                armed_exactly_the_partition,
+                write_protected: None,
+                sync_ok: false,
+            };
+            if usb
+                && boot == BootDevice::Identified(index)
+                && persist == Persist::On
+                && armed_exactly_the_partition
+                && let Some(probe) = crate::drivers::block::write_probe(index)
+            {
+                facts.write_protected = probe.write_protected;
+                facts.sync_ok = probe.sync == crate::drivers::block::SyncSupport::Ok;
+            } else if !usb {
+                facts.sync_ok = true;
+            }
+            let decision = persist_logic::rw_decision(&facts);
+            let fs = match decision {
+                Ok(()) => neofs::NeoFs::mount_readwrite(part)?,
+                Err(_) => neofs::NeoFs::mount_readonly(part)?,
+            };
+            serial_println!(
+                "persist: mount index={} driver={} partition={} {}{}",
+                index,
+                ident.driver,
+                entry.index,
+                if decision.is_ok() { "rw" } else { "ro" },
+                match decision {
+                    Ok(()) => alloc::string::String::new(),
+                    Err(refusal) => alloc::format!(" ({})", refusal.reason()),
+                }
+            );
+            let report = fs.report();
+            let typed: Arc<neofs::NeoFs> = Arc::new(fs);
+            let fs_arc: Arc<dyn MountedFs> = typed.clone();
+            let mut mounts = lock_mounts();
+            mounts
+                .install_root_child("neofs", fs_arc, FileRights::KNOWN_BUILD4B, MountFlags(0))
+                .map_err(|_| neofs::NeoFsError::BlockDevice)?;
+            #[cfg(feature = "neo-test")]
+            {
+                mounts.set_neofs_typed(Some(typed.clone()));
+            }
+            drop(mounts);
+            if usb {
+                *PERSIST_MOUNT.lock() = Some(typed);
+            }
+            return Ok(report);
+        }
+    }
+    // No LogansOS partition: today's whole-device probe, read-only for USB.
+    let (index, device) = find_neofs_block_device()?;
+    let usb = device.identity().driver == "usb-storage";
+    serial_println!(
+        "persist: mount index={} whole device {}",
+        index,
+        if usb { "ro (not a partition)" } else { "rw" }
+    );
+    let fs = if usb {
+        neofs::NeoFs::mount_readonly(device)?
+    } else {
+        neofs::NeoFs::mount_readwrite(device)?
+    };
+    let report = fs.report();
+    let typed: Arc<neofs::NeoFs> = Arc::new(fs);
+    let fs_arc: Arc<dyn MountedFs> = typed.clone();
+    let mut mounts = lock_mounts();
+    mounts
+        .install_root_child("neofs", fs_arc, FileRights::KNOWN_BUILD4B, MountFlags(0))
+        .map_err(|_| neofs::NeoFsError::BlockDevice)?;
+    #[cfg(feature = "neo-test")]
+    {
+        mounts.set_neofs_typed(Some(typed));
+    }
     Ok(report)
 }
 
