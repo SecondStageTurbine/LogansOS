@@ -54,10 +54,15 @@ concurrency:
   group: ot61-closure-${{ github.ref }}
   cancel-in-progress: true
 
+# A public repo: hosted runners only, a read-only token, and no token left in
+# the checkout's git config for the build steps to read.
+permissions:
+  contents: read
+
 jobs:
   closure-build:
     name: html5ever + selectors closure (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -68,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # The disk bound (Janus #214): a free-space floor before the build, a
       # budget for what it writes after, and the build dirs removed at the
@@ -76,7 +83,7 @@ jobs:
       - name: Disk floor (12 GiB free)
         run: bash scripts/ci-disk-guard.sh check 12
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -131,7 +138,7 @@ jobs:
   # closure job, the first build of this third-party build code runs here.
   stylo-build:
     name: Stylo (C2.4) over the vendored closure (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     env:
@@ -142,8 +149,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -194,7 +203,7 @@ jobs:
   # started.)
   crt-build:
     name: neo-crt C/C++ runtime (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     env:
@@ -205,8 +214,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -243,7 +254,7 @@ jobs:
 
   swgl-build:
     name: SWGL S1 smoke over neo-crt (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 45
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -255,8 +266,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -307,7 +320,7 @@ jobs:
 
   webrender-build:
     name: WebRender S2 smoke on SWGL over neo-crt (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 90
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -319,8 +332,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -371,7 +386,7 @@ jobs:
 
   layout-build:
     name: Servo layout without script (L0-L4 smoke) on WebRender + SWGL (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 120
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -383,8 +398,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then
@@ -444,7 +461,7 @@ jobs:
 
   mozjs-build:
     name: SpiderMonkey C3c-1 smoke over neo-crt (x86_64-unknown-neoplutarch)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 75
 
     # Isolated toolchain roots, as in ci.yml's host jobs (2026-08-11 note).
@@ -456,8 +473,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Ensure rustup is present (self-hosted runners)
+      - name: Ensure rustup is present (bootstrap if missing)
         run: |
           mkdir -p "$RUSTUP_HOME" "$CARGO_HOME"
           if ! command -v rustup >/dev/null 2>&1; then

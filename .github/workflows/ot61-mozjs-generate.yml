@@ -24,10 +24,15 @@ concurrency:
   group: ot61-mozjs-generate-${{ github.ref }}
   cancel-in-progress: true
 
+# A public repo: hosted runners only, a read-only token, and no token left in
+# the checkout's git config for the build steps to read.
+permissions:
+  contents: read
+
 jobs:
   generate:
     name: SpiderMonkey configure, network off (C3c-1 probe)
-    runs-on: ${{ fromJSON(vars.CI_RUNNER_LABELS || '"ubuntu-latest"') }}
+    runs-on: ubuntu-latest
     timeout-minutes: 60
 
     # The compiler that produces the frozen set is pinned, as ot61-closure.yml
@@ -40,6 +45,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # A copy, so vendor/ stays exactly upstream's; our patches go on the copy.
       - name: Copy the vendored tree and apply our patches
