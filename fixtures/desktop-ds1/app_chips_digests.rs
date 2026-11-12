@@ -5,3 +5,6 @@
 /// The app chips' box (x, y, w, h) at 1920x1080.
 pub const APP_CHIPS_BOX_1920X1080: (usize, usize, usize, usize) = (14, 206, 56, 226);
 pub const DS1_HOME_GLASS_1920X1080_FOCUSED_APP_CHIPS: u64 = 0x8f90d7d1930c4406;
+/// field_oracle's EMPTY_FOCUSED window, as in field_text.rs's WINDOWS[0].
+pub const FIELD_WINDOW: (usize, usize, usize, usize) = (664, 426, 150, 26);
+pub const DS1_HOME_FIELD_EMPTY_FOCUSED_GLASS_1920X1080_APP_CHIPS: u64 = 0x32b11a9d38c90729;

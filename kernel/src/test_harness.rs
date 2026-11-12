@@ -43375,11 +43375,30 @@ fn desktop_glass_asserts() {
         }
         const EMPTY_FOCUSED: usize = 0;
         let (wx, wy, ww, wh) = field::WINDOWS[EMPTY_FOCUSED];
-        #[cfg(not(feature = "neo-test-desktop-intro-boot"))]
+        #[cfg(not(any(
+            feature = "neo-test-desktop-intro-boot",
+            feature = "neo-test-app-chips"
+        )))]
         let (masks, want) = (
             [boxes[0], boxes[2], (wx, wy, ww, wh)],
             field::DIGESTS[EMPTY_FOCUSED],
         );
+        // A2: and the app chips' box (`scene_oracle.py app-chips-fixture`).
+        #[cfg(feature = "neo-test-app-chips")]
+        let (masks, want) = {
+            if app_chips::FIELD_WINDOW != (wx, wy, ww, wh) {
+                fail("reason=desktop_app_chips_field_window_not_field_oracles");
+            }
+            (
+                [
+                    boxes[0],
+                    boxes[2],
+                    (wx, wy, ww, wh),
+                    app_chips::APP_CHIPS_BOX_1920X1080,
+                ],
+                app_chips::DS1_HOME_FIELD_EMPTY_FOCUSED_GLASS_1920X1080_APP_CHIPS,
+            )
+        };
         // desktop-intro: the same window, the hint box masked too.
         #[cfg(all(
             feature = "neo-test-desktop-intro-boot",

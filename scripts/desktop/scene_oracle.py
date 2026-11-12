@@ -923,6 +923,20 @@ def main():
         L = dict(L)
         L["labels"] = list(L["labels"]) + [box]
         print(f"pub const DS1_HOME_GLASS_1920X1080_FOCUSED_APP_CHIPS: u64 = 0x{digest(rgb, L):016x};")
+        # The field check's digest (field_oracle.py's EMPTY_FOCUSED: the bar's
+        # and chip's label boxes and the placeholder-and-caret window masked),
+        # with the app chips' box masked too.
+        import field_oracle as fo
+        face = fo.ao.Face(fo.lo.FONT)
+        name, text, focused = fo.STATES[0]
+        layers, _fg, _px, caret = fo.run(face, layout(1920, 1080), text, focused)
+        win = fo.window(layers, caret, fo.text_box(layout(1920, 1080)))
+        rgb, Lr = render(1920, 1080, "glass", focused, "home")
+        masks = [Lr["home_labels"][0], Lr["home_labels"][2], win, box]
+        field = digest(rgb, dict(Lr, labels=masks))
+        print("/// field_oracle's %s window, as in field_text.rs's WINDOWS[0]." % name)
+        print("pub const FIELD_WINDOW: (usize, usize, usize, usize) = (%d, %d, %d, %d);" % win)
+        print(f"pub const DS1_HOME_FIELD_{name}_GLASS_1920X1080_APP_CHIPS: u64 = 0x{field:016x};")
         return
     if len(sys.argv) >= 2 and sys.argv[1] == "icon-fixture":
         # `atrium-app-icons`: the DS-1 Home end view with Arthur's chip showing
