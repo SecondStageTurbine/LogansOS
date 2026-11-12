@@ -762,11 +762,14 @@ const DESKTOP_LAUNCH_CHIP_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"DESKTOP arthur answer composited round=1",
         &[
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_PARK,
             HMP_PAUSE_1S,
             HMP_CAPTURE_0,
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_TERMINAL_CHIP,
+            HMP_PAUSE_1S,
             0x03,
             0x04,
         ],
@@ -775,11 +778,14 @@ const DESKTOP_LAUNCH_CHIP_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"DESKTOP apps chip look app=terminal look=front",
         &[
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_PARK,
             HMP_PAUSE_1S,
             HMP_CAPTURE_0 + 1,
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_ARTHUR_CHIP,
+            HMP_PAUSE_1S,
             0x03,
             0x04,
         ],
@@ -788,28 +794,41 @@ const DESKTOP_LAUNCH_CHIP_BOOT_HID_STEPS: &[SerialScriptStep] = &[
         b"DESKTOP apps chip look app=terminal look=background",
         &[
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_PARK,
             HMP_PAUSE_1S,
             HMP_CAPTURE_0 + 2,
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_TERMINAL_CHIP,
+            HMP_PAUSE_1S,
             0x03,
             0x04,
         ],
     ),
     step(
         b"DESKTOP apps chip look app=terminal look=front",
-        &[HMP_TO_ORIGIN, HMP_ORIGIN_TO_FILES_CHIP, 0x03, 0x04],
+        &[
+            HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
+            HMP_ORIGIN_TO_FILES_CHIP,
+            HMP_PAUSE_1S,
+            0x03,
+            0x04,
+        ],
     ),
     step(
         b"DESKTOP apps chip unavailable app=files",
         &[
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_PARK,
             HMP_PAUSE_1S,
             HMP_CAPTURE_0 + 3,
             HMP_TO_ORIGIN,
+            HMP_PAUSE_1S,
             HMP_ORIGIN_TO_ARTHUR_CHIP,
+            HMP_PAUSE_1S,
             0x03,
             0x04,
         ],
@@ -17588,7 +17607,9 @@ const HMP_SUPER_TAB: u8 = 0x9D;
 /// L1a.3: the terminal's End process (Ctrl+Shift+C) and Ctrl+D.
 const HMP_CTRL_SHIFT_C: u8 = 0xB0;
 const HMP_CTRL_D: u8 = 0xB1;
-/// A2: the cursor to the screen's top-left (the WM clamps it there), then
+/// A2: the cursor to the screen's top-left (the WM clamps it there; QEMU
+/// merges queued relative moves, so a script pauses after this one before the
+/// next move or press), then
 /// from there to a Spine chip's centre on a 1920x1080 desktop without the
 /// Install chip (Arthur's 42,78; the app chips' 42,234 / 42,312 / 42,390), or
 /// to a parking spot clear of the Spine (1200,900) for a capture.
@@ -17718,7 +17739,7 @@ fn hmp_special_for_byte(byte: u8) -> Option<&'static str> {
         HMP_FROM_INSTALL_CHIP => Some("mouse_move 794 383\n"),
         HMP_SUPER_L => Some("sendkey meta_l-l\n"),
         HMP_SUPER_ESCAPE => Some("sendkey meta_l-esc\n"),
-        HMP_TO_ORIGIN => Some("mouse_move -4000 -4000\n"),
+        HMP_TO_ORIGIN => Some("mouse_move -2000 -1200\n"),
         HMP_ORIGIN_TO_ARTHUR_CHIP => Some("mouse_move 42 78\n"),
         HMP_ORIGIN_TO_TERMINAL_CHIP => Some("mouse_move 42 234\n"),
         HMP_ORIGIN_TO_FILES_CHIP => Some("mouse_move 42 312\n"),
