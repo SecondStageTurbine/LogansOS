@@ -33956,6 +33956,80 @@ fn run_neofs_dir_ops() -> ! {
         "neofs_dir_ops_contended_cleanup",
     );
 
+    // #106 relay 403: the commit itself reads nothing under `entries`. A
+    // superblock copy is 512 bytes of a 4 KiB block; its blocks stay cached
+    // from mount on, so the publish never reads the device to merge into
+    // them. Chad's input: a cold cache, then a mkdir (and an unlink) at the
+    // root, whose commit is the root publish alone.
+    let _ = crate::fs::debug_neofs_dir_op_reads();
+    cold();
+    expect(
+        ops::mkdir_at(root_fd, b"x"),
+        0,
+        "neofs_dir_ops_cold_root_mkdir",
+    );
+    cold();
+    expect(
+        ops::unlink_at(root_fd, b"x"),
+        0,
+        "neofs_dir_ops_cold_root_unlink",
+    );
+    let (_, held_reads, contended, _) = crate::fs::debug_neofs_dir_op_reads();
+    if held_reads != 0 {
+        fail_with_hex(
+            "reason=neofs_dir_ops_commit_read_under_entries count",
+            held_reads,
+        );
+    }
+    if contended != 0 {
+        fail_with_hex("reason=neofs_dir_ops_cold_root_contended count", contended);
+    }
+
+    // #106 relay 403: a held completion. While one of a mkdir's device
+    // reads is outstanding, another writer takes `entries` and commits
+    // twice (a root mkdir, then its unlink). It runs on this CPU, so a writer that had to
+    // spin would never return: completing is the witness that it neither
+    // spins nor stalls. The mkdir sees the commits, reads again, and lands.
+    let _ = crate::fs::debug_neofs_commit_at_dir_op_reads(0);
+    let _ = crate::fs::debug_neofs_dir_op_reads();
+    cold();
+    let _ = crate::fs::debug_neofs_commit_at_dir_op_reads(1);
+    expect(
+        ops::mkdir_at(f1_fd, b"held"),
+        0,
+        "neofs_dir_ops_held_completion_mkdir",
+    );
+    let at_read_commits = crate::fs::debug_neofs_commit_at_dir_op_reads(0);
+    let (_, held_reads, contended, _) = crate::fs::debug_neofs_dir_op_reads();
+    if at_read_commits != 2 {
+        fail_with_hex(
+            "reason=neofs_dir_ops_held_completion_writer_commits count",
+            at_read_commits,
+        );
+    }
+    if held_reads != 0 {
+        fail_with_hex(
+            "reason=neofs_dir_ops_held_completion_read_under_entries count",
+            held_reads,
+        );
+    }
+    if contended != 0 {
+        fail_with_hex(
+            "reason=neofs_dir_ops_held_completion_contended count",
+            contended,
+        );
+    }
+    if stat(f1_fd, b"held").0 != KIND_DIRECTORY
+        || ops::stat_at(root_fd, b"f2-writer") != Err(ENOENT)
+    {
+        fail("reason=neofs_dir_ops_held_completion_tree");
+    }
+    expect(
+        ops::unlink_at(f1_fd, b"held"),
+        0,
+        "neofs_dir_ops_held_completion_cleanup",
+    );
+
     // Refusals.
     expect(
         ops::unlink_at(root_fd, b"hello.txt"),
@@ -34076,7 +34150,7 @@ fn run_neofs_dir_ops() -> ! {
         fail("reason=neofs_dir_ops_barrier_not_flushed");
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 contended=EAGAIN:interleaved_commits:8+reads:{}+retry_ok pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
+        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 contended=EAGAIN:interleaved_commits:8+reads:{}+retry_ok commit_reads_under_entries=0 held_completion=writer_commits:2 pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
         SCENARIO,
         after_file,
         cold_reads,

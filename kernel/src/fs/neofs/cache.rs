@@ -407,6 +407,34 @@ impl NeoFsBlockCache {
         Ok(())
     }
 
+    /// #106 relay 403 (CP-63): read the blocks the superblock copies sit in
+    /// and keep them cached for the mount's life ([`pinned_block`]). A
+    /// superblock copy is 512 bytes of a 4 KiB block, so writing it merges
+    /// into the block's bytes: on a miss, `write_bytes_at` reads the device
+    /// first, and every commit writes the copies with the namespace lock
+    /// (`entries`, spinning) held. Pinned, the write is always a hit. Copies
+    /// past the device's end are skipped, as the writers skip them.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub(super) fn pin_superblock_blocks(&self) -> Result<(), NeoFsError> {
+        let geometry = self.device.geometry();
+        let device_bytes = geometry
+            .block_count
+            .saturating_mul(geometry.logical_block_size as u64);
+        for offset in SUPERBLOCK_COPY_OFFSETS {
+            let block = offset / FS_BLOCK_SIZE as u64;
+            if block_offset(block)? + FS_BLOCK_SIZE as u64 > device_bytes {
+                continue;
+            }
+            let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
+            read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
+            let mut inner = self.inner.lock();
+            if find_cached_block(&inner, block).is_none() {
+                push_block(&mut inner, block, bytes);
+            }
+        }
+        Ok(())
+    }
+
     /// NFS-W1: drop any cached copy of blocks `first..first + count`, which
     /// were just allocated to a file written past the cache. Only free blocks
     /// are ever allocated, so a cached copy (even a dirty one) holds no data
@@ -419,9 +447,9 @@ impl NeoFsBlockCache {
         // Off (the previous layer): drop them, and nothing else changes.
         #[cfg(not(feature = "neofs-cache-evict"))]
         {
-            inner
-                .blocks
-                .retain(|cached| cached.block < first || cached.block >= end);
+            inner.blocks.retain(|cached| {
+                pinned_block(cached.block) || cached.block < first || cached.block >= end
+            });
             #[cfg(all(
                 feature = "neofs-cache-index",
                 not(feature = "neo-test-neofs-cache-index-off")
@@ -439,7 +467,7 @@ impl NeoFsBlockCache {
             let mut idx = 0;
             while idx < inner.blocks.len() {
                 let block = inner.blocks[idx].block;
-                if block >= first && block < end {
+                if block >= first && block < end && !pinned_block(block) {
                     inner.blocks.remove(idx);
                     #[cfg(all(
                         feature = "neofs-cache-index",
@@ -932,7 +960,7 @@ fn evict_locked(inner: &mut CacheInner) {
             .blocks
             .iter()
             .enumerate()
-            .filter(|(_, block)| !block.dirty)
+            .filter(|(_, block)| !block.dirty && !pinned_block(block.block))
             .min_by_key(|(_, block)| block.last_use)
             .map(|(idx, _)| idx)
         else {
@@ -1109,6 +1137,21 @@ fn drain_pass(
     }
 
     Ok(DrainReport { drained_blocks })
+}
+
+/// #106 relay 403: a block that stays cached from mount on (the superblock
+/// copies' blocks, [`NeoFsBlockCache::pin_superblock_blocks`]): never an
+/// eviction victim, and never dropped by `forget_range` (nothing allocates
+/// them, and the scenario's cold cache keeps them). Off (`neofs-dir-ops`
+/// disabled): none, the previous layer.
+#[cfg(feature = "neofs-dir-ops")]
+fn pinned_block(block: u64) -> bool {
+    superblock_copy_of_block(block).is_some()
+}
+
+#[cfg(not(feature = "neofs-dir-ops"))]
+fn pinned_block(_block: u64) -> bool {
+    false
 }
 
 /// The superblock copy (0..3) whose 4 KiB block is `block`, if any.

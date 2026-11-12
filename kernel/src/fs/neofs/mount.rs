@@ -79,6 +79,8 @@ impl NeoFs {
             selected.entries.clone(),
             selected.free_map_bytes.clone(),
         ));
+        #[cfg(feature = "neofs-dir-ops")]
+        state.pin_superblock_blocks()?;
 
         let report = report_from_selection(&selected);
         Ok(Self { state, report })

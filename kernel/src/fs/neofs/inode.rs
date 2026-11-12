@@ -301,6 +301,18 @@ impl NeoFsState {
         report
     }
 
+    /// #106 relay 403: keep the superblock copies' blocks cached, so no
+    /// commit reads the device under `entries` to merge into them
+    /// (`NeoFsBlockCache::pin_superblock_blocks`). Only a writable mount
+    /// writes superblocks.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub(super) fn pin_superblock_blocks(&self) -> Result<(), NeoFsError> {
+        if self.writable {
+            self.cache.pin_superblock_blocks()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn total_blocks(&self) -> u64 {
         self.metadata.lock().superblock.total_blocks
     }

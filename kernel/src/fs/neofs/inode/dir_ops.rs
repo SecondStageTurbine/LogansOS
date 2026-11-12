@@ -125,7 +125,7 @@ impl NeoFsState {
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
         #[cfg(feature = "neo-test-neofs-dir-ops")]
-        let _probe = probe::InOp::new();
+        let _probe = probe::InOp::on(self);
         let dir_parts = logic::components(dir);
         // An empty directory is one level tall: its entries will sit below it.
         if !logic::depth_fits(&dir_parts, 1) {
@@ -168,7 +168,7 @@ impl NeoFsState {
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
         #[cfg(feature = "neo-test-neofs-dir-ops")]
-        let _probe = probe::InOp::new();
+        let _probe = probe::InOp::on(self);
         let dir_parts = logic::components(dir);
         if logic::is_pinned(&dir_parts, name) {
             return Err(NeoFsError::Pinned);
@@ -231,7 +231,7 @@ impl NeoFsState {
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
         #[cfg(feature = "neo-test-neofs-dir-ops")]
-        let _probe = probe::InOp::new();
+        let _probe = probe::InOp::on(self);
         let src_parts = logic::components(src_dir);
         let dst_parts = logic::components(dst_dir);
         if logic::is_pinned(&src_parts, src_name) {
@@ -322,7 +322,7 @@ impl NeoFsState {
         name: &str,
     ) -> Result<DirStat, NeoFsError> {
         #[cfg(feature = "neo-test-neofs-dir-ops")]
-        let _probe = probe::InOp::new();
+        let _probe = probe::InOp::on(self);
         let dir_parts = logic::components(dir);
         let (lock, stat) = self.after_reads(|root| {
             let frames = self.handle_chain(root, &dir_parts)?;
@@ -651,6 +651,14 @@ pub(in crate::fs::neofs) mod probe {
     pub(super) static CONTENDED: AtomicU64 = AtomicU64::new(0);
     /// Interleaved commits still to make, one per optimistic attempt.
     static INTERLEAVE: AtomicU32 = AtomicU32::new(0);
+    /// Device reads of F0 operations still to hold: during each, another
+    /// writer commits twice, as a writer on another CPU would while that
+    /// read's completion is pending.
+    static AT_READ: AtomicU32 = AtomicU32::new(0);
+    static AT_READ_DONE: AtomicU64 = AtomicU64::new(0);
+    /// The state the at-read writer commits on (set by `InOp::on`).
+    static STATE: core::sync::atomic::AtomicPtr<NeoFsState> =
+        core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
     static INTERLEAVING: AtomicBool = AtomicBool::new(false);
     static INTERLEAVED: AtomicU64 = AtomicU64::new(0);
     /// The root folder the interleaved writer makes and removes.
@@ -664,12 +672,31 @@ pub(in crate::fs::neofs) mod probe {
             IN_OP.fetch_add(1, Ordering::SeqCst);
             Self
         }
+
+        /// As `new`, for an operation on `state`: the at-read writer
+        /// commits there.
+        pub(super) fn on(state: &NeoFsState) -> Self {
+            STATE.store(
+                state as *const NeoFsState as *mut NeoFsState,
+                Ordering::SeqCst,
+            );
+            Self::new()
+        }
     }
 
     impl Drop for InOp {
         fn drop(&mut self) {
-            IN_OP.fetch_sub(1, Ordering::SeqCst);
+            if IN_OP.fetch_sub(1, Ordering::SeqCst) == 1 {
+                STATE.store(core::ptr::null_mut(), Ordering::SeqCst);
+            }
         }
+    }
+
+    /// The next `reads` device reads of F0 operations each have another
+    /// writer commit twice (a root mkdir, then its unlink) before the read
+    /// returns, leaving the tree as it was.
+    pub(in crate::fs::neofs) fn commit_at_reads(reads: u32) {
+        AT_READ.store(reads, Ordering::SeqCst);
     }
 
     /// The next F0 operation's next `commits` optimistic attempts each see
@@ -707,7 +734,41 @@ pub(in crate::fs::neofs) mod probe {
             if ENTRIES_HELD.load(Ordering::SeqCst) {
                 HELD_READS.fetch_add(1, Ordering::SeqCst);
             }
+            commit_at_read();
         }
+    }
+
+    /// The held-completion leg: while this read is outstanding, another
+    /// writer takes `entries` and commits. It runs on this CPU, so if the
+    /// operation held `entries` here the writer would spin for ever: the
+    /// scenario's timeout is the witness. It counts only commits that
+    /// completed.
+    fn commit_at_read() {
+        let state = STATE.load(Ordering::SeqCst);
+        if state.is_null() || AT_READ.load(Ordering::SeqCst) == 0 {
+            return;
+        }
+        if INTERLEAVING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        AT_READ.fetch_sub(1, Ordering::SeqCst);
+        // SAFETY: `STATE` is set by `InOp::on` from a live `&NeoFsState`
+        // and cleared when the outermost operation's `InOp` drops, so it
+        // points to the state that operation borrows for as long as this
+        // read (inside that operation) runs.
+        let state = unsafe { &*state };
+        if state.mkdir_at(None, INTERLEAVE_NAME).is_ok() {
+            AT_READ_DONE.fetch_add(1, Ordering::SeqCst);
+            if state.unlink_at(None, INTERLEAVE_NAME).is_ok() {
+                AT_READ_DONE.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        INTERLEAVING.store(false, Ordering::SeqCst);
+    }
+
+    /// Commits the at-read writer completed since the last call.
+    pub(in crate::fs::neofs) fn take_at_read() -> u64 {
+        AT_READ_DONE.swap(0, Ordering::SeqCst)
     }
 
     /// (device reads during F0 operations, of them with the lock held,

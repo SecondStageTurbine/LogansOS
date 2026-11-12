@@ -1714,6 +1714,14 @@ pub fn debug_neofs_dir_op_reads() -> (u64, u64, u64, u64) {
     neofs::debug_dir_op_reads()
 }
 
+/// F0's held-completion leg: the next `reads` device reads of F0
+/// operations each see another writer commit twice while they are
+/// outstanding. Returns the at-read commits completed since the last call.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_neofs_commit_at_dir_op_reads(reads: u32) -> u64 {
+    neofs::debug_commit_at_dir_op_reads(reads)
+}
+
 /// F0's contention leg: the next operation's next `commits` optimistic
 /// attempts each see another writer commit before they take the lock.
 #[cfg(feature = "neo-test-neofs-dir-ops")]
