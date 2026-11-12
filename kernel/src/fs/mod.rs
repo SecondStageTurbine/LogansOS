@@ -1177,6 +1177,12 @@ pub fn persist_switch_read_only() -> bool {
     }
 }
 
+/// OT-100 R3: the mounted USB persistence volume, for the scenarios.
+#[cfg(all(feature = "usb-persistence", feature = "neo-test"))]
+pub fn debug_persist_mount() -> Option<Arc<neofs::NeoFs>> {
+    PERSIST_MOUNT.lock().clone()
+}
+
 /// OT-100 R3: why the mounted volume went read-only, if it did (THINK
 /// §4.2's status for the shell).
 #[cfg(feature = "usb-persistence")]

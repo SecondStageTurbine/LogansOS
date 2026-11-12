@@ -2224,6 +2224,15 @@ neo-test-usb-storage-off = ["neo-test", "usb-host"]
 # across the chunk boundaries, flushed and read back; the unsealed one is never
 # probed or written. xtask hashes both images and reads QEMU's SCSI trace.
 neo-test-usb-msc-write = ["neo-test", "usb-storage-write"]
+# OT-100 R3: the persistence scenarios (THINK §10, R3's gate).
+neo-test-usb-persist-two-boot = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-never-internal = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-unplug = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-try = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-absent = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-corrupt = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-second-stick = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-two-sticks = ["neo-test", "usb-persistence", "boot-neofs"]
 # #30: a stick hot-plugged, bound and read, then pulled while a reader runs:
 # the driver is told, the block device leaves the registry, and every read
 # after (and the one in flight) fails NoDevice.

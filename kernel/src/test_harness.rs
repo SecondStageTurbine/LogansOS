@@ -1056,6 +1056,22 @@ const SCENARIO: &str = "usb_storage_unplug";
 const SCENARIO: &str = "usb_storage_off";
 #[cfg(feature = "neo-test-usb-msc-write")]
 const SCENARIO: &str = "usb_msc_write";
+#[cfg(feature = "neo-test-usb-persist-two-boot")]
+const SCENARIO: &str = "usb_persist_two_boot";
+#[cfg(feature = "neo-test-usb-persist-never-internal")]
+const SCENARIO: &str = "usb_persist_never_internal";
+#[cfg(feature = "neo-test-usb-persist-unplug")]
+const SCENARIO: &str = "usb_persist_unplug_midwrite";
+#[cfg(feature = "neo-test-usb-persist-try")]
+const SCENARIO: &str = "usb_persist_try";
+#[cfg(feature = "neo-test-usb-persist-absent")]
+const SCENARIO: &str = "usb_persist_absent";
+#[cfg(feature = "neo-test-usb-persist-corrupt")]
+const SCENARIO: &str = "usb_persist_corrupt";
+#[cfg(feature = "neo-test-usb-persist-second-stick")]
+const SCENARIO: &str = "usb_persist_second_stick";
+#[cfg(feature = "neo-test-usb-persist-two-sticks")]
+const SCENARIO: &str = "usb_persist_two_sticks";
 #[cfg(feature = "neo-test-usb-enumerate")]
 const SCENARIO: &str = "usb_enumerate";
 #[cfg(feature = "neo-test-usb-storm")]
@@ -1745,6 +1761,14 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-usb-storage-read",
     feature = "neo-test-usb-storage-off",
     feature = "neo-test-usb-msc-write",
+    feature = "neo-test-usb-persist-two-boot",
+    feature = "neo-test-usb-persist-never-internal",
+    feature = "neo-test-usb-persist-unplug",
+    feature = "neo-test-usb-persist-try",
+    feature = "neo-test-usb-persist-absent",
+    feature = "neo-test-usb-persist-corrupt",
+    feature = "neo-test-usb-persist-second-stick",
+    feature = "neo-test-usb-persist-two-sticks",
     feature = "neo-test-usb-storm",
     feature = "neo-test-usb-baremetal-probe",
     feature = "neo-test-usb-ethernet",
@@ -2104,6 +2128,14 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-usb-storage-read",
         feature = "neo-test-usb-storage-off",
         feature = "neo-test-usb-msc-write",
+        feature = "neo-test-usb-persist-two-boot",
+        feature = "neo-test-usb-persist-never-internal",
+        feature = "neo-test-usb-persist-unplug",
+        feature = "neo-test-usb-persist-try",
+        feature = "neo-test-usb-persist-absent",
+        feature = "neo-test-usb-persist-corrupt",
+        feature = "neo-test-usb-persist-second-stick",
+        feature = "neo-test-usb-persist-two-sticks",
         feature = "neo-test-usb-storm",
         feature = "neo-test-usb-baremetal-probe",
         feature = "neo-test-usb-ethernet",
@@ -5568,6 +5600,18 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-usb-msc-write")]
     run_usb_msc_write();
+
+    #[cfg(any(
+        feature = "neo-test-usb-persist-two-boot",
+        feature = "neo-test-usb-persist-never-internal",
+        feature = "neo-test-usb-persist-unplug",
+        feature = "neo-test-usb-persist-try",
+        feature = "neo-test-usb-persist-absent",
+        feature = "neo-test-usb-persist-corrupt",
+        feature = "neo-test-usb-persist-second-stick",
+        feature = "neo-test-usb-persist-two-sticks",
+    ))]
+    run_usb_persist();
 
     #[cfg(feature = "neo-test-usb-storage-unplug")]
     run_usb_storage_unplug();
@@ -17618,6 +17662,150 @@ const USB_MSC_WRITE_BLOCKS: u64 = 300;
 /// `WriteRefused`. The driver's per-device write-class command counts are
 /// printed for xtask to hold against QEMU's SCSI trace, and xtask hashes
 /// both images after QEMU exits.
+/// OT-100 R3 (THINK §10, R3's gate): the persistence scenarios share this
+/// harness; xtask gives each its QEMU setup and holds it to its own
+/// expectations. After the boot mount (`fs::mount_persist`) it reports what
+/// was mounted, bumps the boot counter when the volume is writable (boot n
+/// finds `boot-1`..`boot-<n-1>` and creates `boot-<n>`, then syncs), and
+/// tries a raw write to LBA 0 of every block device: LBA 0 is MBR/GPT
+/// metadata, which the guard never arms, so every one must be refused. The
+/// unplug scenario then keeps writing until the volume is lost (xtask pulls
+/// the stick on `unplug-ready`), and checks the read-only flip.
+#[cfg(any(
+    feature = "neo-test-usb-persist-two-boot",
+    feature = "neo-test-usb-persist-never-internal",
+    feature = "neo-test-usb-persist-unplug",
+    feature = "neo-test-usb-persist-try",
+    feature = "neo-test-usb-persist-absent",
+    feature = "neo-test-usb-persist-corrupt",
+    feature = "neo-test-usb-persist-second-stick",
+    feature = "neo-test-usb-persist-two-sticks",
+))]
+fn run_usb_persist() -> ! {
+    use crate::drivers::block::{self, BlockError, DmaBuffer};
+    let fs = crate::fs::debug_persist_mount();
+    let mode = match &fs {
+        None => "none",
+        Some(f) if f.is_writable() => "rw",
+        Some(_) => "ro",
+    };
+    let count = |f: &crate::fs::neofs::NeoFs| {
+        (1..=64)
+            .take_while(|k| f.lookup(&alloc::format!("boot-{k}")).is_ok())
+            .count()
+    };
+    let before = fs.as_ref().map(|f| count(f));
+    let mut after = before;
+    if let (Some(f), Some(n)) = (&fs, before)
+        && f.is_writable()
+    {
+        let path = alloc::format!("boot-{}", n + 1);
+        if let Err(e) = f
+            .create_regular(&path)
+            .and_then(|inode| inode.write_at(0, b"persist\n"))
+        {
+            serial_println!("USB_PERSIST create {} failed {:?}", path, e);
+            fail("reason=usb_persist_create");
+        }
+        if let Err(e) = f.sync() {
+            serial_println!("USB_PERSIST sync failed {:?}", e);
+            fail("reason=usb_persist_sync");
+        }
+        after = Some(count(f));
+    }
+    serial_println!(
+        "USB_PERSIST mount={} counter_before={} counter_after={}",
+        mode,
+        before.map_or(-1, |n| n as i64),
+        after.map_or(-1, |n| n as i64)
+    );
+    // LBA 0 of every device: never armed, so every write is refused.
+    for index in 0..block::device_count() {
+        let Some(device) = block::get_device(index) else {
+            continue;
+        };
+        let size = device.geometry().logical_block_size as usize;
+        let buffer = DmaBuffer::alloc_zeroed(size).unwrap_or_else(|_| fail("reason=alloc"));
+        let result = device.write_block(0, core::slice::from_ref(&buffer));
+        serial_println!(
+            "USB_PERSIST raw-write index={} driver={} result={}",
+            index,
+            device.identity().driver,
+            match result {
+                Err(BlockError::WriteRefused) => "refused",
+                Ok(()) => "WRITTEN",
+                Err(_) => "error",
+            }
+        );
+        if result.is_ok() {
+            fail("reason=usb_persist_raw_write_landed");
+        }
+    }
+    #[cfg(feature = "neo-test-usb-persist-unplug")]
+    usb_persist_unplug(fs.as_ref());
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} mount={} counter_before={} counter_after={}",
+        SCENARIO,
+        mode,
+        before.map_or(-1, |n| n as i64),
+        after.map_or(-1, |n| n as i64)
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
+/// `usb_persist_unplug_midwrite` (THINK §4.2, Dexter's test): with the
+/// volume read-write, keep creating and syncing files; xtask pulls the stick
+/// (QMP `device_del`) on `unplug-ready`. The drain then fails, the mount
+/// flips read-only once, and every later mutation and sync is refused.
+#[cfg(feature = "neo-test-usb-persist-unplug")]
+fn usb_persist_unplug(fs: Option<&alloc::sync::Arc<crate::fs::neofs::NeoFs>>) {
+    let Some(f) = fs else {
+        fail("reason=usb_persist_unplug_no_mount");
+    };
+    if !f.is_writable() {
+        fail("reason=usb_persist_unplug_not_rw");
+    }
+    serial_println!("USB_PERSIST unplug-ready");
+    let mut written = 0u32;
+    for round in 0..20_000u32 {
+        if f.lost().is_some() {
+            break;
+        }
+        let path = alloc::format!("unplug-{round}");
+        // Errors are expected once the stick is gone; the flip is the check.
+        if f.create_regular(&path)
+            .and_then(|inode| inode.write_at(0, &[0x5a; 8192]))
+            .is_ok()
+        {
+            written += 1;
+        }
+        let _ = f.sync();
+        for _ in 0..50 {
+            crate::sched::yield_now();
+        }
+    }
+    let Some(lost) = f.lost() else {
+        fail("reason=usb_persist_unplug_never_lost");
+    };
+    if f.is_writable() {
+        fail("reason=usb_persist_unplug_still_writable");
+    }
+    let create = f
+        .create_regular("after-loss")
+        .and_then(|inode| inode.write_at(0, b"x"));
+    let sync = f.sync();
+    if create.is_ok() || sync.is_ok() {
+        fail("reason=usb_persist_unplug_mutation_after_loss");
+    }
+    serial_println!(
+        "USB_PERSIST after-loss lost={} written_before={} create={:?} sync={:?}",
+        lost.reason(),
+        written,
+        create.err(),
+        sync.err()
+    );
+}
+
 #[cfg(feature = "neo-test-usb-msc-write")]
 fn run_usb_msc_write() -> ! {
     use crate::drivers::block::{self, BlockError, DmaBuffer, SyncSupport};
