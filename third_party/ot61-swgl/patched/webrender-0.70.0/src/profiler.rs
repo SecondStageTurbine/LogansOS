@@ -637,7 +637,12 @@ impl Profiler {
         if update_avg {
             self.start = now;
         }
-        let one_second_ago = now - ONE_SECOND_NS;
+        // NeoPlutarch: zeitstempel's fallback clock (no native backend for our
+        // target) counts from its first call, so `now` is under one second for
+        // a while; the subtraction underflowed (a debug-build panic in
+        // layout_smoke). Saturating keeps every timestamp then, as a wrapped
+        // subtraction effectively does in release builds.
+        let one_second_ago = now.saturating_sub(ONE_SECOND_NS);
         self.frame_timestamps_within_last_second.retain(|t| *t > one_second_ago);
         self.frame_timestamps_within_last_second.push(now);
 
