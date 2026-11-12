@@ -81,6 +81,8 @@ mod ci_memory_floor_tests;
 #[cfg(test)]
 mod i8042_tests;
 #[cfg(test)]
+mod keymap_layout_tests;
+#[cfg(test)]
 mod keymap_tests;
 #[cfg(test)]
 mod ot61_c05_tests;
@@ -233,6 +235,9 @@ const SETUP_MENU_NET_CAPTURE_REL: &str = "target/neo-test/setup_menu_net.ppm";
 const SETUP_MENU_NET_PAGE_REL: &str = "target/neo-test/setup_menu_net_page.ppm";
 const SETUP_MENU_NET_NONIC_CAPTURE_REL: &str = "target/neo-test/setup_menu_net_nonic.ppm";
 const SETUP_MENU_NET_OFF_CAPTURE_REL: &str = "target/neo-test/setup_menu_net_off.ppm";
+const SETUP_MENU_KEYS_CAPTURE_REL: &str = "target/neo-test/setup_menu_keys.ppm";
+const SETUP_MENU_KEYS_PAGE_REL: &str = "target/neo-test/setup_menu_keys_page.ppm";
+const SETUP_MENU_KEYS_US_CAPTURE_REL: &str = "target/neo-test/setup_menu_keys_us.ppm";
 /// OT-87 R4.4: `install_atrium`'s captures: the list, then the confirmation.
 const INSTALL_ATRIUM_LIST_REL: &str = "target/neo-test/install_atrium_list.ppm";
 const INSTALL_ATRIUM_CONFIRM_REL: &str = "target/neo-test/install_atrium_confirm.ppm";
@@ -941,7 +946,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 46] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 48] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1308,6 +1313,31 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 46] = [
             b"\r",
         )
     },
+    // F11 S5: the Keyboard page in Spanish, its field captured once the
+    // gate's keys are in, then Home and Arthur in Spanish; and the control,
+    // left on US.
+    DesktopScenario {
+        mid: Some((
+            "DESKTOP setup typed layout=1 field=ñ¿¡çá\n".as_bytes(),
+            SETUP_MENU_KEYS_PAGE_REL,
+        )),
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_keys",
+            SETUP_MENU_KEYS_STEPS,
+            SETUP_MENU_KEYS_CAPTURE_REL,
+            b"\r",
+        )
+    },
+    DesktopScenario {
+        long_timeout: true,
+        ..desktop(
+            "setup_menu_keys_us",
+            SETUP_MENU_KEYS_US_STEPS,
+            SETUP_MENU_KEYS_US_CAPTURE_REL,
+            b"\r",
+        )
+    },
     // OT-87 R4.4: the Atrium installer in the intro session, booted as an
     // install scenario (`run_install_scenario`): the list captured as it
     // shows, the confirmation after Enter (`\r`).
@@ -1606,6 +1636,78 @@ const SETUP_MENU_NET_DOWN_STEPS: &[SerialScriptStep] = &[
     step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
     HOME_TYPED_ENTER,
     ROUND1_ESC,
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S5 (`setup_menu_keys`): Begin, then the Keyboard page: Spanish, and
+/// the keys a Spanish keyboard labels `ñ` `¿` `¡` `ç`, then its acute dead key
+/// and `a` (`sendkey semicolon`, `shift-equal`, `equal`, `backslash`,
+/// `apostrophe`, `a`), giving `ñ¿¡çá`; then Continue, Time zone, Comfort and
+/// Try. In the intro session, `ñ` (not ASCII) then Shift+2 in Home and in
+/// Arthur: `ñ` is dropped, Shift+2 types `"` (then Backspace), and the
+/// intro's walk runs as usual, Arthur's session included.
+const SETUP_MENU_KEYS_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=keyboard rows=7", &[HMP_DOWN]),
+    step(b"DESKTOP setup redraw page=keyboard focus=1", b"\n"),
+    step(b"DESKTOP setup redraw page=keyboard focus=1", b";+=\\'a"),
+    step(
+        "DESKTOP setup typed layout=1 field=ñ¿¡çá\n".as_bytes(),
+        &[HMP_DOWN],
+    ),
+    step(b"DESKTOP setup redraw page=keyboard focus=2", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=6", b"\n"),
+    // ñ (semicolon) is not ASCII: Home drops it, then Shift+2 types `"`.
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b";@"),
+    step(b"DESKTOP home keystroke ascii=34\n", b"\x08help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    // ñ in Arthur: dropped before his line (his intent path is ASCII), then
+    // Shift+2 types `"` and his session goes on.
+    step(b"DESKTOP arthur answer composited round=1", b";@"),
+    step(b"DESKTOP arthur keystroke ascii=34\n", b"\x08"),
+    step(b"DESKTOP arthur keystroke ascii=8\n", b"\x1b"),
+    HOLD_TAB,
+    CHIP1_TAB,
+    CHIP0_AGAIN,
+    AGAIN_ENTER,
+    step(b"DESKTOP arthur answer composited serial=", b"q"),
+];
+
+/// F11 S5's control (`setup_menu_keys_us`): the same keys with the layout
+/// left on US; they type `;+=\'a` (no dead key), and Shift+2 is `@` in Home
+/// and Arthur.
+const SETUP_MENU_KEYS_US_STEPS: &[SerialScriptStep] = &[
+    step(b"DESKTOP setup page=welcome rows=5", b"\n"),
+    step(b"DESKTOP setup page=keyboard rows=7", b";+=\\'a"),
+    step(b"DESKTOP setup typed layout=0 field=;+=\\'a\n", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=keyboard focus=2", b"\n"),
+    step(b"DESKTOP setup page=timezone rows=8", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=timezone focus=4", b"\n"),
+    step(b"DESKTOP setup page=comfort rows=6", &[HMP_UP]),
+    step(b"DESKTOP setup redraw page=comfort focus=2", b"\n"),
+    step(b"DESKTOP setup page=try rows=6", b"\n"),
+    step(DESKTOP_INTRO_SHOWN_PROMPT, b"@"),
+    step(b"DESKTOP home keystroke ascii=64\n", b"\x08help"),
+    step(b"DESKTOP home keystroke ascii=112\n", b"\r"),
+    step(b"DESKTOP help shown via=typed rows=6", b"\x1b"),
+    step(b"DESKTOP help closed via=esc", b"\x81\x03\x04"),
+    step(b"DESKTOP help shown via=click rows=6", b"hello desktop"),
+    HOME_TYPED_ENTER,
+    step(b"DESKTOP arthur answer composited round=1", b"@"),
+    step(b"DESKTOP arthur keystroke ascii=64\n", b"\x08"),
+    step(b"DESKTOP arthur keystroke ascii=8\n", b"\x1b"),
     HOLD_TAB,
     CHIP1_TAB,
     CHIP0_AGAIN,
@@ -2622,6 +2724,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         // The same with xsave-fpu: AVX advertised and saved, memchr on AVX2.
         name: "servo_closure_smoke_avx",
         feature: "neo-test-servo-closure-smoke-avx",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 rung 6: the std surface a window's loop runs on (channel
+        // try_recv, input focus create/mint/recv), on-target.
+        name: "browser_io_smoke",
+        feature: "neo-test-browser-io-smoke",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -4181,6 +4292,23 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: "setup_menu_store_try",
         feature: "neo-test-desktop-intro-boot",
         user_feature: Some("setup-store-try-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S5: the Keyboard page in Spanish on the volatile overlay; the
+        // field, Home and Arthur type Spanish.
+        name: "setup_menu_keys",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("keyboard-layouts-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // F11 S5's control: the same build and keys, the layout left on US.
+        name: "setup_menu_keys_us",
+        feature: "neo-test-desktop-intro-boot",
+        user_feature: Some("keyboard-layouts-boot-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8181,6 +8309,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "webrender_smoke" => &[WEBRENDER_BIN],
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
         "swgl_grant_smoke" => &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
+        "browser_io_smoke" => &[BROWSER_IO_BIN, BROWSER_IO_PEER_BIN],
         _ => &[],
     }
 }
@@ -8774,6 +8903,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("setup-menu-boot-test")
         | Some("setup-store-try-boot-test")
         | Some("setup-net-boot-test")
+        | Some("keyboard-layouts-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -9085,6 +9215,15 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-lens",
             "desktop-resize",
         ],
+        // F11 S5: the intro's Arthur, decoding in the layout his create reply
+        // carries.
+        Some("keyboard-layouts-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "desktop-lens",
+            "desktop-resize",
+            "keyboard-layouts",
+        ],
         // F8: Arthur's third round (a question the clock leaves alone).
         Some("desktop-clock-boot-test") => vec![
             "desktop-session-boot-test",
@@ -9300,6 +9439,13 @@ fn build_user_members(
         if std_real_staged_bins().contains(&WEBRENDER_BIN) {
             build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
         }
+        if std_real_staged_bins().contains(&BROWSER_IO_BIN) {
+            build_standalone_std_smoke(
+                "browser-app",
+                &[BROWSER_IO_BIN, BROWSER_IO_PEER_BIN],
+                BROWSER_APP_DIR,
+            )?;
+        }
         if std_real_staged_bins().contains(&SWGL_ATRIUM_BIN) {
             build_standalone_std_smoke(SWGL_BIN, &[SWGL_ATRIUM_BIN], SWGL_DIR)?;
         }
@@ -9343,6 +9489,11 @@ const SWGL_GRANT_COMPOSITOR_BIN: &str = "swgl-grant-compositor";
 /// OT-61 rung 4 (SWGL S2): upstream WebRender on SWGL, over neo-crt.
 const WEBRENDER_BIN: &str = "webrender-smoke";
 const WEBRENDER_DIR: &str = "userland/webrender-smoke";
+/// OT-61 rung 6: the browser app's crate; its first bins check the std
+/// surface a window's loop runs on.
+const BROWSER_APP_DIR: &str = "userland/browser-app";
+const BROWSER_IO_BIN: &str = "browser-io-smoke";
+const BROWSER_IO_PEER_BIN: &str = "browser-io-peer";
 
 /// The std crates with their own target dir that build std as a known target
 /// (`RUSTC_BOOTSTRAP_SYNTHETIC_TARGET`; see `build_member_at_opt_level`): the
@@ -9356,6 +9507,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
             Some(SWGL_DIR)
         }
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
+        BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
         _ => None,
     }
 }
@@ -9366,6 +9518,7 @@ fn is_standalone_std_dir(subdir: &str) -> bool {
         || subdir == CXX_RUNTIME_DIR
         || subdir == SWGL_DIR
         || subdir == WEBRENDER_DIR
+        || subdir == BROWSER_APP_DIR
 }
 
 fn build_servo_closure_smoke() -> Result<(), String> {
@@ -19978,7 +20131,9 @@ fn serial_frame_name(scenario: TestScenario) -> &'static str {
         | "setup_menu_store_try"
         | "setup_menu_net"
         | "setup_menu_net_nonic"
-        | "setup_menu_net_off" => "desktop_intro_boot",
+        | "setup_menu_net_off"
+        | "setup_menu_keys"
+        | "setup_menu_keys_us" => "desktop_intro_boot",
         // F11 S2: the plain sign-in kernel, with the setup menu before it.
         login_scenarios::LOGIN_SETUP_STORE_SCENARIO
         | login_scenarios::LOGIN_SETUP_TZ_SCENARIO
@@ -20097,6 +20252,23 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 needle,
                 "WebRender on SWGL must render the hand-derived scene",
+            )?;
+        }
+    }
+    if scenario.name == "browser_io_smoke" {
+        for needle in [
+            "[ browser-io-smoke ] ok(2) try_recv before the peer sends is WouldBlock",
+            "[ browser-io-smoke ] ok(4) try_recv takes the peer's W",
+            "[ browser-io-smoke ] ok(6) recv on a focus no WM made live is PermissionDenied",
+            "[ browser-io-smoke ] ok(7) the activator is ACTIVATE only, USE|GRANT, no DERIVE",
+            "[ browser-io-smoke ] PASS",
+            "[ browser-io-peer ] PASS",
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                needle,
+                "std must poll a channel and an input focus without parking",
             )?;
         }
     }
@@ -21702,6 +21874,121 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             _ => SETUP_MENU_NET_OFF_CAPTURE_REL,
         };
         require_framebuffer_capture(scenario, capture)?;
+    }
+    // F11 S5 (setup-menu THINK §5 S5): Spanish chosen on the Keyboard page;
+    // the field types every legend and composes the acute dead key, Home and
+    // Arthur type Spanish, and key 7 holds Spanish (on the volatile overlay:
+    // in force, nothing written).
+    if scenario.name == "setup_menu_keys" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=welcome rows=5",
+                "DESKTOP setup page=keyboard rows=7",
+                "DESKTOP setup redraw page=keyboard focus=1",
+                "DESKTOP setup redraw page=keyboard focus=1",
+                "DESKTOP setup typed layout=1 field=ñ\n",
+                "DESKTOP setup typed layout=1 field=ñ¿\n",
+                "DESKTOP setup typed layout=1 field=ñ¿¡\n",
+                "DESKTOP setup typed layout=1 field=ñ¿¡ç\n",
+                "DESKTOP setup typed layout=1 field=ñ¿¡çá\n",
+                "DESKTOP setup redraw page=keyboard focus=2",
+                "DESKTOP setup page=timezone rows=8",
+                "DESKTOP setup page=comfort rows=6",
+                "DESKTOP setup page=try rows=6",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 layout=1",
+                "SETTING applied key=6 value=0 status=0",
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=1",
+                "DESKTOP keyboard layout=1 cause=settings live=1",
+                "SETTING applied key=7 value=1 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP home keystroke ascii=34\n",
+                "DESKTOP arthur line=hello desktop",
+                "DESKTOP arthur keystroke ascii=34\n",
+                // After the dropped ñ his session goes on: the next round
+                // is answered and he exits cleanly.
+                "DESKTOP arthur answer composited serial=",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "Spanish on the Keyboard page: the field types ñ¿¡ç and composes the acute dead key with a, Home and Arthur type Spanish, and key 7 holds Spanish",
+        )?;
+        for (needle, why) in [
+            (
+                "DESKTOP setup typed layout=0",
+                "every key on the page was typed after Spanish was chosen",
+            ),
+            (
+                "field=ñ¿¡ç´",
+                "the acute dead key composes with a: no bare accent",
+            ),
+            (
+                "DESKTOP home keystroke ascii=59\n",
+                "ñ is not ASCII: Home drops it (59 is US `;`)",
+            ),
+            (
+                "DESKTOP arthur keystroke ascii=59\n",
+                "ñ is not ASCII: Arthur's line never gets it",
+            ),
+            ("SETTINGS written", "the volatile overlay writes no record"),
+            (
+                "DESKTOP home keystroke ascii=64\n",
+                "Shift+2 is \" in Spanish, in Home",
+            ),
+            (
+                "DESKTOP arthur keystroke ascii=64\n",
+                "Shift+2 is \" in Spanish, in Arthur",
+            ),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_framebuffer_capture(scenario, SETUP_MENU_KEYS_PAGE_REL)?;
+        require_setup_keyboard_capture(scenario, SETUP_MENU_KEYS_PAGE_REL)?;
+        require_framebuffer_capture(scenario, SETUP_MENU_KEYS_CAPTURE_REL)?;
+    }
+    // F11 S5's control: the same build and keys with the layout left on US:
+    // the US characters (no dead key), no layout change.
+    if scenario.name == "setup_menu_keys_us" {
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "SETTINGS volatile writes=0 rt=0 rm=0 idle=10 lang=0 kb=0",
+                "DESKTOP setup page=keyboard rows=7",
+                "DESKTOP setup typed layout=0 field=;\n",
+                "DESKTOP setup typed layout=0 field=;+\n",
+                "DESKTOP setup typed layout=0 field=;+=\n",
+                "DESKTOP setup typed layout=0 field=;+=\\\n",
+                "DESKTOP setup typed layout=0 field=;+=\\'\n",
+                "DESKTOP setup typed layout=0 field=;+=\\'a\n",
+                "DESKTOP setup redraw page=keyboard focus=2",
+                "DESKTOP setup page=try rows=6",
+                "DESKTOP setup done action=try zone=UTC reduce_motion=0 reduce_transparency=0 layout=0",
+                "SETTING applied key=7 value=0 status=0",
+                "DESKTOP setup stored keys=4 refused=0 volatile=1",
+                "DESKTOP intro shown variant=ready usb=1 rows=7 persistent=0",
+                "DESKTOP home keystroke ascii=64\n",
+                "DESKTOP arthur keystroke ascii=64\n",
+                "DESKTOP session end client=arthur exit=0",
+            ],
+            "the control: US left on the Keyboard page, the US characters everywhere",
+        )?;
+        for (needle, why) in [
+            (
+                "DESKTOP setup typed layout=1",
+                "the control never chooses Spanish",
+            ),
+            (
+                "DESKTOP keyboard layout=",
+                "the layout never changes in the control",
+            ),
+            ("DESKTOP home keystroke ascii=34\n", "Shift+2 is @ in US"),
+        ] {
+            require_serial_absent(scenario, observed, needle, why)?;
+        }
+        require_framebuffer_capture(scenario, SETUP_MENU_KEYS_US_CAPTURE_REL)?;
     }
     // F11 S1's control: Esc on Welcome asks, Skip ends the menu with the
     // defaults and no other page, and the session is the intro's.
@@ -24478,6 +24765,27 @@ fn require_setup_capture(
             "setup welcome",
         )
     }
+}
+
+/// F11 S5 (`setup_menu_keys`): the Keyboard page in Spanish with the gate's
+/// keys typed, against `setup_oracle.py fixture`'s `KEYBOARD_ES` (the scene,
+/// and every row's words: the field reads `ñ¿¡çá_`).
+fn require_setup_keyboard_capture(
+    scenario: TestScenario,
+    capture_rel: &'static str,
+) -> Result<(), String> {
+    #[allow(dead_code)]
+    mod setup {
+        include!("../../../fixtures/desktop-setup/setup.rs");
+    }
+    check_card_capture(
+        scenario,
+        capture_rel,
+        setup::KEYBOARD_ES_GLASS_1920X1080,
+        setup::KEYBOARD_ES_TEXT_BOX,
+        &setup::KEYBOARD_ES_PATTERNS[..],
+        "setup keyboard es",
+    )
 }
 
 /// DL-1 (desktop_full_boot): the capture with the Lens docked to the moved

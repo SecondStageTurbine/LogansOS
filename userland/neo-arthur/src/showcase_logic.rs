@@ -111,10 +111,46 @@ pub const fn scroll_allowed(key: ScrollKey, input_empty: bool) -> bool {
     }
 }
 
-/// The shared US layout (`kernel/src/drivers/keymap_us_logic.rs`).
+/// The shared US layout (`kernel/src/drivers/keymap_us_logic.rs`), and with
+/// `keyboard-layouts` the layouts by id (`keymap_layout_logic.rs`), as the
+/// WM reads them.
 #[allow(dead_code)]
 mod keymap {
     include!("../../../kernel/src/drivers/keymap_us_logic.rs");
+    #[cfg(feature = "keyboard-layouts")]
+    include!("../../../kernel/src/drivers/keymap_layout_logic.rs");
+}
+
+/// F11 S5: the session's layout, from the WM's create reply (0: US).
+#[cfg(feature = "keyboard-layouts")]
+static LAYOUT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Take the session's layout from the create reply. An id that is not a
+/// layout leaves US (the keyboard must not go dead); `false` then.
+#[cfg(feature = "keyboard-layouts")]
+pub fn set_layout(layout: u32) -> bool {
+    match u8::try_from(layout) {
+        Ok(id) if keymap::layout_valid(id) => {
+            LAYOUT.store(id, core::sync::atomic::Ordering::Relaxed);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// A printable key in the session's layout. Arthur's line is ASCII: a key
+/// whose legend is not ASCII types nothing, and a dead key types its accent
+/// only when that is ASCII, without composing (`ascii_in`).
+fn printable(keycode: u8, modifiers: u8, locks: u8) -> Option<u8> {
+    #[cfg(feature = "keyboard-layouts")]
+    return keymap::ascii_in(
+        LAYOUT.load(core::sync::atomic::Ordering::Relaxed),
+        keycode,
+        modifiers,
+        locks,
+    );
+    #[cfg(not(feature = "keyboard-layouts"))]
+    keymap::printable(keycode, modifiers, locks)
 }
 
 /// A key's ASCII byte: printable keys from the shared US layout with the
@@ -127,7 +163,7 @@ pub fn keycode_to_ascii_locked(keycode: u8, modifiers: u8, locks: u8) -> Option<
         0x29 => Some(0x1b),
         0x2a => Some(0x08),
         0x2b => Some(b'\t'),
-        _ => keymap::printable(keycode, modifiers, locks),
+        _ => printable(keycode, modifiers, locks),
     }
 }
 
