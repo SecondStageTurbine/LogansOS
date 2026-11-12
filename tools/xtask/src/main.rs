@@ -9109,6 +9109,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("setup-store-try-boot-test")
         | Some("setup-net-boot-test")
         | Some("keyboard-layouts-boot-test")
+        | Some("i18n-catalog-boot-test")
         | Some("desktop-with-model") => vec!["desktop-lens"],
         // OT-78: the product scenario executes the real DW-1 client protocol
         // before Arthur, so its worker binary needs the same client role.
@@ -9414,7 +9415,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("power-menu-boot-test")
         | Some("setup-menu-boot-test")
         | Some("setup-store-try-boot-test")
-        | Some("setup-net-boot-test") => vec![
+        | Some("setup-net-boot-test")
+        // F11 S6b: Arthur is unchanged (his replies stay English).
+        | Some("i18n-catalog-boot-test") => vec![
             "desktop-session-boot-test",
             "desktop-home",
             "desktop-lens",
