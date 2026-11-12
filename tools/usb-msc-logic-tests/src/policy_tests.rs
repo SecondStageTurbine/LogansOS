@@ -494,14 +494,14 @@ fn a_late_data_protect_still_latches() {
     assert_eq!(latches.write_protected(), Some(true));
 }
 
-/// A late sense after a failed SYNC: the attempt is a deadline, not a
-/// retryable failure classified from the late sense.
+/// A late sense after a failed SYNC: the attempt is a deadline (TimedOut,
+/// final), not a retryable failure classified from the late sense.
 #[test]
 fn a_late_sense_after_a_failed_sync_is_a_deadline() {
     let mut port = Mock::new(vec![failed(3000)], vec![sense_reply(5, 0x3, 0x11, 0)]);
     port.late_senses = true;
     let latches = WriteLatches::new();
-    assert_eq!(sync_once(&mut port, &latches), SyncResult::Failed);
+    assert_eq!(sync_once(&mut port, &latches), SyncResult::TimedOut);
     assert!(matches!(
         port.events[..],
         [WriteEvent::Deadline {
@@ -582,7 +582,7 @@ fn the_sense_after_a_failed_sync_shares_its_deadline() {
         vec![sense_reply(ticks(2_000), 0x3, 0, 0)],
     );
     let latches = WriteLatches::new();
-    assert_eq!(sync_once(&mut port, &latches), SyncResult::Failed);
+    assert_eq!(sync_once(&mut port, &latches), SyncResult::TimedOut);
     assert_eq!(port.sensed, vec![port.sent[0].1]);
     assert!(matches!(
         port.events[..],
@@ -999,4 +999,78 @@ fn a_stalled_write_whose_recovery_runs_out_sends_nothing_more() {
             ..
         }]
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Relay 395: a SYNC's passed deadline ends the flush; it is never retried.
+// ---------------------------------------------------------------------------
+
+/// Janus's input: SYNC starts at tick 0 (deadline 3001), fails on tick 3000,
+/// and a UNIT ATTENTION sense lands on tick 3001. The next SYNC would succeed;
+/// it is never sent. `flush` ends TimedOut after one command.
+#[test]
+fn a_sync_timeout_ends_the_flush() {
+    let mut port = Mock::new(
+        vec![failed(3000), passed(1, 0)],
+        vec![sense_reply(1, 0x6, 0x28, 0)],
+    );
+    port.late_senses = true;
+    let latches = WriteLatches::new();
+    latches.set_sync_ok(true);
+    assert_eq!(flush(&mut port, &latches), FlushResult::TimedOut);
+    assert_eq!(port.opcodes(), vec![OP_SYNCHRONIZE_CACHE_10]);
+    assert_eq!(port.sent[0].1.end, 3001);
+    assert!(matches!(
+        port.events[..],
+        [WriteEvent::Deadline {
+            op: Op::Sync,
+            stage: None,
+            ..
+        }]
+    ));
+    assert!(latches.sync_ok(), "a timeout doesn't turn flushing off");
+}
+
+/// A SYNC cut off at its deadline in the transport (its recovery ran out
+/// too): the flush ends there as well.
+#[test]
+fn a_sync_cut_off_by_its_deadline_ends_the_flush() {
+    let mut port = Mock::new(vec![step(10_000, Outcome::Passed { len: 0 })], vec![]);
+    let latches = WriteLatches::new();
+    latches.set_sync_ok(true);
+    assert_eq!(flush(&mut port, &latches), FlushResult::TimedOut);
+    assert_eq!(port.sent.len(), 1);
+}
+
+/// A SYNC that fails inside its deadline (MEDIUM ERROR) is retried, up to
+/// SYNC_MAX_ATTEMPTS; the third time it works.
+#[test]
+fn a_sync_failing_in_time_is_retried() {
+    let mut port = Mock::new(
+        vec![failed(10), failed(10), passed(10, 0)],
+        vec![sense_reply(1, 0x3, 0x0c, 0), sense_reply(1, 0x3, 0x0c, 0)],
+    );
+    let latches = WriteLatches::new();
+    latches.set_sync_ok(true);
+    assert_eq!(flush(&mut port, &latches), FlushResult::Flushed);
+    assert_eq!(port.sent.len(), SYNC_MAX_ATTEMPTS as usize);
+}
+
+/// The probe's SYNC timing out: reported, flushing stays off.
+#[test]
+fn a_probe_sync_timeout_leaves_flushing_off() {
+    let mut header = passed(10, 4);
+    header.data_in = vec![0x03, 0x00, 0x00, 0x00];
+    let mut port = Mock::new(
+        vec![
+            header,
+            passed(10, 0),
+            step(10_000, Outcome::Passed { len: 0 }),
+        ],
+        vec![],
+    );
+    let latches = WriteLatches::new();
+    let probe = write_probe(&mut port, &latches);
+    assert_eq!(probe.sync, SyncResult::TimedOut);
+    assert!(!latches.sync_ok());
 }

@@ -1050,14 +1050,20 @@ fn submit_command(trb: Trb) -> Option<Trb> {
 }
 
 /// [`submit_command`], its waits also ending at the tick `until`. Nothing is
-/// submitted once `until` has passed (relay 394 F1b).
+/// submitted once `until` has passed (relay 394 F1b): admission to the
+/// command ring (`ring::admit_until`) tries `CONTROLLER` only until `until`,
+/// and reads `until` again once the lock is held, before the ring is touched
+/// (relay 395). `None` takes the lock unconditionally, as before.
 fn submit_command_until(trb: Trb, until: Option<u64>) -> Option<Trb> {
-    if until_passed(until) {
-        return None;
-    }
     let cmd_phys;
     {
-        let mut guard = CONTROLLER.lock();
+        let mut guard = ring::admit_until(
+            until,
+            || crate::arch::x86_64::timer::TICKS.load(Ordering::Relaxed),
+            || CONTROLLER.try_lock(),
+            || CONTROLLER.lock(),
+            core::hint::spin_loop,
+        )?;
         let ctrl = guard.as_mut()?;
         let step = ctrl.cmd_state.enqueue_step();
         let mut armed = trb;
@@ -2442,7 +2448,9 @@ fn control_no_data(
     until: Option<u64>,
 ) -> Result<(), &'static str> {
     // Nothing is published once the caller's deadline has passed (relay 394
-    // F1b). `None` never refuses.
+    // F1b). `None` never refuses. EP0 is the caller's own (`&mut` on the
+    // claimed device, under the class driver's lock): no lock is waited for
+    // between this read and the doorbell below (relay 395).
     if until_passed(until) {
         return Err("control transfer: deadline passed before submission");
     }

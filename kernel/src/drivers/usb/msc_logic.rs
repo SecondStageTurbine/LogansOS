@@ -775,7 +775,9 @@ pub const fn write_chunk_bound_ms() -> u64 {
     write_chunk_bound_ticks() * MS_PER_TICK
 }
 
-/// A flush's worst case in ms: every SYNC attempt to its deadline, 90,030.
+/// A flush's worst case in ms, 90,030: every SYNC attempt to its deadline.
+/// (Since a passed deadline ends a flush, at most one attempt reaches it; the
+/// bound stays the simple product.)
 pub const fn flush_bound_ms() -> u64 {
     SYNC_MAX_ATTEMPTS as u64 * attempt_ticks(SYNC_ATTEMPT_MS) * MS_PER_TICK
 }
@@ -1191,11 +1193,14 @@ pub enum SyncResult {
     /// DATA PROTECT (now latched).
     WriteProtected,
     NoDevice,
+    /// The attempt's deadline passed: final, never retried (relay 395).
+    TimedOut,
     Failed,
 }
 
 /// One SYNCHRONIZE CACHE(10), with one deadline for the command, its sense
-/// and its recovery. DATA PROTECT latches write-protect here as on a WRITE.
+/// and its recovery. DATA PROTECT latches write-protect here as on a WRITE. A
+/// passed deadline is [`SyncResult::TimedOut`], which `flush` does not retry.
 pub fn sync_once(port: &mut impl WritePort, latches: &WriteLatches) -> SyncResult {
     let op = Op::Sync;
     if port.gone() {
@@ -1217,7 +1222,7 @@ pub fn sync_once(port: &mut impl WritePort, latches: &WriteLatches) -> SyncResul
                 elapsed,
             },
         );
-        SyncResult::Failed
+        SyncResult::TimedOut
     };
     match port.command(&cdb_synchronize_cache_10(), Data::None, by) {
         Outcome::Passed { .. } => SyncResult::Synced,
@@ -1282,12 +1287,15 @@ pub enum FlushResult {
     Unsupported,
     WriteProtected,
     NoDevice,
+    /// A SYNC attempt's deadline passed: the flush ends there (relay 395).
+    TimedOut,
     Io,
 }
 
 /// `flush`: SYNCHRONIZE CACHE only once the probe showed it works, at most
 /// [`SYNC_MAX_ATTEMPTS`] times. ILLEGAL REQUEST latches flushing off; DATA
-/// PROTECT latches write-protect and ends it.
+/// PROTECT latches write-protect and ends it; a passed deadline ends it too:
+/// only a failure inside its deadline is retried.
 pub fn flush(port: &mut impl WritePort, latches: &WriteLatches) -> FlushResult {
     if !latches.sync_ok() {
         return FlushResult::Unsupported;
@@ -1302,6 +1310,7 @@ pub fn flush(port: &mut impl WritePort, latches: &WriteLatches) -> FlushResult {
             }
             SyncResult::WriteProtected => return FlushResult::WriteProtected,
             SyncResult::NoDevice => return FlushResult::NoDevice,
+            SyncResult::TimedOut => return FlushResult::TimedOut,
             SyncResult::Failed => {}
         }
     }

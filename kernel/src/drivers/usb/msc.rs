@@ -928,7 +928,7 @@ impl BlockDevice for MscDisk {
             msc_logic::FlushResult::Unsupported => Err(BlockError::Unsupported),
             msc_logic::FlushResult::WriteProtected => Err(BlockError::WriteRefused),
             msc_logic::FlushResult::NoDevice => Err(BlockError::NoDevice),
-            msc_logic::FlushResult::Io => Err(BlockError::Io),
+            msc_logic::FlushResult::TimedOut | msc_logic::FlushResult::Io => Err(BlockError::Io),
         }
     }
 
