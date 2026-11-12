@@ -542,10 +542,33 @@ fn unlock(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                 super::action_log::report();
                 super::permission::end_client();
             }
+            #[cfg(feature = "lock-terminal-test")]
+            end_arthur();
             libneo::sys_exit(0);
         }
     }
     Ok(())
+}
+
+/// `login_terminal_lock`: the session's Arthur is the product's (it opens the
+/// terminal on `open terminal`), which never exits by itself, so the boot
+/// test ends it, as `arthur-actions-test` does.
+#[cfg(feature = "lock-terminal-test")]
+static ARTHUR: AtomicU32 = AtomicU32::new(u32::MAX);
+
+#[cfg(feature = "lock-terminal-test")]
+pub fn note_arthur(process: libneo::ProcessHandle) {
+    ARTHUR.store(process.0, Ordering::Release);
+}
+
+#[cfg(feature = "lock-terminal-test")]
+fn end_arthur() {
+    let handle = ARTHUR.load(Ordering::Acquire);
+    if handle != u32::MAX {
+        let process = libneo::ProcessHandle(handle);
+        let _ = libneo::sys_kill(process);
+        let _ = libneo::sys_wait(process, 0);
+    }
 }
 
 fn card_damage(scene: &Scene) -> Rect {
