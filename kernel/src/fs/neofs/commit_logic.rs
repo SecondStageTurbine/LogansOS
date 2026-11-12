@@ -84,6 +84,41 @@ where
 /// fits (`docs/specs/neofs-format.md`: copies at 0, 1 MiB and 64 MiB).
 pub const COPIES: usize = 3;
 
+/// Whether the superblock copy of `copy_len` bytes at `offset` is on a
+/// device of `device_bytes`. This is the one rule for which copies exist:
+/// mount reads them, the cache's durability tracks them, every commit
+/// publishes them, and F0 pins their blocks (#106 relay 405).
+pub fn superblock_copy_on_device(offset: u64, copy_len: u64, device_bytes: u64) -> bool {
+    offset
+        .checked_add(copy_len)
+        .is_some_and(|end| end <= device_bytes)
+}
+
+/// Whether the `block_len`-byte block holding the copy at `offset` is wholly
+/// on the device: the cache can only hold (and pin) whole blocks.
+pub fn superblock_copy_block_on_device(offset: u64, block_len: u64, device_bytes: u64) -> bool {
+    (offset / block_len)
+        .checked_mul(block_len)
+        .and_then(|start| start.checked_add(block_len))
+        .is_some_and(|end| end <= device_bytes)
+}
+
+/// #106 relay 405: whether every copy on the device has its whole block
+/// there too, so the blocks pinned are exactly the copies published. A
+/// writable F0 mount refuses a device where this fails (a copy fits but its
+/// block does not, e.g. 64 MiB plus 512 bytes).
+pub fn superblock_copies_pinnable(
+    offsets: &[u64],
+    copy_len: u64,
+    block_len: u64,
+    device_bytes: u64,
+) -> bool {
+    offsets.iter().all(|&offset| {
+        !superblock_copy_on_device(offset, copy_len, device_bytes)
+            || superblock_copy_block_on_device(offset, block_len, device_bytes)
+    })
+}
+
 /// What each superblock copy's media holds, as far as flushes prove it.
 #[derive(Clone, Debug)]
 pub struct SuperblockDurability {

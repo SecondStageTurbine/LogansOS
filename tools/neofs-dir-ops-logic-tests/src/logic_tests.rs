@@ -206,3 +206,64 @@ fn a_late_older_reload_never_replaces_a_newer_one() {
     assert!(!logic::newer_generation(None, Some(1)));
     assert!(!logic::newer_generation(Some(4), Some(4)));
 }
+
+/// #106 relay 405: the blocks F0 pins are exactly the superblock copies the
+/// commit publishes. Both use `superblock_copy_on_device`; a writable mount
+/// refuses a device where a copy fits but its 4 KiB block does not. The
+/// offsets and sizes are the format's (`docs/specs/neofs-format.md` §3),
+/// written out here, not taken from the kernel.
+#[test]
+fn pinned_superblock_blocks_are_the_published_copies() {
+    use crate::commit_logic::{
+        superblock_copies_pinnable, superblock_copy_block_on_device, superblock_copy_on_device,
+    };
+    const OFFSETS: [u64; 3] = [0, 1 << 20, 64 << 20];
+    const COPY: u64 = 512;
+    const BLOCK: u64 = 4096;
+    let pinnable = |bytes: u64| superblock_copies_pinnable(&OFFSETS, COPY, BLOCK, bytes);
+
+    // Chad's geometry: 64 MiB plus 512 bytes. The third copy fits, so the
+    // commit would publish it, but its block (16384) does not: no pin, so
+    // the writable mount is refused.
+    let chad = (64 << 20) + 512;
+    assert!(superblock_copy_on_device(64 << 20, COPY, chad));
+    assert!(!superblock_copy_block_on_device(64 << 20, BLOCK, chad));
+    assert!(!pinnable(chad));
+    // The same at the second copy: 1 MiB plus 512 to 1 MiB plus 4095.
+    assert!(!pinnable((1 << 20) + 512));
+    assert!(!pinnable((1 << 20) + 4095));
+    assert!(!pinnable((64 << 20) + 4095));
+    // A copy that doesn't fit isn't published, so needs no pin.
+    assert!(pinnable(64 << 20));
+    assert!(pinnable((64 << 20) + 511));
+    assert!(pinnable((1 << 20) + 511));
+    assert!(pinnable(1 << 20));
+    // Whole blocks: pinnable.
+    assert!(pinnable((64 << 20) + 4096));
+    assert!(pinnable(128 << 20));
+    assert!(pinnable(4096));
+    // Below one block the first copy fits but its block doesn't.
+    assert!(!pinnable(512));
+    assert!(pinnable(511));
+    // Nothing overflows near the top.
+    assert!(!superblock_copy_on_device(u64::MAX - 100, COPY, u64::MAX));
+    assert!(pinnable(u64::MAX));
+
+    // Over every size in 512-byte steps around each copy: when the mount
+    // is allowed, every copy the commit publishes has its whole block on
+    // the device (the pin covers it), and vice versa for refused ones.
+    for &offset in &OFFSETS {
+        for step in 0..=24u64 {
+            let bytes = (offset + step * 512).max(1);
+            let published: alloc::vec::Vec<u64> = OFFSETS
+                .iter()
+                .copied()
+                .filter(|&o| superblock_copy_on_device(o, COPY, bytes))
+                .collect();
+            let whole = published
+                .iter()
+                .all(|&o| superblock_copy_block_on_device(o, BLOCK, bytes));
+            assert_eq!(pinnable(bytes), whole, "device of {bytes} bytes");
+        }
+    }
+}

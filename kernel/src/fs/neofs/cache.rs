@@ -15,8 +15,7 @@ use super::NeoFsError;
 pub(super) use super::commit_logic::Role as CachedBlockRole;
 use super::commit_logic::{COPIES, DrainStep, SuperblockDurability, next_drain_step};
 use super::format::{
-    FS_BLOCK_SIZE, SUPERBLOCK_COPY_OFFSETS, SUPERBLOCK_GENERATION_OFFSET, SUPERBLOCK_SIZE,
-    block_offset,
+    FS_BLOCK_SIZE, SUPERBLOCK_COPY_OFFSETS, SUPERBLOCK_GENERATION_OFFSET, block_offset,
 };
 use super::inode::{read_bytes_at, read_fs_block, write_fs_block};
 
@@ -190,7 +189,7 @@ impl NeoFsBlockCache {
             .saturating_mul(geometry.logical_block_size as u64);
         let mut present = [false; COPIES];
         for (copy, offset) in SUPERBLOCK_COPY_OFFSETS.iter().copied().enumerate() {
-            present[copy] = offset + SUPERBLOCK_SIZE as u64 <= device_bytes;
+            present[copy] = super::format::superblock_copy_on_device(offset, device_bytes);
         }
         Self {
             device,
@@ -412,8 +411,11 @@ impl NeoFsBlockCache {
     /// superblock copy is 512 bytes of a 4 KiB block, so writing it merges
     /// into the block's bytes: on a miss, `write_bytes_at` reads the device
     /// first, and every commit writes the copies with the namespace lock
-    /// (`entries`, spinning) held. Pinned, the write is always a hit. Copies
-    /// past the device's end are skipped, as the writers skip them.
+    /// (`entries`, spinning) held. Pinned, the write is always a hit. It
+    /// pins exactly the copies the writers publish (the one rule,
+    /// `format::superblock_copy_on_device`); a writable mount has already
+    /// refused a device where such a copy's block is not whole
+    /// (`superblock_copies_pinnable`), and this refuses it again.
     #[cfg(feature = "neofs-dir-ops")]
     pub(super) fn pin_superblock_blocks(&self) -> Result<(), NeoFsError> {
         let geometry = self.device.geometry();
@@ -421,9 +423,12 @@ impl NeoFsBlockCache {
             .block_count
             .saturating_mul(geometry.logical_block_size as u64);
         for offset in SUPERBLOCK_COPY_OFFSETS {
+            if !super::format::superblock_copy_on_device(offset, device_bytes) {
+                continue;
+            }
             let block = offset / FS_BLOCK_SIZE as u64;
             if block_offset(block)? + FS_BLOCK_SIZE as u64 > device_bytes {
-                continue;
+                return Err(NeoFsError::InvalidDeviceGeometry);
             }
             let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
             read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;

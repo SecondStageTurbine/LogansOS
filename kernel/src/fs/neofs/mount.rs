@@ -69,6 +69,23 @@ impl NeoFs {
             );
             return Err(NeoFsError::NoDurableFlush);
         }
+        // #106 relay 405: F0 pins the block of every superblock copy it
+        // publishes; a copy whose 4 KiB block runs past the device's end
+        // can't be pinned, so a writable mount refuses that geometry.
+        #[cfg(feature = "neofs-dir-ops")]
+        if writable {
+            let geometry = device.geometry();
+            let device_bytes = geometry
+                .block_count
+                .checked_mul(geometry.logical_block_size as u64)
+                .ok_or(NeoFsError::InvalidDeviceGeometry)?;
+            if !super::format::superblock_copies_pinnable(device_bytes) {
+                crate::serial_println!(
+                    "[ kernel ] neofs: refusing a writable mount: a superblock copy's block runs past the device's end"
+                );
+                return Err(NeoFsError::InvalidDeviceGeometry);
+            }
+        }
         let selected = select_superblock(&device)?;
         let state = Arc::new(NeoFsState::new(
             device.clone(),
@@ -387,7 +404,7 @@ fn select_superblock(device: &Arc<dyn BlockDevice>) -> Result<MountSelection, Ne
     let mut rejected = 0usize;
     let mut rejected_mask = 0u8;
     for (slot, offset) in SUPERBLOCK_COPY_OFFSETS.iter().copied().enumerate() {
-        if offset + SUPERBLOCK_SIZE as u64 > device_bytes {
+        if !super::format::superblock_copy_on_device(offset, device_bytes) {
             continue;
         }
         let mut bytes = [0u8; SUPERBLOCK_SIZE];

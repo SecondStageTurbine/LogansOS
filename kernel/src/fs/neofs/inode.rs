@@ -28,9 +28,9 @@ use super::commit_logic::DeferredFrees;
 use super::format::{
     DIRECT_BLOCKS, DIRENT_SIZE, DOUBLE_INDIRECT_BLOCKS, DirEntry, FS_BLOCK_SIZE, FreeMapRef,
     INDIRECT_POINTERS_PER_BLOCK, INODE_SIZE, InodeRecord, MAX_FILE_BLOCKS, MAX_FILE_SIZE,
-    SINGLE_INDIRECT_BLOCKS, SUPERBLOCK_COPY_OFFSETS, SUPERBLOCK_SIZE, Superblock, block_offset,
-    file_data_blocks, free_map_block_count_for_total, free_map_byte_len, hash,
-    parse_directory_entries, parse_inode, write_dir_entry, write_inode, write_superblock,
+    SINGLE_INDIRECT_BLOCKS, SUPERBLOCK_COPY_OFFSETS, Superblock, block_offset, file_data_blocks,
+    free_map_block_count_for_total, free_map_byte_len, hash, parse_directory_entries, parse_inode,
+    write_dir_entry, write_inode, write_superblock,
 };
 
 // F0: mkdir_at, unlink_at, rename_at, stat_at.
@@ -3545,7 +3545,7 @@ fn write_superblock_copies(
     let bytes = write_superblock(superblock);
     let mut wrote = false;
     for offset in SUPERBLOCK_COPY_OFFSETS {
-        if offset + SUPERBLOCK_SIZE as u64 > device_bytes {
+        if !super::format::superblock_copy_on_device(offset, device_bytes) {
             continue;
         }
         write_bytes_at(device, offset, &bytes)?;
@@ -3570,7 +3570,7 @@ fn write_superblock_copies_cached(
     let bytes = write_superblock(superblock);
     let mut wrote = false;
     for offset in SUPERBLOCK_COPY_OFFSETS {
-        if offset + SUPERBLOCK_SIZE as u64 > device_bytes {
+        if !super::format::superblock_copy_on_device(offset, device_bytes) {
             continue;
         }
         cache.write_bytes_at(offset, &bytes, CachedBlockRole::Superblock)?;
