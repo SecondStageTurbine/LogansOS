@@ -17616,7 +17616,10 @@ fn run_usb_msc_write() -> ! {
     let per = total / 5;
     let alloc_bufs = || -> alloc::vec::Vec<alloc::sync::Arc<DmaBuffer>> {
         (0..5)
-            .map(|_| DmaBuffer::alloc_in_arena(per).unwrap_or_else(|_| fail("reason=alloc")))
+            // Ordinary DMA buffers, not the small fenced arena: the driver
+            // copies caller data through its own bounce buffer, so these
+            // never reach the device (THINK §9 c).
+            .map(|_| DmaBuffer::alloc_zeroed(per).unwrap_or_else(|_| fail("reason=alloc_caller")))
             .collect()
     };
     let out = alloc_bufs();
