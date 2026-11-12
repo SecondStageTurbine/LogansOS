@@ -9109,15 +9109,22 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-stall-boot-test")
         | Some("desktop-apps-drop-boot-test")
         | Some("desktop-apps-handoff-death-boot-test")
-        | Some("desktop-apps-reuse-boot-test")
         | Some("desktop-apps-flood-boot-test")
         | Some("desktop-apps-arthur-hang-boot-test")
         | Some("desktop-apps-arthur-yield-hang-boot-test")
         | Some("desktop-apps-grab-boot-test") => {
-            // A3p: parked, so every A1a leg (hang, drop, flood, grab, the
-            // reused slot of CP-61) runs the client table's wait set.
+            // A3p: parked, so every A1a leg (hang, drop, flood, grab) runs
+            // the client table's wait set.
             vec!["atrium-apps", "desktop-home-boot-test", "desktop-park"]
         }
+        // A3p CP-61: parked, with the park witness (its oracle reads the
+        // park's client set and the wakes the clients' items caused).
+        Some("desktop-apps-reuse-boot-test") => vec![
+            "atrium-apps",
+            "desktop-home-boot-test",
+            "desktop-park",
+            "desktop-park-witness",
+        ],
         // OT-61 L5: the same, with the browser's slot.
         Some("desktop-browser-boot-test") => {
             vec!["atrium-apps-browser", "desktop-home-boot-test"]
@@ -9292,8 +9299,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
         Some("desktop-apps-drop-boot-test") => vec!["probe-app-drop-reply"],
         Some("desktop-apps-handoff-death-boot-test") => vec!["probe-app-die-on-discard"],
-        Some("desktop-apps-reuse-boot-test")
-        | Some("desktop-apps-grab-boot-test")
+        // A3p CP-61: the probe idles 2 s after its key, so it dies while
+        // the WM is parked over it.
+        Some("desktop-apps-reuse-boot-test") => vec!["probe-app-exit-idle"],
+        Some("desktop-apps-grab-boot-test")
         | Some("desktop-apps-arthur-hang-boot-test")
         | Some("desktop-apps-arthur-yield-hang-boot-test") => vec!["probe-app-exit-after-key"],
         Some("desktop-apps-flood-boot-test") => vec!["probe-app"],
@@ -9769,6 +9778,95 @@ fn require_parked_by_default(
         )),
     }
 }
+
+/// A3p CP-61 (Janus, relay 400): `desktop_apps_reuse_boot`'s ordering,
+/// from the WM's park witness (`desktop-park-witness`):
+/// 1. the WM's park set holds client 1, generation 1 (`f=F s=S`);
+/// 2. after the probe says it idles, a park lasting at least
+///    [`CP61_PARKED_MS`] is woken by generation 1's own items, before the WM
+///    logs that client's end: it died while the WM was parked over it;
+/// 3. the next set names no client (the dead one's handles are gone), and
+///    no set or wake names generation 1 after that set;
+/// 4. the slot's next client, generation 2, is parked over with the same
+///    numeric handles `F` and `S` (the slot and its handles reused);
+/// 5. a wake names generation 2's surface (its first request after its key
+///    woke the WM).
+fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
+    const SET: &str = "DESKTOP park set";
+    const WOKE: &str = "DESKTOP park woke ms=";
+    let lines: Vec<&str> = serial.lines().collect();
+    let at = |needle: &str, from: usize| -> Result<usize, String> {
+        lines[from..]
+            .iter()
+            .position(|l| l.contains(needle))
+            .map(|i| i + from)
+            .ok_or_else(|| format!("no `{needle}` after line {from}"))
+    };
+    let handles = |line: &str, client: &str| -> Option<(u32, u32)> {
+        let rest = line.split(client).nth(1)?;
+        let f = rest.split(" f=").nth(1)?.split(' ').next()?.parse().ok()?;
+        let s = rest.split(" s=").nth(1)?.split(' ').next()?.parse().ok()?;
+        Some((f, s))
+    };
+    let connected1 = at("DESKTOP apps client connected client=1 value=1", 0)?;
+    let set1 = at(" c1g1 f=", connected1)?;
+    if !lines[set1].contains(SET) {
+        return Err(format!("line {set1} is not a park set: {}", lines[set1]));
+    }
+    let gen1 = handles(lines[set1], " c1g1").ok_or("no handles in the generation-1 set")?;
+    let idle = at("PROBEAPP idling before exit", set1)?;
+    let ended1 = at("DESKTOP apps client ended client=1 value=7", idle)?;
+    let death = lines[idle..ended1]
+        .iter()
+        .rposition(|l| l.contains(WOKE) && l.contains("c1g1"))
+        .map(|i| i + idle)
+        .ok_or("no park woken by generation 1's items between its idle and its end")?;
+    let ms: u64 = lines[death]
+        .split(WOKE)
+        .nth(1)
+        .and_then(|r| r.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .ok_or("the death wake has no duration")?;
+    if ms < CP61_PARKED_MS {
+        return Err(format!(
+            "the death wake's park lasted {ms} ms (< {CP61_PARKED_MS}): not parked when it died: {}",
+            lines[death]
+        ));
+    }
+    // The WM removes the client from its table at once, and logs its end
+    // once it's reaped: the next set comes after the wake, maybe before the
+    // end's line.
+    let empty = at(SET, death + 1)?;
+    if !lines[empty].contains("clients=none") {
+        return Err(format!(
+            "the set after the end still names a client: {}",
+            lines[empty]
+        ));
+    }
+    let connected2 = at("DESKTOP apps client connected client=1 value=2", ended1)?;
+    if let Some(stale) = lines[empty..]
+        .iter()
+        .find(|l| (l.contains(SET) || l.contains(WOKE)) && l.contains("c1g1"))
+    {
+        return Err(format!("generation 1 named after its end: {stale}"));
+    }
+    let set2 = at(" c1g2 f=", connected2)?;
+    let gen2 = handles(lines[set2], " c1g2").ok_or("no handles in the generation-2 set")?;
+    if gen2 != gen1 {
+        return Err(format!(
+            "slot 1's handles weren't reused: generation 1 (f, s) = {gen1:?}, generation 2 = {gen2:?}"
+        ));
+    }
+    let woke2 = at("c1g2f", set2)?;
+    if !lines[woke2].contains(WOKE) {
+        return Err(format!("line {woke2} is not a wake: {}", lines[woke2]));
+    }
+    Ok(())
+}
+
+/// How long the death wake's park must have lasted for the WM to have been
+/// parked when the client died (the probe idles 2000 ms).
+const CP61_PARKED_MS: u64 = 500;
 
 /// A3p: whether neo-init built with `features` has `target` on, through
 /// its own `[features]` table (`userland/neo-init/Cargo.toml`, read
@@ -22156,6 +22254,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "DESKTOP apps stale activator client=1 refused=no\n",
             "PR #15 item 2: a released activator must be stale",
         )?;
+        require_cp61_parked_death(&read_serial(observed)?)
+            .map_err(|e| format!("`{}`: A3p CP-61: {e}", scenario.name))?;
     }
     // PR #15 review item 3: Arthur's flood starves nobody.
     if scenario.name == "desktop_apps_flood_boot" {
@@ -30209,6 +30309,48 @@ mod tests {
     /// file", so deleting one row fails even when the name is mentioned in a
     /// note. Falsified by deleting any non-test row: the missing list names it.
     /// A3p: the feature resolver behind the parked default.
+    /// A3p CP-61: the parked-death oracle on a synthetic log in the WM's
+    /// order, then with each ordering it must refuse.
+    const CP61_LOG: &str = "\
+DESKTOP apps client connected client=1 value=1
+DESKTOP park set c1g1 f=40 s=38
+DESKTOP park woke ms=3 ready=c1g1f,
+PROBEAPP idling before exit ms=2000
+DESKTOP park woke ms=2004 ready=c1g1f,c1g1s,
+DESKTOP apps front client=0 via=client-ended
+DESKTOP park set clients=none
+DESKTOP apps client ended client=1 value=7
+DESKTOP apps client connected client=1 value=2
+DESKTOP park set c1g2 f=40 s=38
+DESKTOP park woke ms=900 ready=c1g2f,
+";
+
+    #[test]
+    fn cp61_oracle_accepts_death_while_parked_and_reuse() {
+        assert_eq!(super::require_cp61_parked_death(CP61_LOG), Ok(()));
+    }
+
+    #[test]
+    fn cp61_oracle_refuses_each_wrong_ordering() {
+        let cases = [
+            // Not parked: the wake came at once.
+            ("ms=2004 ready=c1g1f,c1g1s", "ms=4 ready=c1g1f,c1g1s"),
+            // Woken by something else: no generation-1 item.
+            ("ms=2004 ready=c1g1f,c1g1s,", "ms=2004 ready=,"),
+            // The slot's handles weren't reused.
+            ("c1g2 f=40 s=38", "c1g2 f=41 s=38"),
+            // The dead client's handles still in the next set.
+            ("set clients=none", "set c1g1 f=40 s=38"),
+            // The new client's request never woke the WM.
+            ("ms=900 ready=c1g2f,", "ms=900 ready=c1g2s,"),
+        ];
+        for (from, to) in cases {
+            let log = CP61_LOG.replace(from, to);
+            assert_ne!(log, CP61_LOG, "{from}");
+            assert!(super::require_cp61_parked_death(&log).is_err(), "{to}");
+        }
+    }
+
     #[test]
     fn feature_resolver_follows_neo_init_features() {
         let table = parse_features(

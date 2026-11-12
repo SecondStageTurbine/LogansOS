@@ -433,7 +433,7 @@ impl Scene {
     /// polls exactly as before (the wait is level-triggered, its mask
     /// unused). A failed wait (EAGAIN: no park slot) costs one spin.
     #[cfg(feature = "desktop-park")]
-    fn park(&self, extra: &[libneo::WaitItem], deadline_ns: u64) {
+    fn park(&self, extra: &[libneo::WaitItem], deadline_ns: u64) -> i64 {
         use libneo::{WAIT_ITEMS_MAX, WAIT_KIND_INPUT, WAIT_KIND_SAK, WaitItem};
         let mut items = [WaitItem::default(); WAIT_ITEMS_MAX];
         let mut n = 0;
@@ -484,6 +484,7 @@ impl Scene {
         if rc == libneo::EAGAIN {
             core::hint::spin_loop();
         }
+        rc
     }
 
     /// DI-1a: hide the sprite; the next present recomposes where it was.
@@ -2190,6 +2191,8 @@ fn arthur_session_turns(
                     n += 1;
                 }
                 // `Scene::park` adds the route and the SAK latch.
+                #[cfg(feature = "desktop-park-witness")]
+                let first_client = n;
                 #[cfg(feature = "atrium-apps")]
                 {
                     n += apps::wait_items(&apps, &mut items[n..WAIT_ITEMS_MAX - 2]);
@@ -2204,7 +2207,20 @@ fn arthur_session_turns(
                 } else {
                     deadline
                 };
-                scene.park(&items[..n], deadline);
+                #[cfg(feature = "desktop-park-witness")]
+                let parked_at = {
+                    apps::witness_set(&apps);
+                    monotonic_ns()
+                };
+                let _rc = scene.park(&items[..n], deadline);
+                #[cfg(feature = "desktop-park-witness")]
+                apps::witness_wake(
+                    &apps,
+                    &items[first_client..n],
+                    first_client,
+                    _rc,
+                    monotonic_ns().saturating_sub(parked_at),
+                );
             }
             #[cfg(not(feature = "desktop-park"))]
             core::hint::spin_loop();
@@ -3351,6 +3367,104 @@ mod apps {
             }
         }
         n
+    }
+
+    /// A3p CP-61 witness (`desktop-park-witness`, test only): when the
+    /// clients the session loop's park watches change (a slot taken or
+    /// emptied, a new generation, new handles), log the set once:
+    /// `DESKTOP park set c<slot>g<generation> f=<surface> s=<session>`, one
+    /// group per live client, or `clients=none`. The scenario's oracle reads
+    /// the numeric handles from it (a slot reused with the same handles).
+    #[cfg(feature = "desktop-park-witness")]
+    pub fn witness_set(apps: &Apps) {
+        use core::sync::atomic::AtomicU64;
+        #[allow(clippy::declare_interior_mutable_const)]
+        const NONE: AtomicU64 = AtomicU64::new(0);
+        static LAST: [AtomicU64; MAX_CLIENTS - 1] = [NONE; MAX_CLIENTS - 1];
+        static LOGGED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+        let key = |slot: usize| {
+            apps.others[slot].as_ref().map_or(0, |c| {
+                (u64::from(apps.generation[slot]) << 48)
+                    | (u64::from(c.surface.0) << 24)
+                    | u64::from(c.session.0)
+            })
+        };
+        let mut changed = !LOGGED.swap(true, Ordering::Relaxed);
+        for (slot, last) in LAST.iter().enumerate() {
+            changed |= last.swap(key(slot), Ordering::Relaxed) != key(slot);
+        }
+        if !changed {
+            return;
+        }
+        let mut line = Line::new().s(b"DESKTOP park set");
+        let mut any = false;
+        for (slot, client) in apps.others.iter().enumerate() {
+            let Some(client) = client else { continue };
+            any = true;
+            line = line
+                .s(b" c")
+                .n(slot as u64 + 1)
+                .s(b"g")
+                .n(u64::from(apps.generation[slot]))
+                .s(b" f=")
+                .n(u64::from(client.surface.0))
+                .s(b" s=")
+                .n(u64::from(client.session.0));
+        }
+        if !any {
+            line = line.s(b" clients=none");
+        }
+        line.s(b"\n").emit();
+    }
+
+    /// A3p CP-61 witness: after the session loop's park, when the wait
+    /// returned a client's item ready, log which, and how long it was parked:
+    /// `DESKTOP park woke ms=<ms> ready=c<slot>g<generation><f|s>...`.
+    /// `items` are the clients' part of the wait (from `wait_items`), at bit
+    /// `first` of the mask on. The table is the one the wait was built from:
+    /// `turns` hasn't run since.
+    #[cfg(feature = "desktop-park-witness")]
+    pub fn witness_wake(
+        apps: &Apps,
+        items: &[libneo::WaitItem],
+        first: usize,
+        rc: i64,
+        elapsed_ns: u64,
+    ) {
+        if rc <= 0 {
+            return;
+        }
+        let mut line = Line::new()
+            .s(b"DESKTOP park woke ms=")
+            .n(elapsed_ns / 1_000_000)
+            .s(b" ready=");
+        let mut any = false;
+        for (k, item) in items.iter().enumerate() {
+            if rc & (1i64 << (first + k)) == 0 {
+                continue;
+            }
+            for (slot, client) in apps.others.iter().enumerate() {
+                let Some(client) = client else { continue };
+                let kind: &[u8] = if item.handle == client.surface.0 {
+                    b"f"
+                } else if item.handle == client.session.0 {
+                    b"s"
+                } else {
+                    continue;
+                };
+                any = true;
+                line = line
+                    .s(b"c")
+                    .n(slot as u64 + 1)
+                    .s(b"g")
+                    .n(u64::from(apps.generation[slot]))
+                    .s(kind)
+                    .s(b",");
+            }
+        }
+        if any {
+            line.s(b"\n").emit();
+        }
     }
 
     /// A3p: the parked loop must come back on its own within a tick: a reply
