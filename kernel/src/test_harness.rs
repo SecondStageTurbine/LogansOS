@@ -545,12 +545,6 @@ const SCENARIO: &str = "login_lock_stall";
 const SCENARIO: &str = "login_lock_park";
 #[cfg(feature = "neo-test-terminal-lock")]
 const SCENARIO: &str = "login_terminal_lock";
-/// A2: the app chips' box on a 1920x1080 Spine (neo-atrium's layout without
-/// the Install chip): x 14 (`CHIP_INSET`), from the first chip's top (y 206,
-/// two chips of 56 and 22 below the bar's 36 + 14) to the third chip's dot's
-/// bottom (362 + 56 + 6 + 8 = 432).
-#[cfg(feature = "neo-test-app-chips")]
-const APP_CHIPS_BOX_1920X1080: (usize, usize, usize, usize) = (14, 206, 56, 226);
 #[cfg(feature = "neo-test-switch-lock")]
 const SCENARIO: &str = "login_switch_lock";
 #[cfg(feature = "neo-test-settings-store")]
@@ -43112,9 +43106,22 @@ fn desktop_glass_asserts() {
     let (material, want) = ("reduce_transparency", oracle::S3_RT_1920X1080_UNFOCUSED);
     #[cfg(all(
         feature = "neo-test-desktop-home",
-        not(feature = "neo-test-desktop-intro-boot")
+        not(feature = "neo-test-desktop-intro-boot"),
+        not(feature = "neo-test-app-chips")
     ))]
     let (material, want) = ("glass_home", oracle::DS1_HOME_GLASS_1920X1080_FOCUSED);
+    // A2: a client-table WM shows the app chips on Home's Spine. The oracle's
+    // digest of DS-1's Home with their box hashed as zero too (`scene_oracle.py
+    // app-chips-fixture`); everything else is DS-1's Home, exactly.
+    #[cfg(feature = "neo-test-app-chips")]
+    mod app_chips {
+        include!("../../fixtures/desktop-ds1/app_chips_digests.rs");
+    }
+    #[cfg(feature = "neo-test-app-chips")]
+    let (material, want) = (
+        "glass_home",
+        app_chips::DS1_HOME_GLASS_1920X1080_FOCUSED_APP_CHIPS,
+    );
     // desktop-intro: the Home end view shows the hint under the field.
     #[cfg(feature = "neo-test-desktop-intro-boot")]
     #[allow(dead_code)]
@@ -43164,12 +43171,11 @@ fn desktop_glass_asserts() {
         not(feature = "neo-test-app-chips")
     ))]
     let got = crate::drivers::fb::pixel_digest_masked(&boxes);
-    // A2: a client-table WM shows the app chips on Home's Spine. Their box is
-    // masked as the labels are; everything else is DS-1's Home, exactly.
+    // A2: the app chips' box is hashed as zero, as in the oracle's digest.
     #[cfg(feature = "neo-test-app-chips")]
     let got = {
         let [a, b, c] = boxes;
-        crate::drivers::fb::pixel_digest_masked(&[a, b, c, APP_CHIPS_BOX_1920X1080])
+        crate::drivers::fb::pixel_digest_masked(&[a, b, c, app_chips::APP_CHIPS_BOX_1920X1080])
     };
     #[cfg(all(
         feature = "neo-test-desktop-intro-boot",
