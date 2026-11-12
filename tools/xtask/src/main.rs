@@ -9802,7 +9802,15 @@ fn require_parked_by_default(
 /// 5. gen 2's first request wakes the WM: after its first key and before its
 ///    idle line (so the client is alive and the fire is its request, not its
 ///    end), a kernel wake on gen 2's surface key, whose latest registration
-///    names gen 2's surface cap.
+///    names gen 2's surface cap; then the WM's next wake names gen 2's
+///    surface (`c1g2f`). Relay 408 asks for `parked=1 why=1` here (the fire
+///    itself woke the parked WM); on this kernel the request's fire always
+///    finds the WM's entry already woken by the tick (`parked=0`, its
+///    `fire_tick` equal to its deadline: the WM's wait watches input, so it
+///    re-parks every tick), so that is reported to the PM, not required.
+///
+/// At the WM's level too: no WM set or wake names gen 1 after its death's
+/// wake (relay 408 item 2).
 fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
     const KSET: &str = "WAITANY witness set pid=";
     const KWOKE: &str = "WAITANY witness woke pid=";
@@ -9901,7 +9909,14 @@ fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
         ));
     }
 
-    // 3. Gen 1's objects are never registered again.
+    // 3. Gen 1's objects are never registered again, and the WM never names
+    //    gen 1 again.
+    if let Some(stale) = lines[wm_death + 1..]
+        .iter()
+        .find(|l| l.contains("DESKTOP park ") && l.contains("c1g1"))
+    {
+        return Err(format!("the WM named gen 1 after its death: {stale}"));
+    }
     if let Some(stale) = lines[death..]
         .iter()
         .find(|l| l.contains(KSET) && kitems(l).iter().any(|&(_, _, c)| c == c1f || c == c1s))
@@ -9929,7 +9944,7 @@ fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
     // 5. Gen 2's first request wakes the WM, while gen 2 is alive.
     let key2 = at("PROBEAPP key code=", set2)?;
     let idle2 = at("PROBEAPP idling before exit", key2)?;
-    (key2..idle2)
+    let request = (key2..idle2)
         .find(|&i| {
             lines[i].contains(KWOKE)
                 && kwoke_key(lines[i]) == Some(k2f)
@@ -9942,6 +9957,13 @@ fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
                  key and its idle"
             )
         })?;
+    let wm_request = at("DESKTOP park woke ms=", request)?;
+    if wm_request > idle2 || !lines[wm_request].contains("c1g2f") {
+        return Err(format!(
+            "the WM's wake after gen 2's request doesn't name gen 2's surface: {}",
+            lines[wm_request]
+        ));
+    }
     Ok(())
 }
 
@@ -30405,8 +30427,8 @@ DESKTOP apps client connected client=1 value=2
 DESKTOP park set c1g2 f=22 s=19
 WAITANY witness set pid=1 items=12:0x10a8:14,22:0xb4d0:44,19:0x9cd8:40,
 PROBEAPP key code=5 count=1
-WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0
-DESKTOP park woke ms=500 ready=c1g2f,
+WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0 fire_tick=1894 deadline=1894 now=1894
+DESKTOP park woke ms=490 ready=c1g2f,
 PROBEAPP idling before exit ms=2000
 ";
 
@@ -30444,6 +30466,11 @@ PROBEAPP idling before exit ms=2000
                 "ticket=2598 parked=0 why=2 key=0xb4d0",
                 "ticket=2598 parked=0 why=2 key=0x9cd8",
             ),
+            // The WM's wake after gen 2's request named gen 1 (relay 408
+            // item 2).
+            ("ms=490 ready=c1g2f,", "ms=490 ready=c1g1f,"),
+            // The WM named gen 1 after its death.
+            ("park set clients=none", "park set c1g1 f=22 s=19"),
         ];
         for (from, to) in cases {
             let log = CP61_LOG.replace(from, to);

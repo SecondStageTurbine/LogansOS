@@ -84,6 +84,9 @@ struct Waiter {
     fired_key: u64,
     #[cfg(feature = "neo-test-wait-any-witness")]
     fired_parked: bool,
+    /// `TICKS` at that fire.
+    #[cfg(feature = "neo-test-wait-any-witness")]
+    fired_tick: u64,
 }
 
 struct Table {
@@ -177,6 +180,8 @@ pub fn register(pid: ProcessId, keys: &[u64], deadline_ticks: u64) -> Option<Reg
         fired_key: 0,
         #[cfg(feature = "neo-test-wait-any-witness")]
         fired_parked: false,
+        #[cfg(feature = "neo-test-wait-any-witness")]
+        fired_tick: 0,
     });
     if nkeys != 0 {
         CHANNEL_WAITERS.fetch_add(1, Ordering::AcqRel);
@@ -243,14 +248,16 @@ pub fn park(reg: Registration) -> i64 {
     let mut t = WAIT_TABLE.lock();
     #[cfg(feature = "neo-test-wait-any-witness")]
     let fired = match &t.slots[reg.slot] {
-        Some(w) if w.ticket == reg.ticket => (w.fired_key, w.fired_parked),
-        _ => (0, false),
+        Some(w) if w.ticket == reg.ticket => {
+            (w.fired_key, w.fired_parked, w.fired_tick, w.deadline_ticks)
+        }
+        _ => (0, false, 0, 0),
     };
     remove(&mut t, &reg);
     #[cfg(feature = "neo-test-wait-any-witness")]
     {
         drop(t);
-        witness_woke(reg.ticket, ret, fired.0, fired.1);
+        witness_woke(reg.ticket, ret, fired);
     }
     ret
 }
@@ -265,17 +272,21 @@ pub fn park(reg: Registration) -> i64 {
 /// three events. A wake with no channel fire (the tick alone: a wait that
 /// pulls input re-parks every tick) logs nothing. No lock is held.
 #[cfg(feature = "neo-test-wait-any-witness")]
-fn witness_woke(ticket: u64, why: i64, key: u64, parked: bool) {
+fn witness_woke(ticket: u64, why: i64, fired: (u64, bool, u64, u64)) {
+    let (key, parked, fire_tick, deadline) = fired;
     if key == 0 {
         return;
     }
     crate::serial_println!(
-        "WAITANY witness woke pid={} ticket={} parked={} why={} key={:#x}",
+        "WAITANY witness woke pid={} ticket={} parked={} why={} key={:#x} fire_tick={} deadline={} now={}",
         super::current_pid().0,
         ticket,
         u8::from(parked),
         why,
-        key
+        key,
+        fire_tick,
+        deadline,
+        TICKS.load(Ordering::Relaxed)
     );
 }
 
@@ -331,6 +342,7 @@ fn fire_key(key: u64, why: i64) {
             if w.fired_key == 0 && w.keys[..w.nkeys].contains(&key) {
                 w.fired_key = key;
                 w.fired_parked = w.token.is_some();
+                w.fired_tick = TICKS.load(Ordering::Relaxed);
             }
             if w.fired == 0 && w.keys[..w.nkeys].contains(&key) {
                 w.fired = why;
