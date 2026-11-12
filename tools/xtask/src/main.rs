@@ -55,6 +55,8 @@ mod a4_gate;
 
 /// OT-87 R1: the VM image layout, its firmware and its QEMU disks.
 mod vm_image;
+// OT-100 R3: the persistent image's oracle and guard KAT.
+mod persist_image;
 // OT-90 P2: QMP, QEMU's own report of why it stopped (power scenarios).
 mod qmp;
 // OT-66 L1: the sign-in scenarios on the VM layout.
@@ -7466,6 +7468,8 @@ fn main() -> ExitCode {
     let result = match cmd {
         "build" => cmd_build(&args[1..]),
         "iso" => cmd_iso(&args[1..]),
+        // OT-100 R3: the persistent image's oracle and guard KAT, on any image.
+        "persist-image-check" => cmd_persist_image_check(&args[1..]),
         "vendor-verify" => cmd_vendor_verify(&args[1..]),
         "run" => cmd_run(&args[1..]),
         "run-headless" => cmd_run_headless(&args[1..]),
@@ -10758,6 +10762,11 @@ fn cmd_vendor_verify(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_iso(args: &[String]) -> Result<(), String> {
+    let (persist_mib, args) = split_persist_mib(args)?;
+    if let Some(mib) = persist_mib {
+        ISO_PERSIST_MIB.store(mib, std::sync::atomic::Ordering::SeqCst);
+    }
+    let args = args.as_slice();
     let (with_model, rest) = split_with_model(args)?;
     if let Some(options) = split_product_kernel(&rest)? {
         if with_model.is_some() {
@@ -11319,29 +11328,37 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
 
+    // OT-100 R3: the persistence area, formatted on the host, appended as a
+    // GPT partition of the LogansOS NeoFS type (THINK §2.2).
+    let persist_area = match iso_persist_mib() {
+        Some(mib) => {
+            let area = root.join(ISO_PERSIST_AREA_REL);
+            if let Some(parent) = area.parent() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("create {}: {e}", parent.display()))?;
+            }
+            eprintln!(
+                "[xtask] persistence area: {mib} MiB NeoFS at {}",
+                area.display()
+            );
+            prepare_neofs_storage_disk_with_payload_files_sized(
+                &area,
+                "normal",
+                None,
+                &[],
+                &[],
+                Some(u64::from(mib)),
+            )?;
+            Some(area)
+        }
+        None => None,
+    };
+
     eprintln!("[xtask] building ISO at {}", iso_path.display());
+    let epoch = iso_source_date_epoch();
     let xorriso_status = Command::new("xorriso")
-        .args([
-            "-as",
-            "mkisofs",
-            "-R",
-            "-r",
-            "-J",
-            "-b",
-            "boot/limine-bios-cd.bin",
-            "-no-emul-boot",
-            "-boot-load-size",
-            "4",
-            "-boot-info-table",
-            "-hfsplus",
-            "-apm-block-size",
-            "2048",
-            "--efi-boot",
-            "boot/limine-uefi-cd.bin",
-            "-efi-boot-part",
-            "--efi-boot-image",
-            "--protective-msdos-label",
-        ])
+        .env("SOURCE_DATE_EPOCH", &epoch)
+        .args(xorriso_iso_args(&epoch, persist_area.as_deref()))
         .arg(&staging)
         .arg("-o")
         .arg(&iso_path)
@@ -11357,8 +11374,236 @@ fn assemble_iso_with_limine_kaslr(kaslr_override: Option<bool>) -> Result<(), St
     // No `limine bios-install` step here. xorriso writes BIOS and UEFI El
     // Torito records and exposes the Limine UEFI image as the ISO's EFI
     // system partition for removable-media boot.
+    if let Some(area) = &persist_area {
+        // OT-100 R3: the image oracle (THINK §2.2), independent of xorriso and
+        // of the guard: the build fails if the area isn't exactly as designed.
+        let image = fs::read(&iso_path).map_err(|e| format!("read {}: {e}", iso_path.display()))?;
+        let area_bytes = fs::read(area).map_err(|e| format!("read {}: {e}", area.display()))?;
+        let area_len = area_bytes.len() as u64;
+        let found = persist_image::check(&image, &area_bytes)?;
+        persist_image::guard_arms_exactly(&image, &found)?;
+        eprintln!(
+            "[xtask] persistence area checked: GPT entry {} at LBA {}..={} ({} MiB), both GPT copies agree",
+            found.entry,
+            found.first_lba,
+            found.last_lba,
+            area_len >> 20
+        );
+    }
     eprintln!("[xtask] ISO ready: {}", iso_path.display());
     Ok(())
+}
+
+/// `persist-image-check <iso> <area>`: run the image oracle and the guard
+/// KAT (`persist_image`) on a built image and the volume it should carry.
+fn cmd_persist_image_check(args: &[String]) -> Result<(), String> {
+    let [iso, area] = args else {
+        return Err("usage: persist-image-check <iso> <area>".to_string());
+    };
+    let image = fs::read(iso).map_err(|e| format!("read {iso}: {e}"))?;
+    let area = fs::read(area).map_err(|e| format!("read {area}: {e}"))?;
+    let found = persist_image::check(&image, &area)?;
+    persist_image::guard_arms_exactly(&image, &found)?;
+    eprintln!("[xtask] persist-image-check: ok, {found:?}");
+    Ok(())
+}
+
+/// OT-100 R3: the persistence area's size in MiB for this `iso` run; 0 is
+/// none (the image is today's).
+static ISO_PERSIST_MIB: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// NeoFS's third superblock copy sits at 64 MiB, so the area is larger.
+const PERSIST_MIB_MIN: u32 = 65;
+/// A bound well inside a 30 GB stick and the image's GPT arithmetic.
+const PERSIST_MIB_MAX: u32 = 16_384;
+/// The formatted area, staged beside the ISO.
+const ISO_PERSIST_AREA_REL: &str = "target/iso/persist.neofs";
+/// The LogansOS NeoFS GPT partition type (`write_guard_logic`'s
+/// `NEOFS_PARTITION_TYPE`; THINK §1).
+const PERSIST_TYPE_GUID: &str = "EAA7A9D0-75C1-4385-9664-B2A74FC2622D";
+
+fn iso_persist_mib() -> Option<u32> {
+    let mib = ISO_PERSIST_MIB.load(std::sync::atomic::Ordering::SeqCst);
+    (mib != 0).then_some(mib)
+}
+
+/// `iso --persist-mib <n>`: take the flag out of `args`.
+fn split_persist_mib(args: &[String]) -> Result<(Option<u32>, Vec<String>), String> {
+    let mut mib = None;
+    let mut rest = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let value = if arg == "--persist-mib" {
+            Some(
+                iter.next()
+                    .ok_or_else(|| "--persist-mib requires a size in MiB".to_string())?
+                    .clone(),
+            )
+        } else {
+            arg.strip_prefix("--persist-mib=").map(str::to_string)
+        };
+        let Some(value) = value else {
+            rest.push(arg.clone());
+            continue;
+        };
+        if mib.is_some() {
+            return Err("--persist-mib given twice".to_string());
+        }
+        let n: u32 = value
+            .parse()
+            .map_err(|_| format!("invalid --persist-mib `{value}`"))?;
+        if !(PERSIST_MIB_MIN..=PERSIST_MIB_MAX).contains(&n) {
+            return Err(format!(
+                "--persist-mib {n}: the area must be {PERSIST_MIB_MIN}..={PERSIST_MIB_MAX} MiB"
+            ));
+        }
+        mib = Some(n);
+    }
+    Ok((mib, rest))
+}
+
+/// The xorriso timestamp every ISO is built with, so the same commit and
+/// inputs give the same bytes (OT-100 R3's kill-switch: without
+/// `--persist-mib` the image is byte-identical to the builder's before R3).
+/// `SOURCE_DATE_EPOCH` if set, else the HEAD commit's time, else 1.
+fn iso_source_date_epoch() -> String {
+    if let Ok(epoch) = env::var("SOURCE_DATE_EPOCH")
+        && !epoch.is_empty()
+        && epoch.bytes().all(|b| b.is_ascii_digit())
+    {
+        return epoch;
+    }
+    Command::new("git")
+        .current_dir(workspace_root())
+        .args(["log", "-1", "--format=%ct", "HEAD"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or_else(|| "1".to_string())
+}
+
+/// The ISO's xorriso arguments, before the staging tree and `-o`. The dates
+/// are pinned to `epoch` (`SOURCE_DATE_EPOCH` pins the volume dates and the
+/// GPT disk GUID; `--set_all_file_dates` the files'). With `persist`, the
+/// area is appended as a GPT partition of the LogansOS NeoFS type, and the
+/// partitions are aligned to 1 MiB cylinders (64 heads x 32 sectors), so the
+/// area starts 1 MiB-aligned (THINK §2.2).
+fn xorriso_iso_args(epoch: &str, persist: Option<&Path>) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = [
+        "-as",
+        "mkisofs",
+        "-R",
+        "-r",
+        "-J",
+        "-b",
+        "boot/limine-bios-cd.bin",
+        "-no-emul-boot",
+        "-boot-load-size",
+        "4",
+        "-boot-info-table",
+        "-hfsplus",
+        "-apm-block-size",
+        "2048",
+        "--efi-boot",
+        "boot/limine-uefi-cd.bin",
+        "-efi-boot-part",
+        "--efi-boot-image",
+        "--protective-msdos-label",
+        "--set_all_file_dates",
+    ]
+    .iter()
+    .map(Into::into)
+    .collect();
+    args.push(format!("={epoch}").into());
+    if let Some(area) = persist {
+        for a in [
+            "-partition_cyl_align",
+            "all",
+            "-partition_hd_cyl",
+            "64",
+            "-partition_sec_hd",
+            "32",
+            "-append_partition",
+            "3",
+            PERSIST_TYPE_GUID,
+        ] {
+            args.push(a.into());
+        }
+        args.push(area.as_os_str().to_owned());
+        args.push("-appended_part_as_gpt".into());
+    }
+    args
+}
+
+/// OT-100 R3 (THINK §2.3): the persistent image's boot menu. The source
+/// `limine.conf` has one entry; this gives it `cmdline: persist=on` and adds
+/// a second, identical entry that boots with `cmdline: persist=off` ("try"),
+/// and sets `timeout: 3` so the menu shows. Only the persistent image gets
+/// it; every other image keeps `timeout: 0` and one entry.
+fn persist_limine_conf(conf: &str) -> Result<String, String> {
+    let lines: Vec<&str> = conf.lines().collect();
+    let entries: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with('/'))
+        .map(|(i, _)| i)
+        .collect();
+    let [entry] = entries[..] else {
+        return Err(format!(
+            "limine.conf has {} entries; the persistent menu is built from exactly one",
+            entries.len()
+        ));
+    };
+    if lines.iter().any(|l| {
+        l.trim_start().starts_with("cmdline:") || l.trim_start().starts_with("kernel_cmdline:")
+    }) {
+        return Err("limine.conf already passes a command line".to_string());
+    }
+    let mut head: Vec<String> = Vec::new();
+    let mut timeout_seen = false;
+    for line in &lines[..entry] {
+        if line.starts_with("timeout:") {
+            head.push("timeout: 3".to_string());
+            timeout_seen = true;
+        } else {
+            head.push((*line).to_string());
+        }
+    }
+    if !timeout_seen {
+        return Err("limine.conf has no top-level timeout: line".to_string());
+    }
+    let name = lines[entry];
+    let body = &lines[entry + 1..];
+    let protocol = body
+        .iter()
+        .position(|l| l.trim_start().starts_with("protocol:"))
+        .ok_or("limine.conf's entry has no protocol: line")?;
+    let indent: String = body[protocol]
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+    let entry_with = |title: &str, value: &str| -> Vec<String> {
+        let mut out = vec![title.to_string()];
+        for (i, line) in body.iter().enumerate() {
+            out.push((*line).to_string());
+            if i == protocol {
+                out.push(format!("{indent}cmdline: persist={value}"));
+            }
+        }
+        out
+    };
+    let mut out = head;
+    out.extend(entry_with(name, "on"));
+    out.push(String::new());
+    out.extend(entry_with(
+        &format!("{name} - try (nothing is saved)"),
+        "off",
+    ));
+    let mut text = out.join("\n");
+    text.push('\n');
+    Ok(text)
 }
 
 // === neo-test ===
@@ -12761,6 +13006,7 @@ const NON_CORE_PATHS: &[&str] = &[
     "kernel/src/net/",
     "kernel/src/rng/",
     "kernel/src/scenario/",
+    "kernel/src/boot_medium.rs",
     "kernel/src/boot_model_logic.rs",
     "kernel/src/boot_modules.rs",
     // #16 (L7.1): write-once TSC stamps and firmware-table reads; no lock,
@@ -12775,6 +13021,8 @@ const NON_CORE_PATHS: &[&str] = &[
     "kernel/src/limine_file_logic.rs",
     "kernel/src/neofs_model.rs",
     "kernel/src/observability.rs",
+    // OT-100 R3: the persistence area's pure decisions (host-tested).
+    "kernel/src/persist_logic.rs",
     "kernel/src/user_fault_logic.rs",
     "kernel/src/watchdog_timeline_logic.rs",
     // Pure logic helpers inside the core directories.
@@ -26044,6 +26292,10 @@ fn write_limine_conf(
     if let Some((width, height)) = desktop_resolution() {
         conf = inject_limine_resolution(&conf, width, height)?;
     }
+    // OT-100 R3: last, so the "try" entry copies every module line above.
+    if iso_persist_mib().is_some() {
+        conf = persist_limine_conf(&conf)?;
+    }
     fs::write(dst, conf).map_err(|e| format!("write {}: {e}", dst.display()))
 }
 
@@ -26543,6 +26795,7 @@ fn cmd_vm_image(args: &[String]) -> Result<(), String> {
             iso_args.push(arg.clone());
         }
     }
+    refuse_persist_for_vm(&iso_args)?;
     cmd_iso(&iso_args)?;
     let dir = workspace_root().join(vm_image::VM_DIR_REL);
     if one_disk {
@@ -26559,6 +26812,22 @@ fn cmd_vm_image(args: &[String]) -> Result<(), String> {
         boot.display(),
         data.display()
     );
+    Ok(())
+}
+
+/// OT-100 R3 (THINK §4.1 item 4, Dexter's F5): `vm-image` always builds
+/// without the persistence area, so `check_vm_layout`, `check_one_disk` and
+/// the installer's invariants keep holding.
+fn refuse_persist_for_vm(iso_args: &[String]) -> Result<(), String> {
+    if iso_args
+        .iter()
+        .any(|a| a == "--persist-mib" || a.starts_with("--persist-mib="))
+    {
+        return Err(
+            "vm-image builds without --persist-mib: the VM's boot disk carries no persistence area"
+                .to_string(),
+        );
+    }
     Ok(())
 }
 
