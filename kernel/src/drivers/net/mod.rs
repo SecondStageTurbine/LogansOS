@@ -59,6 +59,8 @@ pub fn register_device(device: Arc<dyn NetDevice>) -> usize {
         let mut registry = REGISTRY.lock();
         let idx = registry.devices.len();
         registry.devices.push(device);
+        // F11 S4: a status source changed (inside the lock, after the write).
+        crate::net::status_gen::bump();
         idx
     };
     serial_println!(

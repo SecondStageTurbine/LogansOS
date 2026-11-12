@@ -76,6 +76,7 @@ members = [
     "tools/image-decode-fuzz",
     "tools/cap-graph-logic-tests",
     "tools/mem-account-logic-tests",
+    "tools/net-if-status-abi-tests",
     "tools/net-rx-logic-tests",
     "tools/xhci-silicon-logic-tests",
     "tools/i2c-hid-logic-tests",

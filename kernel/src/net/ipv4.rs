@@ -259,6 +259,8 @@ pub fn apply_lease(
         }
     };
     table.apply_lease(addr, mask, router, lease_until);
+    // F11 S4: a status source changed (inside the lock, after the write).
+    crate::net::status_gen::bump();
 }
 
 /// OT-96: with `wire-rx` the wire reaches this table, so it is capped.
@@ -286,8 +288,15 @@ pub fn inject_address(interface_id: u32, addr: [u8; 4], mask: [u8; 4], router: O
 pub fn tick() {
     let now = CLOCK_TICKS.fetch_add(1, Ordering::AcqRel) + 1;
     let mut tables = INTERFACES.lock();
+    let mut expired = false;
     for table in tables.iter_mut() {
+        let before = table.addresses.len();
         table.refresh(now);
+        expired |= table.addresses.len() != before;
+    }
+    // F11 S4: an expired address is a new status (inside the lock).
+    if expired {
+        crate::net::status_gen::bump();
     }
 }
 

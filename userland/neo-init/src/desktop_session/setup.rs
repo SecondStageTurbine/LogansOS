@@ -20,6 +20,13 @@
 //! makes it review-only from the start, and a kernel without `rtc-offset`
 //! hides it (the kill-switch: the wizard doesn't offer a zone it can't apply).
 //!
+//! **S4** (`setup-net`, §3.3): the Network page says what the kernel's
+//! `SYS_NET_IF_STATUS` reports for the default interface, read once when the
+//! wizard starts: connected with its address, driver and lease; no link; or,
+//! without the kernel's `net-info` (`ENOSYS`), that the status is
+//! unavailable. It only reports: Continue is always there, and nothing is
+//! chosen or stored (the lease is kernel state).
+//!
 //! **The action log** (S3 with `arthur-action-log`, §4.4): each choice made
 //! leaving a page forward, and the end, is held in a small queue with its
 //! monotonic instant, and appended (`Kind::Setup`) only when the wizard ends,
@@ -40,6 +47,8 @@ use setup_core::{Finish, Input, Outcome, Wizard, ZONES};
 /// Run the wizard to its end. `Ok` when the session may go on.
 pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
     let wizard = Wizard::new(cfg!(feature = "setup-stub-pages"));
+    #[cfg(feature = "setup-net")]
+    let wizard = wizard.with_network(net_page::read());
     #[cfg(feature = "setup-tz")]
     let wizard = tz_page::attach(scene, wizard);
     let mut wizard = wizard;
@@ -421,6 +430,76 @@ mod tz_page {
             .s(confirmed)
             .s(b"\n")
             .emit();
+    }
+}
+
+/// S4: the Network page's status, from the kernel.
+#[cfg(feature = "setup-net")]
+mod net_page {
+    use super::Line;
+    use alloc::string::String;
+    use setup_core::Network;
+
+    /// Read the default interface once, log what the page will say
+    /// (`DESKTOP setup net …`) and return it.
+    pub fn read() -> Network {
+        match libneo::sys_net_if_status() {
+            Err(errno) => {
+                Line::new()
+                    .s(b"DESKTOP setup net status=unavailable errno=")
+                    .n(errno.unsigned_abs())
+                    .s(b"\n")
+                    .emit();
+                Network::Unavailable
+            }
+            // The network kept changing as the kernel read it: the parts may
+            // not belong together, so the page claims nothing.
+            Ok(s) if s.stale() => {
+                Line::new()
+                    .s(b"DESKTOP setup net status=unavailable stale=1 flags=")
+                    .n(u64::from(s.flags))
+                    .s(b"\n")
+                    .emit();
+                Network::Unavailable
+            }
+            Ok(s) if s.present() && s.link_up() => {
+                let line = Line::new()
+                    .s(b"DESKTOP setup net link=up driver=")
+                    .s(s.driver().as_bytes())
+                    .s(b" ipv4=");
+                let line = match s.address() {
+                    Some(a) => line
+                        .n(u64::from(a[0]))
+                        .s(b".")
+                        .n(u64::from(a[1]))
+                        .s(b".")
+                        .n(u64::from(a[2]))
+                        .s(b".")
+                        .n(u64::from(a[3])),
+                    None => line.s(b"none"),
+                };
+                let line = line.s(b" lease_s=");
+                let line = match s.lease_secs_left() {
+                    Some(secs) => line.n(secs),
+                    None => line.s(b"none"),
+                };
+                line.s(b"\n").emit();
+                Network::Connected {
+                    driver: String::from(s.driver()),
+                    address: s.address(),
+                    lease_secs: s.lease_secs_left(),
+                }
+            }
+            Ok(s) => {
+                let driver = s.present().then(|| String::from(s.driver()));
+                Line::new()
+                    .s(b"DESKTOP setup net link=down driver=")
+                    .s(driver.as_deref().unwrap_or("none").as_bytes())
+                    .s(b"\n")
+                    .emit();
+                Network::NoLink { driver }
+            }
+        }
     }
 }
 

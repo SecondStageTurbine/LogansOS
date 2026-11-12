@@ -82,6 +82,8 @@ pub enum Page {
     Language,
     /// A stub until a second layout exists (§3.2).
     Keyboard,
+    /// S4: the wired link's status, read from the kernel (§3.3).
+    Network,
     TimeZone,
     Comfort,
     /// The summary and "Try LogansOS" (Install is S7's).
@@ -96,6 +98,7 @@ impl Page {
             Page::SkipConfirm => "skip",
             Page::Language => "language",
             Page::Keyboard => "keyboard",
+            Page::Network => "network",
             Page::TimeZone => "timezone",
             Page::Comfort => "comfort",
             Page::Try => "try",
@@ -166,6 +169,78 @@ pub struct Choices {
     pub layout: u8,
 }
 
+/// S4: what the Network page says (§3.3), from the kernel's
+/// `SYS_NET_IF_STATUS`. The page only reports: nothing is chosen or stored,
+/// and Continue is always there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Network {
+    /// The kernel has no status call (the `net-info` kill-switch) or the call
+    /// failed.
+    Unavailable,
+    /// No device, or a device without link (`driver`: its driver, if any).
+    NoLink { driver: Option<String> },
+    /// Link up. `address`: the lease's (or the interface's) IPv4 address;
+    /// `lease_secs`: the lease's time left, if one is bound.
+    Connected {
+        driver: String,
+        address: Option<[u8; 4]>,
+        lease_secs: Option<u64>,
+    },
+}
+
+impl Network {
+    fn connected(&self) -> bool {
+        matches!(
+            self,
+            Network::Connected {
+                address: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// The page's body rows.
+    fn rows(&self) -> Vec<String> {
+        let mut b = Vec::new();
+        match self {
+            Network::Unavailable => b.push(String::from("Network status is unavailable.")),
+            Network::NoLink { driver } => {
+                b.push(String::from("Wired: no link."));
+                if let Some(d) = driver {
+                    b.push(format!("Device: {d}."));
+                }
+            }
+            Network::Connected {
+                driver,
+                address,
+                lease_secs,
+            } => {
+                b.push(match address {
+                    Some(a) => format!("Wired: connected, {}.{}.{}.{}", a[0], a[1], a[2], a[3]),
+                    None => String::from("Wired: connected, no address yet."),
+                });
+                b.push(match lease_secs {
+                    Some(s) => format!("Device: {driver}. Lease: {}.", lease_left(*s)),
+                    None => format!("Device: {driver}."),
+                });
+            }
+        }
+        b.push(String::from("Wi-Fi: coming in a later version."));
+        b
+    }
+}
+
+/// A lease's time left, in words: "23 h 59 min left", "5 min left",
+/// "under a minute left".
+pub fn lease_left(secs: u64) -> String {
+    let (h, m) = (secs / 3600, secs % 3600 / 60);
+    match (h, m) {
+        (0, 0) => String::from("under a minute left"),
+        (0, m) => format!("{m} min left"),
+        (h, m) => format!("{h} h {m} min left"),
+    }
+}
+
 /// S3's Time zone page state.
 struct TzPage {
     zones: Box<dyn Zones>,
@@ -186,6 +261,8 @@ pub struct Wizard {
     notice: Option<String>,
     /// The Time zone page is shown (off: the `rtc-offset` kill-switch).
     time_zone: bool,
+    /// S4: the Network page, with what it says (`None`: no page).
+    network: Option<Network>,
     tz: Option<TzPage>,
     page: Page,
     focus: usize,
@@ -203,6 +280,7 @@ impl Wizard {
             stub_pages,
             notice: None,
             time_zone: true,
+            network: None,
             tz: None,
             page: Page::Welcome,
             focus: 0,
@@ -228,6 +306,12 @@ impl Wizard {
             listed,
             review,
         });
+        self
+    }
+
+    /// S4: show the Network page, saying `network` (§3.3).
+    pub fn with_network(mut self, network: Network) -> Self {
+        self.network = Some(network);
         self
     }
 
@@ -319,6 +403,9 @@ impl Wizard {
         if self.stub_pages || keyboard::SHOWN {
             pages.push(Page::Keyboard);
         }
+        if self.network.is_some() {
+            pages.push(Page::Network);
+        }
         if self.time_zone {
             pages.push(Page::TimeZone);
         }
@@ -341,6 +428,13 @@ impl Wizard {
             }
             Page::Language => o.push(String::from("Continue")),
             Page::Keyboard => keyboard::options(self, &mut o),
+            Page::Network => o.push(String::from(
+                if self.network.as_ref().is_some_and(Network::connected) {
+                    "Continue"
+                } else {
+                    "Continue without a network"
+                },
+            )),
             Page::TimeZone if self.tz.is_some() => {
                 let t = self.tz.as_ref().expect("checked");
                 if !t.review {
@@ -411,6 +505,7 @@ impl Wizard {
             Page::SkipConfirm => return String::from("Skip setup?"),
             Page::Language => "Language",
             Page::Keyboard => "Keyboard",
+            Page::Network => "Network",
             Page::TimeZone => "Time zone",
             Page::Comfort => "Comfort",
             Page::Try => "Try LogansOS",
@@ -436,6 +531,11 @@ impl Wizard {
             }
             Page::Language => b.push(String::from("English is the only language for now.")),
             Page::Keyboard => keyboard::body(self, &mut b),
+            Page::Network => {
+                if let Some(n) = &self.network {
+                    b.extend(n.rows());
+                }
+            }
             Page::TimeZone => match self.tz.as_ref() {
                 None => b.push(String::from("Where are you? At Home: timezone Area/City.")),
                 Some(t) if t.review => {
@@ -574,6 +674,7 @@ impl Wizard {
             (Page::SkipConfirm, _) => self.show(Page::Welcome),
             (Page::Language, _) => self.show(self.next(self.page)),
             (Page::Keyboard, i) => keyboard::choose(self, i),
+            (Page::Network, _) => self.show(self.next(self.page)),
             (Page::TimeZone, i) if self.tz.is_some() => {
                 let t = self.tz.as_ref().expect("checked");
                 match t.listed.get(i) {
@@ -635,7 +736,11 @@ fn on_off(on: bool) -> &'static str {
     if on { "on" } else { "off" }
 }
 
+// S4's KATs walk Begin straight to the Network page: the build without
+// layouts, as S1's.
 mod keyboard;
+#[cfg(all(test, not(feature = "keyboard-layouts")))]
+mod net_tests;
 #[cfg(feature = "keyboard-layouts")]
 pub use keyboard::{Dead, FIELD_MAX, LAYOUT_COUNT, LAYOUT_NAMES, Typed};
 

@@ -300,6 +300,11 @@ pub const SYS_NET_DIAL_CAP_DERIVE: u64 = 0x18F;
 /// Phase 10.3 BUILD-10.3: userland randomness via SYS_GETRANDOM.
 /// Fills a userland buffer from the kernel CSPRNG DRBG (10.1).
 pub const SYS_GETRANDOM: u64 = 0x190;
+/// F11 S4 (setup-menu THINK §3.3): the default network interface's status, a
+/// read-only snapshot (`NetIfStatusV1`, 56 bytes: link, driver, MAC, IPv4,
+/// lease). Gated by `net-info`; off ⇒ the arm is not compiled and the number
+/// is `ENOSYS` (the kill-switch). No capability: it names what is on the wire.
+pub const SYS_NET_IF_STATUS: u64 = 0x191;
 /// Atrium G1 compositor range: 0x1A0..0x1AF (Rung 0 slice-1). Gated by the
 /// default-off `atrium-compositor-g1` feature AND the runtime switch — off
 /// means the dispatch arms are not compiled and every number is ENOSYS (the
@@ -1382,6 +1387,14 @@ extern "C" fn syscall_dispatch(
         #[cfg(not(feature = "net-dial-cap"))]
         SYS_NET_DIAL_CAP_DERIVE => ENOSYS,
         SYS_GETRANDOM => sys_getrandom_impl(a0 as *mut u8, a1 as usize),
+        // The `net-info` kill-switch: off, the number answers ENOSYS.
+        #[cfg(not(feature = "net-info"))]
+        SYS_NET_IF_STATUS => ENOSYS,
+        #[cfg(feature = "net-info")]
+        SYS_NET_IF_STATUS => sys_net_if_status_impl(
+            a0 as *mut crate::net::if_status_logic::NetIfStatusV1,
+            a1 as usize,
+        ),
         #[cfg(feature = "atrium-compositor-g1")]
         SYS_BUFFER_CREATE => sys_buffer_create_impl(a0 as *const u8, a1 as usize),
         #[cfg(feature = "atrium-compositor-g1")]
@@ -6601,6 +6614,29 @@ fn sys_net_stats_impl(h: u32, out: *mut NetStatsV1, out_len: usize) -> i64 {
             bytes_out: stats.bytes_out,
         },
     ) {
+        Ok(()) => 0,
+        Err(e) => e,
+    }
+}
+
+/// F11 S4: `SYS_NET_IF_STATUS(out, out_len)`. `EINVAL` on a null pointer or a
+/// buffer shorter than the record; `EFAULT` outside the user half; else the
+/// snapshot's 56 bytes are written and 0 returned. The body runs IF=0 like
+/// every syscall body here, and the snapshot takes each net lock alone
+/// (`net::if_status`), none of them an AI-governance lock (I-14).
+#[cfg(feature = "net-info")]
+fn sys_net_if_status_impl(
+    out: *mut crate::net::if_status_logic::NetIfStatusV1,
+    out_len: usize,
+) -> i64 {
+    use crate::net::if_status_logic as logic;
+    if out.is_null() || !logic::len_ok(out_len) {
+        return EINVAL;
+    }
+    if let Err(e) = validate_user_buf(out as u64, logic::NET_IF_STATUS_V1_SIZE) {
+        return e;
+    }
+    match write_user(out, crate::net::if_status::snapshot()) {
         Ok(()) => 0,
         Err(e) => e,
     }
