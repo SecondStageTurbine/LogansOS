@@ -9803,11 +9803,15 @@ fn require_parked_by_default(
 ///    idle line (so the client is alive and the fire is its request, not its
 ///    end), a kernel wake on gen 2's surface key, whose latest registration
 ///    names gen 2's surface cap; then the WM's next wake names gen 2's
-///    surface (`c1g2f`). Relay 408 asks for `parked=1 why=1` here (the fire
-///    itself woke the parked WM); on this kernel the request's fire always
-///    finds the WM's entry already woken by the tick (`parked=0`, its
-///    `fire_tick` equal to its deadline: the WM's wait watches input, so it
-///    re-parks every tick), so that is reported to the PM, not required.
+///    surface (`c1g2f`). The request's fire finds the WM's entry already
+///    woken by the tick (`parked=0`, `fire_tick` equal to its deadline): the
+///    WM's wait watches input, so the kernel re-parks it every tick, and a
+///    send driven by time always lands on such a tick (40 boots, relay 408).
+///    The PM's ruling (A) accepts the registered entry here, with two guards:
+/// 6. the park-wake path is exercised in this boot: at least one channel fire
+///    woke a parked waiter (`parked=1 why=1`; Arthur's, in practice);
+/// 7. a boot whose tick woke the WM with no fire of gen 2's request (no
+///    cap-44 fire, no `c1g2f` ready) is refused (unit test).
 ///
 /// At the WM's level too: no WM set or wake names gen 1 after its death's
 /// wake (relay 408 item 2).
@@ -9957,6 +9961,17 @@ fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
                  key and its idle"
             )
         })?;
+    // 6. The park-wake path ran in this boot.
+    if !lines
+        .iter()
+        .any(|l| l.contains(KWOKE) && l.contains(" parked=1 why=1 "))
+    {
+        return Err(
+            "no channel fire woke a parked waiter (`parked=1 why=1`) in this boot: the \
+             park-wake path wasn't exercised"
+                .to_string(),
+        );
+    }
     let wm_request = at("DESKTOP park woke ms=", request)?;
     if wm_request > idle2 || !lines[wm_request].contains("c1g2f") {
         return Err(format!(
@@ -30414,6 +30429,7 @@ mod tests {
 DESKTOP apps client connected client=1 value=1
 DESKTOP park set c1g1 f=22 s=19
 WAITANY witness set pid=1 items=12:0x10a8:14,22:0xb4d0:32,19:0x9cd8:28,
+WAITANY witness woke pid=1 ticket=1592 parked=1 why=1 key=0x10a8 fire_tick=1558 deadline=1559 now=1558
 PROBEAPP key code=4 count=1
 WAITANY witness woke pid=1 ticket=1696 parked=0 why=2 key=0xb4d0
 DESKTOP park woke ms=500 ready=c1g1f,
@@ -30435,6 +30451,22 @@ PROBEAPP idling before exit ms=2000
     #[test]
     fn cp61_oracle_accepts_death_while_parked_and_reuse() {
         assert_eq!(super::require_cp61_parked_death(CP61_LOG), Ok(()));
+    }
+
+    /// Guard 2 (the PM's ruling on relay 408 item 3): the tick wakes the WM
+    /// and gen 2's request never fires: no cap-44 fire, and no `c1g2f` in any
+    /// ready set. Refused.
+    #[test]
+    fn cp61_oracle_refuses_a_tick_wake_without_the_request() {
+        let log = CP61_LOG.replace(
+            "WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0 fire_tick=1894 \
+             deadline=1894 now=1894\nDESKTOP park woke ms=490 ready=c1g2f,\n",
+            "",
+        );
+        assert_ne!(log, CP61_LOG);
+        assert!(!log.contains("c1g2f"));
+        assert!(!log.contains(":44,") || !log.contains("key=0xb4d0 fire_tick=1894"));
+        assert!(super::require_cp61_parked_death(&log).is_err());
     }
 
     #[test]
@@ -30465,6 +30497,11 @@ PROBEAPP idling before exit ms=2000
             (
                 "ticket=2598 parked=0 why=2 key=0xb4d0",
                 "ticket=2598 parked=0 why=2 key=0x9cd8",
+            ),
+            // Guard 1: no fire woke a parked waiter in this boot.
+            (
+                "ticket=1592 parked=1 why=1 key=0x10a8",
+                "ticket=1592 parked=0 why=2 key=0x10a8",
             ),
             // The WM's wake after gen 2's request named gen 1 (relay 408
             // item 2).
