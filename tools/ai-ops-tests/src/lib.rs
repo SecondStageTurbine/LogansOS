@@ -4811,6 +4811,65 @@ mod tests {
         // fixture documents the gate for CB-5's bare-metal SAE run.
     }
 
+    /// OT-100 R2, relay 395: command-ring admission against a deadline tick.
+    /// The clock advances while another CPU holds the controller lock; nothing
+    /// is admitted (so nothing published) once the deadline has passed, even
+    /// when the lock is finally won on the deadline's tick. `None` is today's
+    /// unconditional `lock()`.
+    #[test]
+    fn xhci_admit_until_refuses_after_the_deadline() {
+        use super::xhci_ring_logic::admit_until;
+        use std::cell::Cell;
+
+        /// A guard that counts how many were given back.
+        struct G<'a>(&'a Cell<u32>);
+        impl Drop for G<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        // The lock is held by another CPU until tick `free_at`; each try
+        // costs one tick. Returns (admitted, guards given back, tries).
+        let run = |start: u64, free_at: u64, until: Option<u64>| {
+            let clock = Cell::new(start);
+            let dropped = Cell::new(0);
+            let tries = Cell::new(0);
+            let locked = Cell::new(false);
+            let got = admit_until(
+                until,
+                || clock.get(),
+                || {
+                    tries.set(tries.get() + 1);
+                    let won = clock.get() >= free_at;
+                    clock.set(clock.get() + 1);
+                    won.then(|| G(&dropped))
+                },
+                || {
+                    locked.set(true);
+                    G(&dropped)
+                },
+                || {},
+            );
+            let admitted = got.is_some();
+            drop(got);
+            (admitted, dropped.get(), tries.get(), locked.get())
+        };
+
+        // The lock frees at 1005, past the deadline 1001: never admitted, and
+        // the waiting ends at the deadline (tries from 1000 to 1000).
+        assert_eq!(run(1000, 1005, Some(1001)), (false, 0, 1, false));
+        // Won on tick 1000, but the try itself ran the clock to 1001: the
+        // guard is given back before anything is published.
+        assert_eq!(run(1000, 1000, Some(1001)), (false, 1, 1, false));
+        // Won in time: admitted (the guard drops at the end of the use).
+        assert_eq!(run(990, 995, Some(1001)), (true, 1, 6, false));
+        // Already past the deadline: not even tried.
+        assert_eq!(run(1001, 0, Some(1001)), (false, 0, 0, false));
+        // No deadline: `lock()`, never `try_lock`, however late.
+        assert_eq!(run(5000, 9000, None), (true, 1, 0, true));
+    }
+
     /// Phase 7.5 BUILD-A (ISC-2/C-6): the xHCI ring arithmetic — the F4/F5
     /// discriminator logic under a truth table BEFORE any blind run. Cycle
     /// protocol, Link-TRB wrap, event-ring CCS flip.

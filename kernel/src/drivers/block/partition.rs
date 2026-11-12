@@ -138,6 +138,16 @@ impl BlockDevice for PartitionDevice {
         self.inner.flush()
     }
 
+    #[cfg(feature = "usb-storage-write")]
+    fn write_protected(&self) -> Option<bool> {
+        self.inner.write_protected()
+    }
+
+    #[cfg(feature = "usb-storage-write")]
+    fn write_probe(&self) -> Option<super::WriteProbe> {
+        self.inner.write_probe()
+    }
+
     fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         let lba = self.map(lba, buffers)?;
         self.inner.read_block(lba, buffers)

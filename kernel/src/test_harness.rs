@@ -1037,6 +1037,8 @@ const SCENARIO: &str = "usb_storage_read";
 const SCENARIO: &str = "usb_storage_unplug";
 #[cfg(feature = "neo-test-usb-storage-off")]
 const SCENARIO: &str = "usb_storage_off";
+#[cfg(feature = "neo-test-usb-msc-write")]
+const SCENARIO: &str = "usb_msc_write";
 #[cfg(feature = "neo-test-usb-enumerate")]
 const SCENARIO: &str = "usb_enumerate";
 #[cfg(feature = "neo-test-usb-storm")]
@@ -1727,6 +1729,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-usb-enumerate",
     feature = "neo-test-usb-storage-read",
     feature = "neo-test-usb-storage-off",
+    feature = "neo-test-usb-msc-write",
     feature = "neo-test-usb-storm",
     feature = "neo-test-usb-baremetal-probe",
     feature = "neo-test-usb-ethernet",
@@ -2085,6 +2088,7 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-usb-enumerate",
         feature = "neo-test-usb-storage-read",
         feature = "neo-test-usb-storage-off",
+        feature = "neo-test-usb-msc-write",
         feature = "neo-test-usb-storm",
         feature = "neo-test-usb-baremetal-probe",
         feature = "neo-test-usb-ethernet",
@@ -5497,6 +5501,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-usb-storage-off")]
     run_usb_storage_off();
+
+    #[cfg(feature = "neo-test-usb-msc-write")]
+    run_usb_msc_write();
 
     #[cfg(feature = "neo-test-usb-storage-unplug")]
     run_usb_storage_unplug();
@@ -17528,6 +17535,187 @@ fn run_graphics_vtd_domain() -> ! {
 /// fixture. The driver binds it, its capacity is the image's, and FAT on it
 /// mounts as `deviceN` and reads back byte-exact (file, subdirectory, LFN);
 /// a write open is refused.
+/// OT-100 R2's pattern (`usb_msc_write`): byte `i` of the region written at
+/// [`USB_MSC_WRITE_LBA`]. xtask checks the stick image against the same
+/// formula after QEMU exits (`usb_msc_write_pattern_byte`).
+#[cfg(feature = "neo-test-usb-msc-write")]
+fn usb_msc_write_pattern_byte(i: usize) -> u8 {
+    ((i.wrapping_mul(31) ^ (i >> 9).wrapping_mul(7)) as u8) ^ 0xa5
+}
+#[cfg(feature = "neo-test-usb-msc-write")]
+const USB_MSC_WRITE_LBA: u64 = 63;
+/// 300 blocks from LBA 63: the driver's 128-block chunks (128, 128, 44)
+/// and the 64-block boundaries (64, 128, 192, 256, 320) all fall inside.
+#[cfg(feature = "neo-test-usb-msc-write")]
+const USB_MSC_WRITE_BLOCKS: u64 = 300;
+
+/// OT-100 R2 (THINK §10, R2's gate): two QEMU usb-storage sticks on
+/// qemu-xhci. The one carrying a sealed scratch sector is armed by the guard:
+/// it is probed (MODE SENSE header, SYNCHRONIZE CACHE), written across the
+/// 64- and 128-block chunk boundaries, flushed and read back. The unmarked
+/// one is never armed: its probe is refused and a write to it is
+/// `WriteRefused`. The driver's per-device write-class command counts are
+/// printed for xtask to hold against QEMU's SCSI trace, and xtask hashes
+/// both images after QEMU exits.
+#[cfg(feature = "neo-test-usb-msc-write")]
+fn run_usb_msc_write() -> ! {
+    use crate::drivers::block::{self, BlockError, DmaBuffer, SyncSupport};
+    let sticks: alloc::vec::Vec<usize> = (0..block::device_count())
+        .filter(|&i| block::get_device(i).is_some_and(|d| d.identity().driver == "usb-storage"))
+        .collect();
+    if sticks.len() != 2 {
+        fail_with_hex("reason=usb_msc_write_sticks", sticks.len() as u64);
+    }
+    let armed: alloc::vec::Vec<bool> = sticks
+        .iter()
+        .map(|&i| block::writes_allowed(i).unwrap_or(false))
+        .collect();
+    let (marked, unmarked) = match (armed[0], armed[1]) {
+        (true, false) => (sticks[0], sticks[1]),
+        (false, true) => (sticks[1], sticks[0]),
+        _ => {
+            serial_println!(
+                "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_arming armed={:?}",
+                SCENARIO,
+                armed
+            );
+            debug_exit(EXIT_FAILURE);
+        }
+    };
+    let marked_dev = block::get_device(marked).unwrap_or_else(|| fail("reason=marked_gone"));
+    let unmarked_dev = block::get_device(unmarked).unwrap_or_else(|| fail("reason=unmarked_gone"));
+    let block_len = marked_dev.geometry().logical_block_size as usize;
+    if block_len != 512 {
+        fail_with_hex("reason=usb_msc_write_block_len", block_len as u64);
+    }
+
+    // The unmarked stick: no probe, no write, no flush command.
+    if block::write_probe(unmarked).is_some() {
+        fail("reason=usb_msc_write_unmarked_probed");
+    }
+    let one = DmaBuffer::alloc_in_arena(512).unwrap_or_else(|_| fail("reason=alloc"));
+    // SAFETY: a fresh buffer no device request uses.
+    unsafe { one.as_mut_slice().fill(0x5a) };
+    let refused = unmarked_dev.write_block(0, core::slice::from_ref(&one));
+    if refused != Err(BlockError::WriteRefused) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_unmarked_written result={:?}",
+            SCENARIO,
+            refused
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    if unmarked_dev.supports_flush() || unmarked_dev.flush().is_ok() {
+        fail("reason=usb_msc_write_unmarked_flush");
+    }
+
+    // The marked stick: the probe, then the write, the flush and the read.
+    let probe = block::write_probe(marked).unwrap_or_else(|| fail("reason=usb_msc_write_no_probe"));
+    if probe.sync != SyncSupport::Ok || probe.write_protected == Some(true) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_probe probe={:?}",
+            SCENARIO,
+            probe
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    if !marked_dev.supports_flush() || marked_dev.write_protected() != probe.write_protected {
+        fail("reason=usb_msc_write_probe_state");
+    }
+    // Five buffers of 60 blocks: the write spans buffers as well as chunks.
+    let total = USB_MSC_WRITE_BLOCKS as usize * 512;
+    let per = total / 5;
+    let alloc_bufs = || -> alloc::vec::Vec<alloc::sync::Arc<DmaBuffer>> {
+        (0..5)
+            // Ordinary DMA buffers, not the small fenced arena: the driver
+            // copies caller data through its own bounce buffer, so these
+            // never reach the device (THINK §9 c).
+            .map(|_| DmaBuffer::alloc_zeroed(per).unwrap_or_else(|_| fail("reason=alloc_caller")))
+            .collect()
+    };
+    let out = alloc_bufs();
+    for (n, buffer) in out.iter().enumerate() {
+        // SAFETY: fresh buffers no device request uses.
+        let bytes = unsafe { buffer.as_mut_slice() };
+        for (j, b) in bytes.iter_mut().enumerate() {
+            *b = usb_msc_write_pattern_byte(n * per + j);
+        }
+    }
+    if let Err(e) = marked_dev.write_block(USB_MSC_WRITE_LBA, &out) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_write err={:?}",
+            SCENARIO,
+            e
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    if let Err(e) = marked_dev.flush() {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_flush err={:?}",
+            SCENARIO,
+            e
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    let back = alloc_bufs();
+    if let Err(e) = marked_dev.read_block(USB_MSC_WRITE_LBA, &back) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_readback err={:?}",
+            SCENARIO,
+            e
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    for (n, buffer) in back.iter().enumerate() {
+        // SAFETY: the read completed; nothing else uses the buffer.
+        let bytes = unsafe { buffer.as_slice() };
+        if let Some(j) = (0..per).find(|&j| bytes[j] != usb_msc_write_pattern_byte(n * per + j)) {
+            fail_with_hex("reason=usb_msc_write_mismatch_at", (n * per + j) as u64);
+        }
+    }
+    let counts = |dev: &dyn crate::drivers::block::BlockDevice| {
+        crate::drivers::usb::msc::write_command_counts(dev).unwrap_or((
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+        ))
+    };
+    let (mw, ms, mm) = counts(&*marked_dev);
+    let (uw, us, um) = counts(&*unmarked_dev);
+    if (uw, us, um) != (0, 0, 0) || (mw, ms, mm) != (3, 2, 1) {
+        serial_println!(
+            "NEO_TEST/1 event=FAIL name={} reason=usb_msc_write_counts marked={}/{}/{} unmarked={}/{}/{}",
+            SCENARIO,
+            mw,
+            ms,
+            mm,
+            uw,
+            us,
+            um
+        );
+        debug_exit(EXIT_FAILURE);
+    }
+    serial_println!(
+        "USB_MSC_WRITE counts marked_writes={} marked_syncs={} marked_mode_senses={} unmarked_writes={} unmarked_syncs={} unmarked_mode_senses={}",
+        mw,
+        ms,
+        mm,
+        uw,
+        us,
+        um
+    );
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} marked=device{} unmarked=device{} lba={} blocks={} readback=match unmarked_write=refused unmarked_probe=refused wp={:?}",
+        SCENARIO,
+        marked,
+        unmarked,
+        USB_MSC_WRITE_LBA,
+        USB_MSC_WRITE_BLOCKS,
+        probe.write_protected
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 #[cfg(feature = "neo-test-usb-storage-read")]
 fn run_usb_storage_read() -> ! {
     let Some((index, device)) = crate::drivers::block::find_device_by_driver("usb-storage") else {

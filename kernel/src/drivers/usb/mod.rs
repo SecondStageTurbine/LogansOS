@@ -49,6 +49,8 @@ pub mod hid_mouse;
 #[cfg(feature = "usb-storage")]
 pub mod msc;
 #[cfg(feature = "usb-storage")]
+// The write path's items (OT-100 R2) are used only with `usb-storage-write`.
+#[cfg_attr(not(feature = "usb-storage-write"), allow(dead_code))]
 pub mod msc_logic;
 #[cfg(feature = "mt7601u")]
 pub mod mt7601u;
