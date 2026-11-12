@@ -38,6 +38,8 @@ use super::format::{
 mod dir_ops;
 #[cfg(feature = "neo-test-neofs-dir-ops")]
 pub(super) use dir_ops::STOP_NEXT_BEFORE_PUBLISH;
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub(super) use dir_ops::probe as dir_ops_probe;
 
 struct NeoFsMetadata {
     superblock: Superblock,
@@ -861,6 +863,16 @@ impl NeoFsState {
             &reserved,
         )?;
         Ok((new_inode_block, new_record))
+    }
+
+    /// F0's F2 leg: every block on the device, and none in the cache (all
+    /// written first), so the next reads miss.
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    pub(super) fn debug_cold_cache(&self) -> Result<(), NeoFsError> {
+        let _entries = self.entries.lock();
+        self.cache.drain_all()?;
+        self.cache.forget_range(0, self.total_blocks());
+        Ok(())
     }
 
     /// W1's byte oracle reads the device: everything cached is written first.
@@ -1992,6 +2004,13 @@ impl Inode for NeoInode {
     #[cfg(feature = "neofs-dir-ops")]
     fn reload_dir(&self) -> Result<Option<u32>, VfsError> {
         dir_ops::reload(self)
+    }
+
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    fn debug_reload_later(
+        &self,
+    ) -> Option<alloc::boxed::Box<dyn FnOnce() -> Result<Option<u32>, VfsError> + '_>> {
+        Some(dir_ops::reload_later(self))
     }
 
     #[cfg(feature = "neofs-dir-ops")]

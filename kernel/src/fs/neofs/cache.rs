@@ -244,6 +244,8 @@ impl NeoFsBlockCache {
             inner.evictions
         };
 
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        super::inode::dir_ops_probe::note_device_read();
         let bytes = read_fs_block(&self.device, block)?;
         let mut inner = self.inner.lock();
         if let Some(idx) = find_cached_block(&inner, block) {
@@ -275,6 +277,8 @@ impl NeoFsBlockCache {
             inner.evictions
         };
 
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        super::inode::dir_ops_probe::note_device_read();
         let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
 
@@ -300,6 +304,8 @@ impl NeoFsBlockCache {
             return Ok(());
         }
         validate_fs_block(&self.device, block)?;
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        super::inode::dir_ops_probe::note_device_read();
         read_bytes_at(&self.device, block_offset(block)?, out)
     }
 
@@ -366,6 +372,8 @@ impl NeoFsBlockCache {
                 };
                 let read = match needs_read {
                     Some(epoch) => {
+                        #[cfg(feature = "neo-test-neofs-dir-ops")]
+                        super::inode::dir_ops_probe::note_device_read();
                         let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
                         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
                         Some((epoch, bytes))
@@ -404,7 +412,7 @@ impl NeoFsBlockCache {
     /// are ever allocated, so a cached copy (even a dirty one) holds no data
     /// anything references, and a later drain must not write it over the
     /// file's bytes.
-    #[cfg(feature = "neofs-large-write")]
+    #[cfg(any(feature = "neofs-large-write", feature = "neo-test-neofs-dir-ops"))]
     pub(super) fn forget_range(&self, first: u64, count: u64) {
         let end = first.saturating_add(count);
         let mut inner = self.inner.lock();

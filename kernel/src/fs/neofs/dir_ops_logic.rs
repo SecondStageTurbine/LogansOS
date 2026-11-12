@@ -138,6 +138,18 @@ pub fn rename_check(
         .count())
 }
 
+/// Is a directory snapshot of generation `new` newer than the one held
+/// (`held`)? A handle publishes a reload only then (#106 F1): generations
+/// only grow, so the newest snapshot wins in whatever order two reloads
+/// through one handle finish. Nothing held yet: any snapshot is newer.
+pub fn newer_generation(new: Option<u32>, held: Option<u32>) -> bool {
+    match (new, held) {
+        (Some(new), Some(held)) => new > held,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 /// Remove the entry named `name`, keeping the others' order. `None` when
 /// there is none.
 pub fn remove_named<E>(

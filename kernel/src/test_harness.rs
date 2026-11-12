@@ -33820,6 +33820,90 @@ fn run_neofs_dir_ops() -> ! {
         fail("reason=neofs_dir_ops_readdir_after_ops_wrong");
     }
 
+    let list_names = |fd: u32| -> alloc::vec::Vec<alloc::vec::Vec<u8>> {
+        let mut names = alloc::vec::Vec::new();
+        let mut cursor = 0u64;
+        loop {
+            let mut rec = [0u8; 80];
+            let n = debug_sys_readdir_kernel_buf_for_test(fd, &mut rec, &mut cursor);
+            if n <= 0 {
+                expect(n, 0, "neofs_dir_ops_list_failed");
+                break names;
+            }
+            let len = u16::from_le_bytes([rec[4], rec[5]]) as usize;
+            names.push(alloc::vec::Vec::from(&rec[16..16 + len]));
+        }
+    };
+
+    // #106 F1 (CP-13), Chad's schedule on one shared handle: operation 1
+    // (mkdir a) reads its reload, operation 2 (mkdir b) commits and reloads,
+    // operation 1 then publishes its older reload, and operation 2's
+    // generation is stored last. Before the fix that left the new generation
+    // over the old listing, so readdir passed and listed `a` alone. Now the
+    // older reload is not published: the listing is `a`, `b`.
+    expect(ops::mkdir_at(root_fd, b"f1"), 0, "neofs_dir_ops_mkdir_f1");
+    let f1_file = open_root_temporary("/neofs/f1", OPEN_SCOPE_DIR, lrw)
+        .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_scope_open_failed", e));
+    let f1_fd = neofs_4a_install_file_handle(f1_file.clone(), lrw);
+    expect(ops::mkdir_at(f1_fd, b"a"), 0, "neofs_dir_ops_f1_mkdir_a");
+    let late = f1_file.debug_after_dir_op_later();
+    expect(ops::mkdir_at(f1_fd, b"b"), 0, "neofs_dir_ops_f1_mkdir_b");
+    let second = f1_file.debug_captured_generation();
+    late().unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_late_reload_failed", e));
+    f1_file.debug_publish_dir_generation(second);
+    if list_names(f1_fd) != [b"a".to_vec(), b"b".to_vec()] {
+        fail("reason=neofs_dir_ops_shared_handle_old_listing");
+    }
+
+    // #106 F2 (CP-63): an F0 operation does its device reads before it takes
+    // the namespace lock (a spinning lock). With the cache emptied before
+    // each one, the five below must read the device (the count is not
+    // vacuous), never while holding the lock, and never fall back to
+    // reading under it.
+    let cold = || {
+        crate::fs::debug_neofs_cold_cache()
+            .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_cold_cache_failed", e))
+    };
+    let _ = crate::fs::debug_neofs_dir_op_reads();
+    cold();
+    if stat(f1_fd, b"a").0 != KIND_DIRECTORY {
+        fail("reason=neofs_dir_ops_cold_stat_wrong");
+    }
+    cold();
+    expect(ops::mkdir_at(f1_fd, b"deep"), 0, "neofs_dir_ops_cold_mkdir");
+    let deep_fd = scope("/neofs/f1/deep", lrw);
+    cold();
+    expect(
+        ops::rename_at(f1_fd, b"b", deep_fd, b"b"),
+        0,
+        "neofs_dir_ops_cold_rename_deeper",
+    );
+    cold();
+    expect(
+        ops::rename_at(f1_fd, b"a", f1_fd, b"a2"),
+        0,
+        "neofs_dir_ops_cold_rename",
+    );
+    cold();
+    expect(
+        ops::unlink_at(deep_fd, b"b"),
+        0,
+        "neofs_dir_ops_cold_unlink",
+    );
+    let (cold_reads, held_reads, fallbacks) = crate::fs::debug_neofs_dir_op_reads();
+    if cold_reads == 0 {
+        fail("reason=neofs_dir_ops_cold_ops_read_nothing");
+    }
+    if held_reads != 0 {
+        fail_with_hex("reason=neofs_dir_ops_read_under_entries count", held_reads);
+    }
+    if fallbacks != 0 {
+        fail_with_hex(
+            "reason=neofs_dir_ops_fell_back_to_locked_reads count",
+            fallbacks,
+        );
+    }
+
     // Refusals.
     expect(
         ops::unlink_at(root_fd, b"hello.txt"),
@@ -33940,9 +34024,10 @@ fn run_neofs_dir_ops() -> ! {
         fail("reason=neofs_dir_ops_barrier_not_flushed");
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_blocks:9 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
+        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
         SCENARIO,
         after_file,
+        cold_reads,
         flushes
     );
     debug_exit(EXIT_SUCCESS);

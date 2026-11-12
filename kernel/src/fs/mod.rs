@@ -204,6 +204,15 @@ pub trait Inode: Send + Sync {
     fn neofs_volume(&self) -> Option<(usize, Option<&str>)> {
         None
     }
+    /// F0's scenario: a reload read now and published later (see
+    /// `OpenFile::debug_after_dir_op_later`). `None` off NeoFS.
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    #[allow(clippy::type_complexity)]
+    fn debug_reload_later(
+        &self,
+    ) -> Option<alloc::boxed::Box<dyn FnOnce() -> Result<Option<u32>, VfsError> + '_>> {
+        None
+    }
     /// File length in bytes, when the inode knows it (a regular/model file on a
     /// backing FS). `None` for inodes with no fixed length. Used by readers that
     /// pre-size a buffer to avoid reallocation — e.g. the Stage-B real-brain model
@@ -684,8 +693,42 @@ impl OpenFile {
     fn after_dir_op(&self, result: Result<(), VfsError>) -> Result<(), VfsError> {
         result?;
         let generation = self.inode.reload_dir()?;
-        *self.generation.lock() = generation;
+        self.publish_dir_generation(generation);
         Ok(())
+    }
+
+    /// The handle takes a reload's generation only if it is newer than the
+    /// one it holds (#106 F1): two operations through one shared handle can
+    /// finish their reloads in either order, and the older must not win.
+    /// The inode publishes its listing the same way, before returning the
+    /// generation, so the handle's generation is never newer than its
+    /// listing.
+    #[cfg(feature = "neofs-dir-ops")]
+    fn publish_dir_generation(&self, generation: Option<u32>) {
+        let mut held = self.generation.lock();
+        if neofs::dir_ops_logic::newer_generation(generation, *held) {
+            *held = generation;
+        }
+    }
+
+    /// F0's F1 discriminator: a delayed generation store, as an operation's
+    /// paused `after_dir_op` makes it.
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    pub fn debug_publish_dir_generation(&self, generation: Option<u32>) {
+        self.publish_dir_generation(generation);
+    }
+
+    /// F0's F1 discriminator: an `after_dir_op` reload whose read is done now
+    /// and whose publish (the inode's, then the handle's) runs when the
+    /// returned closure is called.
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    pub fn debug_after_dir_op_later(&self) -> impl FnOnce() -> Result<(), VfsError> + '_ {
+        let later = self.inode.debug_reload_later();
+        move || {
+            let generation = later.ok_or(VfsError::Unsupported)?()?;
+            self.publish_dir_generation(generation);
+            Ok(())
+        }
     }
 
     /// One directory entry, through a file handle whose rights are `handle`:
@@ -1650,6 +1693,20 @@ pub fn debug_neofs_raw_inode(path: &str) -> Result<(u64, alloc::vec::Vec<u8>), V
 ))]
 pub fn debug_neofs_raw_block(block: u64) -> Result<alloc::vec::Vec<u8>, VfsError> {
     mounted_neofs_for_debug()?.debug_raw_block(block)
+}
+
+/// F0's F2 leg: write everything cached and drop it, so the next reads miss.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_neofs_cold_cache() -> Result<(), VfsError> {
+    mounted_neofs_for_debug()?.debug_cold_cache()
+}
+
+/// F0's F2 leg: (device reads during F0 operations, of them made with the
+/// namespace lock held, operations that read under the lock after repeated
+/// commits), counted since the last call.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_neofs_dir_op_reads() -> (u64, u64, u64) {
+    neofs::debug_dir_op_reads()
 }
 
 /// The cut after the commit barrier: the unpublished overwrite's blocks

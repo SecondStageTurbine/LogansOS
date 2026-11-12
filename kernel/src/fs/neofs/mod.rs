@@ -78,6 +78,11 @@ pub enum NeoFsError {
 /// F0's cut: the next directory operation writes its whole commit but the
 /// superblocks (then the scenario drains to the barrier and ends the boot).
 #[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_dir_op_reads() -> (u64, u64, u64) {
+    inode::dir_ops_probe::take()
+}
+
+#[cfg(feature = "neo-test-neofs-dir-ops")]
 pub fn debug_stop_next_dir_op_before_publish() {
     inode::STOP_NEXT_BEFORE_PUBLISH.store(true, core::sync::atomic::Ordering::SeqCst);
 }

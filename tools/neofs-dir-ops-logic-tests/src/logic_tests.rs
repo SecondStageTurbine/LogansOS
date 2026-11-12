@@ -172,3 +172,37 @@ fn libneo_refuses_what_it_does_not_know() {
     bytes[4] = 0x02;
     assert_eq!(StatAt::decode(&bytes), None);
 }
+
+/// #106 F1: a handle publishes a reload only when it is newer. Chad's
+/// schedule on one shared handle, as stores to the handle's state: operation
+/// 2's reload (generation 7) lands first, then operation 1's older reload
+/// (generation 5), then operation 2's delayed generation store. With "store
+/// whatever arrives" the listing ends at 5 under generation 7 (a stale
+/// listing that passes the check); with `newer_generation` both end at 7.
+#[test]
+fn a_late_older_reload_never_replaces_a_newer_one() {
+    fn publish(held: &mut Option<u32>, new: Option<u32>) {
+        if logic::newer_generation(new, *held) {
+            *held = new;
+        }
+    }
+    let (op1, op2) = (Some(5), Some(7));
+    // The inode's listing, then the handle's generation.
+    let mut listing = Some(3);
+    let mut handle = Some(3);
+    publish(&mut listing, op2);
+    publish(&mut listing, op1);
+    publish(&mut handle, op1);
+    publish(&mut handle, op2);
+    assert_eq!((listing, handle), (op2, op2));
+
+    // The unguarded stores Chad's finding describes, for contrast: each
+    // field keeps the last store, so the listing is operation 1's and the
+    // generation operation 2's.
+    let last = |stores: &[Option<u32>]| stores.last().copied().flatten();
+    assert_ne!(last(&[op2, op1]), last(&[op1, op2]));
+
+    assert!(logic::newer_generation(Some(1), None));
+    assert!(!logic::newer_generation(None, Some(1)));
+    assert!(!logic::newer_generation(Some(4), Some(4)));
+}

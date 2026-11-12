@@ -304,6 +304,12 @@ impl NeoFs {
     }
 
     /// `block`'s bytes on the device, after draining the cache.
+    /// F0's F2 leg (`debug_neofs_cold_cache`).
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    pub fn debug_cold_cache(&self) -> Result<(), VfsError> {
+        self.state.debug_cold_cache().map_err(neofs_to_vfs)
+    }
+
     #[cfg(any(
         feature = "neo-test-neofs-file-replace",
         feature = "neo-test-neofs-dir-ops"

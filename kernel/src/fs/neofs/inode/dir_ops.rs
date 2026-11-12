@@ -41,7 +41,71 @@ pub(in crate::fs::neofs) struct DirStat {
     pub entry_count: u32,
 }
 
+/// How many times an operation reads before the lock and finds a commit came
+/// in between, before it reads under the lock instead (see
+/// [`NeoFsState::after_reads`]).
+const READ_BEFORE_LOCK_TRIES: usize = 8;
+
+/// The namespace lock as an F0 operation holds it: only after its reads.
+struct DirOpLock<'a> {
+    guard: crate::sync::switch_mutex::SwitchMutexGuard<'a, Vec<DirEntry>>,
+}
+
+impl<'a> DirOpLock<'a> {
+    fn new(guard: crate::sync::switch_mutex::SwitchMutexGuard<'a, Vec<DirEntry>>) -> Self {
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        probe::ENTRIES_HELD.store(true, core::sync::atomic::Ordering::SeqCst);
+        Self { guard }
+    }
+}
+
+impl Drop for DirOpLock<'_> {
+    fn drop(&mut self) {
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        probe::ENTRIES_HELD.store(false, core::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Everything a rename reads before the lock: the chains it rewrites and the
+/// entry it moves.
+struct RenamePlan {
+    shared: Vec<DirectoryFrame>,
+    tails: [Vec<DirectoryFrame>; 2],
+    moved: DirEntry,
+}
+
 impl NeoFsState {
+    /// Read first, then lock (#106 F2). `entries` is a spinning lock, so no
+    /// F0 operation holds it across a device read: `read` runs on a copy of
+    /// the root's entries with no lock held, and may miss the cache. Then the
+    /// lock is taken and the superblock generation compared with the one
+    /// before the reads. Every publish bumps it, under this lock, so an equal
+    /// generation means no commit came in between: the blocks read were the
+    /// live tree's (copy on write never changes them in place, and a commit
+    /// frees the ones it supersedes only at its publish), and `read`'s result
+    /// stands, an error included. Otherwise it reads again. After
+    /// [`READ_BEFORE_LOCK_TRIES`] such misses it reads under the lock, so
+    /// writers that keep committing can delay an operation but not starve it.
+    fn after_reads<T>(
+        &self,
+        read: impl Fn(&[DirEntry]) -> Result<T, NeoFsError>,
+    ) -> Result<(DirOpLock<'_>, T), NeoFsError> {
+        for _ in 0..READ_BEFORE_LOCK_TRIES {
+            let before = self.generation();
+            let root_entries = self.entries.lock().clone();
+            let result = read(&root_entries);
+            let lock = DirOpLock::new(self.entries.lock());
+            if self.generation() == before {
+                return result.map(|value| (lock, value));
+            }
+        }
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        probe::FALLBACKS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        let lock = DirOpLock::new(self.entries.lock());
+        let value = read(&lock.guard)?;
+        Ok((lock, value))
+    }
+
     /// A new, empty directory `name` in `dir`.
     pub(in crate::fs::neofs) fn mkdir_at(
         &self,
@@ -53,6 +117,8 @@ impl NeoFsState {
         }
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        let _probe = probe::InOp::new();
         let dir_parts = logic::components(dir);
         // An empty directory is one level tall: its entries will sit below it.
         if !logic::depth_fits(&dir_parts, 1) {
@@ -60,13 +126,16 @@ impl NeoFsState {
         }
         self.throttle_dirty()?;
         let _writeback_pause = self.cache.pause_worker();
-        let mut root_entries = self.entries.lock();
-        let mut frames = self.handle_chain(&root_entries, &dir_parts)?;
+        let (mut lock, mut frames) = self.after_reads(|root| {
+            let frames = self.handle_chain(root, &dir_parts)?;
+            let parent = frames.last().ok_or(NeoFsError::InvalidDirectory)?;
+            if parent.entries.iter().any(|entry| entry.name == name) {
+                return Err(NeoFsError::Exists);
+            }
+            check_directory_capacity(parent.entries.len() + 1)?;
+            Ok(frames)
+        })?;
         let parent = frames.last_mut().ok_or(NeoFsError::InvalidDirectory)?;
-        if parent.entries.iter().any(|entry| entry.name == name) {
-            return Err(NeoFsError::Exists);
-        }
-        check_directory_capacity(parent.entries.len() + 1)?;
         // The new directory's rights are its parent's (the format keeps
         // them per inode; every directory carries LOOKUP|READDIR).
         let template = parent.record.clone();
@@ -76,7 +145,7 @@ impl NeoFsState {
             child_block,
             kind: super::super::format::NeoFsKind::Directory,
         });
-        self.commit_dir_tree(&mut root_entries, &mut frames, &mut [], Vec::new())
+        self.commit_dir_tree(&mut lock.guard, &mut frames, &mut [], Vec::new())
     }
 
     /// Remove `name` from `dir`: a regular file, or an empty directory. Its
@@ -91,40 +160,45 @@ impl NeoFsState {
         }
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        let _probe = probe::InOp::new();
         let dir_parts = logic::components(dir);
         if logic::is_pinned(&dir_parts, name) {
             return Err(NeoFsError::Pinned);
         }
         self.throttle_dirty()?;
         let _writeback_pause = self.cache.pause_worker();
-        let mut root_entries = self.entries.lock();
-        let mut frames = self.handle_chain(&root_entries, &dir_parts)?;
-        let parent = frames.last_mut().ok_or(NeoFsError::InvalidDirectory)?;
-        let entry = parent
-            .entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .cloned()
-            .ok_or(NeoFsError::NotFound)?;
-        let (record, _bytes) = self.read_cached_inode(entry.child_block)?;
-        if record.kind != entry.kind {
-            return Err(NeoFsError::DirectoryTypeMismatch);
-        }
-        let superseded = match record.kind {
-            super::super::format::NeoFsKind::Regular => {
-                collect_regular_tree_blocks_cached(&self.cache, entry.child_block, &record)?
+        let (mut lock, (mut frames, superseded)) = self.after_reads(|root| {
+            let frames = self.handle_chain(root, &dir_parts)?;
+            let parent = frames.last().ok_or(NeoFsError::InvalidDirectory)?;
+            let entry = parent
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .cloned()
+                .ok_or(NeoFsError::NotFound)?;
+            let (record, _bytes) = self.read_cached_inode(entry.child_block)?;
+            if record.kind != entry.kind {
+                return Err(NeoFsError::DirectoryTypeMismatch);
             }
-            super::super::format::NeoFsKind::Directory => {
-                if record.directory_entry_count != 0 {
-                    return Err(NeoFsError::NotEmpty);
+            let superseded = match record.kind {
+                super::super::format::NeoFsKind::Regular => {
+                    collect_regular_tree_blocks_cached(&self.cache, entry.child_block, &record)?
                 }
-                let mut blocks = Vec::new();
-                collect_directory_blocks(entry.child_block, &record, &mut blocks)?;
-                blocks
-            }
-            // A model or a symlink: not F0's to remove.
-            _ => return Err(NeoFsError::UnsupportedType),
-        };
+                super::super::format::NeoFsKind::Directory => {
+                    if record.directory_entry_count != 0 {
+                        return Err(NeoFsError::NotEmpty);
+                    }
+                    let mut blocks = Vec::new();
+                    collect_directory_blocks(entry.child_block, &record, &mut blocks)?;
+                    blocks
+                }
+                // A model or a symlink: not F0's to remove.
+                _ => return Err(NeoFsError::UnsupportedType),
+            };
+            Ok((frames, superseded))
+        })?;
+        let parent = frames.last_mut().ok_or(NeoFsError::InvalidDirectory)?;
         logic::remove_named(&mut parent.entries, name, |e| e.name.as_str())
             .ok_or(NeoFsError::NotFound)?;
         let superseded = if cfg!(feature = "neofs-leak-superseded") {
@@ -132,7 +206,7 @@ impl NeoFsState {
         } else {
             superseded
         };
-        self.commit_dir_tree(&mut root_entries, &mut frames, &mut [], superseded)
+        self.commit_dir_tree(&mut lock.guard, &mut frames, &mut [], superseded)
     }
 
     /// Move `src_name` in `src_dir` to `dst_name` in `dst_dir`, on this
@@ -149,6 +223,8 @@ impl NeoFsState {
         }
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        let _probe = probe::InOp::new();
         let src_parts = logic::components(src_dir);
         let dst_parts = logic::components(dst_dir);
         if logic::is_pinned(&src_parts, src_name) {
@@ -158,44 +234,56 @@ impl NeoFsState {
             .map_err(|_| NeoFsError::IntoItself)?;
         self.throttle_dirty()?;
         let _writeback_pause = self.cache.pause_worker();
-        let mut root_entries = self.entries.lock();
-        let mut src_chain = self.handle_chain(&root_entries, &src_parts)?;
-        let mut dst_chain = self.handle_chain(&root_entries, &dst_parts)?;
-
-        // Frames 0..=common are the directories both chains share (the root
-        // and the common components); the rest are each side's own tail.
-        let shared_len = common + 1;
-        let src_tail: Vec<DirectoryFrame> = src_chain.split_off(shared_len);
-        let dst_tail: Vec<DirectoryFrame> = dst_chain.split_off(shared_len);
-        let mut shared = src_chain;
-        drop(dst_chain);
-        let mut tails = [src_tail, dst_tail];
-
-        let moved = {
-            let src = last_of(&mut shared, &mut tails, 0)?;
-            src.entries
-                .iter()
-                .find(|entry| entry.name == src_name)
-                .cloned()
-                .ok_or(NeoFsError::NotFound)?
-        };
-        {
-            let dst = last_of(&mut shared, &mut tails, 1)?;
-            if dst.entries.iter().any(|entry| entry.name == dst_name) {
-                return Err(NeoFsError::Exists);
+        let (mut lock, plan) = self.after_reads(|root| {
+            let mut src_chain = self.handle_chain(root, &src_parts)?;
+            let mut dst_chain = self.handle_chain(root, &dst_parts)?;
+            // Frames 0..=common are the directories both chains share (the
+            // root and the common components); the rest are each side's own
+            // tail.
+            let shared_len = common + 1;
+            let src_tail: Vec<DirectoryFrame> = src_chain.split_off(shared_len);
+            let dst_tail: Vec<DirectoryFrame> = dst_chain.split_off(shared_len);
+            let mut shared = src_chain;
+            let mut tails = [src_tail, dst_tail];
+            let moved = {
+                let src = last_of(&mut shared, &mut tails, 0)?;
+                src.entries
+                    .iter()
+                    .find(|entry| entry.name == src_name)
+                    .cloned()
+                    .ok_or(NeoFsError::NotFound)?
+            };
+            {
+                let dst = last_of(&mut shared, &mut tails, 1)?;
+                if dst.entries.iter().any(|entry| entry.name == dst_name) {
+                    return Err(NeoFsError::Exists);
+                }
             }
-        }
-        // Only a move deeper can break the depth limit: a subtree that fit
-        // where it was fits at the same depth or above, so the walk (which
-        // runs under the namespace lock) is skipped then.
-        if dst_parts.len() > src_parts.len() {
-            let height = self.subtree_height(&moved, 0)?;
-            if !logic::depth_fits(&dst_parts, height) {
-                return Err(NeoFsError::TooDeep);
+            // Only a move deeper can break the depth limit: a subtree that
+            // fit where it was fits at the same depth or above, so the walk
+            // is skipped then.
+            if dst_parts.len() > src_parts.len() {
+                let height = self.subtree_height(&moved, 0)?;
+                if !logic::depth_fits(&dst_parts, height) {
+                    return Err(NeoFsError::TooDeep);
+                }
             }
-        }
-        let same_directory = tails[0].is_empty() && tails[1].is_empty();
-        if same_directory {
+            if !(tails[0].is_empty() && tails[1].is_empty()) {
+                let dst = last_of(&mut shared, &mut tails, 1)?;
+                check_directory_capacity(dst.entries.len() + 1)?;
+            }
+            Ok(RenamePlan {
+                shared,
+                tails,
+                moved,
+            })
+        })?;
+        let RenamePlan {
+            mut shared,
+            mut tails,
+            moved,
+        } = plan;
+        if tails[0].is_empty() && tails[1].is_empty() {
             // In place: the entry keeps its position.
             let dir = last_of(&mut shared, &mut tails, 0)?;
             let entry = dir
@@ -205,10 +293,6 @@ impl NeoFsState {
                 .ok_or(NeoFsError::NotFound)?;
             entry.name = dst_name.into();
         } else {
-            {
-                let dst = last_of(&mut shared, &mut tails, 1)?;
-                check_directory_capacity(dst.entries.len() + 1)?;
-            }
             let src = last_of(&mut shared, &mut tails, 0)?;
             logic::remove_named(&mut src.entries, src_name, |e| e.name.as_str())
                 .ok_or(NeoFsError::NotFound)?;
@@ -219,33 +303,40 @@ impl NeoFsState {
                 kind: moved.kind,
             });
         }
-        self.commit_dir_tree(&mut root_entries, &mut shared, &mut tails, Vec::new())
+        self.commit_dir_tree(&mut lock.guard, &mut shared, &mut tails, Vec::new())
     }
 
-    /// `name` in `dir`: its kind, size and entry count.
+    /// `name` in `dir`: its kind, size and entry count. Read with no lock
+    /// held, then checked against the generation under it, as a mutation's
+    /// reads are.
     pub(in crate::fs::neofs) fn stat_at(
         &self,
         dir: Option<&str>,
         name: &str,
     ) -> Result<DirStat, NeoFsError> {
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        let _probe = probe::InOp::new();
         let dir_parts = logic::components(dir);
-        let root_entries = self.entries.lock();
-        let frames = self.handle_chain(&root_entries, &dir_parts)?;
-        let parent = frames.last().ok_or(NeoFsError::InvalidDirectory)?;
-        let entry = parent
-            .entries
-            .iter()
-            .find(|entry| entry.name == name)
-            .ok_or(NeoFsError::NotFound)?;
-        let (record, _bytes) = self.read_cached_inode(entry.child_block)?;
-        if record.kind != entry.kind {
-            return Err(NeoFsError::DirectoryTypeMismatch);
-        }
-        Ok(DirStat {
-            kind: record.kind,
-            size: record.file_size,
-            entry_count: record.directory_entry_count,
-        })
+        let (lock, stat) = self.after_reads(|root| {
+            let frames = self.handle_chain(root, &dir_parts)?;
+            let parent = frames.last().ok_or(NeoFsError::InvalidDirectory)?;
+            let entry = parent
+                .entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .ok_or(NeoFsError::NotFound)?;
+            let (record, _bytes) = self.read_cached_inode(entry.child_block)?;
+            if record.kind != entry.kind {
+                return Err(NeoFsError::DirectoryTypeMismatch);
+            }
+            Ok(DirStat {
+                kind: record.kind,
+                size: record.file_size,
+                entry_count: record.directory_entry_count,
+            })
+        })?;
+        drop(lock);
+        Ok(stat)
     }
 
     /// The chain from the root to the handle's directory `dir_parts`, as it
@@ -491,18 +582,99 @@ pub(super) fn stat(inode: &NeoInode, name: &str) -> Result<logic::StatAtV1, VfsE
     Ok(logic::StatAtV1 { kind, flags, size })
 }
 
-/// After its own commit, a directory handle reads the new version: its
-/// inode block and record (which `readdir_at` lists), and the generation
-/// the handle now holds, taken from the same record so the two agree.
+/// After its own commit, a directory handle reads the new version (no lock
+/// held), then publishes it ([`publish`]). Returns the generation the inode
+/// now holds, for the handle.
 pub(super) fn reload(inode: &NeoInode) -> Result<Option<u32>, VfsError> {
-    let (block, record) = inode
+    let snapshot = inode
         .state
         .directory_now(inode.name.as_deref())
         .map_err(|_| VfsError::Stale)?;
-    let generation = record.generation;
-    *inode.inode_block.lock() = block;
-    *inode.record.lock() = record;
-    Ok(Some(generation))
+    Ok(publish(inode, snapshot))
+}
+
+/// Publish a directory snapshot to the inode only if it is newer than the
+/// one it holds (#106 F1, CP-13). Two operations through one shared handle
+/// each reload; without this, the later commit's reload could store its
+/// inode block and the earlier one's record after it, and a readdir would
+/// pass the generation check and list the old entries. Generations only
+/// grow (each version gets the next one), so the newest snapshot wins
+/// whatever order the reloads finish in. The block and the record are
+/// stored under the record's lock, with no I/O, and the generation returned
+/// is the one now held, so the handle never holds a generation newer than
+/// the listing its inode has.
+fn publish(inode: &NeoInode, (block, record): (u64, InodeRecord)) -> Option<u32> {
+    let mut held = inode.record.lock();
+    if logic::newer_generation(Some(record.generation), Some(held.generation)) {
+        *inode.inode_block.lock() = block;
+        *held = record;
+    }
+    Some(held.generation)
+}
+
+/// The scenario's F1 discriminator: a reload whose read is done now and
+/// whose publish runs when the returned closure is called, later. It stands
+/// in for an operation paused after its reload's read while another one
+/// through the same handle completes.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub(super) fn reload_later<'a>(
+    inode: &'a NeoInode,
+) -> alloc::boxed::Box<dyn FnOnce() -> Result<Option<u32>, VfsError> + 'a> {
+    let snapshot = inode.state.directory_now(inode.name.as_deref());
+    alloc::boxed::Box::new(move || {
+        let snapshot = snapshot.map_err(|_| VfsError::Stale)?;
+        Ok(publish(inode, snapshot))
+    })
+}
+
+/// The scenario's F2 discriminator: every device read a cache miss makes
+/// while an F0 operation runs is counted, and separately the ones made
+/// while that operation holds the namespace lock (which must be none).
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub(in crate::fs::neofs) mod probe {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    pub(super) static ENTRIES_HELD: AtomicBool = AtomicBool::new(false);
+    static IN_OP: AtomicBool = AtomicBool::new(false);
+    static OP_READS: AtomicU64 = AtomicU64::new(0);
+    static HELD_READS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+    /// The span of one F0 operation.
+    pub(super) struct InOp;
+
+    impl InOp {
+        pub(super) fn new() -> Self {
+            IN_OP.store(true, Ordering::SeqCst);
+            Self
+        }
+    }
+
+    impl Drop for InOp {
+        fn drop(&mut self) {
+            IN_OP.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Called by the block cache before each device read it makes.
+    pub(in crate::fs::neofs) fn note_device_read() {
+        if IN_OP.load(Ordering::SeqCst) {
+            OP_READS.fetch_add(1, Ordering::SeqCst);
+            if ENTRIES_HELD.load(Ordering::SeqCst) {
+                HELD_READS.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// (device reads during F0 operations, of them with the lock held,
+    /// operations that fell back to reading under the lock), and reset.
+    pub(in crate::fs::neofs) fn take() -> (u64, u64, u64) {
+        (
+            OP_READS.swap(0, Ordering::SeqCst),
+            HELD_READS.swap(0, Ordering::SeqCst),
+            FALLBACKS.swap(0, Ordering::SeqCst),
+        )
+    }
 }
 
 /// The VFS error for a directory operation's NeoFS error.
