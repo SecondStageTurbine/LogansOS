@@ -21249,7 +21249,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         } else {
             (
                 "[ mozjs-smoke ]",
-                "ok(20) the helper thread pool started (JSGC_HELPER_THREAD_COUNT threads, at least 2)",
+                "ok(20) the helper thread pool started (at least 2 threads; the GC's parallel helpers drawn from them)",
                 "ok(21) helper threads were woken for work before shutdown",
                 "ok(22) JS_ShutDown stopped and joined every helper thread",
             )

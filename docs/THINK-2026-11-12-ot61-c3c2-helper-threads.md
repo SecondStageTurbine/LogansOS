@@ -53,7 +53,7 @@ What this rung borrows is **pattern only**:
 
 | Check | Reads | Passes when |
 |---|---|---|
-| 20 | `JS_GetGCParameter(JSGC_HELPER_THREAD_COUNT)` after `JS_NewContext`, and neo-crt's created count | Both equal, and ≥ 2. At `NEO_SMP=4` that's 4 if std's `available_parallelism` reports the CPUs, 2 if it reports 1; the smoke prints which |
+| 20 | neo-crt's created count after `JS_NewContext`, and `JS_GetGCParameter(JSGC_HELPER_THREAD_COUNT)` | At least 2 threads made (`max(cpus, 2)`, `HelperThreads.cpp:97-101`), and the GC's count between 1 and that. *(Corrected after the first gate run, #113: `JSGC_HELPER_THREAD_COUNT` is the GC's share of the pool for parallel work, `cpus × JSGC_HELPER_THREAD_RATIO` clamped, not the pool's size, so the first draft's "both equal" failed with 1 and 2. That run also showed std's `available_parallelism` returning `NotFound` on our target, so neo-crt's `sysconf` reports 1 CPU and SpiderMonkey sizes for one even at `NEO_SMP=4`; the smoke prints both.)* |
 | 21 | neo-crt's per-thread condvar wakes, summed over the helper threads, before shutdown | ≥ 1 after the compacting GC of §4.2. The pool only wakes a helper to run a task or to exit, and exit hasn't happened yet, so a wake means a task ran off the main thread |
 | 22 | neo-crt's joined and exited counts after `JS_ShutDown` returns | Both equal check 20's count; no helper thread is left |
 | 23 | The process's exit code and the kernel's frame count | 0, and every frame back (as C3c-1) |

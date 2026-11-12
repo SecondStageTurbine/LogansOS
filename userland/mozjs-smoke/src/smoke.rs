@@ -18,8 +18,9 @@
 //! - 7, 8: about 4 MiB allocated, a forced GC, the survivors intact.
 //!
 //! C3c-2's checks, counted through neo-crt's thread record:
-//! - 20: the helper threads started (pool: `JSGC_HELPER_THREAD_COUNT`
-//!   threads, at least 2; single: none);
+//! - 20: the helper threads started (pool: at least 2, `max(cpus, 2)` by
+//!   `HelperThreads.cpp`, and the GC's `JSGC_HELPER_THREAD_COUNT`, its share
+//!   of them for parallel GC work, between 1 and the pool; single: none);
 //! - 26: the control for check 21: with parallel marking and compaction off
 //!   and a small allocation, no helper thread is woken;
 //! - 24, 25: a shrinking GC packs a fragmented heap (fewer heap bytes than
@@ -55,7 +56,13 @@ unsafe extern "C" {
     fn free(p: *mut core::ffi::c_void);
     /// Patch 0006: `js::DisableExtraThreads()`, for our target only.
     fn neo_js_disable_extra_threads();
+    /// neo-crt's: what SpiderMonkey's `GetCPUCount` reads
+    /// (`threading/posix/CpuCount.cpp`).
+    fn sysconf(name: i32) -> i64;
 }
+
+/// musl's `_SC_NPROCESSORS_ONLN`.
+const SC_NPROCESSORS_ONLN: i32 = 84;
 
 /// Which binary is running. Each binary constructs only its own variant.
 #[allow(dead_code)]
@@ -265,17 +272,20 @@ pub fn run(mode: Mode) -> ! {
         let started = settled();
         match mode {
             Mode::Pool => {
+                // JSGC_HELPER_THREAD_COUNT is the GC's share of the pool for
+                // parallel work (cpus x a ratio, clamped), not the pool's size.
                 let helpers = gc_param(&rt, JSGCParamKey::JSGC_HELPER_THREAD_COUNT);
+                let cpus = unsafe { sysconf(SC_NPROCESSORS_ONLN) };
                 pool = started.created;
                 println!(
-                    "{tag}   check 20: JSGC_HELPER_THREAD_COUNT {helpers}, pthread_create {}, available_parallelism {:?}",
+                    "{tag}   check 20: pthread_create {}, JSGC_HELPER_THREAD_COUNT {helpers}, sysconf CPUs {cpus}, available_parallelism {:?}",
                     started.created,
                     thread::available_parallelism().map(|n| n.get()),
                 );
                 out.check(
                     20,
-                    "the helper thread pool started (JSGC_HELPER_THREAD_COUNT threads, at least 2)",
-                    started.created >= 2 && u64::from(helpers) == started.created,
+                    "the helper thread pool started (at least 2 threads; the GC's parallel helpers drawn from them)",
+                    started.created >= 2 && helpers >= 1 && u64::from(helpers) <= started.created,
                 );
             }
             Mode::Single => {
