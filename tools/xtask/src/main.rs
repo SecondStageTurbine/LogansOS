@@ -24986,8 +24986,8 @@ fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         &[
             "DESKTOP launchcap minted client=arthur",
             "DESKTOP arthur line=open terminal",
-            "DESKTOP apps client connected client=2 value=1",
-            "DESKTOP apps front client=2 via=launch",
+            "DESKTOP apps client connected client=3 value=1",
+            "DESKTOP apps front client=3 via=launch",
             "DESKTOP apps front client=0",
             // Exactly `again`: a key of the terminal's would be in it.
             "DESKTOP arthur line=again\n",
@@ -25003,7 +25003,7 @@ fn require_terminal_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
         "TERM ready cols=",
         "DESKTOP arthur terminal opened",
         // The session's end closes the terminal, which exits 0.
-        "DESKTOP apps client ended client=2 value=0",
+        "DESKTOP apps client ended client=3 value=0",
     ] {
         require_serial_contains(scenario, observed, needle, detail)?;
     }

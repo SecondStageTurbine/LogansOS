@@ -428,7 +428,7 @@ const TERMINAL_LOCK: &[SerialScriptStep] = &[
     ),
     step(b"LOCK prompt=password", b"x\n"),
     step(b"LOCK prompt=password", P1),
-    step(b"DESKTOP apps client resumed client=2", b"c\n"),
+    step(b"DESKTOP apps client resumed client=3", b"c\n"),
     step(b"TERM row=2 |got=6162630a|", &[PAUSE, HMP_SUPER_L]),
     step(b"LOCK prompt=password", P1),
 ];
@@ -1772,12 +1772,12 @@ fn terminal_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Resu
         &[
             "LOCK armed route=kernel",
             "LOGIN session started view=home",
-            "DESKTOP apps front client=2 via=launch",
+            "DESKTOP apps front client=3 via=launch",
             "TERM row=1 |ab|",
             "LOCK locked reason=sak",
             "LOCK prompt=password",
             "LOCK unlocked failures=1 to=client",
-            "DESKTOP apps client resumed client=2",
+            "DESKTOP apps client resumed client=3",
             "TERM row=1 |abc|",
             "TERM row=2 |got=6162630a|",
             "LOCK unlocked failures=0 to=client",

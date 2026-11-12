@@ -3597,10 +3597,6 @@ mod apps {
         index_of(module).is_some()
     }
 
-    // The browser and the terminal both take slot 2; no image builds both.
-    #[cfg(all(feature = "atrium-apps-browser", feature = "atrium-terminal"))]
-    compile_error!("atrium-apps-browser and atrium-terminal both take client slot 2");
-
     /// The table index a module's client takes (one instance per app).
     fn index_of(module: u32) -> Option<usize> {
         match module {
@@ -3608,9 +3604,12 @@ mod apps {
             // OT-61 L5: the browser.
             #[cfg(feature = "atrium-apps-browser")]
             libneo::atrium_launch::MODULE_BROWSER => Some(2),
-            // L1a.3: the terminal (THINK-2026-10-31-l1a §2).
+            // L1a.3: the terminal (THINK-2026-10-31-l1a §2). A2: a slot of
+            // its own, so one image can run it and the browser (each app has
+            // one slot: the browser 2, the terminal 3; Files and Settings will
+            // take 4 and 5, which fills MAX_CLIENTS).
             #[cfg(feature = "atrium-terminal")]
-            libneo::atrium_launch::MODULE_TERMINAL => Some(2),
+            libneo::atrium_launch::MODULE_TERMINAL => Some(3),
             _ => None,
         }
     }
