@@ -33499,7 +33499,8 @@ fn run_neofs_dir_ops() -> ! {
     // padding to byte 48, the child inode block (u64 LE) at 48, the kind at
     // 56, zeros 57..64; the rest of the 4096-byte block zero (§5). The inode:
     // magic, kind Directory (1) and version 1 at 8 and 9, size 64 per entry
-    // at 16, one block at 24, the entry count at 156, BLAKE3 of the entries
+    // at 16, one block at 24 (none, and no block pointer, when empty), the
+    // entry count at 156, BLAKE3 of the entries
     // at 104, and its checksum, BLAKE3 of bytes 0..224, at 224 (§4).
     let oracle = |path: &str, entries: &[(&[u8], u64, u8)], reason: &str| {
         let mut want = alloc::vec![0u8; 4096];
@@ -33512,11 +33513,15 @@ fn run_neofs_dir_ops() -> ! {
         let used = entries.len() * 64;
         let (_block, raw) = crate::fs::debug_neofs_raw_inode(path)
             .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_raw_inode_failed", e));
+        // An empty directory has no data block (its size is 0, so its block
+        // count is 0, §4); otherwise one.
+        let blocks = u64::from(!entries.is_empty());
         let inode_ok = &raw[0..8] == b"NEOFSINO"
             && raw[8] == DIR
             && raw[9] == 1
             && u64_at(&raw, 16) == used as u64
-            && u64_at(&raw, 24) == 1
+            && u64_at(&raw, 24) == blocks
+            && (blocks == 1 || u64_at(&raw, 32) == 0)
             && u32::from_le_bytes(raw[156..160].try_into().unwrap()) == entries.len() as u32
             && raw[104..136] == *blake3::hash(&want[..used]).as_bytes()
             && raw[224..256] == *blake3::hash(&raw[..224]).as_bytes();
@@ -33528,6 +33533,9 @@ fn run_neofs_dir_ops() -> ! {
                 path
             );
             debug_exit(EXIT_FAILURE);
+        }
+        if blocks == 0 {
+            return;
         }
         let block = crate::fs::debug_neofs_raw_block(u64_at(&raw, 32))
             .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_raw_block_failed", e));

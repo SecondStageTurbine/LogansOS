@@ -47,8 +47,10 @@ pub enum Content {
         free_map: Block,
         free_hash: u64,
     },
+    /// `data` is `None` for an empty directory: no data block (the kernel's
+    /// `write_directory_version`).
     DirInode {
-        data: Block,
+        data: Option<Block>,
         data_hash: u64,
     },
     DirData(Vec<Entry>),
@@ -169,8 +171,14 @@ pub enum Refused {
 
 #[derive(Clone)]
 enum Node {
-    Dir { data: Block, entries: Vec<Entry> },
-    File { data: Block, bytes: Vec<u8> },
+    Dir {
+        data: Option<Block>,
+        entries: Vec<Entry>,
+    },
+    File {
+        data: Block,
+        bytes: Vec<u8>,
+    },
 }
 
 /// One directory on a chain: its name in its parent (`None`: the root), the
@@ -178,7 +186,7 @@ enum Node {
 struct Frame {
     name: Option<String>,
     inode: Block,
-    data: Block,
+    data: Option<Block>,
     entries: Vec<Entry>,
 }
 
@@ -228,7 +236,7 @@ impl Volume {
         let mut root = [Frame {
             name: None,
             inode: 0,
-            data: 0,
+            data: None,
             entries: Vec::new(),
         }];
         v.commit_tree(&mut root, &mut [], Vec::new(), false);
@@ -273,12 +281,18 @@ impl Volume {
         }
     }
 
-    /// `write_directory_tree_without_publish`: a data block, then an inode.
+    /// `write_directory_version`: a data block (none when empty), then an
+    /// inode.
     fn write_dir(&mut self, entries: &[Entry]) -> Block {
-        let data = self.allocate();
         let content = Content::DirData(entries.to_vec());
         let data_hash = hash(&content);
-        self.dirty(data, Role::RootDirectory, content);
+        let data = if entries.is_empty() {
+            None
+        } else {
+            let block = self.allocate();
+            self.dirty(block, Role::RootDirectory, content);
+            Some(block)
+        };
         let inode = self.allocate();
         self.dirty(
             inode,
@@ -340,7 +354,7 @@ impl Volume {
         if frees_frames {
             for frame in shared.iter().chain(tails.iter().flatten()) {
                 superseded.push(frame.inode);
-                superseded.push(frame.data);
+                superseded.extend(frame.data);
             }
         }
         let point = |entries: &mut Vec<Entry>, name: &str, block: Block| {
@@ -532,7 +546,11 @@ impl Volume {
             .ok_or(Refused::NotFound)?;
         let superseded = match self.nodes.get(&child) {
             Some(Node::File { data, .. }) => vec![child, *data],
-            Some(Node::Dir { data, entries }) if entries.is_empty() => vec![child, *data],
+            Some(Node::Dir { data, entries }) if entries.is_empty() => {
+                let mut blocks = vec![child];
+                blocks.extend(*data);
+                blocks
+            }
             Some(Node::Dir { .. }) => return Err(Refused::NotEmpty),
             None => unreachable!("an entry names a live node"),
         };
@@ -748,16 +766,31 @@ fn walk_media(
     let Content::DirInode { data, data_hash } = media.get(&inode)? else {
         return None;
     };
-    let data_content = media.get(data)?;
-    if hash(data_content) != *data_hash {
-        return None;
-    }
-    let Content::DirData(entries) = data_content else {
-        return None;
-    };
     mark(live, inode)?;
-    mark(live, *data)?;
-    for (name, child, is_dir) in entries {
+    let entries = match data {
+        // An empty directory names no data block.
+        None => {
+            if *data_hash != hash(&Content::DirData(Vec::new())) {
+                return None;
+            }
+            Vec::new()
+        }
+        Some(data) => {
+            let data_content = media.get(data)?;
+            if hash(data_content) != *data_hash {
+                return None;
+            }
+            let Content::DirData(entries) = data_content else {
+                return None;
+            };
+            if entries.is_empty() {
+                return None;
+            }
+            mark(live, *data)?;
+            entries.clone()
+        }
+    };
+    for (name, child, is_dir) in &entries {
         let path = if prefix.is_empty() {
             name.clone()
         } else {

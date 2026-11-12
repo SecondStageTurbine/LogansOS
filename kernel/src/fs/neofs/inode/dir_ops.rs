@@ -70,7 +70,7 @@ impl NeoFsState {
         // The new directory's rights are its parent's (the format keeps
         // them per inode; every directory carries LOOKUP|READDIR).
         let template = parent.record.clone();
-        let (child_block, _record) = self.write_directory_tree_without_publish(&template, &[])?;
+        let (child_block, _record) = self.write_directory_version(&template, &[])?;
         parent.entries.push(DirEntry {
             name: name.into(),
             child_block,
@@ -275,6 +275,46 @@ impl NeoFsState {
         }
     }
 
+    /// A new version of a directory holding `entries`. With entries, it is
+    /// `write_directory_tree_without_publish`'s. Empty, it is an inode with no
+    /// data block: the format counts a file's blocks from its size
+    /// (`parse_inode`: `block_count == file_data_blocks(file_size)`, 0 for an
+    /// empty directory), and its content hash is BLAKE3 of nothing (spec
+    /// §4.4). F0 is the first writer of an empty directory: a new folder, a
+    /// folder emptied by an unlink, a rename's source.
+    fn write_directory_version(
+        &self,
+        old_record: &InodeRecord,
+        entries: &[DirEntry],
+    ) -> Result<(u64, InodeRecord), NeoFsError> {
+        if !entries.is_empty() {
+            return self.write_directory_tree_without_publish(old_record, entries);
+        }
+        let (inode_block, generation) = self.reserve_inode_block_and_generation()?;
+        let record = InodeRecord {
+            kind: super::super::format::NeoFsKind::Directory,
+            generation,
+            file_size: 0,
+            block_count: 0,
+            direct_blocks: [0; DIRECT_BLOCKS],
+            single_indirect_block: 0,
+            double_indirect_block: 0,
+            triple_indirect_block: 0,
+            content_hash: hash(&[]),
+            available_rights: old_record.available_rights,
+            directory_entry_count: 0,
+            fs_block_count: self.total_blocks(),
+        };
+        write_inode_to_cache(
+            &self.cache,
+            inode_block,
+            self.total_blocks(),
+            &record,
+            CachedBlockRole::RootDirectory,
+        )?;
+        Ok((inode_block, record))
+    }
+
     /// How many directory levels `entry` adds below its own: 0 for a file,
     /// 1 for an empty directory (its future entries), and one more than its
     /// tallest child directory otherwise. Bounded by the depth mount allows.
@@ -319,8 +359,8 @@ impl NeoFsState {
                 if let Some((name, block)) = child_update.take() {
                     point_entry(&mut tail[idx].entries, &name, block)?;
                 }
-                let (dir_block, _record) = self
-                    .write_directory_tree_without_publish(&tail[idx].record, &tail[idx].entries)?;
+                let (dir_block, _record) =
+                    self.write_directory_version(&tail[idx].record, &tail[idx].entries)?;
                 let name = tail[idx].name.clone().ok_or(NeoFsError::InvalidDirectory)?;
                 child_update = Some((name, dir_block));
             }
@@ -345,8 +385,8 @@ impl NeoFsState {
                 *root_entries = shared[0].entries.clone();
                 return Ok(());
             }
-            let (dir_block, _record) = self
-                .write_directory_tree_without_publish(&shared[idx].record, &shared[idx].entries)?;
+            let (dir_block, _record) =
+                self.write_directory_version(&shared[idx].record, &shared[idx].entries)?;
             let name = shared[idx]
                 .name
                 .clone()
