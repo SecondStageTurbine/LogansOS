@@ -2,8 +2,8 @@
 # i18n-core: translation notes (Spanish)
 
 The Spanish table in `src/lib.rs`, row by row, for the wording review. Generated from the table, so the
-two can't disagree; the KATs in `src/tests.rs` hold the English column to today's literals and every row
-inside the card.
+two can't disagree; the KATs in `src/tests.rs` hold the English column to the pinned `fixtures/en.txt` and every row inside
+the card.
 
 ## Choices that apply to every row
 
@@ -66,6 +66,20 @@ inside the card.
 | `Off` | off | no | See On. |
 | `SetupNoticeZoneInUse` | Couldn't save the time zone. In use: {}. | No se pudo guardar la zona horaria. En uso: {}. |  |
 | `SetupNoticeZoneRestart` | Couldn't save the time zone. Restart to check it. | No se pudo guardar la zona horaria. Reinicia para comprobarla. | "comprobarla" (la zona). |
+| `SetupBodyLanguageChoose` | Choose the language for setup and Home. | Elige el idioma de la configuración y de Inicio. | S6b. "Inicio" for Home, as elsewhere. |
+| `SetupBodyLanguageArthur` | Arthur answers in English for now. | Por ahora, Arthur responde en inglés. | S6b. Arthur's replies stay in English (the dispatch's scope), so the page says so. |
+| `SetupTitleNetwork` | Network | Red | S4's page (S6b moved its strings in). |
+| `SetupContinueNoNetwork` | Continue without a network | Continuar sin red |  |
+| `NetUnavailable` | Network status is unavailable. | El estado de la red no está disponible. |  |
+| `NetNoLink` | Wired: no link. | Cable: sin enlace. | "Cable" for "Wired" (a wired connection); "enlace" is the link layer's term. |
+| `NetDevice` | Device: {}. | Dispositivo: {}. | The argument is a driver name (12 bytes at most). |
+| `NetConnected` | Wired: connected, {} | Cable: conectado, {} | The argument is the dotted IPv4 address. |
+| `NetNoAddress` | Wired: connected, no address yet. | Cable: conectado, aún sin dirección. |  |
+| `NetDeviceLease` | Device: {}. Lease: {}. | Dispositivo: {}. Concesión: {}. | "Concesión" is the DHCP lease's usual Spanish term. Widest Spanish S6b row: 70% of the card. |
+| `NetWifiLater` | Wi-Fi: coming in a later version. | Wi-Fi: llegará en una versión posterior. |  |
+| `LeaseUnderMinute` | under a minute left | queda menos de un minuto | Fills NetDeviceLease's second argument. |
+| `LeaseMinutes` | {} min left | quedan {} min | Always plural in Spanish: the minutes are 1 to 59, and "quedan 1 min" reads as an abbreviation, as in English. |
+| `LeaseHours` | {} h {} min left | quedan {} h {} min |  |
 | `IntroGreeting` | Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | Buen día. Soy Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | **Decision: the acronym's expansion stays in English, as the name it spells.** "ARTHUR" is an English acronym; translating the expansion (Chad's alternative, "Asistente para tareas en tiempo real, automatización del hogar y solicitudes de usuario") no longer spells it. It also doesn't fit: measured with the card's face and size, that row is 114% of the card with "Buen día." and 104% without it, and a Spanish gloss next to the English would be longer still. A gloss on a row of its own would change the intro's row count, which is S6b's and the persona's call. **J.c. decides**; the catalog takes either answer. |
 | `IntroName` | I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | Soy Arthur: Assistant for Real-time Tasks, Home automation and User Requests. | As IntroGreeting. |
 | `IntroHousehold` | The household side comes later; for now, I look after this computer for you. | Lo del hogar llegará después; por ahora, cuido esta computadora por ti. | "Lo del hogar" for "the household side"; "cuido esta computadora por ti". |

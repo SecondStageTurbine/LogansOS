@@ -1,0 +1,134 @@
+SetupHint	Up/Down to move, Enter to choose, Esc to go back.
+SetupSearchHint	Type to search. Up/Down, Enter to choose.
+SetupBegin	Begin
+SetupSkip	Skip setup
+SetupSkipDefaults	Skip setup and use the defaults
+SetupBack	Back
+SetupContinue	Continue
+SetupTryOption	Try LogansOS
+SetupReduceMotionOption	{} Reduce motion
+SetupReduceTransparencyOption	{} Reduce transparency
+SetupTitleWelcome	Set up LogansOS
+SetupTitleSkip	Skip setup?
+SetupTitleLanguage	Language
+SetupTitleKeyboard	Keyboard
+SetupTitleTimeZone	Time zone
+SetupTitleComfort	Comfort
+SetupTitleTry	Try LogansOS
+SetupTitlePage	{} ({} of {})
+SetupBodyWelcome	A few short screens. You can change any of these later.
+SetupBodySkip	The defaults are UTC, with full motion and transparency.
+SetupBodyLanguage	English is the only language for now.
+SetupBodyKeyboard	US is the only keyboard layout for now.
+SetupKeyboardBodyChoose	Choose the layout printed on your keys.
+SetupKeyboardTryIt	Try it: {}_
+SetupSummaryKeyboard	Keyboard: {}
+LayoutEnglishUs	English (US)
+LayoutSpanishSpain	Spanish (Spain)
+SetupBodyTimeZoneNoSearch	Where are you? At Home: timezone Area/City.
+SetupBodyZoneSet	Time zone: {}. The clock is set.
+SetupBodyZoneLater	Change it later at Home: timezone Area/City.
+SetupBodySearchEmpty	Type a city to search, or pick one.
+SetupBodySearchNone	Search: {}  (no zone matches)
+SetupBodySearch	Search: {}
+SetupBodyComfort	Make the screen calmer, if you like.
+SetupNotSet	not set
+ZoneRow	Time zone: {}
+SetupSummaryZoneClockNotSet	Time zone: {} (clock not set)
+ZoneRowNotSet	Time zone: not set
+SetupSummaryComfort	Reduce motion: {}. Reduce transparency: {}.
+On	on
+Off	off
+SetupNoticeZoneInUse	Couldn't save the time zone. In use: {}.
+SetupNoticeZoneRestart	Couldn't save the time zone. Restart to check it.
+SetupBodyLanguageChoose	Choose the language for setup and Home.
+SetupBodyLanguageArthur	Arthur answers in English for now.
+SetupTitleNetwork	Network
+SetupContinueNoNetwork	Continue without a network
+NetUnavailable	Network status is unavailable.
+NetNoLink	Wired: no link.
+NetDevice	Device: {}.
+NetConnected	Wired: connected, {}
+NetNoAddress	Wired: connected, no address yet.
+NetDeviceLease	Device: {}. Lease: {}.
+NetWifiLater	Wi-Fi: coming in a later version.
+LeaseUnderMinute	under a minute left
+LeaseMinutes	{} min left
+LeaseHours	{} h {} min left
+IntroGreeting	Good day. I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.
+IntroName	I'm Arthur: Assistant for Real-time Tasks, Home automation and User Requests.
+IntroHousehold	The household side comes later; for now, I look after this computer for you.
+IntroPrivacy	I work entirely on this machine, and I don't send what you tell me anywhere.
+IntroUsbOnly	On this machine I can't keep anything once it's switched off, not yet.
+IntroAsk	Ask in your own words: "What does a CPU do?", for instance.
+IntroList	"list /" shows you the files on this machine.
+IntroListStill	"list /" still shows you the files on this machine.
+IntroExit	Type help for what you can do yourself. Esc always brings you back here.
+HelpTitle	What you can do yourself, without asking me:
+HelpEsc	Esc sets me aside and brings you back to Home.
+HelpList	"list /" opens the Lens: a read-only view of the files on this machine.
+HelpChips	The chips on the left switch between me and the Lens; Tab reaches them.
+HelpDrag	Drag a window by its title bar to move it, or by an edge to resize it.
+HelpType	Start typing to ask me something, or press Esc to close this card.
+IntroHint	Type help, or click here, for what you can do yourself.
+IntroModelAbsent	I can hear you, but my model isn't on this system yet. Boot the LogansOS USB it came with.
+IntroModelDamaged	My model file is damaged, so I won't use it. Re-create the USB from the original image.
+IntroModelLoadFailed	My model didn't load, so I'm running without it. The details are in /model.
+IntroTooLittleMemory	This computer has {} GB of memory; my smallest brain needs {} GB.
+IntroCantThink	I can't think yet, but "list /" still shows you the files on this machine.
+ButtonBack	[ Back ]
+GoodMorning	Good morning
+GoodAfternoon	Good afternoon
+GoodEvening	Good evening
+GreetingRow	{}. It's {} on {}.
+Sunday	Sunday
+Monday	Monday
+Tuesday	Tuesday
+Wednesday	Wednesday
+Thursday	Thursday
+Friday	Friday
+Saturday	Saturday
+January	January
+February	February
+March	March
+April	April
+May	May
+June	June
+July	July
+August	August
+September	September
+October	October
+November	November
+December	December
+Am	 AM
+Pm	 PM
+PowerAskShutDown	Shut down this computer?
+PowerShutDown	Shut down
+PowerAskRestart	Restart this computer?
+PowerRestart	Restart
+PowerWarning	Open apps close first; anything they haven't saved is lost.
+PowerConfirmHint	Enter to go ahead; any other key goes back.
+PowerShuttingDown	Shutting down...
+PowerRestarting	Restarting...
+PowerBusy	It's already shutting down.
+PowerUnsupported	This system can't do that from here.
+PowerFailed	That didn't work.
+PowerError	(error {}) Press any key.
+ZoneRowNow	Time zone: {} ({})
+ClockKeepsLocal	This computer's clock keeps local time (as Windows does).
+ClockKeepsUtc	This computer's clock keeps UTC.
+ClockLegacy1	Saved. This system shows the computer's clock
+ClockLegacy2	as it reads, without a time zone.
+ClockSetZone	Set your zone: timezone America/New_York
+ClockChangeZone	Change it: timezone Area/City
+ClockRestart	Restart to read this computer's clock this way.
+ClockOffUtc	Off by whole hours? Type: rtc utc
+ClockOffLocal	Off by whole hours? Type: rtc local
+ClockTitle	The clock
+ClockZoneSet	Time zone set to {}.
+ClockNoZone	There's no time zone called "{}".
+ClockTypeZone	Type timezone Area/City, for example
+ClockTypeZoneExamples	timezone America/New_York or timezone Europe/London.
+ClockDidYouMean	Did you mean:
+ClockSavedLocal	Saved: this computer's clock keeps local time.
+ClockSavedUtc	Saved: this computer's clock keeps UTC.
