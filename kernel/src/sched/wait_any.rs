@@ -42,8 +42,15 @@ use crate::sync::IrqSafeMutex;
 use super::process::ProcessId;
 use super::scheduler::{self, ThreadWakeToken};
 
-/// At most this many items per wait (and channel keys per waiter).
-pub const ITEMS_MAX: usize = 8;
+/// At most this many items per wait (and channel keys per waiter). A3p
+/// (OT-88 THINK §2.3 item 9): 16, the parked WM's 15 (six clients' session
+/// and surface channels, the pointer route, Home's focus and the SAK latch)
+/// plus one spare. Every array sized by it is fixed: per wait, about 1 KiB of
+/// the syscall's stack (the 128-byte copy-in, 16 decoded items, two
+/// `WaitIdentity` scans of 264 bytes and `register`'s 128-byte key copy); per
+/// waiter, 128 bytes of keys in the static table (16 waiters: 2 KiB). No heap.
+/// A 17-item wait is `EINVAL`, returned before any copy.
+pub const ITEMS_MAX: usize = 16;
 /// Concurrent waiters. Three desktop processes park one thread each; a full
 /// table fails closed with EAGAIN (the caller polls once), never a panic.
 const WAITERS_MAX: usize = 16;

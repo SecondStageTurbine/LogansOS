@@ -7129,6 +7129,13 @@ fn sys_wait_any_impl(items_ptr: u64, n: usize, deadline_ns: u64) -> i64 {
     wait_any_items(&items[..n], deadline_ns)
 }
 
+/// A3p leg 8: the syscall's own entry (bound check, then copy-in), for the
+/// kernel-side `wait_any_core` legs.
+#[cfg(feature = "neo-test-wait-any-core")]
+pub(crate) fn debug_sys_wait_any_for_test(items_ptr: u64, n: usize, deadline_ns: u64) -> i64 {
+    sys_wait_any_impl(items_ptr, n, deadline_ns)
+}
+
 /// `SYS_WAIT_ANY`'s body over resolved items, for the calling thread's
 /// process. Also the entry point of the kernel-side `wait_any_core` legs.
 #[cfg(feature = "wait-multiplex")]

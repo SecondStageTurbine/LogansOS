@@ -122,6 +122,18 @@ mod wait_abi_kats {
     };
     use super::wait_any_logic as kernel;
 
+    /// A3p: the bound is 16 on both sides (the parked WM's 15 items plus a
+    /// spare). The kernel's constant is read from its source, since
+    /// `wait_any.rs` doesn't build on the host.
+    #[test]
+    fn the_bound_is_sixteen_on_both_sides() {
+        assert_eq!(super::wait_abi::WAIT_ITEMS_MAX, 16);
+        let kernel_src = include_str!("../../../kernel/src/sched/wait_any.rs");
+        assert!(kernel_src.contains("pub const ITEMS_MAX: usize = 16;"));
+        // The readiness mask is a u64: bit 15 fits.
+        assert!(super::wait_abi::WAIT_ITEMS_MAX <= 64);
+    }
+
     /// The byte oracle: `WaitItem { handle: 0x04030201, kind: 2 }` is these
     /// eight bytes in memory (what the kernel copies in), and the kernel
     /// decodes them back to the same pair.

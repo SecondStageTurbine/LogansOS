@@ -21476,9 +21476,14 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 " ipc_wakes=1",
                 "WAITANY revoke rc=0 returned=true result=-9 handle_wakes=",
                 " ipc_wakes=0",
-                "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf",
+                // A3p: the bound of 16.
+                "WAITANY sixteen items=16 result=0x8000 latency_ticks=",
+                " ipc_wakes=1",
+                "WAITANY bound seventeen=-22 sixteen=-14",
+                "WAITANY race16 rounds=8 woken=8 fired_before_park=",
+                "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf sixteen=last_item bound=einval_17 race16=no_lost_wakeup",
             ],
-            "an IPC-only wait must end on the send, a send inside the check-to-park window must never be lost, a deadline must end the wait by the tick, a waiter killed while parked must leave no entry, a handle closed and reused before the registration must be re-watched, and a handle revoked under a parked wait must end it with EBADF (Jarvis rung-1 F1)",
+            "an IPC-only wait must end on the send, a send inside the check-to-park window must never be lost, a deadline must end the wait by the tick, a waiter killed while parked must leave no entry, a handle closed and reused before the registration must be re-watched, a handle revoked under a parked wait must end it with EBADF (Jarvis rung-1 F1); A3p: a 16-item wait wakes on its last item, a 17-item wait is EINVAL before any copy, and a send on the 16th item inside the check-to-park window is never lost",
         )?;
     }
     if scenario.name == "hid_contention" {
