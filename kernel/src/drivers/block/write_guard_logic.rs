@@ -621,3 +621,14 @@ pub fn judge(disk: &dyn Disk) -> Arming {
         table: name,
     }
 }
+
+/// OT-100 R3 (Muse's #104 observations 1 and 2): the guard's gate on the
+/// paths that write no data themselves but drive a device's write machinery:
+/// `flush`, the write-protect query and a `Flush` request. `allowed` is the
+/// guard's own answer, "armed, or claimed by the installer"; when it is
+/// false the answer is `refused` and `inner` is never called, so an unarmed
+/// device is never asked to flush or probed for write-protect, whatever its
+/// driver would do.
+pub fn gate_non_write<R>(allowed: bool, refused: R, inner: impl FnOnce() -> R) -> R {
+    if allowed { inner() } else { refused }
+}

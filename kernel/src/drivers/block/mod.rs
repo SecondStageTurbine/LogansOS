@@ -459,6 +459,19 @@ impl GuardedDevice {
         !self.arming().claims.is_empty()
     }
 
+    /// OT-100 R3 (Muse's #104 observations 1 and 2): whether the paths that
+    /// drive the device's write machinery without writing data (`flush`, the
+    /// write-protect query, a `Flush` request) may reach it: the device is
+    /// armed, or the installer has claimed it (its claim flushes the target).
+    #[cfg(feature = "usb-persistence")]
+    fn non_write_allowed(&self) -> bool {
+        #[cfg(feature = "installer")]
+        if self.claimed.load(Ordering::Acquire) {
+            return true;
+        }
+        self.writes_allowed()
+    }
+
     /// Whether this disk is armed, without judging it: a judgement not yet
     /// made (or one stuck on a disk that stopped answering) reads as not
     /// armed. The shutdown's K6 plan reads this; it never waits.
@@ -585,6 +598,14 @@ impl BlockDevice for GuardedDevice {
         if request.op == BlockOp::Write && !self.write_allowed(request.lba, request.buffers) {
             return Err(BlockError::WriteRefused);
         }
+        #[cfg(feature = "usb-persistence")]
+        if request.op == BlockOp::Flush {
+            return write_guard_logic::gate_non_write(
+                self.non_write_allowed(),
+                Err(BlockError::Unsupported),
+                || self.inner.submit(request),
+            );
+        }
         #[cfg(feature = "installer")]
         if request.op == BlockOp::Read {
             self.reads.fetch_add(1, Ordering::Relaxed);
@@ -597,11 +618,23 @@ impl BlockDevice for GuardedDevice {
     }
 
     fn flush(&self) -> BlockResult<()> {
+        #[cfg(feature = "usb-persistence")]
+        return write_guard_logic::gate_non_write(
+            self.non_write_allowed(),
+            Err(BlockError::Unsupported),
+            || self.inner.flush(),
+        );
+        #[cfg(not(feature = "usb-persistence"))]
         self.inner.flush()
     }
 
     #[cfg(feature = "usb-storage-write")]
     fn write_protected(&self) -> Option<bool> {
+        #[cfg(feature = "usb-persistence")]
+        return write_guard_logic::gate_non_write(self.non_write_allowed(), None, || {
+            self.inner.write_protected()
+        });
+        #[cfg(not(feature = "usb-persistence"))]
         self.inner.write_protected()
     }
 
