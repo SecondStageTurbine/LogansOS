@@ -1401,6 +1401,9 @@ jobs:
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features keyboard-layouts -- -D warnings)
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features keyboard-layouts-boot-test -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home,keyboard-layouts -- -D warnings)
+          # F11 S6b: the language (the WM and its boot test, with the clock and the power verbs).
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features i18n-catalog-boot-test -- -D warnings)
+          (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features i18n-catalog,power-menu,desktop-clock,setup-tz -- -D warnings)
           # OT-87 R4.4b: the intro Home with the installer (the Install chip).
           (cd userland/neo-init && cargo clippy -Zjson-target-spec --bin neo-init --features desktop-intro,installer,atrium-app-icons -- -D warnings)
           (cd userland/neo-arthur && cargo clippy -Zjson-target-spec --bin neo-arthur --features desktop-home -- -D warnings)

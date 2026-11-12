@@ -46,7 +46,8 @@ use setup_core::{Finish, Input, Outcome, Wizard, ZONES};
 
 /// Run the wizard to its end. `Ok` when the session may go on.
 pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
-    let wizard = Wizard::new(cfg!(feature = "setup-stub-pages"));
+    // S6b: in the stored language (English without `i18n-catalog`).
+    let wizard = Wizard::new(cfg!(feature = "setup-stub-pages")).with_lang(neo_atrium::lang::get());
     #[cfg(feature = "setup-net")]
     let wizard = wizard.with_network(net_page::read());
     #[cfg(feature = "setup-tz")]
@@ -131,6 +132,11 @@ pub fn run(scene: &mut Scene, focus: &HomeFocus) -> Result<(), i32> {
                     Finish::Try => line.s(b" layout=").n(u64::from(c.layout)),
                     Finish::Skipped => line,
                 };
+                #[cfg(feature = "i18n-catalog")]
+                let line = match finish {
+                    Finish::Try => line.s(b" lang=").s(c.lang.tag().as_bytes()),
+                    Finish::Skipped => line,
+                };
                 line.s(b"\n").emit();
                 #[cfg(feature = "setup-store")]
                 if finish == Finish::Try {
@@ -164,8 +170,9 @@ fn store(scene: &mut Scene, c: &setup_core::Choices) {
     let writes = [
         (Key::ReduceTransparency, u32::from(c.reduce_transparency)),
         (Key::ReduceMotion, rm),
-        // One language exists (S6 adds the rest); S5's layouts are chosen.
-        (Key::Language, 0),
+        // S6b: the language chosen (English without `i18n-catalog`); S5's
+        // layouts are chosen.
+        (Key::Language, c.lang.index() as u32),
         (Key::KeyboardLayout, layout(c)),
     ];
     let mut refused = 0u64;
@@ -393,7 +400,8 @@ mod tz_page {
                 // Zone 0 with an RTC holding local time is no zone at all.
                 let mode = scene.clock.mode();
                 let held = (in_force != tz::UTC || !mode.rtc_local).then_some(in_force);
-                let name = held.and_then(tz::zone).map_or("not set", |z| z.name);
+                let not_set = i18n_core::text(wizard.lang(), i18n_core::Msg::SetupNotSet);
+                let name = held.and_then(tz::zone).map_or(not_set, |z| z.name);
                 Line::new()
                     .s(b"DESKTOP setup tz reconciled zone=")
                     .s(name.as_bytes())
@@ -403,20 +411,24 @@ mod tz_page {
                     .emit();
                 wizard.confirmed(false);
                 wizard.reconciled(held, confirmed);
-                wizard.notice(format!("Couldn't save the time zone. In use: {name}."));
+                wizard.notice(i18n_core::format(
+                    wizard.lang(),
+                    i18n_core::Msg::SetupNoticeZoneInUse,
+                    &[name],
+                ));
             }
             // The store couldn't be re-read: the clock is as it was, and the
             // page stays, claiming no stored zone (Chad, relay 379).
             clock::Confirmed::Unresolved => {
-                const NOTICE: &str = "Couldn't save the time zone. Restart to check it.";
+                let notice = i18n_core::text(wizard.lang(), i18n_core::Msg::SetupNoticeZoneRestart);
                 log(zone, b"0");
                 Line::new()
                     .s(b"DESKTOP setup tz unresolved notice=\"")
-                    .s(NOTICE.as_bytes())
+                    .s(notice.as_bytes())
                     .s(b"\"\n")
                     .emit();
                 wizard.unresolved();
-                wizard.notice(String::from(NOTICE));
+                wizard.notice(String::from(notice));
             }
         }
         Ok(())

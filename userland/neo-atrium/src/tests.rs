@@ -2070,7 +2070,7 @@ fn persona_kat_in_spanish() {
     use crate::intro::{help_lines_in, hint_in, intro_lines_in, intro_lines_now_in};
     use crate::layout::CARD_MAX_ROWS;
     use crate::power::{PowerCommand, confirm_lines_in, going_lines_in, refused_lines_in};
-    use crate::scene::{CARD_TEXT_PX, HINT_PX};
+    use crate::scene::{CARD_TEXT_PX, CLOCK_DATE_PX, CLOCK_TIME_PX, HINT_PX};
     use i18n_core::{Lang, Msg, text};
     use neo_text::Font;
     use neo_text::fonts::INTER_REGULAR;
@@ -2127,6 +2127,21 @@ fn persona_kat_in_spanish() {
         }
         let hint = measure(&font, HINT_PX, hint_in(es));
         assert!(hint <= room, "hint {hint} px > {room}");
+        // Home's readout: the longest time with the not-set mark, and the
+        // longest date, inside the readout's box.
+        let clock_room = Layout::new(w, h, 640, 400).unwrap().clock_box().w as f32;
+        for lang in [Lang::En, es] {
+            let time = format!(
+                "12:59{}{}",
+                text(lang, Msg::Pm),
+                text(lang, Msg::ClockReadoutZoneNotSet)
+            );
+            let t = measure(&font, CLOCK_TIME_PX, &time);
+            assert!(t <= clock_room, "{time:?} {t} px > {clock_room}");
+        }
+        let date = "miércoles 30 de septiembre de 2026";
+        let d = measure(&font, CLOCK_DATE_PX, date);
+        assert!(d <= clock_room, "{date:?} {d} px > {clock_room}");
     }
 }
 

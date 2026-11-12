@@ -1227,6 +1227,7 @@ version = "0.0.1"
 dependencies = [
  "action-log-core",
  "fetch-proto",
+ "i18n-core",
  "libneo",
  "login-core",
  "neo-atrium",

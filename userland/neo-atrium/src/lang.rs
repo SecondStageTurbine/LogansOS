@@ -14,8 +14,7 @@ static LANG: AtomicU8 = AtomicU8::new(0);
 
 /// Set the session's language.
 pub fn set(lang: Lang) {
-    let i = Lang::ALL.iter().position(|&l| l == lang).unwrap_or(0);
-    LANG.store(i as u8, Ordering::Relaxed);
+    LANG.store(lang.index() as u8, Ordering::Relaxed);
 }
 
 /// The session's language.

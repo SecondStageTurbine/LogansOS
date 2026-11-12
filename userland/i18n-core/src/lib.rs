@@ -32,6 +32,8 @@ extern crate alloc;
 use alloc::string::String;
 
 #[cfg(test)]
+mod stray;
+#[cfg(test)]
 mod tests;
 
 /// A language the catalog has a table for. The default is English (the
@@ -64,6 +66,14 @@ impl Lang {
         match self {
             Lang::En => "en",
             Lang::Es => "es-419",
+        }
+    }
+
+    /// The language's index (the setting's stored value).
+    pub const fn index(self) -> usize {
+        match self {
+            Lang::En => 0,
+            Lang::Es => 1,
         }
     }
 
@@ -346,6 +356,9 @@ catalog! {
         "Guardado: el reloj de esta computadora guarda la hora local.";
     ClockSavedUtc = "Saved: this computer's clock keeps UTC.",
         "Guardado: el reloj de esta computadora guarda la hora UTC.";
+    /// S6b: Home's readout, after the time while the zone isn't set (S6a
+    /// missed it: the literal sat in neo-init's clock module).
+    ClockReadoutZoneNotSet = " (zone not set)", " (zona sin definir)";
 }
 
 /// The table for `lang`.

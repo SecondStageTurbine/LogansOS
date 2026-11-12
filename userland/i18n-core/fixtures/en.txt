@@ -133,3 +133,4 @@ ClockTypeZoneExamples	timezone America/New_York or timezone Europe/London.
 ClockDidYouMean	Did you mean:
 ClockSavedLocal	Saved: this computer's clock keeps local time.
 ClockSavedUtc	Saved: this computer's clock keeps UTC.
+ClockReadoutZoneNotSet	 (zone not set)

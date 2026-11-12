@@ -158,3 +158,4 @@ the card.
 | `ClockDidYouMean` | Did you mean: | Quizás quisiste decir: | "Quizás quisiste decir:" avoids a question that the list below would have to close with "?". |
 | `ClockSavedLocal` | Saved: this computer's clock keeps local time. | Guardado: el reloj de esta computadora guarda la hora local. |  |
 | `ClockSavedUtc` | Saved: this computer's clock keeps UTC. | Guardado: el reloj de esta computadora guarda la hora UTC. |  |
+| `ClockReadoutZoneNotSet` |  (zone not set) |  (zona sin definir) | S6b. Home's clock readout, after the time (with its leading space). S6a missed it; the no-stray-literals scan found it. "sin definir" as in SetupNotSet. |

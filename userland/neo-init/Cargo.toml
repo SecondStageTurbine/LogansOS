@@ -27,6 +27,8 @@ setup-core = { path = "../setup-core", optional = true }
 action-log-core = { path = "../action-log-core", optional = true }
 # Desktop S3 (feature `desktop-glass`): the glass chrome scene.
 neo-atrium = { path = "../neo-atrium", optional = true }
+# F11 S6b: the catalog (setup, Home's clock verbs and readout).
+i18n-core = { path = "../i18n-core" }
 # OT-61 rung 5c: the fetch broker's wire format (the content side of the
 # fetch_broker scenario).
 fetch-proto = { path = "../fetch-proto", optional = true }
@@ -262,6 +264,19 @@ keyboard-layouts = [
     "neo-atrium/keyboard-layouts",
     "libneo/atrium-keymap",
 ]
+# F11 S6b (setup-menu THINK §3.1, §5 S6): the catalog's languages (English,
+# Spanish). The Language page chooses one, the wizard redraws in it, key 6
+# holds it, and the intro, help, power and clock cards and Home's hint and
+# readout show it (Arthur's replies stay English). Off: English, the page
+# hidden, every row as before.
+i18n-catalog = [
+    "setup-store",
+    "setup-core/i18n-catalog",
+    "settings-core/i18n-catalog",
+]
+# `setup_menu_lang` (Spanish) and `setup_menu_lang_en` (its control): the
+# Language page on the volatile overlay, then Home and the intro session.
+i18n-catalog-boot-test = ["i18n-catalog", "setup-store-try-boot-test"]
 # `setup_menu_keys` (Spanish) and `setup_menu_keys_us` (its control): the Keyboard
 # page on the volatile overlay, then Home and the intro session.
 keyboard-layouts-boot-test = ["keyboard-layouts", "setup-store-try-boot-test"]
