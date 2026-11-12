@@ -1073,9 +1073,25 @@ impl BaseScene {
         } else {
             [Rect::default(); crate::layout::APP_CHIPS]
         };
-        #[cfg(not(feature = "app-chips"))]
-        let app_labels: [Rect; 0] = [];
-        #[cfg(not(feature = "install-chip"))]
+        // (Without `app-chips`, these two checks are exactly today's: the
+        // feature's boxes are chained on only when it is compiled in.)
+        #[cfg(all(not(feature = "install-chip"), not(feature = "app-chips")))]
+        if boxes
+            .iter()
+            .chain([lens_title, chip2_label, intro_box, clock_box].iter())
+            .all(|b| b.intersect(&clip).is_empty())
+        {
+            return;
+        }
+        #[cfg(all(feature = "install-chip", not(feature = "app-chips")))]
+        if boxes
+            .iter()
+            .chain([lens_title, chip2_label, chip3_label, intro_box, clock_box].iter())
+            .all(|b| b.intersect(&clip).is_empty())
+        {
+            return;
+        }
+        #[cfg(all(not(feature = "install-chip"), feature = "app-chips"))]
         if boxes
             .iter()
             .chain([lens_title, chip2_label, intro_box, clock_box].iter())
@@ -1084,7 +1100,7 @@ impl BaseScene {
         {
             return;
         }
-        #[cfg(feature = "install-chip")]
+        #[cfg(all(feature = "install-chip", feature = "app-chips"))]
         if boxes
             .iter()
             .chain([lens_title, chip2_label, chip3_label, intro_box, clock_box].iter())
