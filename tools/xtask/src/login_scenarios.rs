@@ -1829,17 +1829,16 @@ fn switch_lock_checks(scenario: TestScenario, observed: &ObservedTest) -> Result
     let serial = read_serial(observed)?;
     let hold_at = serial.find("DESKTOP apps sak hold ms=");
     let unlocked_at = serial.find("LOCK unlocked failures=0 to=client");
-    if let (Some(from), Some(to)) = (hold_at, unlocked_at) {
-        if let Some(line) = serial[from..to]
+    if let (Some(from), Some(to)) = (hold_at, unlocked_at)
+        && let Some(line) = serial[from..to]
             .lines()
             .find(|l| l.contains("DESKTOP apps front client="))
-        {
-            return Err(format!(
-                "`{}`: a client was switched to (and sent its `K`) as the session locked or while it was locked: `{line}`; serial={}",
-                scenario.name,
-                observed.serial_log.display()
-            ));
-        }
+    {
+        return Err(format!(
+            "`{}`: a client was switched to (and sent its `K`) as the session locked or while it was locked: `{line}`; serial={}",
+            scenario.name,
+            observed.serial_log.display()
+        ));
     }
     require_serial_sequence(
         scenario,
