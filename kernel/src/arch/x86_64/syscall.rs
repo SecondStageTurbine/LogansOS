@@ -8254,6 +8254,8 @@ pub(crate) fn vfs_errno(e: VfsError) -> i64 {
         VfsError::NotEmpty => crate::errno::ENOTEMPTY,
         #[cfg(feature = "neofs-dir-ops")]
         VfsError::CrossDevice => crate::errno::EXDEV,
+        #[cfg(feature = "neofs-dir-ops")]
+        VfsError::Again => EAGAIN,
     }
 }
 

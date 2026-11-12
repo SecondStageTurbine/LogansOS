@@ -33478,7 +33478,7 @@ fn run_neofs_dir_ops() -> ! {
     use crate::arch::x86_64::syscall::debug_sys_readdir_kernel_buf_for_test;
     use crate::arch::x86_64::syscall::dir_ops_for_test as ops;
     use crate::errno::{
-        EACCES, EBUSY, EEXIST, EFAULT, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY, ESTALE, EXDEV,
+        EACCES, EAGAIN, EBUSY, EEXIST, EFAULT, EINVAL, ENOENT, ENOTDIR, ENOTEMPTY, ESTALE, EXDEV,
     };
     use crate::fs::neofs::dir_ops_logic::{KIND_DIRECTORY, KIND_REGULAR, STAT_EMPTY_DIRECTORY};
     use crate::fs::{
@@ -33858,8 +33858,8 @@ fn run_neofs_dir_ops() -> ! {
     // #106 F2 (CP-63): an F0 operation does its device reads before it takes
     // the namespace lock (a spinning lock). With the cache emptied before
     // each one, the five below must read the device (the count is not
-    // vacuous), never while holding the lock, and never fall back to
-    // reading under it.
+    // vacuous), never while holding the lock, and never be refused as
+    // contended (nothing else commits meanwhile).
     let cold = || {
         crate::fs::debug_neofs_cold_cache()
             .unwrap_or_else(|e| neofs_2c_fail_vfs("neofs_dir_ops_cold_cache_failed", e))
@@ -33890,19 +33890,66 @@ fn run_neofs_dir_ops() -> ! {
         0,
         "neofs_dir_ops_cold_unlink",
     );
-    let (cold_reads, held_reads, fallbacks) = crate::fs::debug_neofs_dir_op_reads();
+    let (cold_reads, held_reads, contended, _) = crate::fs::debug_neofs_dir_op_reads();
     if cold_reads == 0 {
         fail("reason=neofs_dir_ops_cold_ops_read_nothing");
     }
     if held_reads != 0 {
         fail_with_hex("reason=neofs_dir_ops_read_under_entries count", held_reads);
     }
-    if fallbacks != 0 {
+    if contended != 0 {
+        fail_with_hex("reason=neofs_dir_ops_uncontended_refused count", contended);
+    }
+
+    // #106 relay 399: under contention an operation never reads under the
+    // lock either. Another writer commits (a root mkdir, then unlink, four
+    // times) between every optimistic attempt's reads and its lock, on a
+    // cold cache. Each of those commits takes `entries` in the middle of the
+    // operation, so a hang here would be a writer spinning on it. The
+    // operation reads the device, never with `entries` held, and returns
+    // EAGAIN having changed nothing; its retry succeeds.
+    cold();
+    crate::fs::debug_neofs_interleave_dir_op_commits(8);
+    expect(
+        ops::mkdir_at(f1_fd, b"contended"),
+        EAGAIN,
+        "neofs_dir_ops_contended_mkdir",
+    );
+    let (contended_reads, held_reads, contended, interleaved) =
+        crate::fs::debug_neofs_dir_op_reads();
+    if interleaved != 8 {
         fail_with_hex(
-            "reason=neofs_dir_ops_fell_back_to_locked_reads count",
-            fallbacks,
+            "reason=neofs_dir_ops_interleaved_commits count",
+            interleaved,
         );
     }
+    if contended != 1 {
+        fail_with_hex("reason=neofs_dir_ops_contended_count count", contended);
+    }
+    if contended_reads == 0 {
+        fail("reason=neofs_dir_ops_contended_read_nothing");
+    }
+    if held_reads != 0 {
+        fail_with_hex(
+            "reason=neofs_dir_ops_contended_read_under_entries count",
+            held_reads,
+        );
+    }
+    if ops::stat_at(f1_fd, b"contended") != Err(ENOENT)
+        || ops::stat_at(root_fd, b"f2-writer") != Err(ENOENT)
+    {
+        fail("reason=neofs_dir_ops_contended_changed_tree");
+    }
+    expect(
+        ops::mkdir_at(f1_fd, b"contended"),
+        0,
+        "neofs_dir_ops_contended_retry",
+    );
+    expect(
+        ops::unlink_at(f1_fd, b"contended"),
+        0,
+        "neofs_dir_ops_contended_cleanup",
+    );
 
     // Refusals.
     expect(
@@ -34024,10 +34071,11 @@ fn run_neofs_dir_ops() -> ! {
         fail("reason=neofs_dir_ops_barrier_not_flushed");
     }
     serial_println!(
-        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
+        "NEO_TEST/1 event=PASS name={} stage=write neofs_dir_ops=ok oracle=dir_inodes:11+data_blocks:8 rename=in_place+across unlink=file+empty_dir+ENOTEMPTY used_back={} stale_handle=ESTALE ancestor_readdir=ESTALE_then_reload shared_handle_late_reload=current_listing cold_reads={} reads_under_entries=0 contended=EAGAIN:interleaved_commits:8+reads:{}+retry_ok pinned=EBUSY exdev=EXDEV rights=no_write:EACCES,no_lookup:EACCES user_args=EFAULT+EINVAL cut=before_publish barrier_flushes={}",
         SCENARIO,
         after_file,
         cold_reads,
+        contended_reads,
         flushes
     );
     debug_exit(EXIT_SUCCESS);

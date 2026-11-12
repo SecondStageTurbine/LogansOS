@@ -73,15 +73,28 @@ pub enum NeoFsError {
     /// F0: a rename into itself or beneath itself.
     #[cfg(feature = "neofs-dir-ops")]
     IntoItself,
+    /// F0: commits kept landing between an operation's reads and its lock
+    /// (`EAGAIN`; the caller retries).
+    #[cfg(feature = "neofs-dir-ops")]
+    Contended,
+}
+
+/// F0's F2 legs: (device reads during F0 operations, of them made with the
+/// namespace lock held, operations refused as contended, interleaved
+/// commits made), counted since the last call.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_dir_op_reads() -> (u64, u64, u64, u64) {
+    inode::dir_ops_probe::take()
+}
+
+/// F0's contention leg: see `dir_ops::probe::interleave_commits`.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_interleave_dir_op_commits(commits: u32) {
+    inode::dir_ops_probe::interleave_commits(commits);
 }
 
 /// F0's cut: the next directory operation writes its whole commit but the
 /// superblocks (then the scenario drains to the barrier and ends the boot).
-#[cfg(feature = "neo-test-neofs-dir-ops")]
-pub fn debug_dir_op_reads() -> (u64, u64, u64) {
-    inode::dir_ops_probe::take()
-}
-
 #[cfg(feature = "neo-test-neofs-dir-ops")]
 pub fn debug_stop_next_dir_op_before_publish() {
     inode::STOP_NEXT_BEFORE_PUBLISH.store(true, core::sync::atomic::Ordering::SeqCst);

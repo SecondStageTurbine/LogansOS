@@ -140,6 +140,9 @@ pub enum VfsError {
     /// F0: a rename between two volumes (`EXDEV`).
     #[cfg(feature = "neofs-dir-ops")]
     CrossDevice,
+    /// F0: commits kept landing while an operation read; retry (`EAGAIN`).
+    #[cfg(feature = "neofs-dir-ops")]
+    Again,
 }
 
 #[derive(Clone, Debug)]
@@ -634,12 +637,14 @@ impl OpenFile {
             return Err(VfsError::CrossDevice);
         }
         let result = self.inode.rename_at(name, &*to.inode, to_name);
-        let reloaded = self.after_dir_op(result);
-        if !core::ptr::eq(self, to) {
-            to.after_dir_op(reloaded)
-        } else {
-            reloaded
+        // Both handles reload after a committed rename, even if the
+        // source's reload fails (Muse, #106): the first error is returned.
+        let source = self.after_dir_op(result);
+        if core::ptr::eq(self, to) {
+            return source;
         }
+        let destination = to.after_dir_op(result);
+        source.and(destination)
     }
 
     /// F0: `name`'s kind, flags and size. LOOKUP only.
@@ -1701,12 +1706,19 @@ pub fn debug_neofs_cold_cache() -> Result<(), VfsError> {
     mounted_neofs_for_debug()?.debug_cold_cache()
 }
 
-/// F0's F2 leg: (device reads during F0 operations, of them made with the
-/// namespace lock held, operations that read under the lock after repeated
-/// commits), counted since the last call.
+/// F0's F2 legs: (device reads during F0 operations, of them made with the
+/// namespace lock held, operations refused as contended (`EAGAIN`),
+/// interleaved commits made), counted since the last call.
 #[cfg(feature = "neo-test-neofs-dir-ops")]
-pub fn debug_neofs_dir_op_reads() -> (u64, u64, u64) {
+pub fn debug_neofs_dir_op_reads() -> (u64, u64, u64, u64) {
     neofs::debug_dir_op_reads()
+}
+
+/// F0's contention leg: the next operation's next `commits` optimistic
+/// attempts each see another writer commit before they take the lock.
+#[cfg(feature = "neo-test-neofs-dir-ops")]
+pub fn debug_neofs_interleave_dir_op_commits(commits: u32) {
+    neofs::debug_interleave_dir_op_commits(commits);
 }
 
 /// The cut after the commit barrier: the unpublished overwrite's blocks

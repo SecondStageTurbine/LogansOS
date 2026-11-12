@@ -1332,7 +1332,8 @@ pub fn sys_file_replace(handle: FileHandle, bytes: &[u8]) -> i64 {
 /// read-only), `EEXIST`, `EINVAL` (a bad name: empty, over 47 bytes, `/`,
 /// NUL, `.`, `..`, not UTF-8; the folder full at 64 entries; too deep),
 /// `ENOTDIR` (`dir` is a file), `ESTALE` (`dir` is gone), `EPERM` (under
-/// `.system`), `EFAULT`, `EIO`.
+/// `.system`), `EFAULT`, `EIO`, `EAGAIN` (other commits kept landing while
+/// it read the folders; nothing changed, so retry).
 #[inline]
 pub fn sys_mkdir_at(dir: FileHandle, name: &[u8]) -> i64 {
     unsafe {
@@ -1381,7 +1382,7 @@ pub fn sys_rename_at(dir: FileHandle, name: &[u8], to: FileHandle, to_name: &[u8
 }
 
 /// F0: what `name` in `dir` is (LOOKUP only). The reply decodes with
-/// [`stat_at::StatAt::decode`].
+/// [`stat_at::StatAt::decode`]. `EAGAIN` as [`sys_mkdir_at`].
 #[inline]
 pub fn sys_stat_at(dir: FileHandle, name: &[u8], out: &mut [u8; stat_at::LEN]) -> i64 {
     unsafe {

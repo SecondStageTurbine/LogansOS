@@ -3,10 +3,13 @@
 //! on a NeoFS volume.
 //!
 //! Each mutation is one commit through #180's barrier, the path every write
-//! takes: under the namespace lock (`entries`), it loads the directory chain
-//! from the root to each directory it edits, edits the entries, writes a new
-//! version of every directory on those chains bottom-up (copy on write), and
-//! publishes one superblock that names the new root. What the commit
+//! takes. It reads the directory chain from the root to each directory it
+//! edits with no lock held (#106 F2: the namespace lock, `entries`, spins,
+//! so no device read happens under it), then, under `entries` and only if
+//! no commit came in between ([`NeoFsState::after_reads`]; `EAGAIN` after
+//! repeated misses), edits the entries, writes a new version of every
+//! directory on those chains bottom-up (copy on write), and publishes one
+//! superblock that names the new root. What the commit
 //! supersedes (the old directory versions, and an unlinked entry's blocks)
 //! is freed in that publish, deferred until it is durable (`commit_logic`,
 //! rule 2). A cut anywhere before the superblocks land leaves the old tree;
@@ -16,8 +19,8 @@
 //! NeoFS directory has no identity that survives a change beneath it (copy
 //! on write gives every new version a new inode block and generation, so an
 //! ancestor's generation moves on every write below it). The operations act
-//! on the directory at the handle's path now, resolved under the namespace
-//! lock; a handle whose directory is gone is `Stale`. The generation keeps
+//! on the directory at the handle's path as of the commit (read before the
+//! lock, checked under it); a handle whose directory is gone is `Stale`. The generation keeps
 //! its one job, readdir's listing: after its own operation a handle reloads
 //! and holds the new version.
 //!
@@ -42,7 +45,7 @@ pub(in crate::fs::neofs) struct DirStat {
 }
 
 /// How many times an operation reads before the lock and finds a commit came
-/// in between, before it reads under the lock instead (see
+/// in between, before it gives up with `Contended` (`EAGAIN`; see
 /// [`NeoFsState::after_reads`]).
 const READ_BEFORE_LOCK_TRIES: usize = 8;
 
@@ -83,9 +86,11 @@ impl NeoFsState {
     /// generation means no commit came in between: the blocks read were the
     /// live tree's (copy on write never changes them in place, and a commit
     /// frees the ones it supersedes only at its publish), and `read`'s result
-    /// stands, an error included. Otherwise it reads again. After
-    /// [`READ_BEFORE_LOCK_TRIES`] such misses it reads under the lock, so
-    /// writers that keep committing can delay an operation but not starve it.
+    /// stands, an error included. Otherwise it drops the lock and reads
+    /// again. After [`READ_BEFORE_LOCK_TRIES`] such misses it returns
+    /// `Contended` (`EAGAIN`) and the caller retries: it never reads under
+    /// the lock, on any path (#106 relay 399). Nothing has been written by
+    /// then, so the refusal leaves the volume as it was.
     fn after_reads<T>(
         &self,
         read: impl Fn(&[DirEntry]) -> Result<T, NeoFsError>,
@@ -94,16 +99,18 @@ impl NeoFsState {
             let before = self.generation();
             let root_entries = self.entries.lock().clone();
             let result = read(&root_entries);
+            // The scenario's contention leg: another writer commits between
+            // the reads and the lock.
+            #[cfg(feature = "neo-test-neofs-dir-ops")]
+            probe::interleave(self);
             let lock = DirOpLock::new(self.entries.lock());
             if self.generation() == before {
                 return result.map(|value| (lock, value));
             }
         }
         #[cfg(feature = "neo-test-neofs-dir-ops")]
-        probe::FALLBACKS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-        let lock = DirOpLock::new(self.entries.lock());
-        let value = read(&lock.guard)?;
-        Ok((lock, value))
+        probe::CONTENDED.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        Err(NeoFsError::Contended)
     }
 
     /// A new, empty directory `name` in `dir`.
@@ -632,33 +639,70 @@ pub(super) fn reload_later<'a>(
 /// while that operation holds the namespace lock (which must be none).
 #[cfg(feature = "neo-test-neofs-dir-ops")]
 pub(in crate::fs::neofs) mod probe {
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use super::NeoFsState;
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
     pub(super) static ENTRIES_HELD: AtomicBool = AtomicBool::new(false);
-    static IN_OP: AtomicBool = AtomicBool::new(false);
+    /// How many F0 operations are running (the contention leg nests the
+    /// interleaved writers' operations inside one).
+    static IN_OP: AtomicU32 = AtomicU32::new(0);
     static OP_READS: AtomicU64 = AtomicU64::new(0);
     static HELD_READS: AtomicU64 = AtomicU64::new(0);
-    pub(super) static FALLBACKS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static CONTENDED: AtomicU64 = AtomicU64::new(0);
+    /// Interleaved commits still to make, one per optimistic attempt.
+    static INTERLEAVE: AtomicU32 = AtomicU32::new(0);
+    static INTERLEAVING: AtomicBool = AtomicBool::new(false);
+    static INTERLEAVED: AtomicU64 = AtomicU64::new(0);
+    /// The root folder the interleaved writer makes and removes.
+    const INTERLEAVE_NAME: &str = "f2-writer";
 
     /// The span of one F0 operation.
     pub(super) struct InOp;
 
     impl InOp {
         pub(super) fn new() -> Self {
-            IN_OP.store(true, Ordering::SeqCst);
+            IN_OP.fetch_add(1, Ordering::SeqCst);
             Self
         }
     }
 
     impl Drop for InOp {
         fn drop(&mut self) {
-            IN_OP.store(false, Ordering::SeqCst);
+            IN_OP.fetch_sub(1, Ordering::SeqCst);
         }
+    }
+
+    /// The next F0 operation's next `commits` optimistic attempts each see
+    /// another writer commit between their reads and the lock: a real
+    /// `mkdir_at`, then `unlink_at`, of a root folder, alternating, so an even
+    /// count leaves the tree as it was. Each takes `entries`, which the
+    /// operation must not be holding.
+    pub(in crate::fs::neofs) fn interleave_commits(commits: u32) {
+        INTERLEAVE.store(commits, Ordering::SeqCst);
+    }
+
+    pub(super) fn interleave(state: &NeoFsState) {
+        if INTERLEAVING.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let left = INTERLEAVE.load(Ordering::SeqCst);
+        if left > 0 {
+            INTERLEAVE.store(left - 1, Ordering::SeqCst);
+            let result = if left.is_multiple_of(2) {
+                state.mkdir_at(None, INTERLEAVE_NAME)
+            } else {
+                state.unlink_at(None, INTERLEAVE_NAME)
+            };
+            if result.is_ok() {
+                INTERLEAVED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        INTERLEAVING.store(false, Ordering::SeqCst);
     }
 
     /// Called by the block cache before each device read it makes.
     pub(in crate::fs::neofs) fn note_device_read() {
-        if IN_OP.load(Ordering::SeqCst) {
+        if IN_OP.load(Ordering::SeqCst) > 0 {
             OP_READS.fetch_add(1, Ordering::SeqCst);
             if ENTRIES_HELD.load(Ordering::SeqCst) {
                 HELD_READS.fetch_add(1, Ordering::SeqCst);
@@ -667,12 +711,14 @@ pub(in crate::fs::neofs) mod probe {
     }
 
     /// (device reads during F0 operations, of them with the lock held,
-    /// operations that fell back to reading under the lock), and reset.
-    pub(in crate::fs::neofs) fn take() -> (u64, u64, u64) {
+    /// operations refused as `Contended`, interleaved commits made), and
+    /// reset.
+    pub(in crate::fs::neofs) fn take() -> (u64, u64, u64, u64) {
         (
             OP_READS.swap(0, Ordering::SeqCst),
             HELD_READS.swap(0, Ordering::SeqCst),
-            FALLBACKS.swap(0, Ordering::SeqCst),
+            CONTENDED.swap(0, Ordering::SeqCst),
+            INTERLEAVED.swap(0, Ordering::SeqCst),
         )
     }
 }
@@ -686,6 +732,7 @@ fn to_vfs(error: NeoFsError) -> VfsError {
         NeoFsError::NotEmpty => VfsError::NotEmpty,
         NeoFsError::Stale => VfsError::Stale,
         NeoFsError::Pinned => VfsError::Busy,
+        NeoFsError::Contended => VfsError::Again,
         NeoFsError::UnsupportedType => VfsError::TypeForbidden,
         NeoFsError::BlockDevice | NeoFsError::NoDurableFlush => VfsError::Io,
         // A path component that is not a directory, a full directory (64
