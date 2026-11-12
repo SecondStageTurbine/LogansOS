@@ -31,8 +31,8 @@ to the reviewed head. This RETURN contains no implementation changes.
   `kernel/src/drivers/usb/msc_logic.rs:1244` and terminal return at line 1313.
 - **PASS — a host test drives `flush` itself.** The regression calls `flush`
   at `tools/usb-msc-logic-tests/src/policy_tests.rs:1020`. The transport-timeout
-  case also calls it at line 1042, while the in-time failure control at line
-  1057 still reaches `Flushed` after three attempts. All passed locally.
+  case also calls it at line 1041, while the in-time failure control at line
+  1055 still reaches `Flushed` after three attempts. All passed locally.
 
 ## Item 2: ring admission must honour the deadline
 
@@ -61,11 +61,11 @@ to the reviewed head. This RETURN contains no implementation changes.
   finally released.
 - **PASS — the admission test advances the clock and rejects publication.**
   `tools/ai-ops-tests/src/lib.rs:4820` calls the production admission helper.
-  Its mock advances the clock inside `try_lock` at line 4846. Lines
-  4862/4865 assert no admission both when the lock remains held beyond the
+  Its mock advances the clock inside `try_lock` at line 4845. Lines
+  4861/4864 assert no admission both when the lock remains held beyond the
   deadline and when it is won at 1000 but acquisition advances to 1001;
   the latter also asserts that the acquired guard was dropped. In-time,
-  already-expired, and `None` controls are at lines 4867/4869/4871. This is
+  already-expired, and `None` controls are at lines 4866/4868/4870. This is
   a helper-level test, not hardware MMIO instrumentation: rejection means
   no publication because the production caller returns via `?` before any
   ring access (`kernel/src/drivers/usb/xhci.rs:1066`). The test passed.
@@ -83,7 +83,7 @@ to the reviewed head. This RETURN contains no implementation changes.
   stages remain. MSC's deadline-free transfers still call the original
   wait at `kernel/src/drivers/usb/msc.rs:230`; its `wait_until` at line 168
   takes a required deadline, not an optional one. The `None` admission
-  control at `tools/ai-ops-tests/src/lib.rs:4871` passed.
+  control at `tools/ai-ops-tests/src/lib.rs:4870` passed.
 - **PASS — the read-only `command()` path is unchanged.**
   `kernel/src/drivers/usb/msc_logic.rs:379` and the entire prefix through
   line 758 are byte-identical to the previous reviewed head `16bb8f56`.
