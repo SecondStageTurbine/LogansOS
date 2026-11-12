@@ -22,7 +22,8 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use i18n_core::{Lang, Msg, text};
+use i18n_core::Lang;
+use i18n_core::files::{Msg, text};
 
 /// The most `readdir` batches one listing reads before it gives up: a folder
 /// holds at most 64 entries, so a well-behaved volume ends far sooner.
@@ -691,7 +692,7 @@ impl Note {
     /// The message in `lang`, its argument filled in.
     pub fn text(&self, lang: Lang) -> String {
         match &self.arg {
-            Some(arg) => i18n_core::format(lang, self.msg, &[arg.as_str()]),
+            Some(arg) => i18n_core::files::format(lang, self.msg, &[arg.as_str()]),
             None => String::from(text(lang, self.msg)),
         }
     }

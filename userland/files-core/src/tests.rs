@@ -15,7 +15,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use i18n_core::{Lang, Msg};
+use i18n_core::Lang;
+use i18n_core::files::Msg;
 use std::format;
 
 fn names(files: &Files<FakeFs>) -> Vec<&str> {

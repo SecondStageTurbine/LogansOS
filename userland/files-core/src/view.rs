@@ -11,7 +11,8 @@ use crate::fs::{FOLDER_MAX, Fs, Kind};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use i18n_core::{Lang, Msg, fill, text};
+use i18n_core::files::{Msg, text};
+use i18n_core::{Lang, fill};
 
 /// One row as drawn.
 #[derive(Clone, Debug, Eq, PartialEq)]
