@@ -459,6 +459,11 @@ usb-storage = ["usb-host"]
 # the MODE SENSE(6) write-protect check), every write still behind the guard.
 # Off: the driver is read-only, as L3u (docs/THINK-2026-11-10-ot100-usb-persistence.md).
 usb-storage-write = ["usb-storage"]
+# OT-100 R3: the persistence area on the boot stick and its mount
+# (docs/THINK-2026-11-10-ot100-usb-persistence.md §2-§5). Also gates the
+# guard's armed check on flush, write-protect and Flush requests (Muse's #104
+# observations). Off: the guard, the image and the mount are R2's.
+usb-persistence = ["usb-storage-write", "neofs-partition"]
 # OT (Milestone-A input): the USB HID boot-protocol MOUSE (the GUI pointer),
 # mirroring the keyboard on the same xHCI arena-fenced stack. Independent
 # kill-switch: off ⇒ hid_mouse + its init are absent ⇒ keyboard-only, bit-for-bit.
