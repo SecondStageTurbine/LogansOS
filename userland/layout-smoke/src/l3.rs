@@ -109,21 +109,36 @@ pub enum RenderError {
 /// by WebRender on SWGL into a fresh 800 x 600 buffer (pre-filled with
 /// `0x5A`, so a pixel nothing wrote shows). The buffer is in GL row order.
 pub fn render_frame(page: &neo_static_page::StaticPage) -> Result<Vec<u8>, RenderError> {
+    let mut fb = vec![0x5Au8; STRIDE * H];
+    render_into(page, &mut fb, W, H, STRIDE)?;
+    Ok(fb)
+}
+
+/// [`render_frame`] into the caller's `w` x `h` BGRA buffer of `stride`
+/// bytes per row (L5: the browser's Atrium mapping). `fb` must hold
+/// `stride * h` bytes, with `stride >= w * 4`.
+pub fn render_into(
+    page: &neo_static_page::StaticPage,
+    fb: &mut [u8],
+    w: usize,
+    h: usize,
+    stride: usize,
+) -> Result<(), RenderError> {
+    assert!(w > 0 && h > 0 && stride >= w * 4 && fb.len() >= stride * h);
     let (info, list) = page.take_display_list().ok_or(RenderError::NoDisplayList)?;
     let fonts = page.take_fonts();
     for name in &fonts.missing {
         println!("{TAG} layout added a font that isn't bundled: {name}");
     }
 
-    let mut fb = vec![0x5Au8; STRIDE * H];
     let ctx = swgl::Context::create();
     ctx.make_current();
     ctx.init_default_framebuffer(
         0,
         0,
-        W as i32,
-        H as i32,
-        STRIDE as i32,
+        w as i32,
+        h as i32,
+        stride as i32,
         fb.as_mut_ptr().cast::<c_void>(),
     );
     let gl: Rc<dyn gl::Gl> = Rc::new(ctx);
@@ -141,7 +156,7 @@ pub fn render_frame(page: &neo_static_page::StaticPage) -> Result<Vec<u8>, Rende
             .map_err(|e| RenderError::WebRender(format!("create_webrender_instance: {e:?}")))?;
 
     let mut api = sender.create_api();
-    let size = DeviceIntSize::new(W as i32, H as i32);
+    let size = DeviceIntSize::new(w as i32, h as i32);
     let doc = api.add_document(size);
     let mut txn = Transaction::new();
     // The display list's text names its fonts by key: add them first.
@@ -171,9 +186,9 @@ pub fn render_frame(page: &neo_static_page::StaticPage) -> Result<Vec<u8>, Rende
 
     // SWGL queues draws; asking for the colour buffer with `flush` runs
     // them into our buffer (as webrender-smoke does before its read).
-    let (ptr, w, h, stride) = ctx.get_color_buffer(0, true);
+    let (ptr, got_w, got_h, got_stride) = ctx.get_color_buffer(0, true);
     let ours = ptr == fb.as_mut_ptr().cast::<c_void>()
-        && (w, h, stride) == (W as i32, H as i32, STRIDE as i32);
+        && (got_w, got_h, got_stride) == (w as i32, h as i32, stride as i32);
     drop(api);
     renderer.deinit();
 
@@ -181,10 +196,10 @@ pub fn render_frame(page: &neo_static_page::StaticPage) -> Result<Vec<u8>, Rende
         return Err(RenderError::WebRender(format!("render: {e:?}")));
     }
     if !ours {
-        println!("{TAG} colour buffer {ptr:?} {w}x{h} stride {stride}");
+        println!("{TAG} colour buffer {ptr:?} {got_w}x{got_h} stride {got_stride}");
         return Err(RenderError::NotOurBuffer);
     }
-    Ok(fb)
+    Ok(())
 }
 
 /// Render the oracle page's display list and check every pixel (checks

@@ -92,6 +92,9 @@ desktop-pointer = ["desktop-home"]
 # its own turns, and Super+Tab moves the front between the clients. Off:
 # today's Arthur-only WM.
 atrium-apps = ["desktop-pointer"]
+# OT-61 L5: the browser takes slot 2 of the client table (MODULE_BROWSER,
+# /modules/neo-browser), connected like the probe app.
+atrium-apps-browser = ["atrium-apps"]
 desktop-pointer-boot-test = ["desktop-pointer", "desktop-home-boot-test"]
 # F7 (drag smoothness) control: a drag frame recomposes the bounding box of
 # the old and new outlines (the behaviour before the fix), for the

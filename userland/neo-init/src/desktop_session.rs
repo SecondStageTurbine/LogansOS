@@ -3568,10 +3568,19 @@ mod apps {
         }
     }
 
+    /// Whether `module` is an app the client table connects (not the Lens or
+    /// the DS-1b probe, which the broker serves itself).
+    pub fn is_app(module: u32) -> bool {
+        index_of(module).is_some()
+    }
+
     /// The table index a module's client takes (one instance per app).
     fn index_of(module: u32) -> Option<usize> {
         match module {
             MODULE_PROBE_APP => Some(1),
+            // OT-61 L5: the browser.
+            #[cfg(feature = "atrium-apps-browser")]
+            libneo::atrium_launch::MODULE_BROWSER => Some(2),
             _ => None,
         }
     }
@@ -3582,16 +3591,100 @@ mod apps {
             .map_err(|_| 61)
     }
 
-    /// Launch (or, if it is running, bring forward) the probe app. Returns
-    /// the status for the launching client's reply: a failed spawn or
-    /// handshake ends the new client only.
+    /// OT-61 L5: the browser (`/modules/neo-browser`), spawned like the probe
+    /// app with its session channel, plus thread authority: real std and
+    /// WebRender start threads, and `SYS_THREAD_CREATE` needs a
+    /// `BrowserRuntime` handle. It gets a copy of the session root's, derived
+    /// to `USE | GRANT` and `THREAD_SPAWN`. GRANT is what spawn needs to
+    /// inherit a non-file handle (`sys_spawn_impl`: `EPERM` without it, the
+    /// second on-target run's code 61). There is no DERIVE, and the browser
+    /// holds no channel but the WM's session, so it can't widen or pass on
+    /// more than this one right. Our copy of the derived handle is closed
+    /// after the spawn.
+    #[cfg(feature = "atrium-apps-browser")]
+    fn spawn_browser(session_client: Handle) -> Result<libneo::ProcessHandle, i32> {
+        use libneo::handle_info::HandleKind;
+        let root = (0..256u32)
+            .find(|&idx| {
+                libneo::sys_handle_info(idx).is_ok_and(|i| i.kind == HandleKind::BrowserRuntime)
+            })
+            .ok_or(62)?;
+        const THREAD_SPAWN: u8 = 1 << 0;
+        let runtime = libneo::sys_derive(
+            Handle(root),
+            libneo::CapRights::new(
+                libneo::meta_rights::USE | libneo::meta_rights::GRANT,
+                THREAD_SPAWN,
+            ),
+        )
+        .map_err(|_| 63)?;
+        // The browser gets its own frame account of BROWSER_BUDGET, nested
+        // under ours (OT-61 C2.2, `mem-quota`): WebRender, Stylo and their
+        // threads can't take more than that, and an allocation past it
+        // aborts the browser alone (exit 134), which the WM sees as the
+        // client's death (ADR-073), not the session's.
+        const BROWSER_BUDGET: u64 = 256 * 1024 * 1024;
+        let spawned =
+            libneo::sys_spawn_budgeted("browser", &[session_client, runtime], BROWSER_BUDGET);
+        let _ = libneo::sys_close(libneo::FileHandle(runtime.0));
+        if spawned.is_ok() {
+            Line::new()
+                .s(b"DESKTOP apps browser budget=")
+                .n(BROWSER_BUDGET)
+                .s(b"\n")
+                .emit();
+        }
+        spawned.map(|(_pid, process)| process).map_err(|errno| {
+            Line::new()
+                .s(b"DESKTOP apps browser spawn errno=")
+                .n(errno.unsigned_abs())
+                .s(b"\n")
+                .emit();
+            61
+        })
+    }
+
+    /// A module's surface namespace, buffer provenance and spawn.
+    #[allow(clippy::type_complexity)]
+    fn client_of(
+        module: u32,
+    ) -> Option<(
+        super::ClientIds,
+        fn(Handle) -> Result<libneo::ProcessHandle, i32>,
+    )> {
+        match module {
+            MODULE_PROBE_APP => Some((
+                super::ClientIds {
+                    namespace: libneo::atrium_launch::PROBE_APP_NAMESPACE,
+                    buffer_provenance: libneo::atrium_launch::PROBE_APP_BUFFER_PROVENANCE,
+                },
+                spawn_probe_app,
+            )),
+            #[cfg(feature = "atrium-apps-browser")]
+            libneo::atrium_launch::MODULE_BROWSER => Some((
+                super::ClientIds {
+                    namespace: libneo::atrium_launch::BROWSER_NAMESPACE,
+                    buffer_provenance: libneo::atrium_launch::BROWSER_BUFFER_PROVENANCE,
+                },
+                spawn_browser,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Launch (or, if it is running, bring forward) `module`'s app (the
+    /// probe app, or under `atrium-apps-browser` the browser). Returns the
+    /// status for the launching client's reply: a failed spawn or handshake
+    /// ends the new client only.
     pub fn open(
         scene: &mut Scene,
         apps: &mut Apps,
+        module: u32,
         arthur_activator: Handle,
         arthur_pixels: &SharedPixels,
     ) -> Result<u32, i32> {
-        let index = index_of(MODULE_PROBE_APP).ok_or(140)?;
+        let index = index_of(module).ok_or(140)?;
+        let (ids, spawn) = client_of(module).ok_or(140)?;
         if apps.others[index - 1].is_some() || apps.dying[index - 1].is_some() {
             if apps.others[index - 1].is_none() {
                 // Still being reaped: one instance per app.
@@ -3607,16 +3700,12 @@ mod apps {
             )?;
             return Ok(0);
         }
-        let ids = super::ClientIds {
-            namespace: libneo::atrium_launch::PROBE_APP_NAMESPACE,
-            buffer_provenance: libneo::atrium_launch::PROBE_APP_BUFFER_PROVENANCE,
-        };
         let mut spawned = None;
         match connect(
             scene,
             apps.output,
             ids,
-            spawn_probe_app,
+            spawn,
             false,
             Link::within(HANDSHAKE_NS),
             &mut spawned,
@@ -4137,6 +4226,9 @@ mod launch {
         // OT-88 A1a: and to the probe app.
         #[cfg(feature = "atrium-apps")]
         let allowed = allowed | allow(libneo::atrium_launch::MODULE_PROBE_APP);
+        // OT-61 L5: and to the browser.
+        #[cfg(feature = "atrium-apps-browser")]
+        let allowed = allowed | allow(libneo::atrium_launch::MODULE_BROWSER);
         if !broker.mint(surface_cap, allowed) {
             return Err(81);
         }
@@ -4203,8 +4295,14 @@ mod launch {
         // OT-88 A1a: the probe app is a client of its own, connected into its
         // slot of the table and brought to the front before Arthur's reply.
         #[cfg(feature = "atrium-apps")]
-        if judged.is_ok() && request.module_id == libneo::atrium_launch::MODULE_PROBE_APP {
-            return super::apps::open(scene, apps, arthur_activator, arthur_pixels);
+        if judged.is_ok() && super::apps::is_app(request.module_id) {
+            return super::apps::open(
+                scene,
+                apps,
+                request.module_id,
+                arthur_activator,
+                arthur_pixels,
+            );
         }
         // DS-1c: the Lens is served here, inside Arthur's request (Arthur
         // is blocked on the reply): one Lens per session, and (Chad DS-1c

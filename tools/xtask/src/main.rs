@@ -264,6 +264,13 @@ const INSTALL_ATRIUM_BAD_PIN_MID_REL: &str = "target/neo-test/install_atrium_bad
 const INSTALL_ATRIUM_BAD_PIN_CAPTURE_REL: &str = "target/neo-test/install_atrium_bad_pin.ppm";
 const DESKTOP_CLOCK_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_clock_boot.ppm";
 const DESKTOP_APPS_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_boot.ppm";
+/// OT-61 L5: the end view (Home, after Arthur's second line) and the capture
+/// with the browser in front, which the pixel check reads.
+const DESKTOP_BROWSER_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_browser_boot.ppm";
+const DESKTOP_BROWSER_BOOT_MID_REL: &str = "target/neo-test/desktop_browser_boot_front.ppm";
+/// The browser's page frame is on screen: the WM presents a shown client's
+/// commit before it replies, and the browser logs this on the reply.
+const DESKTOP_BROWSER_FRONT_PROMPT: &[u8] = b"[ neo-browser ] ok(96) the WM took the page frame";
 const DESKTOP_APPS_FAULT_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_fault_boot.ppm";
 const DESKTOP_APPS_HANG_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_hang_boot.ppm";
 const DESKTOP_APPS_STALL_BOOT_CAPTURE_REL: &str = "target/neo-test/desktop_apps_stall_boot.ppm";
@@ -682,6 +689,19 @@ const DESKTOP_APPS_BOOT_HID_STEPS: &[SerialScriptStep] = &[
     step(b"PROBEAPP key code=5 count=2", &[HMP_SUPER_TAB]),
     step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
 ];
+/// OT-61 L5: Arthur's line `open browser` launches the browser; once it is in
+/// front (its first turn) the screen is captured; Super+Tab gives the front
+/// back to Arthur, whose second line ends the session.
+const DESKTOP_BROWSER_BOOT_HID_STEPS: &[SerialScriptStep] = &[
+    HOME_READY_TYPE,
+    HOME_TYPED_ENTER,
+    step(
+        b"DESKTOP arthur answer composited round=1",
+        b"open browser\n",
+    ),
+    step(DESKTOP_BROWSER_FRONT_PROMPT, &[HMP_SUPER_TAB]),
+    step(b"DESKTOP apps front client=0 via=sak-tab", b"again\n"),
+];
 /// OT-88 A1a, per-client faults: the probe app exits 7 after its first key.
 /// The WM ends that client alone and gives the front back to Arthur, whose
 /// next line is exactly `again`.
@@ -969,7 +989,7 @@ const fn desktop(
     }
 }
 
-const DESKTOP_SCENARIOS: [DesktopScenario; 50] = [
+const DESKTOP_SCENARIOS: [DesktopScenario; 51] = [
     DesktopScenario {
         band: Some(false),
         ..desktop(
@@ -1103,6 +1123,17 @@ const DESKTOP_SCENARIOS: [DesktopScenario; 50] = [
             "desktop_drag_cross_control_boot",
             DESKTOP_DRAG_CROSS_BOOT_HID_STEPS,
             DESKTOP_DRAG_CROSS_CONTROL_BOOT_CAPTURE_REL,
+            b"again\n",
+        )
+    },
+    // OT-61 L5: the first page in a LogansOS window.
+    DesktopScenario {
+        mid: Some((DESKTOP_BROWSER_FRONT_PROMPT, DESKTOP_BROWSER_BOOT_MID_REL)),
+        long_timeout: true,
+        ..desktop(
+            "desktop_browser_boot",
+            DESKTOP_BROWSER_BOOT_HID_STEPS,
+            DESKTOP_BROWSER_BOOT_CAPTURE_REL,
             b"again\n",
         )
     },
@@ -4215,6 +4246,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 L5: the first page in a LogansOS window. Arthur opens the
+        // browser (a real-std WM client); its 640x400 surface, on screen,
+        // is every pixel of the hand-derived frame.
+        name: "desktop_browser_boot",
+        feature: "neo-test-desktop-browser-boot",
+        user_feature: Some("desktop-browser-boot-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-88 A1a: the probe app as a second WM client: launched through
         // Arthur's LaunchCap, its own keys while in front, Super+Tab back to
         // Arthur with none of its keys in his line.
@@ -5916,6 +5957,17 @@ const TEST_SCENARIOS: &[TestScenario] = &[
     TestScenario {
         name: "usb_storage_off",
         feature: "neo-test-usb-storage-off",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    // OT-100 R2: the USB mass-storage write path. Two sticks: the sealed one
+    // is probed, written across the chunk boundaries, flushed and read back;
+    // the unsealed one is never probed or written. xtask then hashes both
+    // images and holds QEMU's SCSI trace against the driver's counts.
+    TestScenario {
+        name: "usb_msc_write",
+        feature: "neo-test-usb-msc-write",
         user_feature: None,
         ignored: false,
         limine_kaslr: None,
@@ -8516,6 +8568,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "swgl_atrium_smoke" => &[SWGL_ATRIUM_BIN],
         "swgl_grant_smoke" => &[SWGL_GRANT_CLIENT_BIN, SWGL_GRANT_COMPOSITOR_BIN],
         "browser_io_smoke" => &[BROWSER_IO_BIN, BROWSER_IO_PEER_BIN],
+        "desktop_browser_boot" => &[BROWSER_BIN],
         _ => &[],
     }
 }
@@ -8932,6 +8985,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-grab-boot-test") => {
             vec!["atrium-apps", "desktop-home-boot-test"]
         }
+        // OT-61 L5: the same, with the browser's slot.
+        Some("desktop-browser-boot-test") => {
+            vec!["atrium-apps-browser", "desktop-home-boot-test"]
+        }
         // M2: neo-init drives the encrypted scenario, so it needs the marker
         // feature that selects the falsifiable driver (arthur_memory_encrypted_tests).
         // Previously this was empty, so the M2 scenario ran the default no-op driver
@@ -9027,6 +9084,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // has no desktop role.
         | Some("desktop-session")
         | Some("desktop-session-boot-test")
+        // OT-61 L5: the browser is its own module; neo-worker plays no role.
+        | Some("desktop-browser-boot-test")
         | Some("desktop-glass")
         | Some("reduce-transparency")
         | Some("desktop-glass-boot-test")
@@ -9249,6 +9308,12 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
             "desktop-session-boot-test",
             "desktop-home",
             "atrium-apps-probe",
+        ],
+        // OT-61 L5: Home's Arthur, who opens the browser on its line.
+        Some("desktop-browser-boot-test") => vec![
+            "desktop-session-boot-test",
+            "desktop-home",
+            "atrium-apps-browser",
         ],
         Some("desktop-apps-flood-boot-test") => vec![
             "desktop-session-boot-test",
@@ -9648,6 +9713,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&LAYOUT_SMOKE_BIN) {
             build_standalone_std_smoke(LAYOUT_SMOKE_BIN, &[LAYOUT_SMOKE_BIN], LAYOUT_SMOKE_DIR)?;
         }
+        if std_real_staged_bins().contains(&BROWSER_BIN) {
+            build_standalone_std_smoke(LAYOUT_SMOKE_BIN, &[BROWSER_BIN], LAYOUT_SMOKE_DIR)?;
+        }
         if std_real_staged_bins().contains(&WEBRENDER_BIN) {
             build_standalone_std_smoke(WEBRENDER_BIN, &[WEBRENDER_BIN], WEBRENDER_DIR)?;
         }
@@ -9691,6 +9759,9 @@ const CXX_TRAP_BIN: &str = "cxx-hardening-trap";
 /// OT-61 rung 4 (SWGL S1): upstream SWGL into a caller buffer, over neo-crt.
 const SWGL_BIN: &str = "swgl-smoke";
 const SWGL_DIR: &str = "userland/swgl-smoke";
+/// OT-61 L5: the browser as a desktop-session client, staged as
+/// `/modules/neo-browser` (module `"browser"`, libneo's `MODULE_BROWSER`).
+const BROWSER_BIN: &str = "browser";
 /// OT-61 rung 4 (SWGL S3a): the same pattern into a kernel Atrium buffer, in
 /// the same crate (`src/atrium.rs`).
 const SWGL_ATRIUM_BIN: &str = "swgl-atrium-smoke";
@@ -9721,7 +9792,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         SWGL_BIN | SWGL_ATRIUM_BIN | SWGL_GRANT_CLIENT_BIN | SWGL_GRANT_COMPOSITOR_BIN => {
             Some(SWGL_DIR)
         }
-        LAYOUT_SMOKE_BIN => Some(LAYOUT_SMOKE_DIR),
+        LAYOUT_SMOKE_BIN | BROWSER_BIN => Some(LAYOUT_SMOKE_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
         _ => None,
@@ -9927,8 +9998,13 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
             &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
             CXX_RUNTIME_DIR,
         ),
-        // `--layout`: OT-61 L0/L1, Servo's layout without script over neo-crt.
-        [a] if a == "--layout" => (LAYOUT_SMOKE_BIN, &[LAYOUT_SMOKE_BIN], LAYOUT_SMOKE_DIR),
+        // `--layout`: OT-61 L0-L4, Servo's layout without script over
+        // neo-crt, and L5's `neo-browser` from the same crate.
+        [a] if a == "--layout" => (
+            LAYOUT_SMOKE_BIN,
+            &[LAYOUT_SMOKE_BIN, BROWSER_BIN],
+            LAYOUT_SMOKE_DIR,
+        ),
         _ => {
             return Err(
                 "usage: cargo xtask ot61-closure-build [--stylo | --crt | --layout]".to_string(),
@@ -9938,14 +10014,16 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
     apply_neoplutarch_std_overlay()?;
     verify_applied_overlay()?;
     build_standalone_std_smoke(bin, bins, dir)?;
-    let elf = std_real_bin_path(bin);
-    let len = fs::metadata(&elf)
-        .map_err(|e| format!("stat {}: {e}", elf.display()))?
-        .len();
-    println!(
-        "ot61-closure-build: {} ({len} bytes), A4 checks passed",
-        elf.display()
-    );
+    for b in bins {
+        let elf = std_real_bin_path(b);
+        let len = fs::metadata(&elf)
+            .map_err(|e| format!("stat {}: {e}", elf.display()))?
+            .len();
+        println!(
+            "ot61-closure-build: {} ({len} bytes), A4 checks passed",
+            elf.display()
+        );
+    }
     Ok(())
 }
 
@@ -16387,6 +16465,33 @@ fn run_qemu_test_invocation(
         ));
     }
 
+    if scenario.name == "usb_msc_write" {
+        // OT-100 R2: two fresh 4 MiB sticks, one with the sealed scratch
+        // sector (the guard arms it), one blank (never armed), and QEMU's
+        // SCSI command trace in a file of its own.
+        let (marked, unmarked, trace) = usb_msc_write_paths();
+        prepare_usb_msc_write_stick(&marked, true)?;
+        prepare_usb_msc_write_stick(&unmarked, false)?;
+        let _ = fs::remove_file(&trace);
+        qemu.arg("-device").arg("qemu-xhci,id=xhci0");
+        for (id, path) in [("stickm", &marked), ("sticku", &unmarked)] {
+            qemu.arg("-drive").arg(format!(
+                "if=none,id={id},format=raw,file={}",
+                path.display()
+            ));
+            qemu.arg("-device")
+                .arg(format!("usb-storage,drive={id},bus=xhci0.0"));
+        }
+        qemu.arg("-D").arg(&trace);
+        qemu.arg("-trace").arg("scsi_req_parsed");
+        // The kernel's xHCI bring-up resets the controller (HCRST); the
+        // firmware's own USB-disk probe (SeaBIOS: INQUIRY, READ CAPACITY,
+        // MODE SENSE(10) for geometry, boot-sector reads) comes before it.
+        // The oracle holds only what follows the last reset to the kernel's
+        // allowlist.
+        qemu.arg("-trace").arg("usb_xhci_reset");
+    }
+
     if scenario.name == "usb_storage_read" || scenario.name == "usb_storage_off" {
         // L3u-2: QEMU's Bulk-Only usb-storage (46f4:0001) on qemu-xhci,
         // holding the FAT32 fixture volume (the same image the phase3_fat32_*
@@ -18138,6 +18243,155 @@ fn prepare_storage_disk(scenario_name: &str) -> Result<PathBuf, String> {
     }
 
     prepare_raw_storage_disk(&path)
+}
+
+/// OT-100 R2 (`usb_msc_write`): the marked stick, the unmarked stick and
+/// QEMU's SCSI trace log.
+fn usb_msc_write_paths() -> (PathBuf, PathBuf, PathBuf) {
+    let dir = workspace_root().join(TEST_OUTPUT_REL);
+    (
+        dir.join("usb_msc_write-marked.raw"),
+        dir.join("usb_msc_write-unmarked.raw"),
+        dir.join("usb_msc_write-scsi-trace.log"),
+    )
+}
+
+/// The sticks' size: 4 MiB of 512-byte blocks.
+const USB_MSC_WRITE_STICK_BYTES: u64 = 4 << 20;
+/// The region the kernel writes (`kernel/src/test_harness.rs`,
+/// `USB_MSC_WRITE_LBA` / `USB_MSC_WRITE_BLOCKS`).
+const USB_MSC_WRITE_LBA: usize = 63;
+const USB_MSC_WRITE_BLOCKS: usize = 300;
+
+/// Byte `i` of the pattern the kernel writes. Written out here from the
+/// scenario's definition, not shared with the kernel: the image check is
+/// independent of the code that produced the bytes.
+fn usb_msc_write_pattern_byte(i: usize) -> u8 {
+    ((i.wrapping_mul(31) ^ (i >> 9).wrapping_mul(7)) as u8) ^ 0xa5
+}
+
+/// A fresh, all-zero stick; `marked` stamps the sealed scratch sector.
+fn prepare_usb_msc_write_stick(path: &Path, marked: bool) -> Result<(), String> {
+    let _ = fs::remove_file(path);
+    let mut file =
+        fs::File::create(path).map_err(|e| format!("create stick {}: {e}", path.display()))?;
+    file.set_len(USB_MSC_WRITE_STICK_BYTES)
+        .map_err(|e| format!("size stick {}: {e}", path.display()))?;
+    if marked {
+        stamp_scratch_marker(&mut file, USB_MSC_WRITE_STICK_BYTES, path)?;
+    }
+    file.sync_all()
+        .map_err(|e| format!("sync stick {}: {e}", path.display()))
+}
+
+/// SCSI opcodes the write-path kernel may send: today's six read-only ones,
+/// and WRITE(10), SYNCHRONIZE CACHE(10), MODE SENSE(6).
+const USB_MSC_READ_ONLY_OPCODES: [u32; 6] = [0x12, 0x00, 0x03, 0x25, 0x9e, 0x28];
+const USB_MSC_WRITE_CLASS_OPCODES: [u32; 3] = [0x2a, 0x35, 0x1a];
+
+/// OT-100 R2's host-side oracle for `usb_msc_write`:
+/// - the marked image holds exactly the pattern in the written region, the
+///   scratch sector unchanged in its last 512 bytes, and zero everywhere
+///   else;
+/// - the unmarked image is still all zero;
+/// - QEMU's SCSI trace, from the kernel's xHCI reset on (the last
+///   `usb_xhci_reset`; what comes before it is the firmware's own probe,
+///   e.g. SeaBIOS's MODE SENSE(10) geometry query, and is only reported),
+///   shows only the kernel's allowed opcodes, and its WRITE(10),
+///   SYNCHRONIZE CACHE(10) and MODE SENSE(6) counts equal the marked
+///   stick's own counts, while the driver says the unmarked stick was sent
+///   none: so the unmarked stick received no write-class command. No reset
+///   in the trace is a failure: the two could not be told apart.
+fn check_usb_msc_write(
+    serial: &str,
+    marked: &[u8],
+    unmarked: &[u8],
+    trace: &str,
+) -> Result<(), String> {
+    let size = USB_MSC_WRITE_STICK_BYTES as usize;
+    if marked.len() != size || unmarked.len() != size {
+        return Err(format!(
+            "stick sizes {} / {} (want {size})",
+            marked.len(),
+            unmarked.len()
+        ));
+    }
+    let start = USB_MSC_WRITE_LBA * 512;
+    let end = start + USB_MSC_WRITE_BLOCKS * 512;
+    if let Some(i) = (start..end).find(|&i| marked[i] != usb_msc_write_pattern_byte(i - start)) {
+        return Err(format!("marked stick byte {i} is not the pattern"));
+    }
+    let scratch = write_guard_logic::scratch_sector(USB_MSC_WRITE_STICK_BYTES);
+    if marked[size - 512..] != scratch[..] {
+        return Err("marked stick's scratch sector changed".into());
+    }
+    if let Some(i) = (0..size - 512).find(|&i| !(start..end).contains(&i) && marked[i] != 0) {
+        return Err(format!("marked stick byte {i} written outside the region"));
+    }
+    if let Some(i) = unmarked.iter().position(|&b| b != 0) {
+        return Err(format!("unmarked stick written at byte {i}"));
+    }
+    let counts = serial
+        .lines()
+        .find_map(|l| l.split_once("USB_MSC_WRITE counts ").map(|(_, rest)| rest))
+        .ok_or("no `USB_MSC_WRITE counts` line")?;
+    let field = |name: &str| -> Result<u64, String> {
+        counts
+            .split_whitespace()
+            .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+            .ok_or(format!("counts line lacks {name}"))?
+            .parse()
+            .map_err(|e| format!("counts {name}: {e}"))
+    };
+    let marked_counts = [
+        field("marked_writes")?,
+        field("marked_syncs")?,
+        field("marked_mode_senses")?,
+    ];
+    let unmarked_counts = [
+        field("unmarked_writes")?,
+        field("unmarked_syncs")?,
+        field("unmarked_mode_senses")?,
+    ];
+    if unmarked_counts != [0, 0, 0] {
+        return Err(format!(
+            "driver sent the unmarked stick {unmarked_counts:?}"
+        ));
+    }
+    let mut seen: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    let lines: Vec<&str> = trace.lines().collect();
+    let kernel_from = lines
+        .iter()
+        .rposition(|l| l.contains("usb_xhci_reset"))
+        .ok_or(
+            "QEMU's trace has no usb_xhci_reset: firmware and kernel commands can't be told apart",
+        )?;
+    for line in lines[kernel_from..]
+        .iter()
+        .filter(|l| l.contains("scsi_req_parsed"))
+    {
+        let op: u32 = line
+            .split_once("command ")
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .ok_or(format!("unparsed trace line: {line}"))?;
+        *seen.entry(op).or_default() += 1;
+    }
+    if !seen.contains_key(&0x28) {
+        return Err("QEMU's SCSI trace has no READ(10): the trace is not being recorded".into());
+    }
+    if let Some(op) = seen.keys().find(|op| {
+        !USB_MSC_READ_ONLY_OPCODES.contains(op) && !USB_MSC_WRITE_CLASS_OPCODES.contains(op)
+    }) {
+        return Err(format!("a stick was sent opcode 0x{op:02x}"));
+    }
+    let traced = USB_MSC_WRITE_CLASS_OPCODES.map(|op| seen.get(&op).copied().unwrap_or(0));
+    if traced != marked_counts {
+        return Err(format!(
+            "QEMU traced WRITE/SYNC/MODE SENSE {traced:?}, the marked stick was sent {marked_counts:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// Zenbook lane: the kernel writes only inside extents a sealed marker claims
@@ -21523,6 +21777,48 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "PR #15 item 4: a held button reaches only the client in front",
         )?;
     }
+    if scenario.name == "desktop_browser_boot" {
+        // What the browser and the WM's client table said, whatever fails
+        // below (the serial tail xtask prints is mostly the WM's end view).
+        if let Ok(serial) = read_serial(observed) {
+            for line in serial.lines().filter(|l| {
+                l.contains("neo-browser") || l.contains("DESKTOP apps") || l.contains("browser")
+            }) {
+                eprintln!("[xtask] desktop_browser_boot: {line}");
+            }
+        }
+        require_serial_sequence(
+            scenario,
+            observed,
+            &[
+                "DESKTOP launchcap minted client=arthur",
+                "DESKTOP arthur line=open browser",
+                "DESKTOP apps browser budget=268435456",
+                "DESKTOP apps client connected client=2 value=1",
+                "DESKTOP apps front client=2 via=launch",
+                "DESKTOP apps front client=0",
+                "DESKTOP arthur line=again\n",
+            ],
+            "OT-61 L5: the browser connects as client 2 and takes the front, then Arthur has his",
+        )?;
+        // The browser's own lines (another process, so not ordered against the
+        // WM's): its frame in its buffer, then each handshake step.
+        for needle in [
+            "[ neo-browser ] ok(83) the page rendered into the Atrium buffer",
+            "[ neo-browser ] ok(84) every pixel of the 640x400 buffer == the hand-derived frame, top row first",
+            "[ neo-browser ] ok(94) the WM took the first (white) frame",
+            "[ neo-browser ] turn: discarded",
+            "[ neo-browser ] ok(96) the WM took the page frame",
+            "[ neo-browser ] ready",
+            "DESKTOP arthur browser opened",
+            "DESKTOP apps client ended client=2 value=0",
+        ] {
+            require_serial_contains(scenario, observed, needle, "OT-61 L5: the browser")?;
+        }
+        let serial = read_serial(observed)?;
+        check_browser_capture(scenario, &serial)?;
+        require_framebuffer_capture(scenario, DESKTOP_BROWSER_BOOT_CAPTURE_REL)?;
+    }
     if scenario.name == "desktop_apps_boot" || scenario.name == "desktop_apps_fault_boot" {
         let fault = scenario.name == "desktop_apps_fault_boot";
         let ended = if fault {
@@ -21562,6 +21858,19 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
     if scenario.name == "desktop_scroll_boot" {
         let serial = read_serial(observed)?;
         check_scroll_sequence(&serial).map_err(|e| format!("`{}` {e}", scenario.name))?;
+    }
+    if scenario.name == "usb_msc_write" {
+        let serial = read_serial(observed)?;
+        let (marked, unmarked, trace) = usb_msc_write_paths();
+        let read = |p: &Path| fs::read(p).map_err(|e| format!("read {}: {e}", p.display()));
+        let trace = fs::read_to_string(&trace).map_err(|e| {
+            format!(
+                "`usb_msc_write`: QEMU's SCSI trace {}: {e}",
+                trace.display()
+            )
+        })?;
+        check_usb_msc_write(&serial, &read(&marked)?, &read(&unmarked)?, &trace)
+            .map_err(|e| format!("`usb_msc_write` {e}"))?;
     }
     if scenario.name == "desktop_wheel_boot" {
         let serial = read_serial(observed)?;
@@ -24335,6 +24644,139 @@ fn check_drag_witness(line: &str, raster: &[u8]) -> Result<(), String> {
             differ.join("; ")
         ))
     }
+}
+
+/// OT-61 L5: the browser's client rect on the 1920x1080 screen, worked by hand
+/// from the layout the Home session's WM uses: `desktop-home` turns on
+/// `desktop-glass`, whose scene is `neo_atrium::Layout::new(1920, 1080, 640,
+/// 400)` (`neo-atrium/src/layout.rs`), not libneo's `atrium_desktop`. (The
+/// first full on-target run used the latter's numbers and found the page's
+/// ring 6 px right and 1 px down of them.)
+/// - the frame is 656 x 442: `frame_size` adds 2 x PAD (8) across, and the
+///   34 px title plus one PAD down;
+/// - the workfield is right of the 84 px spine and below the 36 px bar:
+///   x 84, y 36, 1836 x 1044;
+/// - the frame is centred in it at x = 84 + (1836 - 656) / 2 = 674 and
+///   y = 36 + (1044 - 442) / 2 = 337, inside `clamp_origin`'s bounds;
+/// - the client is PAD in and the title down: (674 + 8, 337 + 34) = (682, 371).
+const BROWSER_CLIENT: (usize, usize, usize, usize) = (682, 371, 640, 400);
+/// The pointer's arrow, which the WM draws over every client: 12 x 18
+/// (neo-init `pointer::ARROW`), its top-left at the screen centre where the
+/// session starts it (no pointer motion in this scenario). Its pixels are
+/// skipped, as `check_lens_capture` skips its sprite. (The run that put the
+/// rect right found exactly these 114 pixels, client x 278..=289,
+/// y 169..=186, the only ones that differ.)
+const BROWSER_SCENE_SPRITE: (usize, usize, usize, usize) = (960, 540, 12, 18);
+
+/// OT-61 L5: the screendump taken with the browser in front shows, in its
+/// client rect, exactly the hand-derived frame of the oracle page: white,
+/// except `#b`'s 2 px black border ring on its border box x 8..122,
+/// y 90..144 (client coordinates; CSS 2.1 §10.3.3, as worked in
+/// `neo-static-page/src/oracle.rs`), every pixel but the pointer's arrow.
+/// And the hash the browser logged over its own buffer (FNV-1a over the RGB
+/// bytes, row by row) must equal the same hash of that hand-derived frame,
+/// computed here: the buffer the WM presented is the frame, byte for byte.
+fn check_browser_capture(scenario: TestScenario, serial: &str) -> Result<(), String> {
+    let (capture, raster) = load_capture(
+        scenario,
+        DESKTOP_BROWSER_BOOT_MID_REL,
+        ("browser capture", "browser capture", ", not 1920x1080"),
+    )?;
+    let (cx, cy, cw, ch) = BROWSER_CLIENT;
+    let expected = |x: usize, y: usize| -> u32 {
+        let inside = |x0, y0, x1, y1| x >= x0 && x < x1 && y >= y0 && y < y1;
+        if inside(8, 90, 122, 144) && !inside(10, 92, 120, 142) {
+            0x00_0000
+        } else {
+            0xFF_FFFF
+        }
+    };
+    let (sx, sy, sw, sh) = BROWSER_SCENE_SPRITE;
+    let in_sprite = |x: usize, y: usize| x >= sx && x < sx + sw && y >= sy && y < sy + sh;
+    let mut wrong = 0usize;
+    let mut first = None;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for y in 0..ch {
+        for x in 0..cw {
+            let want = expected(x, y);
+            for b in [(want >> 16) as u8, (want >> 8) as u8, want as u8] {
+                hash ^= u64::from(b);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            if in_sprite(cx + x, cy + y) {
+                continue;
+            }
+            let got = rgb(&raster, cx + x, cy + y);
+            if got != want {
+                wrong += 1;
+                first.get_or_insert((x, y, got));
+            }
+        }
+    }
+    if let Some((x, y, got)) = first {
+        // Where the wrong pixels are, and where the page's black ring landed
+        // on screen (searched near the expected rect), so a placement error
+        // reads off the log without the capture.
+        let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+        let mut colours: Vec<(u32, usize)> = Vec::new();
+        for yy in 0..ch {
+            for xx in 0..cw {
+                let got = rgb(&raster, cx + xx, cy + yy);
+                if !in_sprite(cx + xx, cy + yy) && got != expected(xx, yy) {
+                    (x0, y0) = (x0.min(xx), y0.min(yy));
+                    (x1, y1) = (x1.max(xx), y1.max(yy));
+                    match colours.iter_mut().find(|c| c.0 == got) {
+                        Some(c) => c.1 += 1,
+                        None => colours.push((got, 1)),
+                    }
+                }
+            }
+        }
+        colours.sort_by_key(|c| std::cmp::Reverse(c.1));
+        colours.truncate(6);
+        let (mut bx0, mut by0, mut bx1, mut by1) = (usize::MAX, usize::MAX, 0, 0);
+        for yy in cy.saturating_sub(120)..(cy + ch + 120).min(CAPTURE_H) {
+            for xx in cx.saturating_sub(120)..(cx + cw + 120).min(CAPTURE_W) {
+                if rgb(&raster, xx, yy) == 0 {
+                    (bx0, by0) = (bx0.min(xx), by0.min(yy));
+                    (bx1, by1) = (bx1.max(xx), by1.max(yy));
+                }
+            }
+        }
+        eprintln!(
+            "[xtask] desktop_browser_boot: wrong pixels span client x {x0}..={x1}, y {y0}..={y1}; commonest wrong colours {colours:06x?}; pure-black pixels near the rect span screen x {bx0}..={bx1}, y {by0}..={by1} (the page's ring is expected at x {}..={}, y {}..={})",
+            cx + 8,
+            cx + 121,
+            cy + 90,
+            cy + 143
+        );
+        return Err(format!(
+            "`{}` browser client rect: {wrong} pixels differ from the hand-derived frame; first at client ({x},{y}) = screen ({},{}): 0x{got:06x}, want 0x{:06x}; capture={}",
+            scenario.name,
+            cx + x,
+            cy + y,
+            expected(x, y),
+            capture.display()
+        ));
+    }
+    let logged = serial
+        .lines()
+        .find_map(|l| l.split("[ neo-browser ] frame fnv1a64=").nth(1))
+        .map(|h| h.trim().to_string())
+        .ok_or_else(|| {
+            format!(
+                "`{}` the browser never logged its frame hash",
+                scenario.name
+            )
+        })?;
+    if logged != format!("{hash:016x}") {
+        return Err(format!(
+            "`{}` the hand-derived frame hashes {hash:016x}, the browser's buffer {logged}; capture={}",
+            scenario.name,
+            capture.display()
+        ));
+    }
+    Ok(())
 }
 
 fn load_capture(
@@ -28031,6 +28473,83 @@ mod tests {
         assert!(check_scroll_sequence(&ok.replace("view_top=22", "view_top=21")).is_err());
         assert!(check_scroll_sequence(&ok.replace("view=follow", "view_top=23")).is_err());
         assert!(check_scroll_sequence("DESKTOP arthur scroll key=pgup view_top=12\n").is_err());
+    }
+
+    /// OT-100 R2: `usb_msc_write`'s host oracle passes on the expected images
+    /// and trace, and fails on each way the run can go wrong.
+    #[test]
+    fn usb_msc_write_oracle() {
+        let size = USB_MSC_WRITE_STICK_BYTES as usize;
+        let start = USB_MSC_WRITE_LBA * 512;
+        let mut marked = vec![0u8; size];
+        for i in 0..USB_MSC_WRITE_BLOCKS * 512 {
+            marked[start + i] = usb_msc_write_pattern_byte(i);
+        }
+        marked[size - 512..].copy_from_slice(&write_guard_logic::scratch_sector(
+            USB_MSC_WRITE_STICK_BYTES,
+        ));
+        let unmarked = vec![0u8; size];
+        let serial = "USB_MSC_WRITE counts marked_writes=3 marked_syncs=2 marked_mode_senses=1 unmarked_writes=0 unmarked_syncs=0 unmarked_mode_senses=0\n";
+        let line = |op: u32| {
+            format!("4242@1.0:scsi_req_parsed target 0 lun 0 tag 1 command {op} dir 0 length 0\n")
+        };
+        // The firmware's probe (SeaBIOS: INQUIRY, TEST UNIT READY, READ
+        // CAPACITY, MODE SENSE(10) for geometry, a boot-sector READ, even a
+        // stray WRITE(10) here to prove it is not counted), then the
+        // kernel's xHCI reset, then the kernel's own commands.
+        let reset = "4242@0.9:usb_xhci_reset \n";
+        let mut firmware = String::from(reset);
+        for op in [
+            0x12, 0x00, 0x25, 0x5a, 0x28, 0x12, 0x00, 0x25, 0x5a, 0x28, 0x2a,
+        ] {
+            firmware.push_str(&line(op));
+        }
+        let mut trace = format!("{firmware}{reset}");
+        for op in [
+            0x12, 0x00, 0x25, 0x28, 0x12, 0x00, 0x25, 0x28, 0x1a, 0x00, 0x35, 0x2a, 0x2a, 0x2a,
+            0x35, 0x28,
+        ] {
+            trace.push_str(&line(op));
+        }
+        assert_eq!(
+            check_usb_msc_write(serial, &marked, &unmarked, &trace),
+            Ok(())
+        );
+        // MODE SENSE(10) after the kernel's reset is the kernel's: refused.
+        let extra = format!("{trace}{}", line(0x5a));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        // No reset at all: the firmware's commands can't be set apart.
+        let no_reset = trace.replace(reset, "");
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &no_reset).is_err());
+
+        // A pattern byte wrong, a byte outside the region, the scratch sector
+        // changed, the unmarked stick touched.
+        let mut bad = marked.clone();
+        bad[start + 70 * 512] ^= 1;
+        assert!(check_usb_msc_write(serial, &bad, &unmarked, &trace).is_err());
+        let mut bad = marked.clone();
+        bad[start - 1] = 1;
+        assert!(check_usb_msc_write(serial, &bad, &unmarked, &trace).is_err());
+        let mut bad = marked.clone();
+        bad[size - 1] ^= 1;
+        assert!(check_usb_msc_write(serial, &bad, &unmarked, &trace).is_err());
+        let mut bad = unmarked.clone();
+        bad[0] = 0x5a;
+        assert!(check_usb_msc_write(serial, &marked, &bad, &trace).is_err());
+
+        // One more WRITE(10) or MODE SENSE than the marked stick was sent:
+        // the unmarked stick got it. An opcode outside the lists. No trace.
+        let extra = format!("{trace}{}", line(0x2a));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        let extra = format!("{trace}{}", line(0x1a));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        let extra = format!("{trace}{}", line(0x1b));
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, &extra).is_err());
+        assert!(check_usb_msc_write(serial, &marked, &unmarked, "").is_err());
+        // The driver's own counts for the unmarked stick must be zero.
+        let serial_bad = serial.replace("unmarked_syncs=0", "unmarked_syncs=1");
+        assert!(check_usb_msc_write(&serial_bad, &marked, &unmarked, &trace).is_err());
+        assert!(check_usb_msc_write("", &marked, &unmarked, &trace).is_err());
     }
 
     /// NEOVOCB1: the fixture vocab this xtask writes holds its text pin, and

@@ -1267,10 +1267,18 @@ fn run_desktop_session(
                 let probe_app = &input[..input_len] == b"open probe app";
                 #[cfg(not(feature = "atrium-apps-probe"))]
                 let probe_app = false;
+                // OT-61 L5 boot test: open the browser, the same way.
+                #[cfg(feature = "atrium-apps-browser")]
+                let browser = &input[..input_len] == b"open browser";
+                #[cfg(not(feature = "atrium-apps-browser"))]
+                let browser = false;
                 if handled {
                 } else if probe_app {
                     #[cfg(feature = "atrium-apps-probe")]
                     open_probe_app(surface, launch_cap);
+                } else if browser {
+                    #[cfg(feature = "atrium-apps-browser")]
+                    open_browser(surface, launch_cap);
                 } else if action {
                     #[cfg(feature = "desktop-lens")]
                     {
@@ -1321,9 +1329,10 @@ fn run_desktop_session(
                     surface.write_text(backend.no_model_line(NO_MODEL));
                 }
                 surface.write_text(b"\n\nYou> ");
-                // (Opening the probe app is not one of the boot test's answers.)
+                // (Opening the probe app or the browser is not one of the
+                // boot test's answers: the second answer ends the session.)
                 #[cfg(all(feature = "desktop-home", feature = "desktop-session-boot-test"))]
-                if !probe_app {
+                if !probe_app && !browser {
                     answers += 1;
                 }
                 #[cfg(all(
@@ -1448,6 +1457,24 @@ fn run_desktop_session(
         // Enter is logged in its own branch, ahead of the line it submits.
         if byte != b'\n' {
             log_desktop_keystroke(byte);
+        }
+    }
+}
+
+/// OT-61 L5 boot test: launch the browser through the LaunchCap, as the probe
+/// app is launched. The WM brings it to the front before it answers.
+#[cfg(feature = "atrium-apps-browser")]
+fn open_browser(surface: &mut showcase_surface::ArthurSurface, cap: libneo::Handle) {
+    const TOKEN: u64 = 0x4252_5753_4150_544B;
+    let module = libneo::atrium_launch::MODULE_BROWSER;
+    match surface.launch(cap, module, TOKEN, Some(TOKEN)) {
+        Ok(()) => {
+            stage_b_log_line(b"DESKTOP arthur browser opened");
+            surface.write_text(b"I opened the browser.");
+        }
+        Err(_) => {
+            stage_b_log_line(b"DESKTOP arthur browser refused");
+            surface.write_text(b"I could not open the browser.");
         }
     }
 }
