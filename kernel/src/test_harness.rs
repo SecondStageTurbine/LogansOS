@@ -545,6 +545,12 @@ const SCENARIO: &str = "login_lock_stall";
 const SCENARIO: &str = "login_lock_park";
 #[cfg(feature = "neo-test-terminal-lock")]
 const SCENARIO: &str = "login_terminal_lock";
+/// A2: the app chips' box on a 1920x1080 Spine (neo-atrium's layout without
+/// the Install chip): x 14 (`CHIP_INSET`), from the first chip's top (y 206,
+/// two chips of 56 and 22 below the bar's 36 + 14) to the third chip's dot's
+/// bottom (362 + 56 + 6 + 8 = 432).
+#[cfg(feature = "neo-test-app-chips")]
+const APP_CHIPS_BOX_1920X1080: (usize, usize, usize, usize) = (14, 206, 56, 226);
 #[cfg(feature = "neo-test-switch-lock")]
 const SCENARIO: &str = "login_switch_lock";
 #[cfg(feature = "neo-test-settings-store")]
@@ -43144,8 +43150,18 @@ fn desktop_glass_asserts() {
     let boxes = oracle::S3_LABEL_BOXES_1920X1080;
     #[cfg(feature = "neo-test-desktop-home")]
     let boxes = oracle::DS1_HOME_LABEL_BOXES_1920X1080;
-    #[cfg(not(feature = "neo-test-desktop-intro-boot"))]
+    #[cfg(all(
+        not(feature = "neo-test-desktop-intro-boot"),
+        not(feature = "neo-test-app-chips")
+    ))]
     let got = crate::drivers::fb::pixel_digest_masked(&boxes);
+    // A2: a client-table WM shows the app chips on Home's Spine. Their box is
+    // masked as the labels are; everything else is DS-1's Home, exactly.
+    #[cfg(feature = "neo-test-app-chips")]
+    let got = {
+        let [a, b, c] = boxes;
+        crate::drivers::fb::pixel_digest_masked(&[a, b, c, APP_CHIPS_BOX_1920X1080])
+    };
     #[cfg(all(
         feature = "neo-test-desktop-intro-boot",
         not(feature = "neo-test-desktop-clock-boot"),
