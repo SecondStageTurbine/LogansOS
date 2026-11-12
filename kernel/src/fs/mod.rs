@@ -1458,9 +1458,11 @@ fn mount_persist() -> Result<neofs::MountReport, neofs::NeoFsError> {
         }
     }
     let persist = crate::boot_medium::persist();
+    let (_, source) = crate::boot_medium::cmdline_with_source();
     serial_println!(
-        "persist: cmdline persist={}",
-        if persist == Persist::On { "on" } else { "off" }
+        "persist: cmdline persist={} source={}",
+        if persist == Persist::On { "on" } else { "off" },
+        source.as_str()
     );
     // The boot device's partitions first, then everyone else's.
     let mut order: Vec<usize> = (0..count).collect();
