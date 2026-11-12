@@ -76,6 +76,14 @@ struct Waiter {
     token: Option<ThreadWakeToken>,
     /// 0 = not fired; else `WHY_*`.
     fired: i64,
+    /// A3p CP-61 witness: the first channel fire that found this entry
+    /// registered (0: none), and whether its thread was still parked then
+    /// (its token installed), or already woken (by the tick) and not yet
+    /// back in its wait.
+    #[cfg(feature = "neo-test-wait-any-witness")]
+    fired_key: u64,
+    #[cfg(feature = "neo-test-wait-any-witness")]
+    fired_parked: bool,
 }
 
 struct Table {
@@ -165,6 +173,10 @@ pub fn register(pid: ProcessId, keys: &[u64], deadline_ticks: u64) -> Option<Reg
         deadline_ticks,
         token: None,
         fired: 0,
+        #[cfg(feature = "neo-test-wait-any-witness")]
+        fired_key: 0,
+        #[cfg(feature = "neo-test-wait-any-witness")]
+        fired_parked: false,
     });
     if nkeys != 0 {
         CHANNEL_WAITERS.fetch_add(1, Ordering::AcqRel);
@@ -229,8 +241,42 @@ pub fn park(reg: Registration) -> i64 {
         Err(_guard) => EAGAIN,
     };
     let mut t = WAIT_TABLE.lock();
+    #[cfg(feature = "neo-test-wait-any-witness")]
+    let fired = match &t.slots[reg.slot] {
+        Some(w) if w.ticket == reg.ticket => (w.fired_key, w.fired_parked),
+        _ => (0, false),
+    };
     remove(&mut t, &reg);
+    #[cfg(feature = "neo-test-wait-any-witness")]
+    {
+        drop(t);
+        witness_woke(reg.ticket, ret, fired.0, fired.1);
+    }
     ret
+}
+
+/// A3p CP-61 witness (test only): this waiter blocked (its token was
+/// installed under the table guard while `fired` was 0), and a channel fire
+/// on `key` found its entry still registered, before the entry was removed
+/// here: `parked=1` if the thread was still parked at the fire (the fire
+/// woke it), `parked=0` if the tick had woken it first and it hadn't run
+/// yet. Either way the fire came after the registration and before this
+/// wake, and the wait's next scan sees the item ready. One line orders the
+/// three events. A wake with no channel fire (the tick alone: a wait that
+/// pulls input re-parks every tick) logs nothing. No lock is held.
+#[cfg(feature = "neo-test-wait-any-witness")]
+fn witness_woke(ticket: u64, why: i64, key: u64, parked: bool) {
+    if key == 0 {
+        return;
+    }
+    crate::serial_println!(
+        "WAITANY witness woke pid={} ticket={} parked={} why={} key={:#x}",
+        super::current_pid().0,
+        ticket,
+        u8::from(parked),
+        why,
+        key
+    );
 }
 
 /// Park the calling kernel thread for `ticks` timer ticks (at least until
@@ -281,6 +327,11 @@ fn fire_key(key: u64, why: i64) {
         let mut t = WAIT_TABLE.lock();
         let mut changed = false;
         for w in t.slots.iter_mut().flatten() {
+            #[cfg(feature = "neo-test-wait-any-witness")]
+            if w.fired_key == 0 && w.keys[..w.nkeys].contains(&key) {
+                w.fired_key = key;
+                w.fired_parked = w.token.is_some();
+            }
             if w.fired == 0 && w.keys[..w.nkeys].contains(&key) {
                 w.fired = why;
                 changed |= w.deadline_ticks != u64::MAX;

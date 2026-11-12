@@ -9779,94 +9779,171 @@ fn require_parked_by_default(
     }
 }
 
-/// A3p CP-61 (Janus, relay 400): `desktop_apps_reuse_boot`'s ordering,
-/// from the WM's park witness (`desktop-park-witness`):
-/// 1. the WM's park set holds client 1, generation 1 (`f=F s=S`);
-/// 2. after the probe says it idles, a park lasting at least
-///    [`CP61_PARKED_MS`] is woken by generation 1's own items, before the WM
-///    logs that client's end: it died while the WM was parked over it;
-/// 3. the next set names no client (the dead one's handles are gone), and
-///    no set or wake names generation 1 after that set;
-/// 4. the slot's next client, generation 2, is parked over with the same
-///    numeric handles `F` and `S` (the slot and its handles reused);
-/// 5. a wake names generation 2's surface (its first request after its key
-///    woke the WM).
+/// A3p CP-61 (relays 400 and 406): `desktop_apps_reuse_boot`'s ordering, in
+/// the kernel's order. Two witnesses:
+/// - the WM's (`desktop-park-witness`): `DESKTOP park set c<slot>g<gen> f=F
+///   s=S` names each client's generation and numeric handles;
+/// - the wait core's (`neo-test-wait-any-witness`): `WAITANY witness set
+///   pid=P items=H:K:C,...` gives each registered channel item's handle, wait
+///   key and `CapId` (never reused, so it names the object, where a key can
+///   repeat once memory is reused); and `WAITANY witness woke ... key=K`
+///   says a channel fire on `K` found the waiter's entry registered, after
+///   it had blocked and before its wake (the line orders the three events).
+///
+/// Required:
+/// 1. gen 1's registration: after the WM's gen-1 set, a kernel set naming
+///    `F` and `S` gives gen 1's caps and keys;
+/// 2. its death while the WM waits over it: after the probe's idle line and
+///    before its end, a kernel wake on one of gen 1's keys, whose latest
+///    registration names gen 1's caps; then the WM's own wake names gen 1;
+/// 3. no kernel registration names a gen-1 cap after that wake;
+/// 4. gen 2 at the same numeric handles `F` and `S`, registered with new
+///    caps;
+/// 5. gen 2's first request wakes the WM: after its first key and before its
+///    idle line (so the client is alive and the fire is its request, not its
+///    end), a kernel wake on gen 2's surface key, whose latest registration
+///    names gen 2's surface cap.
 fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
-    const SET: &str = "DESKTOP park set";
-    const WOKE: &str = "DESKTOP park woke ms=";
+    const KSET: &str = "WAITANY witness set pid=";
+    const KWOKE: &str = "WAITANY witness woke pid=";
+    type Items = Vec<(u32, u64, u64)>;
+    type KeyCap = (u64, u64);
     let lines: Vec<&str> = serial.lines().collect();
     let at = |needle: &str, from: usize| -> Result<usize, String> {
-        lines[from..]
+        lines[from.min(lines.len())..]
             .iter()
             .position(|l| l.contains(needle))
             .map(|i| i + from)
             .ok_or_else(|| format!("no `{needle}` after line {from}"))
     };
-    let handles = |line: &str, client: &str| -> Option<(u32, u32)> {
+    // The WM's handles for a generation: `c1g<gen> f=F s=S`.
+    let wm_handles = |line: &str, client: &str| -> Option<(u32, u32)> {
         let rest = line.split(client).nth(1)?;
         let f = rest.split(" f=").nth(1)?.split(' ').next()?.parse().ok()?;
         let s = rest.split(" s=").nth(1)?.split(' ').next()?.parse().ok()?;
         Some((f, s))
     };
+    // A kernel set line's items: (handle, key, cap).
+    let kitems = |line: &str| -> Items {
+        line.split("items=")
+            .nth(1)
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|item| {
+                let mut parts = item.trim().split(':');
+                let h = parts.next()?.parse().ok()?;
+                let k = u64::from_str_radix(parts.next()?.trim_start_matches("0x"), 16).ok()?;
+                let c = parts.next()?.parse().ok()?;
+                Some((h, k, c))
+            })
+            .collect()
+    };
+    let kwoke_key = |line: &str| -> Option<u64> {
+        let k = line.split(" key=").nth(1)?.split(' ').next()?;
+        u64::from_str_radix(k.trim_start_matches("0x"), 16).ok()
+    };
+    // The first kernel set at or after `from` naming both handles: their
+    // (key, cap).
+    let kset_for = |from: usize, f: u32, s: u32| -> Result<(KeyCap, KeyCap), String> {
+        lines[from..]
+            .iter()
+            .filter(|l| l.contains(KSET))
+            .find_map(|l| {
+                let items = kitems(l);
+                let get = |h: u32| {
+                    items
+                        .iter()
+                        .find(|&&(x, _, _)| x == h)
+                        .map(|&(_, k, c)| (k, c))
+                };
+                Some((get(f)?, get(s)?))
+            })
+            .ok_or_else(|| {
+                format!("no kernel registration of handles {f} and {s} after line {from}")
+            })
+    };
+    // The latest kernel set before line `i`.
+    let kset_before = |i: usize| -> Option<Items> {
+        lines[..i]
+            .iter()
+            .rev()
+            .find(|l| l.contains(KSET))
+            .map(|l| kitems(l))
+    };
+
+    // 1. Gen 1, its handles, and the kernel's registration of them.
     let connected1 = at("DESKTOP apps client connected client=1 value=1", 0)?;
-    let set1 = at(" c1g1 f=", connected1)?;
-    if !lines[set1].contains(SET) {
-        return Err(format!("line {set1} is not a park set: {}", lines[set1]));
-    }
-    let gen1 = handles(lines[set1], " c1g1").ok_or("no handles in the generation-1 set")?;
-    let idle = at("PROBEAPP idling before exit", set1)?;
-    let ended1 = at("DESKTOP apps client ended client=1 value=7", idle)?;
-    let death = lines[idle..ended1]
-        .iter()
-        .rposition(|l| l.contains(WOKE) && l.contains("c1g1"))
-        .map(|i| i + idle)
-        .ok_or("no park woken by generation 1's items between its idle and its end")?;
-    let ms: u64 = lines[death]
-        .split(WOKE)
-        .nth(1)
-        .and_then(|r| r.split(' ').next())
-        .and_then(|n| n.parse().ok())
-        .ok_or("the death wake has no duration")?;
-    if ms < CP61_PARKED_MS {
+    let set1 = at("DESKTOP park set c1g1 f=", connected1)?;
+    let (f, s) = wm_handles(lines[set1], " c1g1").ok_or("no handles in the WM's gen-1 set")?;
+    let ((k1f, c1f), (k1s, c1s)) = kset_for(set1, f, s)?;
+
+    // 2. Its death, fired on a registered entry of the WM's.
+    let idle1 = at("PROBEAPP idling before exit", set1)?;
+    let ended1 = at("DESKTOP apps client ended client=1 value=7", idle1)?;
+    let death = (idle1..ended1)
+        .find(|&i| {
+            lines[i].contains(KWOKE)
+                && kwoke_key(lines[i]).is_some_and(|k| k == k1f || k == k1s)
+                && kset_before(i)
+                    .is_some_and(|items| items.iter().any(|&(_, _, c)| c == c1f || c == c1s))
+        })
+        .ok_or_else(|| {
+            format!(
+                "no kernel wake on gen 1's keys ({k1f:#x}, {k1s:#x}) under a registration of \
+                 its caps ({c1f}, {c1s}) between its idle and its end"
+            )
+        })?;
+    let wm_death = at("DESKTOP park woke ms=", death)?;
+    if wm_death > ended1 || !lines[wm_death].contains("c1g1") {
         return Err(format!(
-            "the death wake's park lasted {ms} ms (< {CP61_PARKED_MS}): not parked when it died: {}",
-            lines[death]
+            "the WM's wake after the kernel's doesn't name gen 1: {}",
+            lines[wm_death]
         ));
     }
-    // The WM removes the client from its table at once, and logs its end
-    // once it's reaped: the next set comes after the wake, maybe before the
-    // end's line.
-    let empty = at(SET, death + 1)?;
-    if !lines[empty].contains("clients=none") {
-        return Err(format!(
-            "the set after the end still names a client: {}",
-            lines[empty]
-        ));
-    }
-    let connected2 = at("DESKTOP apps client connected client=1 value=2", ended1)?;
-    if let Some(stale) = lines[empty..]
+
+    // 3. Gen 1's objects are never registered again.
+    if let Some(stale) = lines[death..]
         .iter()
-        .find(|l| (l.contains(SET) || l.contains(WOKE)) && l.contains("c1g1"))
+        .find(|l| l.contains(KSET) && kitems(l).iter().any(|&(_, _, c)| c == c1f || c == c1s))
     {
-        return Err(format!("generation 1 named after its end: {stale}"));
+        return Err(format!("a gen-1 cap registered after its death: {stale}"));
     }
-    let set2 = at(" c1g2 f=", connected2)?;
-    let gen2 = handles(lines[set2], " c1g2").ok_or("no handles in the generation-2 set")?;
-    if gen2 != gen1 {
+
+    // 4. Gen 2: the same numeric handles, new objects.
+    let connected2 = at("DESKTOP apps client connected client=1 value=2", ended1)?;
+    let set2 = at("DESKTOP park set c1g2 f=", connected2)?;
+    let gen2 = wm_handles(lines[set2], " c1g2").ok_or("no handles in the WM's gen-2 set")?;
+    if gen2 != (f, s) {
         return Err(format!(
-            "slot 1's handles weren't reused: generation 1 (f, s) = {gen1:?}, generation 2 = {gen2:?}"
+            "slot 1's handles weren't reused: gen 1 (f, s) = {:?}, gen 2 = {gen2:?}",
+            (f, s)
         ));
     }
-    let woke2 = at("c1g2f", set2)?;
-    if !lines[woke2].contains(WOKE) {
-        return Err(format!("line {woke2} is not a wake: {}", lines[woke2]));
+    let ((k2f, c2f), (_, c2s)) = kset_for(set2, f, s)?;
+    if [c2f, c2s].iter().any(|c| *c == c1f || *c == c1s) {
+        return Err(format!(
+            "gen 2's caps ({c2f}, {c2s}) repeat gen 1's ({c1f}, {c1s})"
+        ));
     }
+
+    // 5. Gen 2's first request wakes the WM, while gen 2 is alive.
+    let key2 = at("PROBEAPP key code=", set2)?;
+    let idle2 = at("PROBEAPP idling before exit", key2)?;
+    (key2..idle2)
+        .find(|&i| {
+            lines[i].contains(KWOKE)
+                && kwoke_key(lines[i]) == Some(k2f)
+                && kset_before(i)
+                    .is_some_and(|items| items.iter().any(|&(h, _, c)| h == f && c == c2f))
+        })
+        .ok_or_else(|| {
+            format!(
+                "no kernel wake on gen 2's surface key ({k2f:#x}, cap {c2f}) between its first \
+                 key and its idle"
+            )
+        })?;
     Ok(())
 }
-
-/// How long the death wake's park must have lasted for the WM to have been
-/// parked when the client died (the probe idles 2000 ms).
-const CP61_PARKED_MS: u64 = 500;
 
 /// A3p: whether neo-init built with `features` has `target` on, through
 /// its own `[features]` table (`userland/neo-init/Cargo.toml`, read
@@ -30313,16 +30390,24 @@ mod tests {
     /// order, then with each ordering it must refuse.
     const CP61_LOG: &str = "\
 DESKTOP apps client connected client=1 value=1
-DESKTOP park set c1g1 f=40 s=38
-DESKTOP park woke ms=3 ready=c1g1f,
+DESKTOP park set c1g1 f=22 s=19
+WAITANY witness set pid=1 items=12:0x10a8:14,22:0xb4d0:32,19:0x9cd8:28,
+PROBEAPP key code=4 count=1
+WAITANY witness woke pid=1 ticket=1696 parked=0 why=2 key=0xb4d0
+DESKTOP park woke ms=500 ready=c1g1f,
 PROBEAPP idling before exit ms=2000
-DESKTOP park woke ms=2004 ready=c1g1f,c1g1s,
-DESKTOP apps front client=0 via=client-ended
-DESKTOP park set clients=none
+WAITANY witness woke pid=1 ticket=1907 parked=0 why=2 key=0x9cd8
+DESKTOP park woke ms=2010 ready=c1g1f,c1g1s,
 DESKTOP apps client ended client=1 value=7
+DESKTOP park set clients=none
+WAITANY witness set pid=1 items=12:0x10a8:14,
 DESKTOP apps client connected client=1 value=2
-DESKTOP park set c1g2 f=40 s=38
-DESKTOP park woke ms=900 ready=c1g2f,
+DESKTOP park set c1g2 f=22 s=19
+WAITANY witness set pid=1 items=12:0x10a8:14,22:0xb4d0:44,19:0x9cd8:40,
+PROBEAPP key code=5 count=1
+WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0
+DESKTOP park woke ms=500 ready=c1g2f,
+PROBEAPP idling before exit ms=2000
 ";
 
     #[test]
@@ -30333,16 +30418,32 @@ DESKTOP park woke ms=900 ready=c1g2f,
     #[test]
     fn cp61_oracle_refuses_each_wrong_ordering() {
         let cases = [
-            // Not parked: the wake came at once.
-            ("ms=2004 ready=c1g1f,c1g1s", "ms=4 ready=c1g1f,c1g1s"),
-            // Woken by something else: no generation-1 item.
-            ("ms=2004 ready=c1g1f,c1g1s,", "ms=2004 ready=,"),
+            // The death's fire found no registration of gen 1 (relay 406's
+            // preempted schedule: the first scan returns ready, no fire).
+            (
+                "ticket=1907 parked=0 why=2 key=0x9cd8",
+                "ticket=1907 parked=0 why=2 key=0x10a8",
+            ),
+            // The WM's registration at the death no longer named gen 1.
+            (
+                "ms=2000\nWAITANY witness woke pid=1 ticket=1907",
+                "ms=2000\nWAITANY witness set pid=1 items=12:0x10a8:14,\n\
+                 WAITANY witness woke pid=1 ticket=1907",
+            ),
             // The slot's handles weren't reused.
-            ("c1g2 f=40 s=38", "c1g2 f=41 s=38"),
-            // The dead client's handles still in the next set.
-            ("set clients=none", "set c1g1 f=40 s=38"),
-            // The new client's request never woke the WM.
-            ("ms=900 ready=c1g2f,", "ms=900 ready=c1g2s,"),
+            ("c1g2 f=22 s=19", "c1g2 f=23 s=19"),
+            // Gen 2 registered with one of gen 1's caps.
+            ("22:0xb4d0:44,19:0x9cd8:40,", "22:0xb4d0:32,19:0x9cd8:40,"),
+            // A gen-1 cap registered again after its death.
+            (
+                "set pid=1 items=12:0x10a8:14,\n",
+                "set pid=1 items=12:0x10a8:14,19:0x9cd8:28,\n",
+            ),
+            // Gen 2's wake was its session's, not its request's.
+            (
+                "ticket=2598 parked=0 why=2 key=0xb4d0",
+                "ticket=2598 parked=0 why=2 key=0x9cd8",
+            ),
         ];
         for (from, to) in cases {
             let log = CP61_LOG.replace(from, to);

@@ -7040,6 +7040,70 @@ fn wait_channel_lookup(
 /// Readiness of every item now (bit i = item i), or an errno for a bad item.
 /// Takes and drops every handle `Arc` itself: nothing owned survives into a
 /// park (CP-30). Also returns what the channel items name (`ident`).
+/// A3p CP-61 witness (test only): the registered items about to park, each
+/// channel's `handle:key:CapId`, logged when the set differs from the last
+/// one logged (a wait that pulls input re-registers every tick). The
+/// `CapId`s are never reused, so a slot's next client is told apart from its
+/// last one even at the same numeric handles. `ident` is the second scan's,
+/// which matched the first. No lock is held.
+#[cfg(feature = "neo-test-wait-any-witness")]
+fn wait_any_witness_set(
+    pid: crate::sched::process::ProcessId,
+    items: &[WaitItem],
+    ident: &WaitIdentity,
+) {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let mut hash = 0xcbf2_9ce4_8422_2325u64 ^ u64::from(pid.0);
+    let mut channels = [(0u32, 0u64, 0u64); crate::sched::wait_any::ITEMS_MAX];
+    let (mut n, mut j) = (0, 0);
+    for item in items {
+        let keyed = item.kind == WAIT_KIND_CHANNEL
+            || (cfg!(feature = "pipe")
+                && item.kind == crate::sched::wait_any_logic::WAIT_KIND_PIPE);
+        if !keyed || j >= ident.n {
+            continue;
+        }
+        if item.kind == WAIT_KIND_CHANNEL {
+            channels[n] = (item.handle, ident.keys[j], ident.caps[j]);
+            for v in [u64::from(item.handle), ident.keys[j], ident.caps[j]] {
+                hash = (hash ^ v).wrapping_mul(0x0100_0000_01b3);
+            }
+            n += 1;
+        }
+        j += 1;
+    }
+    if n == 0 || LAST.swap(hash, Ordering::Relaxed) == hash {
+        return;
+    }
+    // One line, written once (another CPU's output can't split it).
+    struct Buf {
+        bytes: [u8; 1024],
+        len: usize,
+    }
+    impl core::fmt::Write for Buf {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            let n = s.len().min(self.bytes.len() - self.len);
+            self.bytes[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            self.len += n;
+            Ok(())
+        }
+    }
+    use core::fmt::Write as _;
+    let mut line = Buf {
+        bytes: [0; 1024],
+        len: 0,
+    };
+    let _ = write!(line, "WAITANY witness set pid={} items=", pid.0);
+    for (handle, key, cap) in &channels[..n] {
+        let _ = write!(line, "{handle}:{key:#x}:{cap},");
+    }
+    crate::serial_println!(
+        "{}",
+        core::str::from_utf8(&line.bytes[..line.len]).unwrap_or("?")
+    );
+}
+
 #[cfg(feature = "wait-multiplex")]
 fn wait_any_scan(items: &[WaitItem], ident: &mut WaitIdentity) -> Result<u64, i64> {
     let mut mask = 0u64;
@@ -7219,6 +7283,8 @@ pub(crate) fn wait_any_items(items: &[WaitItem], deadline_ns: u64) -> i64 {
             wait_any::unregister(reg);
             return crate::errno::ETIMEDOUT;
         }
+        #[cfg(feature = "neo-test-wait-any-witness")]
+        wait_any_witness_set(pid, items, &second);
         let why = crate::arch::x86_64::without_interrupts(|| wait_any::park(reg));
         if why == EAGAIN {
             return EAGAIN;
