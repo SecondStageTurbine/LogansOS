@@ -251,6 +251,38 @@ fn due() -> Option<(&'static [u8], u64)> {
     }
 }
 
+/// A3p: the latest a parked WM loop may sleep (absolute monotonic ns) and
+/// still serve the lock on time. Unarmed, or with the idle lock off: no
+/// bound. Armed and unlocked: when the idle time runs out (input since then
+/// only wakes it early, which is harmless). Locked: one tick, so the lock
+/// screen reads its keys and ends its backoff without a wait item of its
+/// own (the lock is rare; the cost is the pre-A3p poll's, while it shows).
+#[cfg(feature = "desktop-park")]
+pub fn park_deadline_ns() -> u64 {
+    const TICK_NS: u64 = 10_000_000;
+    if !ARMED.load(Ordering::Acquire) {
+        return u64::MAX;
+    }
+    if locked() || PAINT_PENDING.load(Ordering::Acquire) {
+        return now_ns().saturating_add(TICK_NS);
+    }
+    let idle = idle_limit_ns();
+    if idle == 0 {
+        return u64::MAX;
+    }
+    LAST_INPUT_NS.load(Ordering::Acquire).saturating_add(idle)
+}
+
+#[cfg(all(feature = "desktop-park", not(feature = "atrium-settings-store")))]
+fn idle_limit_ns() -> u64 {
+    IDLE_NS
+}
+
+#[cfg(all(feature = "desktop-park", feature = "atrium-settings-store"))]
+fn idle_limit_ns() -> u64 {
+    super::settings::idle_ns()
+}
+
 /// Called from every WM loop and wait that can reach the scene (the session
 /// loop's every turn, the window view's tick, Home's and the Lens view's
 /// loops, `poll_control`): engage the lock when it is asked for or the idle

@@ -452,6 +452,10 @@ impl Scene {
             };
             n += 2;
         }
+        // A3p: the idle lock is a time, not an item; a signed-in session
+        // never sleeps past it (and, locked, the lock screen gets its tick).
+        #[cfg(feature = "login")]
+        let deadline_ns = deadline_ns.min(lock::park_deadline_ns());
         let rc = libneo::sys_wait_any(&items[..n], deadline_ns);
         // A3p: the first park says the loop parks (rc >= 0: an item was
         // ready; ETIMEDOUT: the deadline), or why it can't (ENOSYS: a kernel

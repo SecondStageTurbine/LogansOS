@@ -9727,7 +9727,8 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
 /// parked by default: its first park must have reached the kernel (no
 /// `ENOSYS`). Only where the scenario's user feature is a neo-init feature
 /// that reaches both `desktop-intro` and the boot-test log, and not the
-/// `desktop-poll` marker.
+/// `desktop-poll` marker. A scenario that ends before any park (the login
+/// cuts) logs no line, which passes; an A1a scenario must log one.
 fn require_parked_by_default(
     scenario: TestScenario,
     observed: &ObservedTest,
@@ -9759,6 +9760,9 @@ fn require_parked_by_default(
             scenario.name,
             rc.trim()
         )),
+        // A scenario may end before the WM's first park (the login cuts);
+        // an A1a scenario always reaches the session loop's.
+        None if !a1a => Ok(()),
         None => Err(format!(
             "`{}`: no `DESKTOP loop parked` line: an intro-based WM parks by default (A3p)",
             scenario.name
