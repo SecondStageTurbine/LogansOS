@@ -899,6 +899,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "i18n-core"
+version = "0.0.1"
+dependencies = [
+ "neo-atrium",
+ "neo-text",
+]
+
+[[package]]
 name = "i2c-hid-logic-tests"
 version = "0.0.1"
 
