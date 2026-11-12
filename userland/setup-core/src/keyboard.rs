@@ -15,6 +15,7 @@
 use crate::{Outcome, Page, Wizard};
 use alloc::string::String;
 use alloc::vec::Vec;
+use i18n_core::Msg;
 
 #[cfg(not(feature = "keyboard-layouts"))]
 pub use off::*;
@@ -28,12 +29,12 @@ mod off {
     /// The page is S1's stub: shown only with `stub_pages`.
     pub const SHOWN: bool = false;
 
-    pub fn options(_w: &Wizard, o: &mut Vec<String>) {
-        o.push(String::from("Continue"));
+    pub fn options(w: &Wizard, o: &mut Vec<String>) {
+        o.push(w.t(Msg::SetupContinue));
     }
 
-    pub fn body(_w: &Wizard, b: &mut Vec<String>) {
-        b.push(String::from("US is the only keyboard layout for now."));
+    pub fn body(w: &Wizard, b: &mut Vec<String>) {
+        b.push(w.t(Msg::SetupBodyKeyboard));
     }
 
     pub fn summary(_w: &Wizard, _s: &mut Vec<String>) {}
@@ -57,6 +58,11 @@ mod on {
 
     pub use keymap::{Composer, Dead, LAYOUT_COUNT, LAYOUT_NAMES, Typed};
 
+    /// The layouts' names in the catalog, in `LAYOUT_NAMES`' order (a KAT
+    /// holds the English entries equal to `LAYOUT_NAMES`).
+    pub const LAYOUT_MSGS: [Msg; LAYOUT_COUNT as usize] =
+        [Msg::LayoutEnglishUs, Msg::LayoutSpanishSpain];
+
     /// The page is shown.
     pub const SHOWN: bool = true;
 
@@ -79,21 +85,25 @@ mod on {
 
     /// One row per layout, then Continue.
     pub fn options(w: &Wizard, o: &mut Vec<String>) {
-        for (i, name) in LAYOUT_NAMES.iter().enumerate() {
-            o.push(format!("{} {}", mark(i == w.choices.layout as usize), name));
+        for (i, &name) in LAYOUT_MSGS.iter().enumerate() {
+            o.push(format!(
+                "{} {}",
+                mark(i == w.choices.layout as usize),
+                w.t(name)
+            ));
         }
-        o.push(String::from("Continue"));
+        o.push(w.t(Msg::SetupContinue));
     }
 
     pub fn body(w: &Wizard, b: &mut Vec<String>) {
-        b.push(String::from("Choose the layout printed on your keys."));
-        b.push(format!("Try it: {}_", w.field.as_str()));
+        b.push(w.t(Msg::SetupKeyboardBodyChoose));
+        b.push(w.f(Msg::SetupKeyboardTryIt, &[w.field.as_str()]));
     }
 
     pub fn summary(w: &Wizard, s: &mut Vec<String>) {
-        s.push(format!(
-            "Keyboard: {}",
-            LAYOUT_NAMES[w.choices.layout as usize]
+        s.push(w.f(
+            Msg::SetupSummaryKeyboard,
+            &[&w.t(LAYOUT_MSGS[w.choices.layout as usize])],
         ));
     }
 

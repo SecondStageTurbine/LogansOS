@@ -11,4 +11,10 @@ license.workspace = true
 # left it.
 keyboard-layouts = []
 
+# F11 S6b: the Language page lists the catalog's languages (English, Spanish),
+# and choosing one redraws the wizard in it. Off: English only, and the page is
+# S1's stub (`stub_pages` only); every row is today's (the host KATs).
+i18n-catalog = []
+
 [dependencies]
+i18n-core = { path = "../i18n-core" }

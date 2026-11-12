@@ -26,6 +26,13 @@
 //! page is review-only for the session (write-once). Without a directory the
 //! page is S1's short list, unchanged; [`Wizard::without_time_zone`] hides it
 //! (the `rtc-offset` kill-switch: no zone the clock cannot apply).
+//!
+//! **S6b, the language** (§3.1, §5 S6): every row comes from `i18n-core`'s
+//! catalog, in the language chosen ([`Choices::lang`]). With `i18n-catalog`
+//! the Language page lists the catalog's languages, and choosing one redraws
+//! the wizard in it. Without it the language is English and the page is S1's
+//! stub (shown only with `stub_pages`): the rows are today's, as the host
+//! KATs hold.
 
 #![no_std]
 
@@ -35,6 +42,8 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+pub use i18n_core::Lang;
+use i18n_core::{LANGUAGE_COUNT, Msg, format as fill, text};
 
 /// The card's row budget (`neo-atrium` `CARD_MAX_ROWS`).
 pub const MAX_ROWS: usize = 8;
@@ -48,11 +57,9 @@ pub const ZONES: [&str; 4] = [
     "Australia/Sydney",
 ];
 
-/// The last row of every page.
-pub const HINT: &str = "Up/Down to move, Enter to choose, Esc to go back.";
-
-/// The last row of the searchable Time zone page (S3): Space types there.
-pub const SEARCH_HINT: &str = "Type to search. Up/Down, Enter to choose.";
+/// The Language page lists the catalog's languages (S6b): with
+/// `i18n-catalog`, once there is more than one.
+pub const LANGUAGE_PAGE: bool = cfg!(feature = "i18n-catalog") && LANGUAGE_COUNT > 1;
 
 /// The longest search the Time zone page keeps (a city name fits).
 pub const QUERY_MAX: usize = 32;
@@ -78,7 +85,7 @@ pub enum Page {
     Welcome,
     /// "Skip setup and use the defaults?" (Esc on Welcome).
     SkipConfirm,
-    /// A stub until a second language exists (§3.1).
+    /// The languages (S6b, `i18n-catalog`); S1's stub without it (§3.1).
     Language,
     /// A stub until a second layout exists (§3.2).
     Keyboard,
@@ -164,6 +171,9 @@ pub struct Choices {
     pub reduce_transparency: bool,
     /// S3: the zone chosen on the searchable page (`None`: not set).
     pub tz: Option<u16>,
+    /// S6b: the language the wizard (and the session) shows; English
+    /// without `i18n-catalog`.
+    pub lang: Lang,
     /// S5: a keyboard layout id (`keymap_layout_logic.rs`; 0: US).
     #[cfg(feature = "keyboard-layouts")]
     pub layout: u8,
@@ -199,15 +209,16 @@ impl Network {
         )
     }
 
-    /// The page's body rows.
-    fn rows(&self) -> Vec<String> {
+    /// The page's body rows, in `lang`.
+    fn rows(&self, lang: Lang) -> Vec<String> {
+        let t = |m| String::from(text(lang, m));
         let mut b = Vec::new();
         match self {
-            Network::Unavailable => b.push(String::from("Network status is unavailable.")),
+            Network::Unavailable => b.push(t(Msg::NetUnavailable)),
             Network::NoLink { driver } => {
-                b.push(String::from("Wired: no link."));
+                b.push(t(Msg::NetNoLink));
                 if let Some(d) = driver {
-                    b.push(format!("Device: {d}."));
+                    b.push(fill(lang, Msg::NetDevice, &[d]));
                 }
             }
             Network::Connected {
@@ -216,28 +227,31 @@ impl Network {
                 lease_secs,
             } => {
                 b.push(match address {
-                    Some(a) => format!("Wired: connected, {}.{}.{}.{}", a[0], a[1], a[2], a[3]),
-                    None => String::from("Wired: connected, no address yet."),
+                    Some(a) => {
+                        let dotted = format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]);
+                        fill(lang, Msg::NetConnected, &[&dotted])
+                    }
+                    None => t(Msg::NetNoAddress),
                 });
                 b.push(match lease_secs {
-                    Some(s) => format!("Device: {driver}. Lease: {}.", lease_left(*s)),
-                    None => format!("Device: {driver}."),
+                    Some(s) => fill(lang, Msg::NetDeviceLease, &[driver, &lease_left(lang, *s)]),
+                    None => fill(lang, Msg::NetDevice, &[driver]),
                 });
             }
         }
-        b.push(String::from("Wi-Fi: coming in a later version."));
+        b.push(t(Msg::NetWifiLater));
         b
     }
 }
 
 /// A lease's time left, in words: "23 h 59 min left", "5 min left",
-/// "under a minute left".
-pub fn lease_left(secs: u64) -> String {
+/// "under a minute left" (in English).
+pub fn lease_left(lang: Lang, secs: u64) -> String {
     let (h, m) = (secs / 3600, secs % 3600 / 60);
     match (h, m) {
-        (0, 0) => String::from("under a minute left"),
-        (0, m) => format!("{m} min left"),
-        (h, m) => format!("{h} h {m} min left"),
+        (0, 0) => String::from(text(lang, Msg::LeaseUnderMinute)),
+        (0, m) => fill(lang, Msg::LeaseMinutes, &[&format!("{m}")]),
+        (h, m) => fill(lang, Msg::LeaseHours, &[&format!("{h}"), &format!("{m}")]),
     }
 }
 
@@ -397,7 +411,7 @@ impl Wizard {
     pub fn pages(&self) -> Vec<Page> {
         let mut pages = Vec::new();
         pages.push(Page::Welcome);
-        if self.stub_pages {
+        if self.stub_pages || LANGUAGE_PAGE {
             pages.push(Page::Language);
         }
         if self.stub_pages || keyboard::SHOWN {
@@ -414,27 +428,60 @@ impl Wizard {
         pages
     }
 
+    /// The language the rows are in (S6b).
+    pub fn lang(&self) -> Lang {
+        self.choices.lang
+    }
+
+    /// S6b: start in `lang` (the stored `Language`). Without `i18n-catalog`
+    /// the wizard stays in English.
+    pub fn with_lang(mut self, lang: Lang) -> Self {
+        if cfg!(feature = "i18n-catalog") {
+            self.choices.lang = lang;
+        }
+        self
+    }
+
+    /// `msg` in the wizard's language.
+    pub(crate) fn t(&self, msg: Msg) -> String {
+        String::from(text(self.choices.lang, msg))
+    }
+
+    /// `msg` in the wizard's language, with its `{}` arguments.
+    pub(crate) fn f(&self, msg: Msg, args: &[&str]) -> String {
+        fill(self.choices.lang, msg, args)
+    }
+
     /// The options of the page shown, as their labels (without marks).
     pub fn options(&self) -> Vec<String> {
         let mut o = Vec::new();
         match self.page {
             Page::Welcome => {
-                o.push(String::from("Begin"));
-                o.push(String::from("Skip setup"));
+                o.push(self.t(Msg::SetupBegin));
+                o.push(self.t(Msg::SetupSkip));
             }
             Page::SkipConfirm => {
-                o.push(String::from("Skip setup and use the defaults"));
-                o.push(String::from("Back"));
+                o.push(self.t(Msg::SetupSkipDefaults));
+                o.push(self.t(Msg::SetupBack));
             }
-            Page::Language => o.push(String::from("Continue")),
+            Page::Language => {
+                if LANGUAGE_PAGE {
+                    for lang in Lang::ALL {
+                        o.push(format!(
+                            "{} {}",
+                            mark(lang == self.choices.lang),
+                            lang.name()
+                        ));
+                    }
+                }
+                o.push(self.t(Msg::SetupContinue));
+            }
             Page::Keyboard => keyboard::options(self, &mut o),
-            Page::Network => o.push(String::from(
-                if self.network.as_ref().is_some_and(Network::connected) {
-                    "Continue"
-                } else {
-                    "Continue without a network"
-                },
-            )),
+            Page::Network => o.push(if self.network.as_ref().is_some_and(Network::connected) {
+                self.t(Msg::SetupContinue)
+            } else {
+                self.t(Msg::SetupContinueNoNetwork)
+            }),
             Page::TimeZone if self.tz.is_some() => {
                 let t = self.tz.as_ref().expect("checked");
                 if !t.review {
@@ -447,26 +494,26 @@ impl Wizard {
                         ));
                     }
                 }
-                o.push(String::from("Continue"));
+                o.push(self.t(Msg::SetupContinue));
             }
             Page::TimeZone => {
                 for (i, z) in ZONES.iter().enumerate() {
                     o.push(format!("{} {}", mark(i == self.choices.zone), z));
                 }
-                o.push(String::from("Continue"));
+                o.push(self.t(Msg::SetupContinue));
             }
             Page::Comfort => {
-                o.push(format!(
-                    "{} Reduce motion",
-                    mark(self.choices.reduce_motion)
+                o.push(self.f(
+                    Msg::SetupReduceMotionOption,
+                    &[mark(self.choices.reduce_motion)],
                 ));
-                o.push(format!(
-                    "{} Reduce transparency",
-                    mark(self.choices.reduce_transparency)
+                o.push(self.f(
+                    Msg::SetupReduceTransparencyOption,
+                    &[mark(self.choices.reduce_transparency)],
                 ));
-                o.push(String::from("Continue"));
+                o.push(self.t(Msg::SetupContinue));
             }
-            Page::Try => o.push(String::from("Try LogansOS")),
+            Page::Try => o.push(self.t(Msg::SetupTryOption)),
         }
         o
     }
@@ -486,10 +533,10 @@ impl Wizard {
             let focus = if i == self.focus { ">" } else { " " };
             rows.push(format!("{focus} {label}"));
         }
-        rows.push(String::from(if self.searching() {
-            SEARCH_HINT
+        rows.push(self.t(if self.searching() {
+            Msg::SetupSearchHint
         } else {
-            HINT
+            Msg::SetupHint
         }));
         rows
     }
@@ -501,57 +548,55 @@ impl Wizard {
 
     fn title(&self) -> String {
         let name = match self.page {
-            Page::Welcome => return String::from("Set up LogansOS"),
-            Page::SkipConfirm => return String::from("Skip setup?"),
-            Page::Language => "Language",
-            Page::Keyboard => "Keyboard",
-            Page::Network => "Network",
-            Page::TimeZone => "Time zone",
-            Page::Comfort => "Comfort",
-            Page::Try => "Try LogansOS",
+            Page::Welcome => return self.t(Msg::SetupTitleWelcome),
+            Page::SkipConfirm => return self.t(Msg::SetupTitleSkip),
+            Page::Language => Msg::SetupTitleLanguage,
+            Page::Keyboard => Msg::SetupTitleKeyboard,
+            Page::Network => Msg::SetupTitleNetwork,
+            Page::TimeZone => Msg::SetupTitleTimeZone,
+            Page::Comfort => Msg::SetupTitleComfort,
+            Page::Try => Msg::SetupTitleTry,
         };
         let pages = self.pages();
         let total = pages.len() - 1;
         let n = pages.iter().position(|&p| p == self.page).unwrap_or(0);
-        format!("{name} ({n} of {total})")
+        self.f(
+            Msg::SetupTitlePage,
+            &[&self.t(name), &format!("{n}"), &format!("{total}")],
+        )
     }
 
     fn body(&self) -> Vec<String> {
         let mut b = Vec::new();
         match self.page {
-            Page::Welcome => {
-                b.push(String::from(
-                    "A few short screens. You can change any of these later.",
-                ));
+            Page::Welcome => b.push(self.t(Msg::SetupBodyWelcome)),
+            Page::SkipConfirm => b.push(self.t(Msg::SetupBodySkip)),
+            Page::Language if LANGUAGE_PAGE => {
+                b.push(self.t(Msg::SetupBodyLanguageChoose));
+                b.push(self.t(Msg::SetupBodyLanguageArthur));
             }
-            Page::SkipConfirm => {
-                b.push(String::from(
-                    "The defaults are UTC, with full motion and transparency.",
-                ));
-            }
-            Page::Language => b.push(String::from("English is the only language for now.")),
+            Page::Language => b.push(self.t(Msg::SetupBodyLanguage)),
             Page::Keyboard => keyboard::body(self, &mut b),
             Page::Network => {
                 if let Some(n) = &self.network {
-                    b.extend(n.rows());
+                    b.extend(n.rows(self.choices.lang));
                 }
             }
             Page::TimeZone => match self.tz.as_ref() {
-                None => b.push(String::from("Where are you? At Home: timezone Area/City.")),
+                None => b.push(self.t(Msg::SetupBodyTimeZoneNoSearch)),
                 Some(t) if t.review => {
-                    let name = self.zone_name().unwrap_or("not set");
-                    b.push(format!("Time zone: {name}. The clock is set."));
-                    b.push(String::from("Change it later at Home: timezone Area/City."));
+                    let not_set = self.t(Msg::SetupNotSet);
+                    let name = self.zone_name().unwrap_or(&not_set);
+                    b.push(self.f(Msg::SetupBodyZoneSet, &[name]));
+                    b.push(self.t(Msg::SetupBodyZoneLater));
                 }
-                Some(t) if t.query.is_empty() => {
-                    b.push(String::from("Type a city to search, or pick one."))
-                }
+                Some(t) if t.query.is_empty() => b.push(self.t(Msg::SetupBodySearchEmpty)),
                 Some(t) if t.listed.is_empty() => {
-                    b.push(format!("Search: {}  (no zone matches)", t.query))
+                    b.push(self.f(Msg::SetupBodySearchNone, &[&t.query]))
                 }
-                Some(t) => b.push(format!("Search: {}", t.query)),
+                Some(t) => b.push(self.f(Msg::SetupBodySearch, &[&t.query])),
             },
-            Page::Comfort => b.push(String::from("Make the screen calmer, if you like.")),
+            Page::Comfort => b.push(self.t(Msg::SetupBodyComfort)),
             Page::Try => {
                 for line in self.summary() {
                     b.push(line);
@@ -565,18 +610,20 @@ impl Wizard {
     pub fn summary(&self) -> Vec<String> {
         let mut s = Vec::new();
         s.push(match self.tz.as_ref() {
-            None => format!("Time zone: {}", ZONES[self.choices.zone]),
+            None => self.f(Msg::ZoneRow, &[ZONES[self.choices.zone]]),
             Some(t) => match self.zone_name() {
-                Some(name) if t.review => format!("Time zone: {name}"),
-                Some(name) => format!("Time zone: {name} (clock not set)"),
-                None => String::from("Time zone: not set"),
+                Some(name) if t.review => self.f(Msg::ZoneRow, &[name]),
+                Some(name) => self.f(Msg::SetupSummaryZoneClockNotSet, &[name]),
+                None => self.t(Msg::ZoneRowNotSet),
             },
         });
         keyboard::summary(self, &mut s);
-        s.push(format!(
-            "Reduce motion: {}. Reduce transparency: {}.",
-            on_off(self.choices.reduce_motion),
-            on_off(self.choices.reduce_transparency)
+        s.push(self.f(
+            Msg::SetupSummaryComfort,
+            &[
+                &self.t(on_off(self.choices.reduce_motion)),
+                &self.t(on_off(self.choices.reduce_transparency)),
+            ],
         ));
         s
     }
@@ -672,6 +719,10 @@ impl Wizard {
             (Page::Welcome, _) => self.show(Page::SkipConfirm),
             (Page::SkipConfirm, 0) => Outcome::Done(Finish::Skipped),
             (Page::SkipConfirm, _) => self.show(Page::Welcome),
+            (Page::Language, i) if LANGUAGE_PAGE && i < LANGUAGE_COUNT => {
+                self.choices.lang = Lang::ALL[i];
+                Outcome::Redraw
+            }
             (Page::Language, _) => self.show(self.next(self.page)),
             (Page::Keyboard, i) => keyboard::choose(self, i),
             (Page::Network, _) => self.show(self.next(self.page)),
@@ -732,25 +783,30 @@ fn mark(on: bool) -> &'static str {
     if on { "[x]" } else { "[ ]" }
 }
 
-fn on_off(on: bool) -> &'static str {
-    if on { "on" } else { "off" }
+fn on_off(on: bool) -> Msg {
+    if on { Msg::On } else { Msg::Off }
 }
 
+// The KATs of S1, S3, S4 and S5 pin the build without `i18n-catalog`: the
+// kill-switch, where every row is today's. `lang_tests` is the build with it.
 // S4's KATs walk Begin straight to the Network page: the build without
 // layouts, as S1's.
 mod keyboard;
-#[cfg(all(test, not(feature = "keyboard-layouts")))]
+#[cfg(all(test, not(feature = "keyboard-layouts"), not(feature = "i18n-catalog")))]
 mod net_tests;
 #[cfg(feature = "keyboard-layouts")]
-pub use keyboard::{Dead, FIELD_MAX, LAYOUT_COUNT, LAYOUT_NAMES, Typed};
+pub use keyboard::{Dead, FIELD_MAX, LAYOUT_COUNT, LAYOUT_MSGS, LAYOUT_NAMES, Typed};
 
-#[cfg(all(test, feature = "keyboard-layouts"))]
+#[cfg(all(test, feature = "keyboard-layouts", not(feature = "i18n-catalog")))]
 mod keyboard_tests;
 // S1's KATs are the build without layouts (the kill-switch: the page machine
 // they pin is the one `keyboard-layouts` off ships).
-#[cfg(all(test, not(feature = "keyboard-layouts")))]
+#[cfg(all(test, not(feature = "keyboard-layouts"), not(feature = "i18n-catalog")))]
 mod tests;
 // S3's KATs walk Begin straight to the Time zone page, the build without
 // layouts; `keyboard_tests` walks the Keyboard page into S3's search.
-#[cfg(all(test, not(feature = "keyboard-layouts")))]
+#[cfg(all(test, not(feature = "keyboard-layouts"), not(feature = "i18n-catalog")))]
 mod tz_tests;
+// S6b: the Language page, and the wizard in Spanish.
+#[cfg(all(test, feature = "i18n-catalog"))]
+mod lang_tests;

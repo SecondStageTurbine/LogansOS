@@ -1939,11 +1939,15 @@ name = "settings-core"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "i18n-core",
 ]
 
 [[package]]
 name = "setup-core"
 version = "0.0.1"
+dependencies = [
+ "i18n-core",
+]
 
 [[package]]
 name = "sha1"

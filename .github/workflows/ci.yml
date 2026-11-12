@@ -1051,6 +1051,14 @@ jobs:
           cargo test -p setup-core --features keyboard-layouts
           cargo test -p neo-atrium --features keyboard-layouts
           cargo test -p arthur-logic-tests --features keyboard-layouts
+      # F11 S6b: the catalog wired in, with the Language page (`i18n-catalog`):
+      # the Spanish rows and the two-language store. The off build's KATs (every
+      # row as before S6b) are the default workspace run.
+      - name: cargo test, the language (i18n-catalog, blocking)
+        run: |
+          cargo test -p settings-core --features i18n-catalog
+          cargo test -p setup-core --features i18n-catalog
+          cargo test -p setup-core --features i18n-catalog,keyboard-layouts
 
       # Sharding coverage gate: prove the 4-way neo-test partition the QEMU
       # matrix uses is complete + pairwise-disjoint, so sharding can never

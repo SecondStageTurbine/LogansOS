@@ -12,10 +12,11 @@
 //! - [`fill`]: positional `{}` arguments, the only formatting the strings
 //!   need. There are no plurals.
 //!
-//! **Nothing links this crate yet.** S6b moves the literals to these ids,
-//! adds the Language page and the `setup_menu_lang` gate, and puts the
-//! catalog behind the `i18n-catalog` kill-switch. Until then the images
-//! are unchanged.
+//! **S6b** moved the literals to these ids: `setup-core`, `neo-atrium`'s
+//! intro, power and clock cards, `libneo::civil` and Home's clock verbs draw
+//! from here. The `i18n-catalog` kill-switch shows the Language page; off,
+//! the language is English and every row is what shipped before S6b (the
+//! pinned table, `fixtures/en.txt`, and the crates' row KATs).
 //!
 //! **Command words are not translated.** `help`, `list /`, `timezone
 //! Area/City`, `rtc utc` and `rtc local` are what the parsers read, so they
@@ -33,9 +34,11 @@ use alloc::string::String;
 #[cfg(test)]
 mod tests;
 
-/// A language the catalog has a table for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A language the catalog has a table for. The default is English (the
+/// store's `Language` 0).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Lang {
+    #[default]
     En,
     Es,
 }

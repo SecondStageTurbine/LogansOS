@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 blake3 = { version = "1.8.2", default-features = false }
+i18n-core = { path = "../i18n-core", optional = true }
 
 [features]
 # F11 S2 (setup-menu THINK §2.2): keys 6 (Language) and 7 (KeyboardLayout).
@@ -15,3 +16,6 @@ setup-keys = []
 # F11 S5: two keyboard layouts (US, Spanish), so `KeyboardLayout` accepts 0 and 1.
 # Off: one layout, as S2 left it.
 keyboard-layouts = ["setup-keys"]
+# F11 S6b: the catalog's languages (English, Spanish), so `Language` accepts 0
+# and 1 (`i18n-core`'s `LANGUAGE_COUNT`). Off: one language, as S2 left it.
+i18n-catalog = ["setup-keys", "dep:i18n-core"]
