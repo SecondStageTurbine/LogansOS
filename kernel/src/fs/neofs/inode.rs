@@ -1024,6 +1024,13 @@ impl NeoFsState {
 
     pub(super) fn fsync_regular(&self) -> Result<(), NeoFsError> {
         if !self.is_writable() {
+            // OT-100 R3 (THINK §4.2): a lost volume refuses fsync, so the
+            // caller learns its data was not saved. A mount that was always
+            // read-only has nothing to save, and keeps answering Ok.
+            #[cfg(feature = "usb-persistence")]
+            if self.cache.lost().is_some() {
+                return Err(NeoFsError::ReadOnly);
+            }
             return Ok(());
         }
 

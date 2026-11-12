@@ -510,6 +510,12 @@ impl NeoFsBlockCache {
         let _worker_pause = self.pause_worker();
         let mut total = DrainReport::default();
         loop {
+            // OT-100 R3 (THINK §4.2, CP-113): once the volume is lost, no
+            // drain writes again, a foreground one included.
+            #[cfg(feature = "usb-persistence")]
+            if self.lost().is_some() {
+                return Err(NeoFsError::ReadOnly);
+            }
             let report = {
                 let _drain = self.drain.lock();
                 drain_pass(
