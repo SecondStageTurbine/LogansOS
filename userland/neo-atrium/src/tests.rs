@@ -3584,6 +3584,20 @@ mod app_chip_tests {
         assert_eq!(paint(&scene), before);
     }
 
+    /// Back to Home: the reset is the chips' first state, bit for bit.
+    #[test]
+    fn reset_is_the_first_state() {
+        let mut scene = BaseScene::with_home(1280, 800, 640, 400, Mode::Glass).unwrap();
+        scene.set_app_chips(true);
+        let first = paint(&scene);
+        scene.set_app_look(0, ChipLook::Background);
+        scene.set_app_note(1, true);
+        scene.set_arthur_background(true);
+        assert_ne!(paint(&scene), first);
+        scene.reset_app_chips();
+        assert_eq!(paint(&scene), first);
+    }
+
     /// Arthur in the background: the grey dot under his chip, and only that.
     #[test]
     fn arthur_background_is_his_dot() {

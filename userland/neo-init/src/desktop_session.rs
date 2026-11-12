@@ -6324,6 +6324,10 @@ mod home {
                     Ok(())
                 },
                 present: || {
+                    // A2: the session's clients are gone; its chips' looks
+                    // with them (repainted with the view).
+                    #[cfg(feature = "atrium-apps")]
+                    scene.chrome.reset_app_chips();
                     scene.show_home(true, false);
                     scene.view_transition(Kind::Close, false)?;
                     #[cfg(feature = "desktop-session-boot-test")]

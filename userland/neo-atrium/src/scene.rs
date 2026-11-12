@@ -540,6 +540,15 @@ impl BaseScene {
         self.arthur_background
     }
 
+    /// A2: the session's client table is gone (back to Home): every app not
+    /// running, no note, Arthur not in the background. The caller repaints.
+    #[cfg(feature = "app-chips")]
+    pub fn reset_app_chips(&mut self) {
+        self.app_look = [ChipLook::NotRunning; crate::layout::APP_CHIPS];
+        self.app_note = [false; crate::layout::APP_CHIPS];
+        self.arthur_background = false;
+    }
+
     /// OT-87 R4.4b: show (or end) the Install chip, the third on the Spine.
     /// Only a scene built with Home has one; `false` otherwise. Off (the
     /// default) leaves every view as without it, bit for bit.
