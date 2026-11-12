@@ -33463,9 +33463,11 @@ fn run_neofs_dir_ops() -> ! {
             ),
             Err(rc) => {
                 serial_println!(
-                    "NEO_TEST/1 event=FAIL name={} reason=neofs_dir_ops_stat_failed rc={}",
+                    "NEO_TEST/1 event=FAIL name={} reason=neofs_dir_ops_stat_failed rc={} fd={} entry={}",
                     SCENARIO,
-                    rc
+                    rc,
+                    fd,
+                    core::str::from_utf8(name).unwrap_or("?")
                 );
                 debug_exit(EXIT_FAILURE);
             }

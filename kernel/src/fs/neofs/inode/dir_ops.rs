@@ -478,6 +478,11 @@ fn to_vfs(error: NeoFsError) -> VfsError {
         NeoFsError::BlockDevice | NeoFsError::NoDurableFlush => VfsError::Io,
         // A path component that is not a directory, a full directory (64
         // entries), too deep, a rename into itself, corruption.
-        _ => VfsError::Invalid,
+        _ => {
+            // The scenario names the NeoFS error behind an EINVAL.
+            #[cfg(feature = "neo-test-neofs-dir-ops")]
+            crate::serial_println!("[ kernel ] neofs dir op: {:?} -> EINVAL", error);
+            VfsError::Invalid
+        }
     }
 }
