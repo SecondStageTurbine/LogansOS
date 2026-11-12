@@ -44,6 +44,8 @@ members = [
     "tools/block-guard-logic-tests",
     # L3u-1: USB mass storage (BOT + SCSI) logic, host KATs.
     "tools/usb-msc-logic-tests",
+    # OT-100 R3: the persistence area's pure decisions, host KATs.
+    "tools/persist-logic-tests",
     "tools/install-bundle-logic-tests",
     "tools/neofs-tree-logic-tests",
     "tools/install-state-logic-tests",
