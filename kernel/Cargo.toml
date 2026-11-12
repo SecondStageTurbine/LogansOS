@@ -1154,6 +1154,9 @@ neo-test-lock-park = ["neo-test-login", "sak-lock-route"]
 # client table's polling loop (SYS_TRY_RECV, the pointer route) and the kernel
 # pipe with the stdio chosen at spawn.
 neo-test-terminal-lock = ["neo-test-login", "sak-lock-route", "atrium-pointer-forward", "ipc-try-send", "close-object-handles", "pipe"]
+# A2 (Muse, #98): the terminal-lock image, with Super+Tab and Super+L taken
+# together; the switch due as the lock engages is dropped.
+neo-test-switch-lock = ["neo-test-login", "sak-lock-route", "atrium-pointer-forward", "ipc-try-send", "close-object-handles", "pipe"]
 # OT-88 S1: the settings store over two boots (OP_SETTING from a test
 # client, applied live; the idle lock at the chosen time; read back after a
 # reboot). The lock's kernel, as the product's.

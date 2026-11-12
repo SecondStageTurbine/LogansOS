@@ -332,6 +332,10 @@ lock-park-test = ["lock-boot-test"]
 # `login_terminal_lock` (L1a.3): the lock with the terminal window in front
 # (docs/THINK-2026-10-31-l1a-terminal-window.md §6).
 lock-terminal-test = ["lock-boot-test", "atrium-terminal"]
+# A2 (`login_switch_lock`): the terminal's first launch holds the SAK latch
+# for 2 s, so the scenario's Super+Tab and Super+L come out of one take: the
+# switch is due in the turn the lock engages, and is dropped (Muse, #98).
+lock-switch-test = ["lock-terminal-test"]
 # `login_settings_store` (OT-88 S1): the store's boot test. A setting's minute is
 # four seconds (the idle lock fires at the chosen time, scaled); the session
 # ends at the first unlock.

@@ -2654,6 +2654,7 @@ fn scenario_timeout(name: &str) -> Duration {
         | "login_lock_stall"
         | "login_lock_park"
         | "login_terminal_lock"
+        | "login_switch_lock"
         | "login_settings_store"
         | "login_settings_refused"
         | "login_arthur_permission" => Duration::from_secs(600),
@@ -4047,6 +4048,15 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         name: login_scenarios::LOGIN_TERMINAL_LOCK_SCENARIO,
         feature: "neo-test-terminal-lock",
         user_feature: Some("lock-terminal-test"),
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // A2 (Muse, #98): a Super+Tab taken with Super+L is dropped once the
+        // lock is up; no client is signalled while the session is locked.
+        name: login_scenarios::LOGIN_SWITCH_LOCK_SCENARIO,
+        feature: "neo-test-switch-lock",
+        user_feature: Some("lock-switch-test"),
         ignored: false,
         limine_kaslr: None,
     },
@@ -8874,6 +8884,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("lock-park-test") => vec!["lock-park-test", "desktop-busy"],
         // L1a.3: the lock with the terminal window in the client table.
         Some("lock-terminal-test") => vec!["lock-terminal-test", "desktop-busy"],
+        Some("lock-switch-test") => vec!["lock-switch-test", "desktop-busy"],
         Some("settings-boot-test") => vec!["settings-boot-test", "desktop-busy"],
         Some("settings-refused-test") => vec!["settings-refused-test", "desktop-busy"],
         Some("settings-authority-control") => vec!["settings-authority-control", "desktop-busy"],
@@ -9079,7 +9090,9 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-terminal-echo-boot-test") => vec!["terminal-test-echo"],
         // The login VM's WM has `desktop-resize` (`desktop-full`), so the
         // terminal's buffer is the size it imports.
-        Some("lock-terminal-test") => vec!["terminal-test-echo", "desktop-resize"],
+        Some("lock-terminal-test") | Some("lock-switch-test") => {
+            vec!["terminal-test-echo", "desktop-resize"]
+        }
         Some("desktop-terminal-flood-boot-test") => vec!["terminal-test-flood"],
         Some("desktop-apps-hang-boot-test") => vec!["probe-app-hang-reply"],
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
@@ -9328,7 +9341,7 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         // L1a.3: the lock's Arthur (the same build as the other lock tests',
         // which the login image's WM expects: its buffer import is refused
         // without `desktop-resize`), who opens the terminal on `open terminal`.
-        Some("lock-terminal-test") => vec![
+        Some("lock-terminal-test") | Some("lock-switch-test") => vec![
             "desktop-session",
             "desktop-home",
             "desktop-lens",

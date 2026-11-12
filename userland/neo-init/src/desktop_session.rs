@@ -3902,6 +3902,20 @@ mod apps {
             }
         }
         reap_dying(apps);
+        // A2 (Muse, #98): no client is signalled while the session is locked.
+        // A Super+Tab read in the same chord take as Super+L is dropped, not
+        // run after unlock: the user's last act was the lock, and unlock
+        // gives the front back to the client that had it.
+        #[cfg(feature = "login")]
+        if super::lock::locked()
+            && let Some(via) = scene.next_client.take()
+        {
+            Line::new()
+                .s(b"DESKTOP apps switch dropped locked via=")
+                .s(via)
+                .s(b"\n")
+                .emit();
+        }
         if let Some(via) = scene.next_client.take() {
             let next = next_live(apps);
             if next != apps.front {
@@ -4045,6 +4059,10 @@ mod apps {
             .s(via)
             .s(b"\n")
             .emit();
+        #[cfg(feature = "lock-switch-test")]
+        if index != ARTHUR && via == b"launch" {
+            super::pointer::hold_sak();
+        }
         Ok(())
     }
 
@@ -7245,9 +7263,44 @@ mod pointer {
         None
     }
 
+    /// A2 (`login_switch_lock`): the SAK latch is left untaken until this
+    /// time, so Super+Tab and Super+L typed in it come out of one take, the
+    /// case where a switch would be due in the turn the lock engages.
+    #[cfg(feature = "lock-switch-test")]
+    static SAK_HOLD_UNTIL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    #[cfg(feature = "lock-switch-test")]
+    const SAK_HOLD_NS: u64 = 2_000_000_000;
+
+    /// The first launch to the front starts the hold (once).
+    #[cfg(feature = "lock-switch-test")]
+    pub fn hold_sak() {
+        use core::sync::atomic::Ordering;
+        let until = super::monotonic_ns().saturating_add(SAK_HOLD_NS);
+        if SAK_HOLD_UNTIL
+            .compare_exchange(0, until, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            super::Line::new()
+                .s(b"DESKTOP apps sak hold ms=")
+                .n(SAK_HOLD_NS / 1_000_000)
+                .s(b"\n")
+                .emit();
+        }
+    }
+
+    #[cfg(feature = "lock-switch-test")]
+    fn sak_held() -> bool {
+        let until = SAK_HOLD_UNTIL.load(core::sync::atomic::Ordering::Acquire);
+        until != 0 && super::monotonic_ns() < until
+    }
+
     /// The SAK latch: Super+Escape / Super+Space escape to the Spine;
     /// Super+Tab toggles.
     pub fn take_sak(arthur_focused: bool) -> Option<Action> {
+        #[cfg(feature = "lock-switch-test")]
+        if sak_held() {
+            return None;
+        }
         let pending = sys_input_sak_take();
         if pending <= 0 {
             return None;
