@@ -581,7 +581,9 @@ impl Volume {
                 return Err(Refused::Exists);
             }
         }
-        if !logic::depth_fits(&dst_parts, self.height(moved.1)) {
+        // As the kernel: only a move deeper walks the subtree.
+        if dst_parts.len() > src_parts.len() && !logic::depth_fits(&dst_parts, self.height(moved.1))
+        {
             return Err(Refused::TooDeep);
         }
         if tails[0].is_empty() && tails[1].is_empty() {

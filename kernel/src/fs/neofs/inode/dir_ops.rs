@@ -185,9 +185,14 @@ impl NeoFsState {
                 return Err(NeoFsError::Exists);
             }
         }
-        let height = self.subtree_height(&moved, 0)?;
-        if !logic::depth_fits(&dst_parts, height) {
-            return Err(NeoFsError::TooDeep);
+        // Only a move deeper can break the depth limit: a subtree that fit
+        // where it was fits at the same depth or above, so the walk (which
+        // runs under the namespace lock) is skipped then.
+        if dst_parts.len() > src_parts.len() {
+            let height = self.subtree_height(&moved, 0)?;
+            if !logic::depth_fits(&dst_parts, height) {
+                return Err(NeoFsError::TooDeep);
+            }
         }
         let same_directory = tails[0].is_empty() && tails[1].is_empty();
         if same_directory {
