@@ -1,0 +1,20 @@
+diff --git a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
+index 81fdca8..4ed146b 100644
+--- a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
++++ b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
+@@ -69,6 +69,15 @@ bool gCanUseExtraThreads = false;
+ 
+ void js::DisableExtraThreads() { gCanUseExtraThreads = false; }
+ 
++#ifdef __neoplutarch__
++// OT-61 C3c-2: the helper-thread kill-switch, as a C symbol the embedding can
++// reach without a bindings change. Called before the first JSRuntime is made,
++// it leaves the process in C3c-1's configuration: no helper thread pool.
++extern "C" JS_PUBLIC_API void neo_js_disable_extra_threads() {
++  js::DisableExtraThreads();
++}
++#endif
++
+ const JSSecurityCallbacks js::NullSecurityCallbacks = {};
+ 
+ static const JSWrapObjectCallbacks DefaultWrapObjectCallbacks = {

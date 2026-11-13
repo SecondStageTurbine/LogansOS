@@ -3074,6 +3074,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C3c-2: the helper-thread kill-switch. The same checks with
+        // SpiderMonkey's pool switched off before the engine starts (patch
+        // 0006): C3c-1's results, and no thread made.
+        name: "mozjs_smoke_single",
+        feature: "neo-test-mozjs-smoke-single",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
         // musl's portable C over a std bottom half) in a real-std process.
         name: "cxx_runtime_smoke",
@@ -8691,6 +8701,7 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "stylo_smoke" => &[STYLO_SMOKE_BIN],
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "mozjs_smoke" => &[MOZJS_BIN],
+        "mozjs_smoke_single" => &[MOZJS_SINGLE_BIN],
         "swgl_smoke" => &[SWGL_BIN],
         "layout_smoke" => &[LAYOUT_SMOKE_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
@@ -9871,8 +9882,9 @@ fn build_user_members(
         if std_real_staged_bins().contains(&STYLO_SMOKE_BIN) {
             build_standalone_std_smoke(STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR)?;
         }
-        if std_real_staged_bins().contains(&MOZJS_BIN) {
-            build_standalone_std_smoke(MOZJS_BIN, &[MOZJS_BIN], MOZJS_DIR)?;
+        let staged = std_real_staged_bins();
+        if staged.contains(&MOZJS_BIN) || staged.contains(&MOZJS_SINGLE_BIN) {
+            build_standalone_std_smoke(MOZJS_BIN, &[MOZJS_BIN, MOZJS_SINGLE_BIN], MOZJS_DIR)?;
             verify_mozjs_build_scripts()?;
         }
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
@@ -9954,6 +9966,8 @@ const BROWSER_IO_PEER_BIN: &str = "browser-io-peer";
 /// OT-61 C3c-1: SpiderMonkey (interpreter, one thread) over neo-crt, from the
 /// patched mozjs crates (`third_party/ot61-mozjs/patched/`).
 const MOZJS_BIN: &str = "mozjs-smoke";
+/// OT-61 C3c-2: the same smoke with helper threads off (the kill-switch).
+const MOZJS_SINGLE_BIN: &str = "mozjs-smoke-single";
 const MOZJS_DIR: &str = "userland/mozjs-smoke";
 
 /// The std crates with their own target dir that build std as a known target
@@ -9970,7 +9984,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         LAYOUT_SMOKE_BIN | BROWSER_BIN => Some(LAYOUT_SMOKE_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
-        MOZJS_BIN => Some(MOZJS_DIR),
+        MOZJS_BIN | MOZJS_SINGLE_BIN => Some(MOZJS_DIR),
         _ => None,
     }
 }
@@ -10287,7 +10301,7 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
             &[LAYOUT_SMOKE_BIN, BROWSER_BIN],
             LAYOUT_SMOKE_DIR,
         ),
-        [a] if a == "--mozjs" => (MOZJS_BIN, &[MOZJS_BIN], MOZJS_DIR),
+        [a] if a == "--mozjs" => (MOZJS_BIN, &[MOZJS_BIN, MOZJS_SINGLE_BIN], MOZJS_DIR),
         _ => {
             return Err(
                 "usage: cargo xtask ot61-closure-build [--stylo | --crt | --layout | --mozjs]"
@@ -16399,6 +16413,7 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // OT-61 C3c-1: the smoke seeds its stack canary from the CSPRNG
             // (SpiderMonkey is built with the stack protector).
             | "mozjs_smoke"
+            | "mozjs_smoke_single"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -16970,7 +16985,7 @@ fn qemu_memory_for_scenario(name: &str) -> &'static str {
         "arthur_real_brain_boot_qwen35" => "6144M",
         // OT-61 C3c-1: SpiderMonkey's image (tens of MiB) as a boot module,
         // its copy in the process, and the process's 256 MiB budget.
-        "mozjs_smoke" => "1024M",
+        "mozjs_smoke" | "mozjs_smoke_single" => "1024M",
         _ => "512M",
     }
 }
@@ -21229,25 +21244,53 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             )?;
         }
     }
-    if scenario.name == "mozjs_smoke" {
-        for needle in [
-            "[ mozjs-smoke ] ok(12) a 1 MiB-aligned 1 MiB block (a GC chunk's shape) from posix_memalign",
-            "[ mozjs-smoke ] ok(11) a runtime, a context and a global in one realm",
-            "[ mozjs-smoke ] ok(1) 1 + 1 == 2",
-            "[ mozjs-smoke ] ok(2) a closure keeps its counter across three calls",
-            "[ mozjs-smoke ] ok(3) irregexp: /a(b+)c/ on 'xabbbcy' captures 3 b's at index 1",
-            "[ mozjs-smoke ] ok(4) normalize: NFC('A\\u030A') is U+00C5, NFD splits it into 2 code units",
-            "[ mozjs-smoke ] ok(5) Date(1700000000000) in UTC is 2023-11-14 22:13:20",
-            "[ mozjs-smoke ] ok(6) UTC time of day is 22:13:20",
-            "[ mozjs-smoke ] ok(7) about 4 MiB allocated (past one chunk), 2500 kept",
-            "[ mozjs-smoke ] ok(8) after a forced GC every survivor is intact",
-            "[ mozjs-smoke ] PASS",
+    if scenario.name == "mozjs_smoke" || scenario.name == "mozjs_smoke_single" {
+        // OT-61 C3c-1's checks, and C3c-2's: the helper thread pool (20-22),
+        // the control for the wake count (26), and a shrinking GC that packs
+        // the heap and keeps every moved survivor intact (27, 24, 25). The
+        // single variant is the kill-switch: the same checks, with the pool
+        // off before the engine starts, so 20-22 read "no thread".
+        let single = scenario.name == "mozjs_smoke_single";
+        let (tag, c20, c21, c22) = if single {
+            (
+                "[ mozjs-smoke-single ]",
+                "ok(20) no helper thread started (neo_js_disable_extra_threads)",
+                "ok(21) no helper thread was ever woken",
+                "ok(22) no thread to join: none was ever created",
+            )
+        } else {
+            (
+                "[ mozjs-smoke ]",
+                "ok(20) the helper thread pool started (at least 2 threads; the GC's parallel helpers drawn from them)",
+                "ok(21) helper threads were woken for work before shutdown",
+                "ok(22) JS_ShutDown stopped and joined every helper thread",
+            )
+        };
+        for check in [
+            "ok(12) a 1 MiB-aligned 1 MiB block (a GC chunk's shape) from posix_memalign",
+            "ok(11) a runtime, a context and a global in one realm",
+            c20,
+            "ok(26) control: no helper wake while there is no work (parallel marking and compaction off, a small allocation)",
+            "ok(1) 1 + 1 == 2",
+            "ok(2) a closure keeps its counter across three calls",
+            "ok(3) irregexp: /a(b+)c/ on 'xabbbcy' captures 3 b's at index 1",
+            "ok(4) normalize: NFC('A\\u030A') is U+00C5, NFD splits it into 2 code units",
+            "ok(5) Date(1700000000000) in UTC is 2023-11-14 22:13:20",
+            "ok(6) UTC time of day is 22:13:20",
+            "ok(7) about 4 MiB allocated (past one chunk), 2500 kept",
+            "ok(8) after a forced GC every survivor is intact",
+            "ok(27) compacting GC is enabled (JSGC_COMPACTING_ENABLED)",
+            "ok(24) a shrinking GC packed the fragmented heap (fewer heap bytes than a normal GC left, no unused chunk kept)",
+            "ok(25) after the shrinking GC every survivor is intact",
+            c21,
+            c22,
+            "PASS",
         ] {
             require_serial_contains(
                 scenario,
                 observed,
-                needle,
-                "SpiderMonkey must evaluate, normalize, date and collect with every hand-written value",
+                &format!("{tag} {check}"),
+                "SpiderMonkey must evaluate, collect and compact with every hand-written value, and its helper threads must start, work and join (none in the single variant)",
             )?;
         }
     }

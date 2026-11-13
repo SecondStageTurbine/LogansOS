@@ -448,18 +448,9 @@ index 3bf694e..dd51214 100644
    ++JS::RootingContext::get(cx)->wasiRecursionDepth;
  }
 diff --git a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
-index b13dc1e..ab8dedb 100644
+index b13dc1e..81fdca8 100644
 --- a/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
 +++ b/mozjs-sys/mozjs/js/src/vm/Runtime.cpp
-@@ -60,7 +60,7 @@ JS::FilenameValidationCallback js::gFilenameValidationCallback = nullptr;
- 
- namespace js {
- 
--#ifndef __wasi__
-+#if !(defined(__wasi__) || defined(__neoplutarch__))
- bool gCanUseExtraThreads = true;
- #else
- bool gCanUseExtraThreads = false;
 @@ -147,7 +147,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
    JS_COUNT_CTOR(JSRuntime);
    liveRuntimesCount++;

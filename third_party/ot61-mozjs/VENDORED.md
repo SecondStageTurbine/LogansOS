@@ -35,12 +35,13 @@ one thread, interpreter only, and build option (c).
     - `mmap`: GC chunks, ArrayBuffers, `TaggedAnonymousMemory`, executable memory, `MmapFaultHandler`;
     - `getpid`: assertions, the base profiler;
     - `tzset`: `DateTime`, two testing functions;
-    - signals: `WasmSignalHandlers`, plus no helper threads in `Runtime.cpp`;
+    - signals: `WasmSignalHandlers` and the eager signal handlers in `Runtime.cpp`;
     - the native-stack base (no `pthread_getattr_np`): the stack-limit cluster in `StackLimits.h`,
       `NativeStackLimits.h`, `RootingAPI.h`, `NativeStack.cpp`, `jsapi.cpp`, `FrontendContext` and `JSContext.cpp`;
     - `arc4random_buf` for `RandomNum`.
 
-    Everything else (atomics, `ThreadLocal`, mutexes, condition variables) stays POSIX. `Poison.cpp` gets its own
+    Everything else (atomics, `ThreadLocal`, mutexes, condition variables, and since C3c-2 the helper
+    thread pool) stays POSIX. `Poison.cpp` gets its own
     small `__neoplutarch__` branch, because WASI's calls a wasm builtin.
   - `0004-jsglue-neoplutarch.patch`: `mozjs-sys/src/jsglue.cpp` (the Rust glue, compiled outside SpiderMonkey's own
     build) picks `<malloc.h>` and `malloc_usable_size` by platform. Our target joins the Linux/WASI branch, since
@@ -49,6 +50,10 @@ one thread, interpreter only, and build option (c).
     route it to `mozalloc_abort`. neo-crt defines `abort()` and the program links it statically, so the two collide
     (the C3c-1 smoke's first link: `duplicate symbol: abort`). Our target leaves the override out;
     `mozalloc_abort` itself is unchanged.
+  - `0006-neoplutarch-disable-extra-threads.patch` (C3c-2): `vm/Runtime.cpp` exports
+    `js::DisableExtraThreads()` as the C symbol `neo_js_disable_extra_threads`, only for our target. It is the
+    helper-thread kill-switch: called before the first `JSRuntime`, the process runs as C3c-1 did, with no helper
+    thread pool (`mozjs_smoke_single`). A C symbol needs no bindings change.
 - `generator/neo-cc` (and `neo-c++`, a symlink) is the compiler the generator gives configure for our target:
   neo-crt's own compile line (clang for `x86_64-unknown-none-elf` over musl's and libc++'s headers) with
   `__neoplutarch__` predefined. configure's test programs link against a stub that defines exactly the symbols in
@@ -105,7 +110,7 @@ to the vendored tree, the patches, `neo-cc` or neo-crt's symbols therefore has t
 - **`bindings/`:** bindgen's `jsapi.rs` and `gluebindings.rs` for our target. The generator's bindgen step makes them
   by running upstream `mozjs-sys`'s own `build_bindings`, with libclang from the runner's `clang` and `neo-cc`'s target
   flags. The step fails if `jsapi.rs` lacks `wasiRecursionDepth` (trap B1).
-- **`patched/`:** the 30 files patches 0001–0005 change, whole and as patched, at their paths under the vendored
+- **`patched/`:** the 30 files patches 0001–0006 change, whole and as patched, at their paths under the vendored
   crate root. `patched/deleted.txt` names the one file they delete (`MoveOnlyFunction.h`). The product build lays
   these over the vendored tree instead of running `git apply`. The drift check proves they equal vendor plus
   patches.

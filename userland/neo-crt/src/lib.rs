@@ -31,6 +31,15 @@
 
 pub mod pthread;
 mod seqcond;
+mod thread_record;
+
+pub use thread_record::ThreadCounts;
+
+/// OT-61 C3c-2: the counts of the threads `pthread_create` made (see
+/// `thread_record.rs`), for the SpiderMonkey smoke's helper-thread checks.
+pub fn thread_counts() -> ThreadCounts {
+    pthread::THREADS.counts()
+}
 
 use core::ffi::{c_char, c_int, c_long, c_void};
 use std::alloc::{Layout, alloc, alloc_zeroed, dealloc};

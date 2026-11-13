@@ -14,11 +14,18 @@ name = "mozjs-smoke"
 version = "0.0.1"
 edition = "2024"
 license = "MPL-2.0"
-description = "OT-61 C3c-1 gate: SpiderMonkey evaluates, normalizes, dates and collects on-target"
+description = "OT-61 C3c-1/C3c-2 gate: SpiderMonkey evaluates, collects, compacts and runs its helper threads on-target"
 
 [[bin]]
 name = "mozjs-smoke"
 path = "src/main.rs"
+test = false
+bench = false
+
+# OT-61 C3c-2: the kill-switch, helper threads off (patch 0006).
+[[bin]]
+name = "mozjs-smoke-single"
+path = "src/bin/mozjs-smoke-single.rs"
 test = false
 bench = false
 
