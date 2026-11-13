@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "files-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "OT-88 F1a: the Files app's core (directory trait, listing, navigation, operations, open with, render model); no_std, linked into no image"
+
+[lib]
+name = "files_core"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies]
+# The message catalog: every string Files shows, in English and Spanish,
+# from its `files` catalog (a feature, so the image's binaries never build it).
+i18n-core = { path = "../i18n-core", features = ["files"] }
