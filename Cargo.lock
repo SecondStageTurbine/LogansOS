@@ -1494,6 +1494,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "persist-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "pico-args"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

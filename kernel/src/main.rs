@@ -97,12 +97,21 @@ mod install_ui_logic;
 mod installer;
 #[cfg(feature = "installer")]
 mod installer_ui;
-#[cfg(feature = "installer")]
+#[cfg(any(feature = "installer", feature = "usb-persistence"))]
 mod limine_file_logic;
+// The boot medium: the kernel file, its disk's GPT GUID and (OT-100 R3) the
+// entry's command line. Shared by the installer and the persistence mount.
+#[cfg(any(feature = "installer", feature = "usb-persistence"))]
+#[allow(dead_code)] // each feature uses part of it
+mod boot_medium;
+// OT-100 R3: the persistence area's pure decisions (host-tested).
 #[allow(dead_code)] // forward-declared APIs for future phases; callers land later
 mod net;
 mod observability;
 mod panic;
+#[cfg(feature = "usb-persistence")]
+#[allow(dead_code)] // the mount uses the rest
+mod persist_logic;
 // Phase 10.1 BUILD-10.1: kernel CSPRNG (entropy + ChaCha20 DRBG + KATs).
 // Compiled only under `kernel-rng` (the kill-switch); default-off ≡ today.
 #[cfg(feature = "kernel-rng")]
@@ -175,9 +184,10 @@ static EXECUTABLE_ADDRESS_REQUEST: ExecutableAddressRequest = ExecutableAddressR
 
 // OT-87 R4.3: the kernel file as Limine loaded it, so the installer writes the
 // running kernel's exact bytes to slot A, and the boot medium's GPT disk GUID
-// (THINK §4.3 item 3, §2a). Gated by `installer`, so the request vanishes
-// without it.
-#[cfg(feature = "installer")]
+// (THINK §4.3 item 3, §2a). OT-100 R3 identifies the boot stick by that GUID.
+// Gated by `installer` / `usb-persistence`, so the request vanishes without
+// them.
+#[cfg(any(feature = "installer", feature = "usb-persistence"))]
 #[used]
 #[unsafe(link_section = ".requests")]
 static EXECUTABLE_FILE_REQUEST: limine::request::ExecutableFileRequest =

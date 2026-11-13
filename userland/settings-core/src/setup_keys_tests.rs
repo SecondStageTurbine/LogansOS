@@ -208,3 +208,28 @@ fn two_languages_accept_spanish_and_refuse_the_next_id() {
     assert_eq!(s.with(6, 1), Ok(Settings { language: 1, ..s }));
     assert_eq!(s.with(6, 2), Err(SetError::Value));
 }
+
+/// OT-100 R3 (THINK §6): until the persistence volume is encrypted, no
+/// network secret (a Wi-Fi PSK, a passphrase) may be written to it. The
+/// settings store, the only record the setup walk writes, can't hold one:
+/// every key is a small number (a flag, a choice from a fixed list, or a
+/// minute count), so no free text reaches the volume. A key that could
+/// carry text, or a network key, must come back through this rule.
+#[test]
+fn no_setting_can_hold_a_network_secret() {
+    for key in KEYS {
+        assert!(
+            matches!(key.kind(), Type::Bool | Type::Choice | Type::Minutes),
+            "{key:?}"
+        );
+        // The largest value any key accepts fits in a u16: a list index or
+        // a minute count, never an encoded string.
+        let mut largest = 0u32;
+        for v in 0..=u16::MAX as u32 + 1 {
+            if key.valid(v) {
+                largest = v;
+            }
+        }
+        assert!(largest <= u16::MAX as u32, "{key:?} accepts {largest}");
+    }
+}

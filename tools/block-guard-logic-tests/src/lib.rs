@@ -25,6 +25,9 @@ mod partition_guard_tests;
 // the differential KAT below.
 #[cfg(test)]
 mod legacy_write_guard_logic;
+// OT-100 R3: the guard's gate on flush, write-protect and Flush requests.
+#[cfg(test)]
+mod gate_tests;
 
 #[cfg(test)]
 mod tests {
