@@ -3084,6 +3084,26 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-61 C3c-2b: SpiderMonkey allocates past its 256 MiB budget with
+        // its helper threads alive; only that process dies, every frame comes
+        // back, and a second SpiderMonkey process then runs to exit 0.
+        name: "mozjs_smoke_oom",
+        feature: "neo-test-mozjs-smoke-oom",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        // OT-61 C3c-2b: MOZ_CRASH (ud2 on our target) with the helper threads
+        // alive: exit 132, every thread and frame gone, then a second
+        // SpiderMonkey process runs to exit 0.
+        name: "mozjs_smoke_crash",
+        feature: "neo-test-mozjs-smoke-crash",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         // OT-61 C3a: the browser bundle's private C/C++ runtime (neo-crt:
         // musl's portable C over a std bottom half) in a real-std process.
         name: "cxx_runtime_smoke",
@@ -8692,6 +8712,8 @@ fn std_real_bins_for(scenario: &str) -> &'static [&'static str] {
         "cxx_runtime_smoke" => &[CXX_RUNTIME_BIN, CXX_TRAP_BIN],
         "mozjs_smoke" => &[MOZJS_BIN],
         "mozjs_smoke_single" => &[MOZJS_SINGLE_BIN],
+        "mozjs_smoke_oom" => &[MOZJS_OOM_BIN, MOZJS_SINGLE_BIN],
+        "mozjs_smoke_crash" => &[MOZJS_CRASH_BIN, MOZJS_SINGLE_BIN],
         "swgl_smoke" => &[SWGL_BIN],
         "layout_smoke" => &[LAYOUT_SMOKE_BIN],
         "webrender_smoke" => &[WEBRENDER_BIN],
@@ -9873,8 +9895,8 @@ fn build_user_members(
             build_standalone_std_smoke(STYLO_SMOKE_BIN, &[STYLO_SMOKE_BIN], STYLO_SMOKE_DIR)?;
         }
         let staged = std_real_staged_bins();
-        if staged.contains(&MOZJS_BIN) || staged.contains(&MOZJS_SINGLE_BIN) {
-            build_standalone_std_smoke(MOZJS_BIN, &[MOZJS_BIN, MOZJS_SINGLE_BIN], MOZJS_DIR)?;
+        if MOZJS_BINS.iter().any(|b| staged.contains(b)) {
+            build_standalone_std_smoke(MOZJS_BIN, MOZJS_BINS, MOZJS_DIR)?;
             verify_mozjs_build_scripts()?;
         }
         if std_real_staged_bins().contains(&CXX_RUNTIME_BIN) {
@@ -9958,6 +9980,12 @@ const BROWSER_IO_PEER_BIN: &str = "browser-io-peer";
 const MOZJS_BIN: &str = "mozjs-smoke";
 /// OT-61 C3c-2: the same smoke with helper threads off (the kill-switch).
 const MOZJS_SINGLE_BIN: &str = "mozjs-smoke-single";
+/// OT-61 C3c-2b: the smoke that dies past its budget, and the one that dies by
+/// MOZ_CRASH, each with the helper threads alive.
+const MOZJS_OOM_BIN: &str = "mozjs-smoke-oom";
+const MOZJS_CRASH_BIN: &str = "mozjs-smoke-crash";
+/// Every binary `userland/mozjs-smoke` builds.
+const MOZJS_BINS: &[&str] = &[MOZJS_BIN, MOZJS_SINGLE_BIN, MOZJS_OOM_BIN, MOZJS_CRASH_BIN];
 const MOZJS_DIR: &str = "userland/mozjs-smoke";
 
 /// The std crates with their own target dir that build std as a known target
@@ -9974,7 +10002,7 @@ fn standalone_std_dir(bin: &str) -> Option<&'static str> {
         LAYOUT_SMOKE_BIN | BROWSER_BIN => Some(LAYOUT_SMOKE_DIR),
         WEBRENDER_BIN => Some(WEBRENDER_DIR),
         BROWSER_IO_BIN | BROWSER_IO_PEER_BIN => Some(BROWSER_APP_DIR),
-        MOZJS_BIN | MOZJS_SINGLE_BIN => Some(MOZJS_DIR),
+        MOZJS_BIN | MOZJS_SINGLE_BIN | MOZJS_OOM_BIN | MOZJS_CRASH_BIN => Some(MOZJS_DIR),
         _ => None,
     }
 }
@@ -10291,7 +10319,7 @@ fn cmd_ot61_closure_build(args: &[String]) -> Result<(), String> {
             &[LAYOUT_SMOKE_BIN, BROWSER_BIN],
             LAYOUT_SMOKE_DIR,
         ),
-        [a] if a == "--mozjs" => (MOZJS_BIN, &[MOZJS_BIN, MOZJS_SINGLE_BIN], MOZJS_DIR),
+        [a] if a == "--mozjs" => (MOZJS_BIN, MOZJS_BINS, MOZJS_DIR),
         _ => {
             return Err(
                 "usage: cargo xtask ot61-closure-build [--stylo | --crt | --layout | --mozjs]"
@@ -16403,6 +16431,8 @@ fn scenario_needs_qemu_max(scenario_name: &str) -> bool {
             // (SpiderMonkey is built with the stack protector).
             | "mozjs_smoke"
             | "mozjs_smoke_single"
+            | "mozjs_smoke_oom"
+            | "mozjs_smoke_crash"
     )
     // Desktop S1 onwards composes the same Arthur substrate (xsave-fpu, AVX2).
     || is_desktop_kernel_scenario(scenario_name)
@@ -16974,7 +17004,7 @@ fn qemu_memory_for_scenario(name: &str) -> &'static str {
         "arthur_real_brain_boot_qwen35" => "6144M",
         // OT-61 C3c-1: SpiderMonkey's image (tens of MiB) as a boot module,
         // its copy in the process, and the process's 256 MiB budget.
-        "mozjs_smoke" | "mozjs_smoke_single" => "1024M",
+        "mozjs_smoke" | "mozjs_smoke_single" | "mozjs_smoke_oom" | "mozjs_smoke_crash" => "1024M",
         _ => "512M",
     }
 }
@@ -21279,6 +21309,38 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 observed,
                 &format!("{tag} {check}"),
                 "SpiderMonkey must evaluate, collect and compact with every hand-written value, and its helper threads must start, work and join (none in the single variant)",
+            )?;
+        }
+    }
+    if scenario.name == "mozjs_smoke_oom" || scenario.name == "mozjs_smoke_crash" {
+        // OT-61 C3c-2b: the first process started its helper pool, put it to
+        // work and died with it alive (the kernel's PASS line says how, and
+        // that every frame came back); the second, helpers off, passed.
+        let oom = scenario.name == "mozjs_smoke_oom";
+        let tag = if oom {
+            "[ mozjs-smoke-oom ]"
+        } else {
+            "[ mozjs-smoke-crash ]"
+        };
+        for needle in [
+            format!(
+                "{tag} ok(20) the helper thread pool started (at least 2 threads; the GC's parallel helpers drawn from them)"
+            ),
+            format!(
+                "{tag} ok(28) the helper threads are alive and have worked (created, none exited, woken)"
+            ),
+            if oom {
+                format!("{tag} OOM past the budget")
+            } else {
+                format!("{tag} MOZ_CRASH (ud2) with the helpers alive")
+            },
+            "[ mozjs-smoke-single ] PASS".to_string(),
+        ] {
+            require_serial_contains(
+                scenario,
+                observed,
+                &needle,
+                "SpiderMonkey must die alone with its helper threads alive, and a second SpiderMonkey process must then pass",
             )?;
         }
     }

@@ -512,6 +512,10 @@ neo-test-mozjs-smoke = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"
 # OT-61 C3c-2: the same smoke with SpiderMonkey's helper threads off (the
 # kill-switch, patch 0006).
 neo-test-mozjs-smoke-single = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+# OT-61 C3c-2b: SpiderMonkey dies with its helper threads alive, by OOM past
+# its budget or by MOZ_CRASH; only that process goes (THINK C3c-2 §4.3).
+neo-test-mozjs-smoke-oom = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
+neo-test-mozjs-smoke-crash = ["neo-test", "browser-runtime", "mem-quota", "kernel-rng"]
 # OT-61 rung 4 (SWGL S1): upstream SWGL over neo-crt, rastering into a
 # caller-owned buffer, byte-compared with a hand-laid pattern.
 neo-test-swgl-smoke = ["neo-test", "browser-runtime", "mem-quota"]

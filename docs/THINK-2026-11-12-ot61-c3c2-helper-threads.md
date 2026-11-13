@@ -89,12 +89,18 @@ tasks, so §4.2 is what gives check 21 something to count.
 
 ### 4.3 OOM and crash kill only the content process
 
-Each runs with the helper pool started (check 20 first), so a death has live threads to retire:
+Each runs with the helper pool started (check 20 first) and put to work (a shrinking GC of a fragmented heap; check
+28 requires the helpers created, none exited, and at least one woken), so a death has live, recently woken threads
+to retire:
 
 | Variant | How | Passes when |
 |---|---|---|
-| `mozjs_smoke_oom` | The smoke allocates JS objects in a loop past its 256 MiB spawn budget | Either SpiderMonkey reports a catchable OOM and the smoke exits with its own code, or the allocator aborts (exit 134). Both are fine for the C3 row; the scenario prints which. The kernel sees the process gone, every frame back, and **the scenario carries on** to a second spawn that passes |
-| `mozjs_smoke_crash` | `MOZ_CRASH` through a test hook in the smoke while a GC task is running | Exit 134 (neo-crt's `abort`); same kernel checks |
+| `mozjs_smoke_oom` | The smoke allocates dense 512 KiB arrays in a loop past its 256 MiB spawn budget | Any of three ends, all fine for the C3 row, printed by the kernel: SpiderMonkey reports its out-of-memory error and the smoke exits 0 (check 30); an allocation SpiderMonkey can't fail softly hits `MOZ_CRASH` (132); a Rust allocation aborts (134) |
+| `mozjs_smoke_crash` | What `MOZ_CRASH` compiles to on our target, with the helpers alive: `MOZ_REALLY_CRASH` is `__builtin_trap()` for `__neoplutarch__` (patched `mfbt/Assertions.h`, as for WASI), so a ring-3 `ud2` | Exit 132 (#UD, SIGILL: OT-83's fault-kill). *(The first draft said 134, neo-crt's `abort`; `MOZ_CRASH` doesn't reach `abort` on our target.)* |
+
+After the first process is gone, the kernel spawns **a second SpiderMonkey process**, `mozjs-smoke-single` (helpers
+off), which must run every C3c-1 check to exit 0 with its frames back: the kernel, the scheduler, the spawn path and
+the memory accounts survived.
 
 The kernel-side check is the C2.2 budget check C3c-1 already makes (`used == baseline`, no underflows), plus
 `any_user_process()` false afterwards: no helper thread survives its process (CP-85).

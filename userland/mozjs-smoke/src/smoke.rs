@@ -72,6 +72,11 @@ pub enum Mode {
     Pool,
     /// The pool switched off before the engine starts (the kill-switch).
     Single,
+    /// C3c-2b: the pool on, then JS allocates past the process's budget.
+    Oom,
+    /// C3c-2b: the pool on, then the engine's crash (`MOZ_CRASH`, which is
+    /// `__builtin_trap`, so `ud2`, on our target) with the helpers alive.
+    Crash,
 }
 
 /// (check, what, script, expected int32). Every script's value is an int32,
@@ -144,6 +149,10 @@ const FRAGMENT: &str = "var kept = []; var junk = [];
     }
     junk = null;
     kept.length";
+/// C3c-2b's hog: dense arrays of 64 Ki numbers until an allocation fails.
+const HOG: &str = "var hog = [];
+    for (;;) hog.push(new Array(65536).fill(hog.length));
+    hog.length";
 /// After the shrinking GC: every survivor (moved) still has its values.
 const MOVED: &str = "var ok = 0;
     for (var j = 0; j < kept.length; j++) {
@@ -208,11 +217,60 @@ fn full_gc(rt: &mut Runtime, options: GCOptions) {
     }
 }
 
+/// C3c-2b (THINK C3c-2 §4.3): the process dies with its helper threads
+/// alive, and the kernel must see only this process go, with every frame
+/// back. First the helpers are put to work (a shrinking GC of a fragmented
+/// heap), so the death finds them started and recently woken.
+fn end_with_helpers_alive(out: &Out, mode: Mode, rt: &mut Runtime, global: HandleObject) -> ! {
+    let tag = out.tag;
+    let kept = eval(rt, global, FRAGMENT);
+    full_gc(rt, GCOptions::Shrink);
+    let c = neo_crt::thread_counts();
+    println!(
+        "{tag}   helpers alive: kept {kept:?}; created {}, exited {}, wakes {}",
+        c.created, c.exited, c.wakes
+    );
+    out.check(
+        28,
+        "the helper threads are alive and have worked (created, none exited, woken)",
+        kept == Some(5000) && c.created >= 2 && c.exited == 0 && c.wakes >= 1,
+    );
+    match mode {
+        Mode::Oom => {
+            // Dense arrays of 64 Ki doubles, 512 KiB each, until an
+            // allocation fails: past the 256 MiB spawn budget, neo-crt's
+            // malloc returns null and SpiderMonkey reports out of memory (an
+            // uncatchable error, so the script ends and eval fails). An
+            // allocation SpiderMonkey can't fail softly crashes instead
+            // (132), and a Rust one aborts (134); the kernel accepts all three.
+            println!("{tag} OOM past the budget: allocating with the helpers alive");
+            let r = eval(rt, global, HOG);
+            println!("{tag}   check 30: the hog ended with {r:?}");
+            out.check(
+                30,
+                "an allocation past the budget ended in SpiderMonkey's out-of-memory error",
+                r.is_none(),
+            );
+            println!("{tag} OOM reported; exiting with the helpers alive");
+            std::process::exit(0)
+        }
+        _ => {
+            println!("{tag} MOZ_CRASH (ud2) with the helpers alive");
+            // What MOZ_CRASH compiles to on our target (`MOZ_REALLY_CRASH`
+            // is `__builtin_trap()` for __neoplutarch__, as for WASI): a
+            // ring-3 #UD, which the kernel turns into a kill (exit 132).
+            unsafe { core::arch::asm!("ud2", options(noreturn)) }
+        }
+    }
+}
+
 pub fn run(mode: Mode) -> ! {
     let out = Out {
         tag: match mode {
             Mode::Pool => "[ mozjs-smoke ]",
             Mode::Single => "[ mozjs-smoke-single ]",
+            Mode::Oom => "[ mozjs-smoke-oom ]",
+            Mode::Crash => "[ mozjs-smoke-crash ]",
         },
     };
     let tag = out.tag;
@@ -222,8 +280,8 @@ pub fn run(mode: Mode) -> ! {
     neo_crt::seed_stack_canary();
     neo_crt::init();
     let threads_note = match mode {
-        Mode::Pool => "helper threads on",
         Mode::Single => "helper threads off",
+        _ => "helper threads on",
     };
     println!("{tag} start: SpiderMonkey 153.6 (mozjs 0.26.14), interpreter, {threads_note}");
 
@@ -271,7 +329,7 @@ pub fn run(mode: Mode) -> ! {
         // Check 20: the pool's size, from SpiderMonkey and from neo-crt.
         let started = settled();
         match mode {
-            Mode::Pool => {
+            Mode::Pool | Mode::Oom | Mode::Crash => {
                 // JSGC_HELPER_THREAD_COUNT is the GC's share of the pool for
                 // parallel work (cpus x a ratio, clamped), not the pool's size.
                 let helpers = gc_param(&rt, JSGCParamKey::JSGC_HELPER_THREAD_COUNT);
@@ -297,6 +355,10 @@ pub fn run(mode: Mode) -> ! {
                     started.created == 0,
                 );
             }
+        }
+
+        if mode == Mode::Oom || mode == Mode::Crash {
+            end_with_helpers_alive(&out, mode, &mut rt, global.handle());
         }
 
         // Check 26, the control for check 21: no work for a helper, so no
@@ -394,7 +456,7 @@ pub fn run(mode: Mode) -> ! {
             before_shutdown.wakes, before_shutdown.timeouts
         );
         match mode {
-            Mode::Pool => out.check(
+            Mode::Pool | Mode::Oom | Mode::Crash => out.check(
                 21,
                 "helper threads were woken for work before shutdown",
                 before_shutdown.wakes >= 1,
@@ -416,7 +478,7 @@ pub fn run(mode: Mode) -> ! {
         after.created, after.exited, after.joined, before_shutdown.created
     );
     match mode {
-        Mode::Pool => out.check(
+        Mode::Pool | Mode::Oom | Mode::Crash => out.check(
             22,
             "JS_ShutDown stopped and joined every helper thread",
             after.created == pool && after.exited == pool && after.joined == pool,
