@@ -87,6 +87,46 @@ pub fn debug_dir_op_reads() -> (u64, u64, u64, u64) {
     inode::dir_ops_probe::take()
 }
 
+/// OT-101's scenario (`fs::debug_neofs_entries_waits`).
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_entries_waits() -> (u64, u64) {
+    use core::sync::atomic::Ordering::SeqCst;
+    let probe = &inode::ENTRIES_PROBE;
+    (
+        probe.parks.swap(0, SeqCst),
+        probe.spin_rounds.swap(0, SeqCst),
+    )
+}
+
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_entries_spin_instead(spin: bool) {
+    inode::ENTRIES_PROBE
+        .spin_instead
+        .store(spin, core::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_hold_next(read: bool, ticks: u64) {
+    use core::sync::atomic::Ordering::SeqCst;
+    cache::hold::GATE.store(cache::hold::IDLE, SeqCst);
+    if read {
+        cache::hold::READ_TICKS.store(ticks, SeqCst);
+    } else {
+        cache::hold::ENTRIES_HELD_AT_WRITE.store(false, SeqCst);
+        cache::hold::WRITE_TICKS.store(ticks, SeqCst);
+    }
+}
+
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_hold_state() -> (u8, bool, u64) {
+    use core::sync::atomic::Ordering::SeqCst;
+    (
+        cache::hold::GATE.load(SeqCst),
+        cache::hold::ENTRIES_HELD_AT_WRITE.load(SeqCst),
+        inode::THROTTLE_DRAINS.load(SeqCst),
+    )
+}
+
 /// F0's read-boundary leg: see `dir_ops::probe::commit_at_reads`;
 /// returns the commits made since the last call.
 #[cfg(feature = "neo-test-neofs-dir-ops")]

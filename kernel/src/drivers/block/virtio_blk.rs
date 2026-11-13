@@ -899,6 +899,10 @@ impl VirtioBlkDevice {
         );
 
         let mut prepark_completion = None;
+        // OT-101 (CP-30): this thread owns `io_gate` and its caller's state
+        // (a NeoFS operation's locks, guards and `Arc`s) across the park, so a
+        // force-kill must not zombify it here; the completion always wakes it.
+        sched::set_current_park_owns_state(true);
         let ret = crate::arch::x86_64::without_interrupts(|| {
             let mut guard = self.inner.lock();
             if inline_completion_poll_enabled() {
@@ -915,6 +919,7 @@ impl VirtioBlkDevice {
                 inner.attach_waiter(token);
             })
         });
+        sched::set_current_park_owns_state(false);
         if let Some(completion) = prepark_completion {
             let ret = self.finish_completion(completion);
             return Self::block_result_from_return(ret);

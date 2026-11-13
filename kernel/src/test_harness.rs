@@ -1357,6 +1357,8 @@ const SCENARIO: &str = "neofs_grow_write";
 const SCENARIO: &str = "neofs_file_replace";
 #[cfg(feature = "neo-test-neofs-dir-ops")]
 const SCENARIO: &str = "neofs_dir_ops";
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+const SCENARIO: &str = "phase3_neofs_entries_park";
 #[cfg(feature = "neo-test-neofs-read-recheck")]
 const SCENARIO: &str = "neofs_read_recheck";
 #[cfg(feature = "neo-test-neofs-truncate")]
@@ -1653,6 +1655,7 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-neofs-grow-write",
     feature = "neo-test-neofs-file-replace",
     feature = "neo-test-neofs-dir-ops",
+    feature = "neo-test-phase3-neofs-entries-park",
     feature = "neo-test-neofs-read-recheck",
     feature = "neo-test-neofs-truncate",
     // Rule-4 consolidation: the nine per-slice atrium entries collapse to the
@@ -5973,6 +5976,9 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
 
     #[cfg(feature = "neo-test-neofs-dir-ops")]
     run_neofs_dir_ops();
+
+    #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+    run_phase3_neofs_entries_park();
 
     #[cfg(feature = "neo-test-neofs-read-recheck")]
     run_neofs_read_recheck();
@@ -33733,6 +33739,255 @@ fn run_neofs_file_replace() -> ! {
 ///   superblocks.
 ///
 /// Boot 2: the tree is the one before the cut rename, and mounts.
+/// OT-101: the NeoFS namespace lock (`entries`) parks its waiters, and dirty
+/// throttling drains without it.
+///
+/// - **The held read.** A kthread creates `/neofs/p/hN.txt` on a cold cache:
+///   `create_regular` reads `p`'s inode under `entries`, and that device read
+///   is held for `HOLD_TICKS` timer ticks (a slow device). Meanwhile this
+///   thread makes a root folder, which needs `entries`. It parks (the lock's
+///   park count rises, its spin count stays 0); while parked, a force-kill
+///   scan would leave it (`park_owns_state`); and it finishes only after the
+///   held read is released.
+/// - **The fix reverted, at runtime.** The same leg with the lock switched
+///   back to spinning (test builds only): the spin count must rise and no wait
+///   parks. So the counters measure the lock, not the schedule.
+/// - **The held throttle drain.** With the writeback worker held and the cache
+///   over the dirty threshold, a kthread's mkdir throttles: its drain's first
+///   device write is held. Meanwhile a lookup on this thread takes `entries`
+///   and returns before the hold ends, and the drain began with `entries`
+///   free.
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+fn run_phase3_neofs_entries_park() -> ! {
+    use crate::fs::{
+        FileRights, OPEN_CREATE_REGULAR, OPEN_ROOT_TEMPORARY, debug_neofs_hold_next,
+        debug_neofs_hold_state, open_root_temporary,
+    };
+    use crate::sched::kthread::{KthreadExitState, KthreadStopToken, spawn_owned};
+    use alloc::format;
+    use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
+    const HOLD_TICKS: u64 = 30;
+    const DIRTY_THROTTLE: u64 = 128;
+    const BLOCKS_PER_FILE: usize = 8;
+    const HOLDING: u8 = 1;
+    const RELEASED: u8 = 2;
+    static HOLDER_OK: AtomicBool = AtomicBool::new(false);
+    static MAIN_TID: AtomicU64 = AtomicU64::new(0);
+    static OBSERVED: AtomicU8 = AtomicU8::new(0);
+    static DONE: AtomicBool = AtomicBool::new(false);
+
+    let tick = || crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
+    let vfs = |reason: &str, r: Result<(), crate::fs::VfsError>| {
+        if let Err(e) = r {
+            neofs_2c_fail_vfs(reason, e);
+        }
+    };
+    let wait_holding = |reason: &str| {
+        let deadline = tick() + 500;
+        while debug_neofs_hold_state().0 != HOLDING {
+            if tick() > deadline {
+                fail(reason);
+            }
+            crate::sched::yield_now();
+        }
+    };
+
+    let _report = mount_neofs_rw_or_fail();
+    vfs(
+        "reason=entries_park_mkdir_p",
+        crate::fs::debug_neofs_mkdir(None, "p"),
+    );
+
+    // One held-read leg: (parks, spin rounds, held read released before the
+    // second writer finished, kill-protected while parked: 0 unseen, 1 no,
+    // 2 yes).
+    let leg = |n: u32, spin: bool| -> (u64, u64, bool, u8) {
+        vfs(
+            "reason=entries_park_cold_cache",
+            crate::fs::debug_neofs_cold_cache(),
+        );
+        let _ = crate::fs::debug_neofs_entries_waits();
+        crate::fs::debug_neofs_entries_spin_instead(spin);
+        HOLDER_OK.store(false, Ordering::SeqCst);
+        DONE.store(false, Ordering::SeqCst);
+        OBSERVED.store(0, Ordering::SeqCst);
+        MAIN_TID.store(
+            crate::arch::x86_64::per_cpu::current_thread_id(),
+            Ordering::SeqCst,
+        );
+        debug_neofs_hold_next(true, HOLD_TICKS);
+        let holder = spawn_owned("entries-holder", move |_stop: KthreadStopToken| {
+            let path = format!("/neofs/p/h{n}.txt");
+            let rights = FileRights::from_bits(FileRights::READ.bits() | FileRights::WRITE.bits());
+            if open_root_temporary(&path, OPEN_CREATE_REGULAR, rights).is_ok() {
+                HOLDER_OK.store(true, Ordering::SeqCst);
+            }
+            KthreadExitState::Success
+        });
+        wait_holding("reason=entries_park_read_never_held");
+        // Watches for this thread in a token slot, and records whether a
+        // force-kill scan would leave it there.
+        let observer = spawn_owned("park-observer", |_stop: KthreadStopToken| {
+            while !DONE.load(Ordering::SeqCst) {
+                let tid = MAIN_TID.load(Ordering::SeqCst);
+                if let Some(protected) = crate::sched::debug_token_parked_kill_protected(tid) {
+                    let seen = if protected { 2 } else { 1 };
+                    OBSERVED.fetch_max(seen, Ordering::SeqCst);
+                    if !protected {
+                        OBSERVED.store(1, Ordering::SeqCst);
+                        break;
+                    }
+                }
+                crate::sched::yield_now();
+            }
+            KthreadExitState::Success
+        });
+        let name = format!("w{n}");
+        let rc = crate::arch::x86_64::with_interrupts_enabled(|| {
+            crate::fs::debug_neofs_mkdir(None, &name)
+        });
+        let released_first = debug_neofs_hold_state().0 == RELEASED;
+        DONE.store(true, Ordering::SeqCst);
+        let _ = holder.join();
+        let _ = observer.join();
+        let (parks, spins) = crate::fs::debug_neofs_entries_waits();
+        crate::fs::debug_neofs_entries_spin_instead(false);
+        vfs("reason=entries_park_second_writer", rc);
+        if !HOLDER_OK.load(Ordering::SeqCst) {
+            fail("reason=entries_park_holder_create");
+        }
+        vfs(
+            "reason=entries_park_unlink_w",
+            crate::fs::debug_neofs_unlink(None, &name),
+        );
+        vfs(
+            "reason=entries_park_unlink_h",
+            crate::fs::debug_neofs_unlink(Some("p"), &format!("h{n}.txt")),
+        );
+        (
+            parks,
+            spins,
+            released_first,
+            OBSERVED.load(Ordering::SeqCst),
+        )
+    };
+
+    // The fix: the second writer parks, never spins.
+    let (parks, spins, released_first, observed) = leg(0, false);
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} leg=park parks={} spin_rounds={} waited_for_release={} kill_protected={}",
+        SCENARIO,
+        parks,
+        spins,
+        released_first,
+        observed
+    );
+    if parks == 0 {
+        fail("reason=entries_park_second_writer_never_parked");
+    }
+    if spins != 0 {
+        fail_with_hex("reason=entries_park_spun rounds", spins);
+    }
+    if !released_first {
+        fail("reason=entries_park_writer_finished_inside_held_read");
+    }
+    if observed != 2 {
+        fail_with_hex(
+            "reason=entries_park_parked_waiter_not_kill_protected seen",
+            u64::from(observed),
+        );
+    }
+
+    // The fix reverted at runtime: the same leg spins.
+    let (r_parks, r_spins, r_released_first, _) = leg(1, true);
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} leg=spin_control parks={} spin_rounds={} waited_for_release={}",
+        SCENARIO,
+        r_parks,
+        r_spins,
+        r_released_first
+    );
+    if r_spins == 0 {
+        fail("reason=entries_park_control_never_spun");
+    }
+    if r_parks != 0 {
+        fail_with_hex("reason=entries_park_control_parked", r_parks);
+    }
+    if !r_released_first {
+        fail("reason=entries_park_control_writer_finished_inside_held_read");
+    }
+
+    // The held throttle drain.
+    neofs_3d_set_writeback_hold_or_fail(true);
+    let mut file = 0usize;
+    while neofs_3d_cache_stats_or_fail().dirty_blocks < DIRTY_THROTTLE {
+        if file >= 32 {
+            fail("reason=entries_park_never_over_throttle");
+        }
+        neofs_2c_write_pattern_file(
+            &format!("/neofs/t-{file:02}.bin"),
+            BLOCKS_PER_FILE,
+            0x30 + file as u8,
+        );
+        file += 1;
+    }
+    let drains_before = debug_neofs_hold_state().2;
+    HOLDER_OK.store(false, Ordering::SeqCst);
+    debug_neofs_hold_next(false, HOLD_TICKS);
+    let throttler = spawn_owned("throttler", |_stop: KthreadStopToken| {
+        if crate::fs::debug_neofs_mkdir(None, "throttled").is_ok() {
+            HOLDER_OK.store(true, Ordering::SeqCst);
+        }
+        KthreadExitState::Success
+    });
+    wait_holding("reason=entries_park_drain_never_held");
+    let lookup = crate::arch::x86_64::with_interrupts_enabled(|| {
+        open_root_temporary("/neofs/hello.txt", OPEN_ROOT_TEMPORARY, FileRights::READ)
+    });
+    let (gate_after_lookup, entries_held_at_write, drains_after) = debug_neofs_hold_state();
+    let _ = throttler.join();
+    if let Err(e) = lookup {
+        neofs_2c_fail_vfs("reason=entries_park_lookup_during_drain", e);
+    }
+    if !HOLDER_OK.load(Ordering::SeqCst) {
+        fail("reason=entries_park_throttled_mkdir");
+    }
+    serial_println!(
+        "NEO_TEST/1 event=INFO name={} leg=throttle drains={} entries_held_at_drain_write={} lookup_inside_hold={}",
+        SCENARIO,
+        drains_after - drains_before,
+        entries_held_at_write,
+        gate_after_lookup == HOLDING
+    );
+    if drains_after == drains_before {
+        fail("reason=entries_park_mkdir_never_throttled");
+    }
+    if entries_held_at_write {
+        fail("reason=entries_park_throttle_drain_holds_entries");
+    }
+    if gate_after_lookup != HOLDING {
+        fail("reason=entries_park_lookup_waited_for_drain");
+    }
+    neofs_3d_set_writeback_hold_or_fail(false);
+    neofs_3d_wait_clean_or_fail("reason=entries_park_not_clean");
+    for f in 0..file {
+        neofs_2c_verify_pattern_file(
+            &format!("/neofs/t-{f:02}.bin"),
+            BLOCKS_PER_FILE,
+            0x30 + f as u8,
+        );
+    }
+
+    serial_println!(
+        "NEO_TEST/1 event=PASS name={} entries=parks:{}+spin_rounds:0+kill_protected spin_control=spin_rounds:{} throttle_drain=entries_free+lookup_inside_hold",
+        SCENARIO,
+        parks,
+        r_spins
+    );
+    debug_exit(EXIT_SUCCESS);
+}
+
 #[cfg(feature = "neo-test-neofs-dir-ops")]
 fn run_neofs_dir_ops() -> ! {
     use crate::arch::x86_64::syscall::debug_sys_readdir_kernel_buf_for_test;
@@ -35416,7 +35671,8 @@ fn run_phase3_neofs_mount_rejects_bad_superblock() -> ! {
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
-    feature = "neo-test-phase3-neofs-allocator-reuse-guard"
+    feature = "neo-test-phase3-neofs-allocator-reuse-guard",
+    feature = "neo-test-phase3-neofs-entries-park"
 ))]
 const NEOFS_2C_DIRECT_BLOCK_BYTES: usize = 4096;
 
@@ -35712,7 +35968,8 @@ fn neofs_2c_read_literal_or_fail(path: &str, expected: &[u8]) {
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
-    feature = "neo-test-phase3-neofs-allocator-reuse-guard"
+    feature = "neo-test-phase3-neofs-allocator-reuse-guard",
+    feature = "neo-test-phase3-neofs-entries-park"
 ))]
 fn neofs_2c_fill_pattern(seed: u8, block_index: usize, buf: &mut [u8]) {
     for (idx, byte) in buf.iter_mut().enumerate() {
@@ -35727,7 +35984,8 @@ fn neofs_2c_fill_pattern(seed: u8, block_index: usize, buf: &mut [u8]) {
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
-    feature = "neo-test-phase3-neofs-allocator-reuse-guard"
+    feature = "neo-test-phase3-neofs-allocator-reuse-guard",
+    feature = "neo-test-phase3-neofs-entries-park"
 ))]
 fn neofs_2c_write_pattern_file(path: &str, blocks: usize, seed: u8) {
     let file = neofs_2c_create_or_fail(path);
@@ -35742,7 +36000,8 @@ fn neofs_2c_write_pattern_file(path: &str, blocks: usize, seed: u8) {
     feature = "neo-test-phase3-neofs-write-readback-same-boot",
     feature = "neo-test-phase3-neofs-cache-evict",
     feature = "neo-test-phase3-neofs-cache-evict-off",
-    feature = "neo-test-phase3-neofs-allocator-reuse-guard"
+    feature = "neo-test-phase3-neofs-allocator-reuse-guard",
+    feature = "neo-test-phase3-neofs-entries-park"
 ))]
 fn neofs_2c_verify_pattern_file(path: &str, blocks: usize, seed: u8) {
     let file = neofs_2c_open_read_or_fail(path);

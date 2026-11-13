@@ -2016,6 +2016,16 @@ neo-test-neofs-truncate = [
     "neo-test-phase3-neofs-2e",
     "neo-test-phase3-neofs-3c",
 ]
+# OT-101: the namespace lock parks, not spins, while its holder waits on the
+# device; dirty throttling drains without it. F0's mkdir_at makes the folders,
+# and eviction is on so throttling drains (the product's configuration).
+neo-test-phase3-neofs-entries-park = [
+    "neo-test",
+    "neofs-dir-ops",
+    "neofs-cache-evict",
+    "neo-test-phase3-neofs-2e",
+    "neo-test-phase3-neofs-3c",
+]
 # BUILD-4B mount-table substrate. Umbrella feature flag enabled by all seven
 # BUILD-4B scenario features so the kernel-side debug helpers compile once.
 neo-test-phase3-mount-table = ["neo-test"]

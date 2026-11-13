@@ -168,6 +168,14 @@ pub struct Thread {
     /// under its CPU's scheduler lock; read by the scans under the lock of the
     /// queue that holds it.
     pub(super) admission_section: bool,
+    /// OT-101 (CP-30): the thread is parked at a site whose frames own kernel
+    /// state, a `ParkMutex` wait or a block-device completion wait inside a
+    /// file operation (the writeback pause, a write count, `Arc`s, and the
+    /// locks the operation holds). A force-kill scan never zombifies it raw:
+    /// the wait always ends (the lock is released, the I/O completes), and the
+    /// thread then exits at its syscall boundary. Written by the thread itself
+    /// under its CPU's scheduler lock, around the park.
+    pub(super) park_owns_state: bool,
     /// OT-93 (CP-95): the thread is inside a syscall, from `syscall_dispatch`'s
     /// entry to its return decision. A Ready thread with this set resumes in
     /// kernel mode with a live syscall frame, which may own `Arc`s and `Vec`s
@@ -356,6 +364,7 @@ impl Thread {
             #[cfg(feature = "inference-stack")]
             inference_lifecycle: false,
             admission_section: false,
+            park_owns_state: false,
             in_syscall: false,
             #[cfg(feature = "obj-quota")]
             obj_charge: None,
@@ -420,6 +429,7 @@ impl Thread {
             #[cfg(feature = "inference-stack")]
             inference_lifecycle: false,
             admission_section: false,
+            park_owns_state: false,
             in_syscall: false,
             #[cfg(feature = "obj-quota")]
             obj_charge: None,
@@ -547,6 +557,7 @@ impl Thread {
             #[cfg(feature = "inference-stack")]
             inference_lifecycle: false,
             admission_section: false,
+            park_owns_state: false,
             in_syscall: false,
             #[cfg(feature = "obj-quota")]
             obj_charge: None,
@@ -627,6 +638,7 @@ impl Thread {
             #[cfg(feature = "inference-stack")]
             inference_lifecycle: false,
             admission_section: false,
+            park_owns_state: false,
             in_syscall: false,
             #[cfg(feature = "obj-quota")]
             obj_charge: None,
