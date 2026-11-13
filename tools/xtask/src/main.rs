@@ -7488,6 +7488,16 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         limine_kaslr: None,
     },
     TestScenario {
+        // OT-101: a held cache-miss read under the NeoFS namespace lock; a
+        // second writer parks (and spins with the fix reverted at runtime);
+        // a held throttling drain doesn't hold the lock.
+        name: "phase3_neofs_entries_park",
+        feature: "neo-test-phase3-neofs-entries-park",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
         name: "neofs_truncate",
         feature: "neo-test-neofs-truncate",
         user_feature: None,
@@ -18986,6 +18996,7 @@ fn neofs_image_variant_for_scenario(scenario_name: &str) -> Option<&'static str>
         NEOFS_GROW_WRITE_SCENARIO => Some("normal"),
         "neofs_file_replace" => Some("normal"),
         "neofs_dir_ops" => Some("normal"),
+        "phase3_neofs_entries_park" => Some("normal"),
         "neofs_read_recheck" => Some("normal"),
         "neofs_truncate" => Some("normal"),
         "model_load_cascade" => Some("normal"),

@@ -6,10 +6,12 @@
 
 pub mod irqsafe_mutex;
 pub mod lock_owner;
+pub mod park_mutex;
 pub mod switch_mutex;
 pub mod ticket_mutex;
 
 pub use irqsafe_mutex::IrqSafeMutex;
+pub use park_mutex::ParkMutex;
 pub use switch_mutex::SwitchMutex;
 
 /// The documented global lock order for the AI-residency locks (Phase 7
