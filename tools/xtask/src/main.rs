@@ -30461,9 +30461,12 @@ PROBEAPP idling before exit ms=2000
         let log = CP61_LOG.replace(
             "WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0 fire_tick=1894 \
              deadline=1894 now=1894\nDESKTOP park woke ms=490 ready=c1g2f,\n",
-            "",
+            // The tick's wake stays (relay 412): the WM woke, with no gen-2
+            // item ready.
+            "DESKTOP park woke ms=490 ready=\n",
         );
         assert_ne!(log, CP61_LOG);
+        assert!(log.contains("DESKTOP park woke ms=490 ready=\n"));
         assert!(!log.contains("c1g2f"));
         assert!(!log.contains(":44,") || !log.contains("key=0xb4d0 fire_tick=1894"));
         assert!(super::require_cp61_parked_death(&log).is_err());
