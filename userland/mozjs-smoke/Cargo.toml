@@ -29,6 +29,19 @@ path = "src/bin/mozjs-smoke-single.rs"
 test = false
 bench = false
 
+# OT-61 C3c-2b: the process dies with the helper threads alive (THINK §4.3).
+[[bin]]
+name = "mozjs-smoke-oom"
+path = "src/bin/mozjs-smoke-oom.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "mozjs-smoke-crash"
+path = "src/bin/mozjs-smoke-crash.rs"
+test = false
+bench = false
+
 [dependencies]
 neo-std-pal = { path = "../neo-std-pal" }
 neo-crt = { path = "../neo-crt" }
