@@ -118,6 +118,13 @@
 
 extern crate alloc;
 
+// A2 (Muse's note on #111): `lock-switch-test` leaves the SAK latch untaken
+// for 2 s after the first launch, so it must never reach a product build.
+#[cfg(all(feature = "lock-switch-test", feature = "product-integration"))]
+compile_error!(
+    "lock-switch-test holds the SAK latch: only in a QEMU neo-test build (never product-integration)"
+);
+
 #[cfg(any(feature = "arthur-compositor", feature = "product-integration"))]
 mod arthur_compositor;
 #[cfg(feature = "desktop-session")]
