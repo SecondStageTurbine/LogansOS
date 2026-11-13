@@ -1307,6 +1307,10 @@ name = "neofs-commit-logic-tests"
 version = "0.0.1"
 
 [[package]]
+name = "neofs-dir-ops-logic-tests"
+version = "0.0.1"
+
+[[package]]
 name = "neofs-mkfs"
 version = "0.0.1"
 dependencies = [

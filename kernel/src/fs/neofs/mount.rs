@@ -69,6 +69,23 @@ impl NeoFs {
             );
             return Err(NeoFsError::NoDurableFlush);
         }
+        // #106 relay 405: F0 pins the block of every superblock copy it
+        // publishes; a copy whose 4 KiB block runs past the device's end
+        // can't be pinned, so a writable mount refuses that geometry.
+        #[cfg(feature = "neofs-dir-ops")]
+        if writable {
+            let geometry = device.geometry();
+            let device_bytes = geometry
+                .block_count
+                .checked_mul(geometry.logical_block_size as u64)
+                .ok_or(NeoFsError::InvalidDeviceGeometry)?;
+            if !super::format::superblock_copies_pinnable(device_bytes) {
+                crate::serial_println!(
+                    "[ kernel ] neofs: refusing a writable mount: a superblock copy's block runs past the device's end"
+                );
+                return Err(NeoFsError::InvalidDeviceGeometry);
+            }
+        }
         let selected = select_superblock(&device)?;
         let state = Arc::new(NeoFsState::new(
             device.clone(),
@@ -79,6 +96,8 @@ impl NeoFs {
             selected.entries.clone(),
             selected.free_map_bytes.clone(),
         ));
+        #[cfg(feature = "neofs-dir-ops")]
+        state.pin_superblock_blocks()?;
 
         let report = report_from_selection(&selected);
         Ok(Self { state, report })
@@ -293,7 +312,10 @@ impl NeoFs {
     }
 
     /// The inode block `path` resolves to, and its bytes read from the device.
-    #[cfg(feature = "neo-test-neofs-file-replace")]
+    #[cfg(any(
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
+    ))]
     pub fn debug_raw_inode(&self, path: &str) -> Result<(u64, alloc::vec::Vec<u8>), VfsError> {
         let (block, _record) = self.state.resolve_path(path).map_err(neofs_to_vfs)?;
         let bytes = self.debug_raw_block(block)?;
@@ -301,7 +323,16 @@ impl NeoFs {
     }
 
     /// `block`'s bytes on the device, after draining the cache.
-    #[cfg(feature = "neo-test-neofs-file-replace")]
+    /// F0's F2 leg (`debug_neofs_cold_cache`).
+    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    pub fn debug_cold_cache(&self) -> Result<(), VfsError> {
+        self.state.debug_cold_cache().map_err(neofs_to_vfs)
+    }
+
+    #[cfg(any(
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
+    ))]
     pub fn debug_raw_block(&self, block: u64) -> Result<alloc::vec::Vec<u8>, VfsError> {
         self.state.debug_drain_all().map_err(neofs_to_vfs)?;
         let bytes = super::inode::read_fs_block(&self.state.device, block).map_err(neofs_to_vfs)?;
@@ -310,7 +341,8 @@ impl NeoFs {
 
     #[cfg(any(
         feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub fn debug_drain_to_barrier(&self) -> Result<u64, VfsError> {
         self.state.debug_drain_to_barrier().map_err(neofs_to_vfs)
@@ -328,7 +360,8 @@ impl NeoFs {
         feature = "neo-test-neofs-large-write",
         feature = "neo-test-neofs-overwrite-frees",
         feature = "neo-test-neofs-grow-write",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub fn debug_free_map_stats(&self) -> Result<super::FreeMapStats, VfsError> {
         self.state.debug_free_map_stats().map_err(neofs_to_vfs)
@@ -371,7 +404,7 @@ fn select_superblock(device: &Arc<dyn BlockDevice>) -> Result<MountSelection, Ne
     let mut rejected = 0usize;
     let mut rejected_mask = 0u8;
     for (slot, offset) in SUPERBLOCK_COPY_OFFSETS.iter().copied().enumerate() {
-        if offset + SUPERBLOCK_SIZE as u64 > device_bytes {
+        if !super::format::superblock_copy_on_device(offset, device_bytes) {
             continue;
         }
         let mut bytes = [0u8; SUPERBLOCK_SIZE];

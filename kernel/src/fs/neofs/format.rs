@@ -24,6 +24,25 @@ pub const MAX_FILE_BLOCKS: u64 = (MAX_FILE_SIZE / FS_BLOCK_SIZE) as u64;
 pub const FORMAT_VERSION: u16 = 1;
 pub const TYPE_VERSION: u8 = 1;
 pub const SUPERBLOCK_COPY_OFFSETS: [u64; 3] = [0, 1024 * 1024, 64 * 1024 * 1024];
+/// Whether the superblock copy at `offset` is on a device of
+/// `device_bytes`: the single rule every reader and writer of the copies,
+/// and the F0 pin, use (`commit_logic::superblock_copy_on_device`).
+pub fn superblock_copy_on_device(offset: u64, device_bytes: u64) -> bool {
+    super::commit_logic::superblock_copy_on_device(offset, SUPERBLOCK_SIZE as u64, device_bytes)
+}
+
+/// #106 relay 405: every copy on the device has its whole block there
+/// (`commit_logic::superblock_copies_pinnable`).
+#[cfg(feature = "neofs-dir-ops")]
+pub fn superblock_copies_pinnable(device_bytes: u64) -> bool {
+    super::commit_logic::superblock_copies_pinnable(
+        &SUPERBLOCK_COPY_OFFSETS,
+        SUPERBLOCK_SIZE as u64,
+        FS_BLOCK_SIZE as u64,
+        device_bytes,
+    )
+}
+
 /// The superblock's `generation` (u64 LE), `docs/specs/neofs-format.md`.
 pub const SUPERBLOCK_GENERATION_OFFSET: usize = 32;
 pub const FREE_MAP_BITS_PER_BLOCK: u64 = FS_BLOCK_SIZE as u64 * 8;

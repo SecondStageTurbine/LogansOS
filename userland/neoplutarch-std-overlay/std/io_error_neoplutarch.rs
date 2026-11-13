@@ -39,6 +39,7 @@ const ERRNO_TABLE: &[(i32, &str, ErrorKind, &str)] = &[
     (14, "EFAULT", ErrorKind::InvalidInput, "bad address"),
     (16, "EBUSY", ErrorKind::ResourceBusy, "resource busy"),
     (17, "EEXIST", ErrorKind::AlreadyExists, "already exists"),
+    (18, "EXDEV", ErrorKind::CrossesDevices, "cross-device rename"),
     (20, "ENOTDIR", ErrorKind::NotADirectory, "not a directory"),
     (21, "EISDIR", ErrorKind::IsADirectory, "is a directory"),
     (22, "EINVAL", ErrorKind::InvalidInput, "invalid argument"),

@@ -15,8 +15,7 @@ use super::NeoFsError;
 pub(super) use super::commit_logic::Role as CachedBlockRole;
 use super::commit_logic::{COPIES, DrainStep, SuperblockDurability, next_drain_step};
 use super::format::{
-    FS_BLOCK_SIZE, SUPERBLOCK_COPY_OFFSETS, SUPERBLOCK_GENERATION_OFFSET, SUPERBLOCK_SIZE,
-    block_offset,
+    FS_BLOCK_SIZE, SUPERBLOCK_COPY_OFFSETS, SUPERBLOCK_GENERATION_OFFSET, block_offset,
 };
 use super::inode::{read_bytes_at, read_fs_block, write_fs_block};
 
@@ -190,7 +189,7 @@ impl NeoFsBlockCache {
             .saturating_mul(geometry.logical_block_size as u64);
         let mut present = [false; COPIES];
         for (copy, offset) in SUPERBLOCK_COPY_OFFSETS.iter().copied().enumerate() {
-            present[copy] = offset + SUPERBLOCK_SIZE as u64 <= device_bytes;
+            present[copy] = super::format::superblock_copy_on_device(offset, device_bytes);
         }
         Self {
             device,
@@ -244,6 +243,8 @@ impl NeoFsBlockCache {
             inner.evictions
         };
 
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        super::inode::dir_ops_probe::note_device_read();
         let bytes = read_fs_block(&self.device, block)?;
         let mut inner = self.inner.lock();
         if let Some(idx) = find_cached_block(&inner, block) {
@@ -275,6 +276,8 @@ impl NeoFsBlockCache {
             inner.evictions
         };
 
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        super::inode::dir_ops_probe::note_device_read();
         let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
 
@@ -300,6 +303,8 @@ impl NeoFsBlockCache {
             return Ok(());
         }
         validate_fs_block(&self.device, block)?;
+        #[cfg(feature = "neo-test-neofs-dir-ops")]
+        super::inode::dir_ops_probe::note_device_read();
         read_bytes_at(&self.device, block_offset(block)?, out)
     }
 
@@ -366,6 +371,8 @@ impl NeoFsBlockCache {
                 };
                 let read = match needs_read {
                     Some(epoch) => {
+                        #[cfg(feature = "neo-test-neofs-dir-ops")]
+                        super::inode::dir_ops_probe::note_device_read();
                         let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
                         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
                         Some((epoch, bytes))
@@ -399,21 +406,55 @@ impl NeoFsBlockCache {
         Ok(())
     }
 
+    /// #106 relay 403 (CP-63): read the blocks the superblock copies sit in
+    /// and keep them cached for the mount's life ([`pinned_block`]). A
+    /// superblock copy is 512 bytes of a 4 KiB block, so writing it merges
+    /// into the block's bytes: on a miss, `write_bytes_at` reads the device
+    /// first, and every commit writes the copies with the namespace lock
+    /// (`entries`, spinning) held. Pinned, the write is always a hit. It
+    /// pins exactly the copies the writers publish (the one rule,
+    /// `format::superblock_copy_on_device`); a writable mount has already
+    /// refused a device where such a copy's block is not whole
+    /// (`superblock_copies_pinnable`), and this refuses it again.
+    #[cfg(feature = "neofs-dir-ops")]
+    pub(super) fn pin_superblock_blocks(&self) -> Result<(), NeoFsError> {
+        let geometry = self.device.geometry();
+        let device_bytes = geometry
+            .block_count
+            .saturating_mul(geometry.logical_block_size as u64);
+        for offset in SUPERBLOCK_COPY_OFFSETS {
+            if !super::format::superblock_copy_on_device(offset, device_bytes) {
+                continue;
+            }
+            let block = offset / FS_BLOCK_SIZE as u64;
+            if block_offset(block)? + FS_BLOCK_SIZE as u64 > device_bytes {
+                return Err(NeoFsError::InvalidDeviceGeometry);
+            }
+            let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
+            read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
+            let mut inner = self.inner.lock();
+            if find_cached_block(&inner, block).is_none() {
+                push_block(&mut inner, block, bytes);
+            }
+        }
+        Ok(())
+    }
+
     /// NFS-W1: drop any cached copy of blocks `first..first + count`, which
     /// were just allocated to a file written past the cache. Only free blocks
     /// are ever allocated, so a cached copy (even a dirty one) holds no data
     /// anything references, and a later drain must not write it over the
     /// file's bytes.
-    #[cfg(feature = "neofs-large-write")]
+    #[cfg(any(feature = "neofs-large-write", feature = "neo-test-neofs-dir-ops"))]
     pub(super) fn forget_range(&self, first: u64, count: u64) {
         let end = first.saturating_add(count);
         let mut inner = self.inner.lock();
         // Off (the previous layer): drop them, and nothing else changes.
         #[cfg(not(feature = "neofs-cache-evict"))]
         {
-            inner
-                .blocks
-                .retain(|cached| cached.block < first || cached.block >= end);
+            inner.blocks.retain(|cached| {
+                pinned_block(cached.block) || cached.block < first || cached.block >= end
+            });
             #[cfg(all(
                 feature = "neofs-cache-index",
                 not(feature = "neo-test-neofs-cache-index-off")
@@ -431,7 +472,7 @@ impl NeoFsBlockCache {
             let mut idx = 0;
             while idx < inner.blocks.len() {
                 let block = inner.blocks[idx].block;
-                if block >= first && block < end {
+                if block >= first && block < end && !pinned_block(block) {
                     inner.blocks.remove(idx);
                     #[cfg(all(
                         feature = "neofs-cache-index",
@@ -570,7 +611,8 @@ impl NeoFsBlockCache {
     /// superblock written. Returns the flushes it issued.
     #[cfg(any(
         feature = "neo-test-phase3-neofs-crash-mid-overwrite-recovery",
-        feature = "neo-test-neofs-file-replace"
+        feature = "neo-test-neofs-file-replace",
+        feature = "neo-test-neofs-dir-ops"
     ))]
     pub(super) fn debug_drain_to_barrier(&self) -> Result<u64, NeoFsError> {
         let _worker_pause = self.pause_worker();
@@ -923,7 +965,7 @@ fn evict_locked(inner: &mut CacheInner) {
             .blocks
             .iter()
             .enumerate()
-            .filter(|(_, block)| !block.dirty)
+            .filter(|(_, block)| !block.dirty && !pinned_block(block.block))
             .min_by_key(|(_, block)| block.last_use)
             .map(|(idx, _)| idx)
         else {
@@ -1100,6 +1142,21 @@ fn drain_pass(
     }
 
     Ok(DrainReport { drained_blocks })
+}
+
+/// #106 relay 403: a block that stays cached from mount on (the superblock
+/// copies' blocks, [`NeoFsBlockCache::pin_superblock_blocks`]): never an
+/// eviction victim, and never dropped by `forget_range` (nothing allocates
+/// them, and the scenario's cold cache keeps them). Off (`neofs-dir-ops`
+/// disabled): none, the previous layer.
+#[cfg(feature = "neofs-dir-ops")]
+fn pinned_block(block: u64) -> bool {
+    superblock_copy_of_block(block).is_some()
+}
+
+#[cfg(not(feature = "neofs-dir-ops"))]
+fn pinned_block(_block: u64) -> bool {
+    false
 }
 
 /// The superblock copy (0..3) whose 4 KiB block is `block`, if any.
