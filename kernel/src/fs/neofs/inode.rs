@@ -254,6 +254,10 @@ impl NeoFsState {
     #[cfg(feature = "usb-persistence")]
     pub(super) fn switch_read_only(&self) {
         if self.writable {
+            // Namespace mutations already admitted finish staging (they hold
+            // `entries`) and go out in the last pass; then the flip. Lock
+            // order: `entries`, then `drain` (as `fsync`).
+            let _entries = self.entries.lock();
             self.cache.lose_by_user();
         }
     }
@@ -383,6 +387,8 @@ impl NeoFsState {
         if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
+        #[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+        super::admission_hold::point();
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
 
@@ -460,6 +466,8 @@ impl NeoFsState {
         if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
+        #[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+        super::admission_hold::point();
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
         if bytes.len() > MAX_FILE_SIZE {
@@ -612,11 +620,13 @@ impl NeoFsState {
                 );
                 return Err(NeoFsError::BlockDevice);
             }
-            write_fs_blocks(
-                &self.device,
-                tree.data + (done / FS_BLOCK_SIZE) as u64,
-                &run[..padded],
-            )?;
+            self.cache.with_io(|| {
+                write_fs_blocks(
+                    &self.device,
+                    tree.data + (done / FS_BLOCK_SIZE) as u64,
+                    &run[..padded],
+                )
+            })?;
             done += take;
         }
         let mut pointers = alloc::boxed::Box::new([0u8; FS_BLOCK_SIZE]);
@@ -624,10 +634,12 @@ impl NeoFsState {
             let block = tree
                 .pointer_block_into(i, &mut pointers)
                 .ok_or(NeoFsError::InvalidInode)?;
-            write_fs_blocks(&self.device, block, &pointers[..])?;
+            self.cache
+                .with_io(|| write_fs_blocks(&self.device, block, &pointers[..]))?;
         }
         if self.device.supports_flush() {
-            retry_busy_block_io(|| self.device.flush())?;
+            self.cache
+                .with_io(|| retry_busy_block_io(|| self.device.flush()))?;
         }
         #[cfg(feature = "neo-test-neofs-large-write")]
         if LARGE_WRITE_STOP_BEFORE_COMMIT.swap(false, core::sync::atomic::Ordering::AcqRel) {

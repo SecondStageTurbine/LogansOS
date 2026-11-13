@@ -1425,7 +1425,7 @@ fn mount_persist() -> Result<neofs::MountReport, neofs::NeoFsError> {
     use crate::drivers::block::gpt_logic::{ATTR_INCOMPLETE, LOGANSOS_NEOFS_TYPE_GUID};
     use crate::drivers::block::partition::PartitionDevice;
     use crate::drivers::block::write_guard_logic::{Extent, WriteMarker};
-    use crate::persist_logic::{self, BootDevice, Persist, RwFacts};
+    use crate::persist_logic::{self, BootDevice, Persist, RwFacts, RwRefusal};
 
     let count = crate::drivers::block::device_count();
     if count == 0 {
@@ -1563,15 +1563,28 @@ fn mount_persist() -> Result<neofs::MountReport, neofs::NeoFsError> {
             return Ok(report);
         }
     }
-    // No LogansOS partition: today's whole-device probe, read-only for USB.
+    // No LogansOS partition: today's whole-device probe. Read-only for USB;
+    // off USB, read-write only on the identified boot device (#110 F4).
     let (index, device) = find_neofs_block_device()?;
     let usb = device.identity().driver == "usb-storage";
-    serial_println!(
-        "persist: mount index={} whole device {}",
-        index,
-        if usb { "ro (not a partition)" } else { "rw" }
-    );
-    let fs = if usb {
+    let refusal = if usb {
+        Some("not a partition")
+    } else {
+        match boot {
+            BootDevice::NotIdentified { .. } => Some(RwRefusal::BootNotIdentified.reason()),
+            BootDevice::Identified(i) if i != index => Some(RwRefusal::NotTheBootDevice.reason()),
+            BootDevice::Identified(_) => None,
+        }
+    };
+    match refusal {
+        Some(why) => {
+            serial_println!("persist: mount index={} whole device ro ({})", index, why);
+        }
+        None => {
+            serial_println!("persist: mount index={} whole device rw", index);
+        }
+    }
+    let fs = if refusal.is_some() {
         neofs::NeoFs::mount_readonly(device)?
     } else {
         neofs::NeoFs::mount_readwrite(device)?

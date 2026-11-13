@@ -2248,6 +2248,8 @@ neo-test-usb-persist-absent = ["neo-test", "usb-persistence", "boot-neofs"]
 neo-test-usb-persist-corrupt = ["neo-test", "usb-persistence", "boot-neofs"]
 neo-test-usb-persist-second-stick = ["neo-test", "usb-persistence", "boot-neofs"]
 neo-test-usb-persist-two-sticks = ["neo-test", "usb-persistence", "boot-neofs"]
+neo-test-usb-persist-flip-user = ["neo-test", "usb-persistence", "boot-neofs", "neofs-large-write"]
+neo-test-usb-persist-flip-failure = ["neo-test", "usb-persistence", "boot-neofs", "neofs-large-write"]
 # #30: a stick hot-plugged, bound and read, then pulled while a reader runs:
 # the driver is told, the block device leaves the registry, and every read
 # after (and the one in flight) fails NoDevice.

@@ -510,21 +510,9 @@ impl NeoFsBlockCache {
         let _worker_pause = self.pause_worker();
         let mut total = DrainReport::default();
         loop {
-            // OT-100 R3 (THINK §4.2, CP-113): once the volume is lost, no
-            // drain writes again, a foreground one included.
-            #[cfg(feature = "usb-persistence")]
-            if self.lost().is_some() {
-                return Err(NeoFsError::ReadOnly);
-            }
             let report = {
                 let _drain = self.drain.lock();
-                drain_pass(
-                    &self.device,
-                    &self.inner,
-                    &self.durable_generation,
-                    None,
-                    false,
-                )?
+                self.pass_locked(None, false)?
             };
             total.drained_blocks = total.drained_blocks.saturating_add(report.drained_blocks);
             let done = {
@@ -556,13 +544,7 @@ impl NeoFsBlockCache {
         loop {
             let report = {
                 let _drain = self.drain.lock();
-                drain_pass(
-                    &self.device,
-                    &self.inner,
-                    &self.durable_generation,
-                    Some(SHUTDOWN_PASS_BLOCKS),
-                    false,
-                )?
+                self.pass_locked(Some(SHUTDOWN_PASS_BLOCKS), false)?
             };
             drained = drained.saturating_add(report.drained_blocks);
             let (done, dirty) = {
@@ -613,13 +595,41 @@ impl NeoFsBlockCache {
         let Some(_drain) = self.drain.try_lock() else {
             return Ok(DrainReport::default());
         };
-        drain_pass(
+        self.pass_locked(Some(WORKER_DRAIN_BLOCKS_PER_CYCLE), false)
+    }
+
+    /// One drain pass. **Call it holding `self.drain`.**
+    ///
+    /// OT-100 R3, CP-113's rule: the volume's loss is decided only while
+    /// holding `drain` (`lose_locked`), and every device write of this mount
+    /// happens while holding it (the drains here, and the large-write path
+    /// through `with_io`). So the pass checks the loss after taking the lock
+    /// and before its first write, and once a flip has returned, no write of
+    /// this mount reaches the device. A pass that fails latches the loss
+    /// itself, still holding the lock (THINK §4.2: an error that survived
+    /// the driver's retries is fatal), whoever ran it: the worker, a
+    /// foreground `fsync`, or the shutdown.
+    fn pass_locked(
+        &self,
+        max_blocks: Option<usize>,
+        stop_at_barrier: bool,
+    ) -> Result<DrainReport, NeoFsError> {
+        #[cfg(feature = "usb-persistence")]
+        if self.lost().is_some() {
+            return Err(NeoFsError::ReadOnly);
+        }
+        let result = drain_pass(
             &self.device,
             &self.inner,
             &self.durable_generation,
-            Some(WORKER_DRAIN_BLOCKS_PER_CYCLE),
-            false,
-        )
+            max_blocks,
+            stop_at_barrier,
+        );
+        #[cfg(feature = "usb-persistence")]
+        if result.is_err() {
+            self.lose_locked(self.failure_reason());
+        }
+        result
     }
 
     /// The cut `phase3_neofs_crash_mid_overwrite_recovery` models: every
@@ -634,13 +644,7 @@ impl NeoFsBlockCache {
         let _worker_pause = self.pause_worker();
         let _drain = self.drain.lock();
         let before = self.inner.lock().flushes;
-        drain_pass(
-            &self.device,
-            &self.inner,
-            &self.durable_generation,
-            None,
-            true,
-        )?;
+        self.pass_locked(None, true)?;
         Ok(self.inner.lock().flushes.saturating_sub(before))
     }
 
@@ -783,26 +787,58 @@ impl NeoFsBlockCache {
         crate::persist_logic::Lost::from_code(self.lost.load(Ordering::Acquire))
     }
 
-    /// THINK §4.2: the drain hit a fatal error. Classify it from the
-    /// device's last failure and flip the mount read-only: store the reason
-    /// first (`Release`), then report once. No superblock is written: the
-    /// stick keeps its last committed generation, which the next boot mounts.
-    pub(super) fn lose_to_failure(&self) {
+    /// The class of the device's last failure (THINK §4.2's classifier).
+    fn failure_reason(&self) -> crate::persist_logic::Lost {
         let failure = self
             .device
             .last_failure()
             .unwrap_or(crate::persist_logic::BlockFailure::Other);
-        self.lose(crate::persist_logic::classify(failure));
+        crate::persist_logic::classify(failure)
     }
 
-    /// The "try" switch (THINK §2.3, §4.2): drain first, so the flip is
-    /// clean, then go read-only with the user's reason.
+    /// THINK §4.2: a write failed fatally. Classify it from the device's
+    /// last failure and flip the mount read-only. Takes `drain`, so the flip
+    /// waits for any pass or large-write chunk in flight (`pass_locked`).
+    /// No superblock is written: the stick keeps its last committed
+    /// generation, which the next boot mounts.
+    pub(super) fn lose_to_failure(&self) {
+        let _drain = self.drain.lock();
+        self.lose_locked(self.failure_reason());
+    }
+
+    /// The "try" switch (THINK §2.3, §4.2): drain what is dirty, then go
+    /// read-only with the user's reason, **under one hold of `drain`**, so
+    /// nothing reaches the device between the last pass and the flip, and
+    /// nothing at all after it. A mutation still staging blocks when the flip
+    /// lands leaves them dirty in the cache, where no pass writes them. The
+    /// caller (`NeoFsState::switch_read_only`) also holds the namespace lock,
+    /// so namespace mutations already admitted finish staging first and go
+    /// out in the last pass.
     pub(super) fn lose_by_user(&self) {
-        let _ = self.drain_all();
-        self.lose(crate::persist_logic::Lost::User);
+        let _worker_pause = self.pause_worker();
+        let _drain = self.drain.lock();
+        loop {
+            let Ok(report) = self.pass_locked(None, false) else {
+                // A failed pass latched its own loss; that reason stands.
+                return;
+            };
+            let clean = {
+                let inner = self.inner.lock();
+                !inner.flush_required && !inner.blocks.iter().any(|block| block.dirty)
+            };
+            if clean {
+                break;
+            }
+            if report.drained_blocks == 0 {
+                sched::yield_now();
+            }
+        }
+        self.lose_locked(crate::persist_logic::Lost::User);
     }
 
-    fn lose(&self, lost: crate::persist_logic::Lost) {
+    /// The flip itself. **Call it holding `self.drain`** (CP-113's rule):
+    /// the reason is stored once (`AcqRel` CAS from 0), then reported once.
+    fn lose_locked(&self, lost: crate::persist_logic::Lost) {
         if self
             .lost
             .compare_exchange(0, lost.code(), Ordering::AcqRel, Ordering::Acquire)
@@ -820,6 +856,33 @@ impl NeoFsBlockCache {
             "persist: notice: Your changes could not be saved: {}. LogansOS is now read-only until you restart.",
             lost.notice()
         );
+    }
+}
+
+/// The large-write path's device I/O (F2 of #110's review): one chunk at a
+/// time, under the same rule as a drain pass.
+impl NeoFsBlockCache {
+    /// With `usb-persistence`: run `io` (a direct device write or flush of
+    /// this mount) holding `drain`, refuse it once the volume is lost, and
+    /// latch the loss if it fails. Off, it runs `io` as before (no lock), so
+    /// the large-write path is NFS-W1's exactly.
+    #[cfg(feature = "neofs-large-write")]
+    pub(super) fn with_io<R>(
+        &self,
+        io: impl FnOnce() -> Result<R, NeoFsError>,
+    ) -> Result<R, NeoFsError> {
+        #[cfg(feature = "usb-persistence")]
+        let _drain = self.drain.lock();
+        #[cfg(feature = "usb-persistence")]
+        if self.lost().is_some() {
+            return Err(NeoFsError::ReadOnly);
+        }
+        let result = io();
+        #[cfg(feature = "usb-persistence")]
+        if result.is_err() {
+            self.lose_locked(self.failure_reason());
+        }
+        result
     }
 }
 

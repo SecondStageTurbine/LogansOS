@@ -200,22 +200,54 @@ mod mount_tests {
         assert_eq!(rw_decision(&all_bad), Err(RwRefusal::NotTheBootDevice));
     }
 
-    /// A volume on an internal disk keeps today's selection, whatever the
-    /// stick facts say: an installed LogansOS still mounts its own volume.
+    /// #110 F4 (the PM's ruling): off USB, only the identified boot device
+    /// mounts read-write. An internal disk that isn't the boot device (a
+    /// stick boot), or any disk when the boot device isn't identified, is
+    /// read-only, whatever else holds.
     #[test]
-    fn a_non_usb_volume_keeps_todays_selection() {
-        let internal = RwFacts {
+    fn a_non_usb_volume_is_rw_only_on_the_boot_device() {
+        let good_internal = RwFacts {
             usb: false,
+            boot: BootDevice::Identified(4),
+            device: 4,
+            persist: Persist::On,
+            armed_exactly_the_partition: true,
+            write_protected: Some(false),
+            sync_ok: true,
+        };
+        assert_eq!(rw_decision(&good_internal), Ok(()));
+        let stick_boot = RwFacts {
+            boot: BootDevice::Identified(0),
+            ..good_internal
+        };
+        assert_eq!(rw_decision(&stick_boot), Err(RwRefusal::NotTheBootDevice));
+        let unidentified = RwFacts {
             boot: BootDevice::NotIdentified {
-                guid_known: false,
-                matches: 0,
+                guid_known: true,
+                matches: 2,
             },
+            ..good_internal
+        };
+        assert_eq!(
+            rw_decision(&unidentified),
+            Err(RwRefusal::BootNotIdentified)
+        );
+    }
+
+    /// An installed LogansOS booted from its own disk keeps today's selection
+    /// there: none of the stick conditions apply off USB.
+    #[test]
+    fn the_internal_boot_device_keeps_todays_selection() {
+        let installed = RwFacts {
+            usb: false,
+            boot: BootDevice::Identified(1),
+            device: 1,
             persist: Persist::Off,
             armed_exactly_the_partition: false,
+            write_protected: None,
             sync_ok: false,
-            ..rw()
         };
-        assert_eq!(rw_decision(&internal), Ok(()));
+        assert_eq!(rw_decision(&installed), Ok(()));
     }
 
     /// THINK §4.2's classifier: DATA PROTECT, a pulled stick, a timeout and a

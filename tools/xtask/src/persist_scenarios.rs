@@ -54,9 +54,11 @@ enum Kind {
     Corrupt,
     SecondStick,
     TwoSticks,
+    FlipUser,
+    FlipFailure,
 }
 
-const KINDS: [(&str, Kind); 8] = [
+const KINDS: [(&str, Kind); 10] = [
     ("usb_persist_two_boot", Kind::TwoBoot),
     ("usb_persist_never_internal", Kind::NeverInternal),
     ("usb_persist_unplug_midwrite", Kind::Unplug),
@@ -65,6 +67,8 @@ const KINDS: [(&str, Kind); 8] = [
     ("usb_persist_corrupt", Kind::Corrupt),
     ("usb_persist_second_stick", Kind::SecondStick),
     ("usb_persist_two_sticks", Kind::TwoSticks),
+    ("usb_persist_flip_race_user", Kind::FlipUser),
+    ("usb_persist_flip_race_failure", Kind::FlipFailure),
 ];
 
 fn kind(name: &str) -> Option<Kind> {
@@ -75,10 +79,14 @@ pub fn is_persist_scenario(name: &str) -> bool {
     kind(name).is_some()
 }
 
-/// The unplug scenario runs on 4 CPUs (THINK §5.1: the read-only flip races
-/// mutations on other CPUs).
+/// The unplug and flip-race scenarios run on 4 CPUs (THINK §5.1: the
+/// read-only flip races mutations on other CPUs).
 pub fn scenario_smp(name: &str) -> Option<&'static str> {
-    (kind(name) == Some(Kind::Unplug)).then_some("4")
+    matches!(
+        kind(name),
+        Some(Kind::Unplug | Kind::FlipUser | Kind::FlipFailure)
+    )
+    .then_some("4")
 }
 
 /// The QEMU arguments: OVMF, `qemu-xhci`, the boot stick (`hotstick`, the
@@ -418,6 +426,31 @@ pub fn run(scenario: TestScenario, attempt: usize) -> Result<(), String> {
             if mode != "rw" || before < 1 {
                 return Err(format!(
                     "`{}` boot 2: mount={mode} counter_before={before}, want rw and >= 1",
+                    scenario.name
+                ));
+            }
+        }
+        Kind::FlipUser | Kind::FlipFailure => {
+            // #110 review F1-F3, on a healthy stick: two mutations held past
+            // their admission check, the flip, then zero device writes.
+            let observed = boot(1)?;
+            expect(scenario, &observed, ("rw", 0, 1))?;
+            let line = if kind == Kind::FlipUser {
+                "USB_PERSIST flip-race kind=user lost=switched to read-only by the user"
+            } else {
+                "USB_PERSIST flip-race kind=failure"
+            };
+            require_serial_contains(scenario, &observed, line, "the flip-race report")?;
+            require_serial_contains(
+                scenario,
+                &observed,
+                "writes_after_flip=0 sync_after=refused",
+                "no write reaches the device after the flip, and fsync refuses",
+            )?;
+            let lost = serial_count(&observed, "persist: volume lost (")?;
+            if lost != 1 {
+                return Err(format!(
+                    "`{}`: `persist: volume lost` printed {lost} times, want exactly 1",
                     scenario.name
                 ));
             }

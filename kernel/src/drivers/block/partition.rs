@@ -169,6 +169,10 @@ impl BlockDevice for PartitionDevice {
     }
 
     fn flush(&self) -> BlockResult<()> {
+        #[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+        if let Some(fault) = flip_race::submit() {
+            return self.note(true, Err(fault));
+        }
         #[cfg(feature = "usb-persistence")]
         return self.note(true, self.inner.flush());
         #[cfg(not(feature = "usb-persistence"))]
@@ -199,9 +203,32 @@ impl BlockDevice for PartitionDevice {
 
     fn write_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         let lba = self.map(lba, buffers)?;
+        #[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+        if let Some(fault) = flip_race::submit() {
+            return self.note(false, Err(fault));
+        }
         #[cfg(feature = "usb-persistence")]
         return self.note(false, self.inner.write_block(lba, buffers));
         #[cfg(not(feature = "usb-persistence"))]
         self.inner.write_block(lba, buffers)
+    }
+}
+
+/// OT-100 R3, #110 review F1/F2: the flip-race scenarios' device side. Every
+/// write or flush a mount sends its partition is counted here, before the
+/// device sees it; `FAIL` makes them fail as an exhausted driver `Io` would.
+#[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+pub mod flip_race {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering::SeqCst};
+
+    /// Writes and flushes submitted to any partition device.
+    pub static SUBMITTED: AtomicU64 = AtomicU64::new(0);
+    /// While set, each submission fails with `BlockError::Io`.
+    pub static FAIL: AtomicBool = AtomicBool::new(false);
+
+    /// Count one submission; the fault to return instead, if any.
+    pub(super) fn submit() -> Option<super::super::BlockError> {
+        SUBMITTED.fetch_add(1, SeqCst);
+        FAIL.load(SeqCst).then_some(super::super::BlockError::Io)
     }
 }

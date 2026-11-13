@@ -6152,6 +6152,22 @@ const TEST_SCENARIOS: &[TestScenario] = &[
         ignored: false,
         limine_kaslr: None,
     },
+    // #110 review F1-F3: mutations held past admission, then the user
+    // switch or a failing foreground fsync; zero device writes after the flip.
+    TestScenario {
+        name: "usb_persist_flip_race_user",
+        feature: "neo-test-usb-persist-flip-user",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
+    TestScenario {
+        name: "usb_persist_flip_race_failure",
+        feature: "neo-test-usb-persist-flip-failure",
+        user_feature: None,
+        ignored: false,
+        limine_kaslr: None,
+    },
     // #30: the stick hot-plugged, bound, read, then pulled with a reader
     // running: every read after (and the one in flight) is NoDevice and the
     // block device leaves the registry.

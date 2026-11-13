@@ -118,13 +118,13 @@ pub struct RwFacts {
     pub sync_ok: bool,
 }
 
-/// Why a USB volume mounts read-only: the first condition of the rule that
+/// Why a volume mounts read-only: the first condition of the rule that
 /// failed, in the order the rule lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RwRefusal {
     /// The boot medium could not be identified.
     BootNotIdentified,
-    /// The volume is on a USB device that isn't the boot medium.
+    /// The volume is on a device (of any bus) that isn't the boot medium.
     NotTheBootDevice,
     /// The boot entry did not say `persist=on` (the "try" entry, or none).
     PersistOff,
@@ -149,19 +149,26 @@ impl RwRefusal {
     }
 }
 
-/// The read-write rule (THINK §4.1 items 2 and 3). A volume that isn't on a
-/// USB device keeps today's selection (`Ok`): an installed system's own
-/// volume. A USB volume is read-write only when every condition holds.
+/// The read-write rule (THINK §4.1 items 2 and 3, with the PM's #110 F4
+/// ruling). On any bus, a volume is read-write only on the identified boot
+/// device. There, a volume that isn't on USB keeps today's selection (`Ok`:
+/// an installed system booted from its own disk), and a USB volume is
+/// read-write only when every stick condition holds too.
 pub fn rw_decision(f: &RwFacts) -> Result<(), RwRefusal> {
-    if !f.usb {
-        return Ok(());
-    }
+    // #110 review F4 (the PM's ruling): on any bus, only the identified boot
+    // device mounts read-write. An installed LogansOS boots from its internal
+    // disk, so that disk is the boot device; a stick boot never writes an
+    // internal disk.
     match f.boot {
         BootDevice::NotIdentified { .. } => return Err(RwRefusal::BootNotIdentified),
         BootDevice::Identified(index) if index != f.device => {
             return Err(RwRefusal::NotTheBootDevice);
         }
         BootDevice::Identified(_) => {}
+    }
+    // Off the stick, the boot device keeps today's selection.
+    if !f.usb {
+        return Ok(());
     }
     if f.persist != Persist::On {
         return Err(RwRefusal::PersistOff);

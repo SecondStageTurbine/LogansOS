@@ -1072,6 +1072,10 @@ const SCENARIO: &str = "usb_persist_corrupt";
 const SCENARIO: &str = "usb_persist_second_stick";
 #[cfg(feature = "neo-test-usb-persist-two-sticks")]
 const SCENARIO: &str = "usb_persist_two_sticks";
+#[cfg(feature = "neo-test-usb-persist-flip-user")]
+const SCENARIO: &str = "usb_persist_flip_race_user";
+#[cfg(feature = "neo-test-usb-persist-flip-failure")]
+const SCENARIO: &str = "usb_persist_flip_race_failure";
 #[cfg(feature = "neo-test-usb-enumerate")]
 const SCENARIO: &str = "usb_enumerate";
 #[cfg(feature = "neo-test-usb-storm")]
@@ -1772,6 +1776,8 @@ const SCENARIO: &str = "gpu_glass_slice6";
     feature = "neo-test-usb-persist-corrupt",
     feature = "neo-test-usb-persist-second-stick",
     feature = "neo-test-usb-persist-two-sticks",
+    feature = "neo-test-usb-persist-flip-user",
+    feature = "neo-test-usb-persist-flip-failure",
     feature = "neo-test-usb-storm",
     feature = "neo-test-usb-baremetal-probe",
     feature = "neo-test-usb-ethernet",
@@ -2139,6 +2145,8 @@ compile_error!("`neo-test-ot90-kill-switch-off` must be built without `power-con
         feature = "neo-test-usb-persist-corrupt",
         feature = "neo-test-usb-persist-second-stick",
         feature = "neo-test-usb-persist-two-sticks",
+        feature = "neo-test-usb-persist-flip-user",
+        feature = "neo-test-usb-persist-flip-failure",
         feature = "neo-test-usb-storm",
         feature = "neo-test-usb-baremetal-probe",
         feature = "neo-test-usb-ethernet",
@@ -5613,6 +5621,8 @@ pub fn run_selected_scenario(_ipc_smoke: fn() -> i32) -> ! {
         feature = "neo-test-usb-persist-corrupt",
         feature = "neo-test-usb-persist-second-stick",
         feature = "neo-test-usb-persist-two-sticks",
+        feature = "neo-test-usb-persist-flip-user",
+        feature = "neo-test-usb-persist-flip-failure",
     ))]
     run_usb_persist();
 
@@ -17686,6 +17696,8 @@ const USB_MSC_WRITE_BLOCKS: u64 = 300;
     feature = "neo-test-usb-persist-corrupt",
     feature = "neo-test-usb-persist-second-stick",
     feature = "neo-test-usb-persist-two-sticks",
+    feature = "neo-test-usb-persist-flip-user",
+    feature = "neo-test-usb-persist-flip-failure",
 ))]
 fn run_usb_persist() -> ! {
     use crate::drivers::block::{self, BlockError, DmaBuffer};
@@ -17749,6 +17761,10 @@ fn run_usb_persist() -> ! {
     }
     #[cfg(feature = "neo-test-usb-persist-unplug")]
     usb_persist_unplug(fs.as_ref());
+    #[cfg(feature = "neo-test-usb-persist-flip-user")]
+    usb_persist_flip_race(fs.as_ref(), false);
+    #[cfg(feature = "neo-test-usb-persist-flip-failure")]
+    usb_persist_flip_race(fs.as_ref(), true);
     serial_println!(
         "NEO_TEST/1 event=PASS name={} mount={} counter_before={} counter_after={}",
         SCENARIO,
@@ -17757,6 +17773,138 @@ fn run_usb_persist() -> ! {
         after.map_or(-1, |n| n as i64)
     );
     debug_exit(EXIT_SUCCESS);
+}
+
+/// `usb_persist_flip_race_user` / `usb_persist_flip_race_failure` (#110
+/// review F1, F2 and F3; CP-113's guarantee). A healthy stick and controlled
+/// scheduling, not an unplug, since removal would hide writes the software
+/// still attempts:
+/// 1. two threads are held just past their `is_writable()` check: a small
+///    create plus write plus sync, and a 128 KiB large write;
+/// 2. the volume flips: the user switch, or (failure) a foreground `fsync`
+///    whose drain meets an injected `Io` fault, with the worker held so only
+///    that `fsync` can meet it, and the device recovering right after;
+/// 3. the held threads go on, the worker runs, and one more `fsync` is tried.
+///
+/// The partition counts every write and flush submitted to it: none may
+/// follow the flip, and the later `fsync` must refuse.
+#[cfg(any(
+    feature = "neo-test-usb-persist-flip-user",
+    feature = "neo-test-usb-persist-flip-failure"
+))]
+fn usb_persist_flip_race(fs: Option<&alloc::sync::Arc<crate::fs::neofs::NeoFs>>, failure: bool) {
+    use crate::drivers::block::partition::flip_race as device;
+    use crate::fs::neofs::admission_hold as hold;
+    use crate::sched::kthread::{KthreadExitState, KthreadJoinResult};
+    use core::sync::atomic::Ordering::SeqCst;
+    const SPIN_CAP: u64 = 2_000_000;
+    let Some(f) = fs.cloned() else {
+        fail("reason=usb_persist_flip_no_mount");
+    };
+    if !f.is_writable() {
+        fail("reason=usb_persist_flip_not_rw");
+    }
+    if failure {
+        // Dirty blocks only a foreground fsync will drain.
+        f.debug_set_writeback_hold(true);
+        if f.create_regular("trigger")
+            .and_then(|inode| inode.write_at(0, &[0x11; 4096]))
+            .is_err()
+        {
+            fail("reason=usb_persist_flip_trigger");
+        }
+    }
+    hold::RELEASE.store(false, SeqCst);
+    hold::ADMITTED.store(0, SeqCst);
+    hold::HOLD.store(true, SeqCst);
+    let small_fs = f.clone();
+    let small = crate::sched::kthread::spawn_owned("flip-race-small", move |_stop| {
+        let wrote = small_fs
+            .create_regular("late-small")
+            .and_then(|inode| inode.write_at(0, &[0x22; 8192]));
+        let synced = small_fs.sync();
+        serial_println!(
+            "USB_PERSIST flip-race held small create={} sync={}",
+            if wrote.is_ok() { "ok" } else { "refused" },
+            if synced.is_ok() { "ok" } else { "refused" }
+        );
+        KthreadExitState::Success
+    });
+    let large_fs = f.clone();
+    let large = crate::sched::kthread::spawn_owned("flip-race-large", move |_stop| {
+        let bytes = alloc::vec![0x33u8; 128 * 1024];
+        let wrote = large_fs.create_file_from_bytes("late-large", &bytes);
+        serial_println!(
+            "USB_PERSIST flip-race held large create={}",
+            if wrote.is_ok() { "ok" } else { "refused" }
+        );
+        KthreadExitState::Success
+    });
+    let mut spins = 0u64;
+    while hold::ADMITTED.load(SeqCst) < 2 {
+        crate::sched::yield_now();
+        spins += 1;
+        if spins > SPIN_CAP {
+            fail("reason=usb_persist_flip_never_admitted");
+        }
+    }
+    hold::HOLD.store(false, SeqCst);
+    let before_flip = device::SUBMITTED.load(SeqCst);
+    if failure {
+        device::FAIL.store(true, SeqCst);
+        let synced = f.sync();
+        device::FAIL.store(false, SeqCst);
+        if synced.is_ok() {
+            fail("reason=usb_persist_flip_sync_ok_under_fault");
+        }
+        f.debug_set_writeback_hold(false);
+    } else if !crate::fs::persist_switch_read_only() {
+        fail("reason=usb_persist_flip_no_switch");
+    }
+    let Some(lost) = f.lost() else {
+        fail("reason=usb_persist_flip_not_lost");
+    };
+    if f.is_writable() {
+        fail("reason=usb_persist_flip_still_writable");
+    }
+    let at_flip = device::SUBMITTED.load(SeqCst);
+    hold::RELEASE.store(true, SeqCst);
+    for (name, handle) in [("small", small), ("large", large)] {
+        if !matches!(
+            handle.join(),
+            KthreadJoinResult::Exited(KthreadExitState::Success)
+        ) {
+            serial_println!("USB_PERSIST flip-race {} thread did not exit cleanly", name);
+            fail("reason=usb_persist_flip_thread");
+        }
+    }
+    // Give the writeback worker its chances, then try once more.
+    for _ in 0..2_000 {
+        crate::sched::yield_now();
+    }
+    let later_sync = f.sync();
+    let after = device::SUBMITTED.load(SeqCst);
+    serial_println!(
+        "USB_PERSIST flip-race kind={} lost={} writes_before_flip={} writes_at_flip={} writes_after_flip={} sync_after={}",
+        if failure { "failure" } else { "user" },
+        lost.reason(),
+        before_flip,
+        at_flip,
+        after - at_flip,
+        if later_sync.is_ok() { "ok" } else { "refused" }
+    );
+    if after != at_flip {
+        fail("reason=usb_persist_flip_write_after_flip");
+    }
+    if later_sync.is_ok() {
+        fail("reason=usb_persist_flip_sync_after_ok");
+    }
+    if failure && lost == crate::persist_logic::Lost::User {
+        fail("reason=usb_persist_flip_wrong_reason");
+    }
+    if !failure && lost != crate::persist_logic::Lost::User {
+        fail("reason=usb_persist_flip_wrong_reason");
+    }
 }
 
 /// `usb_persist_unplug_midwrite` (THINK §4.2, Dexter's test): with the
