@@ -3,8 +3,9 @@
 //! from `tools/atrium-logic-tests` against hand-laid bytes and against the
 //! kernel's decoder (`kernel/src/sched/wait_any_logic.rs`).
 
-/// At most this many items per wait.
-pub const WAIT_ITEMS_MAX: usize = 8;
+/// At most this many items per wait (the kernel's `wait_any::ITEMS_MAX`;
+/// A3p: 16, the parked WM's 15 plus a spare).
+pub const WAIT_ITEMS_MAX: usize = 16;
 /// A channel the caller could `sys_recv`/`sys_try_recv` without parking.
 pub const WAIT_KIND_CHANNEL: u32 = 1;
 /// An input focus or pointer-route leaf with an event queued (tick-paced).

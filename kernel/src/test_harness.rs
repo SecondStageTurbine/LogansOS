@@ -28331,6 +28331,13 @@ static WA_WAITER_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::Atom
 static WA_SEND_TICK: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "neo-test-wait-any-core")]
 static WA_SENDER_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+/// A3p legs 7 and 9: a wait over this many channels, one handle each
+/// (`WA_MULTI`); 0 = the single `WA_HANDLE`. The sender sends on the last.
+#[cfg(feature = "neo-test-wait-any-core")]
+static WA_MULTI_N: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+#[cfg(feature = "neo-test-wait-any-core")]
+static WA_MULTI: [core::sync::atomic::AtomicU32; crate::sched::wait_any::ITEMS_MAX] =
+    [const { core::sync::atomic::AtomicU32::new(u32::MAX) }; crate::sched::wait_any::ITEMS_MAX];
 /// Race leg: the waiter's pid; the sender sends once that pid is registered.
 #[cfg(feature = "neo-test-wait-any-core")]
 static WA_RACE_PID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
@@ -28338,10 +28345,15 @@ static WA_RACE_PID: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU3
 #[cfg(feature = "neo-test-wait-any-core")]
 extern "C" fn wa_waiter() -> ! {
     use crate::arch::x86_64::syscall::{WAIT_KIND_CHANNEL, WaitItem, wait_any_items};
-    let item = [WaitItem {
+    use crate::sched::wait_any::ITEMS_MAX;
+    let mut item = [WaitItem {
         handle: WA_HANDLE.load(Ordering::Acquire),
         kind: WAIT_KIND_CHANNEL,
-    }];
+    }; ITEMS_MAX];
+    let multi = WA_MULTI_N.load(Ordering::Acquire);
+    for (i, slot) in item.iter_mut().enumerate().take(multi) {
+        slot.handle = WA_MULTI[i].load(Ordering::Acquire);
+    }
     let n = WA_ITEMS.load(Ordering::Acquire);
     let r = wait_any_items(&item[..n], WA_DEADLINE_NS.load(Ordering::Acquire));
     WA_RETURN_TICK.store(
@@ -28440,6 +28452,42 @@ fn wa_until(what: &str, mut done: impl FnMut() -> bool) {
         crate::sched::yield_now();
         crate::sched::reap();
     }
+}
+
+/// A3p: one registered process holding side A of `n` fresh channels
+/// (`WA_MULTI`), the last armed as `WA_CHANNEL` for the sender.
+#[cfg(feature = "neo-test-wait-any-core")]
+fn wa_arm_multi(name: &'static str, n: usize) -> crate::sched::process::ProcessId {
+    use crate::ipc::EndpointSide;
+    use crate::sched::process::{self, Handle, Process};
+    let pmap = crate::mm::pmap::Pmap::new().unwrap_or_else(|_| fail("reason=wa_pmap_new_failed"));
+    let proc = process::register(Process::new_user(name, pmap));
+    let pid = proc.pid;
+    let pmap = proc
+        .pmap
+        .as_ref()
+        .cloned()
+        .expect("user process has a pmap");
+    let mut last = None;
+    for slot in WA_MULTI.iter().take(n) {
+        let channel = crate::ipc::Channel::new();
+        let handle = process::install_cap(
+            &proc,
+            Handle::Channel {
+                channel: channel.clone(),
+                side: EndpointSide::A,
+                cap_id: process::alloc_cap_id(),
+                rights: process::full_channel_rights(),
+            },
+            None,
+        )
+        .unwrap_or_else(|_| fail("reason=wa_install_cap_failed"));
+        slot.store(handle, Ordering::Release);
+        last = Some(channel);
+    }
+    WA_MULTI_N.store(n, Ordering::Release);
+    *WA_CHANNEL.lock() = Some((last.expect("n > 0"), pmap));
+    pid
 }
 
 /// Retire a waiter thread (it spins after recording its result) by killing
@@ -28803,8 +28851,96 @@ fn run_wait_any_core() -> ! {
         // left registered: `terminate` needs a thread to stop.
         wa_retire(pid);
     }
+    // --- Leg 7, A3p: the bound. A 16-item wait (16 channels, one handle
+    // each) parks, and a send on its last item wakes it, with only bit 15
+    // set: the 16th item is watched, not dropped at the old bound of 8.
+    let pid = wa_arm_multi("wa-sixteen", wait_any::ITEMS_MAX);
+    let parks0 = STATS.parks.load(Ordering::Relaxed);
+    let ipc0 = STATS.ipc_wakes.load(Ordering::Relaxed);
+    wa_spawn_waiter(pid, wait_any::ITEMS_MAX, ns(ticks() + 300));
+    wa_until("16-item waiter parked", || {
+        STATS.parks.load(Ordering::Relaxed) > parks0 && wait_any::debug_entries(Some(pid)) == 1
+    });
+    WA_SENDER_DONE.store(false, Ordering::Release);
+    WA_RACE_PID.store(u32::MAX, Ordering::Release);
+    crate::sched::scheduler::push_ready(crate::sched::thread::Thread::new("wa-sender", wa_sender));
+    wa_until("16-item waiter returned", || {
+        WA_WAITER_DONE.load(Ordering::Acquire)
+    });
+    let result = WA_RESULT.load(Ordering::Acquire);
+    let latency = WA_RETURN_TICK
+        .load(Ordering::Acquire)
+        .saturating_sub(WA_SEND_TICK.load(Ordering::Acquire));
+    let ipc_wakes = STATS.ipc_wakes.load(Ordering::Relaxed) - ipc0;
+    serial_println!(
+        "WAITANY sixteen items={} result={:#x} latency_ticks={} ipc_wakes={}",
+        wait_any::ITEMS_MAX,
+        result,
+        latency,
+        ipc_wakes
+    );
+    if wait_any::ITEMS_MAX != 16 || result != 1 << 15 || ipc_wakes != 1 || latency > 5 {
+        fail("reason=wait_any_sixteen_last_item_missed");
+    }
+    wa_release_sender();
+    wa_retire(pid);
+
+    // --- Leg 8, A3p: a 17-item wait is EINVAL, before any copy. The same
+    // kernel-half pointer at 16 items reaches the copy-in's check (EFAULT),
+    // so the EINVAL can only be the bound's.
+    {
+        use crate::arch::x86_64::syscall::debug_sys_wait_any_for_test as wait;
+        let bad = 0xFFFF_8000_0000_0000u64;
+        let seventeen = wait(bad, wait_any::ITEMS_MAX + 1, ns(ticks() + 10));
+        let sixteen = wait(bad, wait_any::ITEMS_MAX, ns(ticks() + 10));
+        serial_println!("WAITANY bound seventeen={} sixteen={}", seventeen, sixteen);
+        if seventeen != crate::errno::EINVAL || sixteen != crate::errno::EFAULT {
+            fail("reason=wait_any_bound_wrong");
+        }
+    }
+
+    // --- Leg 9, A3p + CP-14: leg 2's race window, with the send on the last
+    // of 16 items. Every wait ends on the send, and the window is hit.
+    wait_any::RACE_SPIN.store(2_000_000, Ordering::Relaxed);
+    let fired0 = STATS.fired_before_park.load(Ordering::Relaxed);
+    let mut woken = 0;
+    const LAST_ROUNDS: usize = 8;
+    for _ in 0..LAST_ROUNDS {
+        let pid = wa_arm_multi("wa-race-16", wait_any::ITEMS_MAX);
+        WA_RACE_PID.store(pid.0, Ordering::Release);
+        WA_SENDER_DONE.store(false, Ordering::Release);
+        let sender = crate::sched::thread::Thread::new("wa-race-sender", wa_sender);
+        if crate::sched::scheduler::place_thread_on_cpu(sender, 1).is_err() {
+            fail("reason=wait_any_place_sender_failed");
+        }
+        wa_spawn_waiter(pid, wait_any::ITEMS_MAX, ns(ticks() + 300));
+        wa_until("16-item race waiter returned", || {
+            WA_WAITER_DONE.load(Ordering::Acquire)
+        });
+        if WA_RESULT.load(Ordering::Acquire) == 1 << 15 {
+            woken += 1;
+        }
+        wa_release_sender();
+        wa_retire(pid);
+    }
+    wait_any::RACE_SPIN.store(0, Ordering::Relaxed);
+    WA_RACE_PID.store(u32::MAX, Ordering::Release);
+    WA_MULTI_N.store(0, Ordering::Release);
+    let fired_before_park = STATS.fired_before_park.load(Ordering::Relaxed) - fired0;
+    serial_println!(
+        "WAITANY race16 rounds={} woken={} fired_before_park={}",
+        LAST_ROUNDS,
+        woken,
+        fired_before_park
+    );
+    if woken != LAST_ROUNDS {
+        fail("reason=wait_any_race16_lost_wakeup");
+    }
+    if fired_before_park == 0 {
+        fail("reason=wait_any_race16_vacuous_window_never_hit");
+    }
     pass(
-        "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf",
+        "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf sixteen=last_item bound=einval_17 race16=no_lost_wakeup",
     )
 }
 
