@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::drivers::block::{BlockDevice, BlockError};
 use crate::sched::kthread::{KthreadExitState, KthreadHandle, KthreadJoinResult, KthreadStopToken};
 use crate::sched::{self, ThreadWakeToken, WakeTokenResult};
-use crate::sync::{IrqSafeMutex, SwitchMutex};
+use crate::sync::{IrqSafeMutex, ParkMutex, SwitchMutex};
 
 use super::NeoFsError;
 pub(super) use super::commit_logic::Role as CachedBlockRole;
@@ -165,8 +165,9 @@ pub(super) struct NeoFsBlockCache {
     /// One drain at a time: the barrier's "flushed since the last write"
     /// holds only if no other drain writes between its flush and its
     /// superblock write. Held across block I/O, in thread context with IF=1
-    /// (the worker, fsync's `drain_all`); the worker only tries it.
-    drain: SwitchMutex<()>,
+    /// (the worker, fsync's `drain_all`); the worker only tries it. OT-101:
+    /// it parks, so a second drainer waits off the CPU (CP-63).
+    drain: ParkMutex<()>,
     /// `durability.durable_generation()`, published for the allocator's
     /// deferred-free check without taking `inner` (`commit_logic`, rule 2).
     durable_generation: Arc<AtomicU64>,
@@ -193,7 +194,7 @@ impl NeoFsBlockCache {
         }
         Self {
             device,
-            drain: SwitchMutex::new(()),
+            drain: ParkMutex::new(()),
             durable_generation: Arc::new(AtomicU64::new(mounted_generation)),
             #[cfg(feature = "power-clean")]
             shutdown_drained: core::sync::atomic::AtomicBool::new(false),
@@ -245,6 +246,8 @@ impl NeoFsBlockCache {
 
         #[cfg(feature = "neo-test-neofs-dir-ops")]
         super::inode::dir_ops_probe::note_device_read();
+        #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+        hold::at_device_read();
         let bytes = read_fs_block(&self.device, block)?;
         let mut inner = self.inner.lock();
         if let Some(idx) = find_cached_block(&inner, block) {
@@ -278,6 +281,8 @@ impl NeoFsBlockCache {
 
         #[cfg(feature = "neo-test-neofs-dir-ops")]
         super::inode::dir_ops_probe::note_device_read();
+        #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+        hold::at_device_read();
         let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
 
@@ -305,6 +310,8 @@ impl NeoFsBlockCache {
         validate_fs_block(&self.device, block)?;
         #[cfg(feature = "neo-test-neofs-dir-ops")]
         super::inode::dir_ops_probe::note_device_read();
+        #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+        hold::at_device_read();
         read_bytes_at(&self.device, block_offset(block)?, out)
     }
 
@@ -373,6 +380,8 @@ impl NeoFsBlockCache {
                     Some(epoch) => {
                         #[cfg(feature = "neo-test-neofs-dir-ops")]
                         super::inode::dir_ops_probe::note_device_read();
+                        #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+                        hold::at_device_read();
                         let mut bytes = alloc::vec![0u8; FS_BLOCK_SIZE];
                         read_bytes_at(&self.device, block_offset(block)?, &mut bytes)?;
                         Some((epoch, bytes))
@@ -445,7 +454,11 @@ impl NeoFsBlockCache {
     /// are ever allocated, so a cached copy (even a dirty one) holds no data
     /// anything references, and a later drain must not write it over the
     /// file's bytes.
-    #[cfg(any(feature = "neofs-large-write", feature = "neo-test-neofs-dir-ops"))]
+    #[cfg(any(
+        feature = "neofs-large-write",
+        feature = "neo-test-neofs-dir-ops",
+        feature = "neo-test-phase3-neofs-entries-park"
+    ))]
     pub(super) fn forget_range(&self, first: u64, count: u64) {
         let end = first.saturating_add(count);
         let mut inner = self.inner.lock();
@@ -523,6 +536,35 @@ impl NeoFsBlockCache {
                 sched::yield_now();
             }
         }
+    }
+
+    /// OT-101: dirty throttling's drain. Passes, in the barrier order, until
+    /// fewer than `DIRTY_THROTTLE_BLOCKS` blocks are dirty, rather than until
+    /// none is (`drain_all`): writers that keep dirtying blocks meanwhile
+    /// can't keep it draining, since each of them throttles itself.
+    pub(super) fn drain_while_over_throttle(&self) -> Result<DrainReport, NeoFsError> {
+        // Steps per pass (writes and flushes), so a pass ends even while
+        // others dirty blocks; the threshold is checked between passes.
+        const THROTTLE_PASS_STEPS: usize = 64;
+        let _worker_pause = self.pause_worker();
+        let mut total = DrainReport::default();
+        while self.dirty_over_throttle() {
+            let report = {
+                let _drain = self.drain.lock();
+                drain_pass(
+                    &self.device,
+                    &self.inner,
+                    &self.durable_generation,
+                    Some(THROTTLE_PASS_STEPS),
+                    false,
+                )?
+            };
+            total.drained_blocks = total.drained_blocks.saturating_add(report.drained_blocks);
+            if report.drained_blocks == 0 {
+                sched::yield_now();
+            }
+        }
+        Ok(total)
     }
 
     /// OT-90 P3a, THINK §5 K2: `drain_all` with a bound. Passes of at most
@@ -1114,6 +1156,8 @@ fn drain_pass(
             continue;
         };
 
+        #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+        hold::at_drain_write();
         write_fs_block(device, block, &bytes)?;
         let mut inner = inner_lock.lock();
         if role == CachedBlockRole::Superblock {
@@ -1142,6 +1186,64 @@ fn drain_pass(
     }
 
     Ok(DrainReport { drained_blocks })
+}
+
+/// OT-101's scenario: hold one device read or one drain write, as a slow
+/// device would, by keeping the caller off its I/O for a number of timer
+/// ticks (yielding, interrupts on). Each is armed once.
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub(super) mod hold {
+    use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+
+    pub const IDLE: u8 = 0;
+    pub const HOLDING: u8 = 1;
+    pub const RELEASED: u8 = 2;
+
+    /// Hold the next device read made while `entries` is held.
+    pub static READ_TICKS: AtomicU64 = AtomicU64::new(0);
+    /// Hold the next drain write.
+    pub static WRITE_TICKS: AtomicU64 = AtomicU64::new(0);
+    pub static GATE: AtomicU8 = AtomicU8::new(IDLE);
+    /// Whether `entries` was held when the held drain write began.
+    pub static ENTRIES_HELD_AT_WRITE: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn at_device_read() {
+        if !super::super::inode::ENTRIES_PROBE
+            .held
+            .load(Ordering::SeqCst)
+        {
+            return;
+        }
+        let ticks = READ_TICKS.swap(0, Ordering::SeqCst);
+        if ticks != 0 {
+            hold_for(ticks);
+        }
+    }
+
+    pub(super) fn at_drain_write() {
+        let ticks = WRITE_TICKS.swap(0, Ordering::SeqCst);
+        if ticks != 0 {
+            ENTRIES_HELD_AT_WRITE.store(
+                super::super::inode::ENTRIES_PROBE
+                    .held
+                    .load(Ordering::SeqCst),
+                Ordering::SeqCst,
+            );
+            hold_for(ticks);
+        }
+    }
+
+    fn hold_for(ticks: u64) {
+        let now = || crate::arch::x86_64::timer::TICKS.load(Ordering::Acquire);
+        let until = now().saturating_add(ticks);
+        GATE.store(HOLDING, Ordering::SeqCst);
+        crate::arch::x86_64::with_interrupts_enabled(|| {
+            while now() < until {
+                crate::sched::yield_now();
+            }
+        });
+        GATE.store(RELEASED, Ordering::SeqCst);
+    }
 }
 
 /// #106 relay 403: a block that stays cached from mount on (the superblock

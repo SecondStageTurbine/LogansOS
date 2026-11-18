@@ -51,11 +51,11 @@ const READ_BEFORE_LOCK_TRIES: usize = 8;
 
 /// The namespace lock as an F0 operation holds it: only after its reads.
 struct DirOpLock<'a> {
-    guard: crate::sync::switch_mutex::SwitchMutexGuard<'a, Vec<DirEntry>>,
+    guard: crate::sync::park_mutex::ParkMutexGuard<'a, Vec<DirEntry>>,
 }
 
 impl<'a> DirOpLock<'a> {
-    fn new(guard: crate::sync::switch_mutex::SwitchMutexGuard<'a, Vec<DirEntry>>) -> Self {
+    fn new(guard: crate::sync::park_mutex::ParkMutexGuard<'a, Vec<DirEntry>>) -> Self {
         #[cfg(feature = "neo-test-neofs-dir-ops")]
         probe::ENTRIES_HELD.store(true, core::sync::atomic::Ordering::SeqCst);
         Self { guard }

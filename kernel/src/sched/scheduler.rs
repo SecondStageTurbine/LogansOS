@@ -1512,7 +1512,15 @@ pub fn set_current_inference_lifecycle(on: bool) {
 /// CP-65, an inference-lifecycle participant (generate / inventory, the
 /// shared inference stack). Each control build restores its own pre-fix rule.
 fn kill_protected(thread: &Thread) -> bool {
-    (crate::ai::admission::CANCEL_ON && thread.admission_section) || lifecycle_protected(thread)
+    (crate::ai::admission::CANCEL_ON && thread.admission_section)
+        || lifecycle_protected(thread)
+        || park_protected(thread)
+}
+
+/// OT-101: a thread parked where its frames own kernel state
+/// (`Thread::park_owns_state`) is left to wake and exit at its boundary.
+fn park_protected(thread: &Thread) -> bool {
+    thread.park_owns_state
 }
 
 /// OT-93 (CP-95): whether a force-kill may zombify this Ready thread, freeing
@@ -1744,6 +1752,37 @@ pub fn with_channel_anchor<R>(
     op: impl FnOnce(&alloc::sync::Arc<crate::ipc::Channel>) -> R,
 ) -> R {
     op(&channel)
+}
+
+/// OT-101: mark (or unmark) the current thread as parked where its frames
+/// own kernel state (see `Thread::park_owns_state`).
+pub fn set_current_park_owns_state(on: bool) {
+    without_interrupts(|| {
+        current_scheduler().inner.lock().current.park_owns_state = on;
+    });
+}
+
+/// OT-101's scenario: whether the thread `tid`, parked in a token slot, is
+/// one a force-kill scan would leave (`None`: not token-parked).
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_token_parked_kill_protected(tid: u64) -> Option<bool> {
+    without_interrupts(|| {
+        for cpu_id in 0..per_cpu::MAX_CPUS as u32 {
+            let Some(sched) = scheduler_for_cpu(cpu_id) else {
+                continue;
+            };
+            let s = sched.inner.lock();
+            if let Some(thread) = s
+                .token_parked
+                .iter()
+                .filter_map(|slot| slot.thread.as_ref())
+                .find(|thread| thread.id.0 == tid)
+            {
+                return Some(kill_protected(thread));
+            }
+        }
+        None
+    })
 }
 
 /// CP-66: mark (or unmark) the current thread as inside the accelerator
@@ -2202,7 +2241,7 @@ where
 /// back, never a kernel panic (the kernel is panic=abort; a user-reachable
 /// panic is a full-system DoS — the C1.0 AAG lesson). On `Err` the caller's
 /// guard is returned untouched (nothing was installed, nothing switched).
-#[cfg(any(feature = "browser-runtime", feature = "wait-multiplex"))]
+/// Every build has it: OT-101's `ParkMutex` parks through it.
 pub fn try_block_current_with_token_and_guard<T, G, F>(
     mut caller_guard: G,
     install: F,

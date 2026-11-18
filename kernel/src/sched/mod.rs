@@ -47,11 +47,14 @@ pub mod wake_trace;
 // re-export unused.
 #[cfg(feature = "neo-test-inference-preemptible-liveness")]
 pub use scheduler::context_switch_count_for_test;
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub use scheduler::debug_token_parked_kill_protected;
 pub use scheduler::{
     ThreadWakeToken, WakeTokenResult, block_current_into_with_guard,
     block_current_with_token_and_guard, current_pid, defer_current_preempt_for_handoff,
     enter_syscall, exit, exit_current_if_force_killed, init_bsp, leave_syscall, on_tick, reap,
-    reap_and_drain, reap_nested, run_ap_bootstrap, spawn, wake_thread, wake_thread_on_current_cpu,
+    reap_and_drain, reap_nested, run_ap_bootstrap, set_current_park_owns_state, spawn,
+    try_block_current_with_token_and_guard, wake_thread, wake_thread_on_current_cpu,
     wake_thread_token, with_channel_anchor, yield_now, zombify_thread,
 };
 

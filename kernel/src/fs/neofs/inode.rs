@@ -15,7 +15,7 @@ use crate::fs::{FileRights, Inode, InodeKind, VfsDirEntry, VfsError};
     feature = "neo-test-arthur-real-brain-boot-3b"
 ))]
 use crate::serial_println;
-use crate::sync::SwitchMutex;
+use crate::sync::{ParkMutex, SwitchMutex};
 
 use super::NeoFsError;
 use super::alloc_logic;
@@ -122,8 +122,14 @@ pub(super) struct NeoFsState {
     metadata: SwitchMutex<NeoFsMetadata>,
     /// Process/kthread root inode state; no interrupt-context acquirer.
     root: SwitchMutex<RootState>,
-    /// Process/kthread directory entry state; no interrupt-context acquirer.
-    entries: SwitchMutex<Vec<DirEntry>>,
+    /// The root's entries, and the namespace lock: every commit holds it.
+    /// OT-101: it parks, never spins. Its holders wait on the device (a
+    /// cache-miss read, fsync's drain, a large write), so a spinning lock
+    /// kept every other writer spinning for the whole wait (CP-63). Every
+    /// acquirer is in thread context with no spinning lock held (a lookup
+    /// drops `MOUNTS` first), as a cache-miss read already requires: it parks
+    /// in the block driver.
+    entries: ParkMutex<Vec<DirEntry>>,
     /// Process/kthread lifecycle handle; stop/join coordination lives in the
     /// kthread control block, not in an interrupt handler.
     writeback_worker: SwitchMutex<Option<crate::sched::kthread::KthreadHandle>>,
@@ -184,6 +190,29 @@ impl ShutdownReport {
     }
 }
 
+/// OT-101's scenario: the namespace lock's counters, and its runtime revert
+/// to spinning. One per build, shared by every NeoFS mount (the scenario
+/// mounts one).
+#[cfg(feature = "neo-test")]
+pub(super) static ENTRIES_PROBE: crate::sync::park_mutex::ParkProbe =
+    crate::sync::park_mutex::ParkProbe::new();
+
+/// OT-101's scenario: throttling drains started.
+#[cfg(feature = "neo-test")]
+pub(super) static THROTTLE_DRAINS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+fn entries_lock(entries: Vec<DirEntry>) -> ParkMutex<Vec<DirEntry>> {
+    #[cfg(feature = "neo-test")]
+    {
+        ParkMutex::new_probed(entries, &ENTRIES_PROBE)
+    }
+    #[cfg(not(feature = "neo-test"))]
+    {
+        ParkMutex::new(entries)
+    }
+}
+
 impl NeoFsState {
     pub(super) fn new(
         device: Arc<dyn BlockDevice>,
@@ -223,7 +252,7 @@ impl NeoFsState {
                 inode_block: root_inode_block,
                 record: root_record,
             }),
-            entries: SwitchMutex::new(entries),
+            entries: entries_lock(entries),
             writeback_worker: SwitchMutex::new(writeback_worker),
             #[cfg(feature = "neofs-large-write")]
             commit_failed: core::sync::atomic::AtomicBool::new(false),
@@ -429,7 +458,8 @@ impl NeoFsState {
     ///
     /// Memory: one run buffer and its DMA copy (2 × 64 KiB) plus one pointer
     /// block (4 KiB), whatever the file's size. The namespace lock is held
-    /// for the whole write, IF on (CP-56): it parks, it never spins.
+    /// for the whole write, IF on (CP-56); it is a `ParkMutex` (OT-101), so
+    /// other writers park meanwhile rather than spin.
     #[cfg(feature = "neofs-large-write")]
     pub(super) fn create_file_from_bytes(
         &self,
@@ -879,7 +909,10 @@ impl NeoFsState {
 
     /// F0's F2 leg: every block on the device, and none in the cache (all
     /// written first), so the next reads miss.
-    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    #[cfg(any(
+        feature = "neo-test-neofs-dir-ops",
+        feature = "neo-test-phase3-neofs-entries-park"
+    ))]
     pub(super) fn debug_cold_cache(&self) -> Result<(), NeoFsError> {
         let _entries = self.entries.lock();
         self.cache.drain_all()?;
@@ -990,14 +1023,21 @@ impl NeoFsState {
 
     /// OT-92: before a mutation, drain the mount if the cache holds
     /// `DIRTY_THROTTLE_BLOCKS` dirty blocks or more, so dirty blocks (which
-    /// eviction never takes) stay bounded. The drain is fsync's: under the
-    /// entries lock, so it never interleaves with a namespace commit, and
-    /// before this mutation takes any lock. Off (`neofs-cache-evict`
-    /// disabled): never drains.
+    /// eviction never takes) stay bounded. It runs before this mutation takes
+    /// any lock. Off (`neofs-cache-evict` disabled): never drains.
+    ///
+    /// OT-101: the drain no longer holds `entries`, so lookups and other
+    /// writers' commits go on while it waits on the device. It needs no
+    /// namespace lock: the drain's own lock and the barrier
+    /// (`commit_logic`) order every write against the superblocks, as for
+    /// the writeback worker, which drains without it. It drains only until
+    /// the cache is back under the threshold, so writers that keep
+    /// committing meanwhile can't keep it draining.
     fn throttle_dirty(&self) -> Result<(), NeoFsError> {
         if self.cache.dirty_over_throttle() {
-            let _entries = self.entries.lock();
-            self.cache.drain_all()?;
+            #[cfg(feature = "neo-test")]
+            THROTTLE_DRAINS.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+            self.cache.drain_while_over_throttle()?;
         }
         Ok(())
     }

@@ -324,9 +324,25 @@ impl NeoFs {
 
     /// `block`'s bytes on the device, after draining the cache.
     /// F0's F2 leg (`debug_neofs_cold_cache`).
-    #[cfg(feature = "neo-test-neofs-dir-ops")]
+    #[cfg(any(
+        feature = "neo-test-neofs-dir-ops",
+        feature = "neo-test-phase3-neofs-entries-park"
+    ))]
     pub fn debug_cold_cache(&self) -> Result<(), VfsError> {
         self.state.debug_cold_cache().map_err(neofs_to_vfs)
+    }
+
+    /// OT-101's scenario: a folder `name` in `dir` (the root: `None`),
+    /// through F0's `mkdir_at`.
+    #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+    pub fn debug_mkdir(&self, dir: Option<&str>, name: &str) -> Result<(), VfsError> {
+        self.state.mkdir_at(dir, name).map_err(neofs_to_vfs)
+    }
+
+    /// OT-101's scenario: remove `name` from `dir`, through F0's `unlink_at`.
+    #[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+    pub fn debug_unlink(&self, dir: Option<&str>, name: &str) -> Result<(), VfsError> {
+        self.state.unlink_at(dir, name).map_err(neofs_to_vfs)
     }
 
     #[cfg(any(

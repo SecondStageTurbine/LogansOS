@@ -1700,10 +1700,55 @@ pub fn debug_neofs_raw_block(block: u64) -> Result<alloc::vec::Vec<u8>, VfsError
     mounted_neofs_for_debug()?.debug_raw_block(block)
 }
 
-/// F0's F2 leg: write everything cached and drop it, so the next reads miss.
-#[cfg(feature = "neo-test-neofs-dir-ops")]
+/// F0's F2 leg and OT-101's: write everything cached and drop it, so the
+/// next reads miss.
+#[cfg(any(
+    feature = "neo-test-neofs-dir-ops",
+    feature = "neo-test-phase3-neofs-entries-park"
+))]
 pub fn debug_neofs_cold_cache() -> Result<(), VfsError> {
     mounted_neofs_for_debug()?.debug_cold_cache()
+}
+
+/// OT-101's scenario: a folder through F0's `mkdir_at` (`dir`: `None` is the
+/// volume's root).
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_neofs_mkdir(dir: Option<&str>, name: &str) -> Result<(), VfsError> {
+    mounted_neofs_for_debug()?.debug_mkdir(dir, name)
+}
+
+/// OT-101's scenario: remove an entry through F0's `unlink_at`.
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_neofs_unlink(dir: Option<&str>, name: &str) -> Result<(), VfsError> {
+    mounted_neofs_for_debug()?.debug_unlink(dir, name)
+}
+
+/// OT-101's scenario: the namespace lock's (parks, spin rounds) since the
+/// last call, and reset.
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_neofs_entries_waits() -> (u64, u64) {
+    neofs::debug_entries_waits()
+}
+
+/// OT-101's control leg: the namespace lock spins (`true`, the fix
+/// reverted) or parks (`false`). Switch only while nothing contends it.
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_neofs_entries_spin_instead(spin: bool) {
+    neofs::debug_entries_spin_instead(spin);
+}
+
+/// OT-101's scenario: hold the next device read made under the namespace
+/// lock (`read`) or the next drain write for `ticks` timer ticks.
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_neofs_hold_next(read: bool, ticks: u64) {
+    neofs::debug_hold_next(read, ticks);
+}
+
+/// OT-101's scenario: (hold gate, whether the namespace lock was held when
+/// the held drain write began, throttling drains started).
+#[cfg(feature = "neo-test-phase3-neofs-entries-park")]
+pub fn debug_neofs_hold_state() -> (u8, bool, u64) {
+    neofs::debug_hold_state()
 }
 
 /// F0's F2 legs: (device reads during F0 operations, of them made with the
