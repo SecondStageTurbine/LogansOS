@@ -5,6 +5,8 @@
 `Plans/DISPATCH-2026-10-30-seat-d-browser.md` rung 3 (C3). **Builds on:** C3c-1 (#107, `63b3e02a`), C3b (neo-crt
 pthreads, #67) and `docs/THINK-2026-10-31-ot61-c3c-spidermonkey.md` §3.2, which names this step.
 
+> **Status update (2026-11-18 audit):** merged as #112. **§6 is decided (PM, 2026-11-12):** D1 (a), SpiderMonkey's internal pool on neo-crt pthreads; D2 (b), export `js::DisableExtraThreads` and add `mozjs_smoke_single`. The §4.1 control reads parallel marking **disabled**. C3c-2a is #113 and C3c-2b is #116. The design read (relay 409) never returned and is re-queued at resume.
+
 ## 1. What this rung has to answer
 
 ADR-078 §3's C3 row asks for four things. C3c-1 proved the first:

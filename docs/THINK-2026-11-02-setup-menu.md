@@ -5,6 +5,8 @@
 `Plans/DISPATCH-2026-11-02-setup-menu-think-dexter.md` (relay 282, F11) · **Status:** revision 2 (relay 285),
 design only, no code.
 
+> **Status update (2026-11-18 audit):** S1-S6b are built (`Plans/FEEDBACK-2026-11-02-preview.md`, F11). §7: questions 1, 3 and 5 were answered when S1-S2 were dispatched. **Q8 is decided by the PM (2026-11-18): a zone change after the confirm takes effect at the next boot,** which keeps the time-zone lane's write-once contract. The delta re-confirm can come later, with its own concurrency KAT, when Home's `timezone` verb is built.
+
 **The ask (the PL, 2026-11-02):** a menu like Ubuntu's, where you choose your Wi-Fi or internet, put in the
 time, the keyboard, and the rest, for the "try it before you install it" sessions.
 

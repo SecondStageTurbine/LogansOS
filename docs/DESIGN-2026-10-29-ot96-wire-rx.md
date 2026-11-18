@@ -3,6 +3,8 @@
 
 **Date:** 2026-10-29 · **Seat:** S4 · **Lane:** OT-96 (PM, 2026-10-29) · **Status:** design, for PM review before any build.
 
+> **Status update (2026-11-18 audit):** R1 and R2 are built as feature `wire-rx`. R3 (DHCP renewal) and putting it in image A are still open (OT-96).
+
 ## 1. The gap, as found on #215
 
 On every NIC the product drives, frames are received only inside a bring-up loop, and only ARP and DHCP are routed:

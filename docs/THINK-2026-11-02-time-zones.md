@@ -9,6 +9,8 @@ decision on it (PR #51). Section 7 maps each finding to its fix.
 **Builds on:** OT-85 (`kernel/src/arch/x86_64/rtc_logic.rs`, `userland/libneo/src/civil.rs`, `docs/OPEN-THREADS.md` row
 OT-85, open item (c)), the settings record (`userland/settings-core`, `NEOSET1`).
 
+> **Status update (2026-11-18 audit):** built (`libneo::tz`, `rtc-offset`, the `setup-tz` lane). The history limitation (§ "accept the history limitation?") was built as written, so it stands as accepted.
+
 ## 0. One breath
 
 - **The kernel contract is `CLOCK_REALTIME` is UTC, always** (PM decision, PR #51). The kernel holds no zone data and

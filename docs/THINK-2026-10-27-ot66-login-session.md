@@ -6,6 +6,8 @@
 `Plans/RETURN-2026-10-27-ot66-login-think-review-chad.md`: items 1, 5, 7, 8 and 9 passed; 2, 3, 4 and 6 failed)
 and records the K1 split (K1a-0 and K1a landed). A narrow re-check of those items follows.
 
+> **Status update (2026-11-18 audit):** partly built. `login-core`, sign-in and the lock screen are on main and in the preview. Below, "K1b open" is out of date: K1b landed in its scoped form (`cap-rooted-open`, `OPEN_SCOPE_DIR`, `ARTHUR_SCOPES`); only `open_at` is deferred (`Plans/AUDIT-2026-11-11-mvp-app-chain.md` §4). Tracked as OT-66.
+
 **The ask.** The MVP tier (`Plans/DECISION-2026-10-27-release-tiers-mvp.md`, PL 2026-10-27) includes **log in**.
 OT-66 (`docs/OPEN-THREADS.md:76`) records that there is no human-user object at all:
 - no credential store for OS sign-in;

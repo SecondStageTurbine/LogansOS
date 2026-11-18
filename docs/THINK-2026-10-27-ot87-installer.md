@@ -12,6 +12,8 @@ barriers for every GPT copy, an uncertain outcome when a flush fails, an honestl
 and the prior-art survey (§11). Revision 5 answers relay #90: the `fatfs` borrow moves to the host ESP-template
 builder (the kernel still never formats FAT), and §11 records the deferred encryption and Secure Boot scope.
 
+> **Status update (2026-11-18 audit):** built through the Atrium installer, VM-only, behind `installer` (scenarios `install_fresh`, `install_atrium`, `install_refusals` and others). Tracked as OT-87.
+
 **The ask (J.c., 2026-10-27).**
 - "In the real world, I want this not to run off of a USB, but to be installed on an actual computer or VM."
 - "Just like an Ubuntu ISO has the option to try first or install, I want that for our OS."

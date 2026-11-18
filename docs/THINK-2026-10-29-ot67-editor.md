@@ -4,6 +4,8 @@
 **Date:** 2026-10-29 · **Author:** S1 · **Asked by:** the PM (2026-10-29, while #191 waits on its cross-family read) ·
 **Status:** design only, no code. A cross-family read comes before the merge.
 
+> **Status update (2026-11-18 audit):** E1 (`userland/neo-edit-core`) and W1 (`neofs-file-replace`) are built. E2 is the last rung of the MVP path, and it waits on D6 and D7 (§8), which are still open. Tracked as OT-67.
+
 The MVP (0.5) needs a text editor (`Plans/DECISION-2026-10-27-release-tiers-mvp.md:10, :20`). OT-67's row
 (`docs/OPEN-THREADS.md:77`) says "text-engine THINK first (it gates the app)". This THINK answers:
 - whether that gate is met for the MVP editor (§1);

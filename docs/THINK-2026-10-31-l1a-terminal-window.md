@@ -9,6 +9,8 @@ own `neo-shell`), and `docs/THINK-2026-10-29-ot88-app-model.md` §3 (the termina
 encoding), whose rungs T1 and T2 L1a *is*. This THINK does not redo OT-88 §3. It settles what §3 left open, and
 re-cuts the rungs so the terminal doesn't wait on A2.
 
+> **Status update (2026-11-18 audit):** built: `neo-term-core` (#42) and the `neo-terminal` window (#98, `93f73bb7`).
+
 Citations are to `origin/main` at `07d7f6e`.
 
 **Revision 2 (2026-11-01), answering the cross-family review** (relay 236,

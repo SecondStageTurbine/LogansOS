@@ -5,6 +5,8 @@
 (step 1, #46, merged as `2a27d7c`), `docs/THINK-2026-10-29-ot88-app-model.md` §3.2 (T-a), and
 `docs/THINK-2026-10-31-l1a-terminal-window.md` §3.2-3.4. **Answers:** Dexter's #46 review notes (relay 263, items 1-5).
 
+> **Status update (2026-11-18 audit):** built: feature `pipe`, with scenarios `pipe_core`, `pipe_park_kill` and `pipe_stdio`.
+
 Citations are to `origin/main` at `792f0bb`.
 
 ## 1. Three facts about the kernel that shape this

@@ -7,6 +7,8 @@
 **Supersedes/relates:** OT-61 (the ship-gating browser program), OT-63 (the GPU/accel path — the hardware-GL provider is a separate program, see §4), OT-44 (cap-bundle/WASM sandbox — the bundle boundary), OT-52 (the compositor + `scanout_authorized()`), ADR-028 (byte-oracle discipline), ADR-076 (scanout DMA fence), `docs/complexity-governance.md` (the invariant budget).
 **Grounded in (raw-source-verified, pinned commits):** `docs/RESEARCH-2026-07-12-web-browser-FINDINGS.md` (Janus), `docs/RESEARCH-2026-07-20-ot61-browser-{architecture,crosscheck}-FINDINGS.md` (Prometheus + Chad), `docs/RESEARCH-2026-07-22-ot61-{servo-host-closure,swgl-browser-floor}-spike-FINDINGS.md` (Janus), `docs/RESEARCH-2026-07-22-ot61-browser-closure-crosscheck-FINDINGS.md` (Cerebro, cross-family), `docs/RESEARCH-2026-07-22-ot61-c0-libstd-pal-FINDINGS.md` (Cerebro, C0).
 
+> **Status update (2026-11-18 audit):** the rung table below is out of date. C0, C0.5, C1.x, C1.3, C2.x, C3a and C3c-1 (#107) are built; the SWGL floor, WebRender, Servo layout L0-L4 and the first page in a window (L5, #85) have landed; C3c-2a/2b are in review (#113, #116). OT-61 in `docs/OPEN-THREADS.md` carries the live state.
+
 ## 1. Context
 
 The web browser is a **ship-gating** requirement (OT-61, PL-ratified): first-ship/1.0 is held until a capability-confined browser passes the modern-site battery. The engine is **confined Servo-embed + bounded SpiderMonkey** (a bounded component behind a narrow authority boundary — no C++/POSIX personality at the kernel/user ABI). Two prerequisite spikes + a **cross-family** review (a Claude lens over a Codex-authored, Codex-corroborated direction) established *how* to host it and *how* it renders. This ADR records the resulting ladder.

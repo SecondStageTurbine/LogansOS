@@ -7,6 +7,8 @@ through a broker that holds the net cap; composes with lane L1's `net-dial-cap` 
 path"). **Depends on nothing above it in the ladder.** It is first-party code over primitives that are on `main`
 today, so it can be built while C2.4 (Stylo) waits on J.c.'s Python question (#249).
 
+> **Status update (2026-11-18 audit):** built as #29 (`647f370d`), with `http://` refused and fixture-only trust anchors. Decisions 2 (the CA store) and 3 (`rustls-rustcrypto`) are still open, and decision 1 is to be revisited before rung 7. Tracked as OT-111.
+
 ## 1. What exists
 
 - **The dial cap** (`net-dial-cap`, `kernel/src/arch/x86_64/syscall.rs`): with the feature on, every legacy egress

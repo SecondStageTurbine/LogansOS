@@ -6,6 +6,8 @@
 **Prior-art rule:** CLAUDE.md, "Unfamiliar features: survey open source before writing from scratch". The table in
 section 2 is the survey; each lane's dispatch repeats the rows it uses and re-checks them on the day it starts.
 
+> **Status update (2026-11-18 audit):** dispatched. L1a (the terminal, pipes) is built. The L1b (kibi) and L1d (coreutils) surveys exist, and their decisions are still open (`docs/THINK-2026-11-01-l1b-kibi-on-logansos.md`, `…-l1d-coreutils-on-logansos.md`). Note that the L1d survey recommends vendoring the uutils workspace, which differs from "individual uutils crates" below; that is part of the open decision.
+
 ## 1. What we already have (not lanes)
 
 The survey listed several components LogansOS already carries. Checked on main, 2026-10-31:

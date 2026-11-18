@@ -8,6 +8,8 @@ process."*
 *second* step here, not the first (§3).
 **Status:** for the PM's read before any build. Nothing here is code.
 
+> **Status update (2026-11-18 audit):** C3c-1 is built (#107, `63b3e02a`). C3c-2 has its own THINK (`docs/THINK-2026-11-12-ot61-c3c2-helper-threads.md`, #112); C3c-2a and 2b are in review (#113, #116).
+
 ## 1. What this rung has to answer
 
 C3a gave the browser bundle a C and C++ runtime. C3c puts the JavaScript engine on it. Servo's `script` crate is

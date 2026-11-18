@@ -4,6 +4,8 @@
 **Date:** 2026-10-29 · **Author:** S1 · **Dispatch:** `Plans/DISPATCH-2026-10-29-ot88-apps-think-s1.md` ·
 **Status:** design only, no code. A cross-family read (Codex, GPT-6-Luna high) comes before the merge.
 
+> **Status update (2026-11-18 audit):** A0k, A1a, T1, T2 (#98), K1b (scoped) and F0 (#106) are built; A2 (#111), A3p (#108) and F1a (#114) are in review. **§8 D1 is superseded for the MVP** by `Plans/DECISION-2026-11-11-one-window-first.md` (J.c.): apps open one window at a time first, the path is A2 → F1 → E2, and side-by-side windows (A1b, A1c) come after E2. Tracked as OT-88.
+
 OT-88 (terminal, file manager, settings) and OT-67 (the text editor) are MVP (0.5) items
 (`Plans/DECISION-2026-10-27-release-tiers-mvp.md:10, :20-21`). All four are apps the user types into and points at.
 Today only Arthur can be one. This THINK designs the missing piece first (§2), then each app against it (§3-§6), then
