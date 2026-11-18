@@ -246,3 +246,4 @@ ran, or was meant to, and pushed no RETURN.
 - **Never delivered, still owed:** 202 (Prometheus, the html5lib/WPT browser fixtures), tracked as OT-116; and
   **409** (Jarvis, the C3c-2 THINK design read), to re-queue when the PM resumes, folded into #113/#116's
   cross-family lens.
+RELAY 414 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-18-relay-414-pr117-consolidation-review.md | #117 consolidation code review at `474c19e7`; RETURN `Plans/RETURN-2026-11-18-pr117-review-jarvis.md` on `codex/pr117-review-jarvis`
