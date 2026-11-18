@@ -1,5 +1,7 @@
 # Plans Directory Index
 
+> **2026-11-18 audit:** this index has not been maintained since 2026-07-20, and about 23 of its paths have moved. Nothing after July is in it, and its "active" lanes are long finished. For the current state read `docs/OPEN-THREADS.md` (threads and debt), `Plans/AUDIT-2026-11-18-docs-and-decisions.md` (this audit, with the open decisions), `Plans/DECISION-2026-11-11-one-window-first.md` (the MVP path) and `Plans/RELAY-QUEUE.md` (reviews). Kept for history.
+
 This directory holds in-flight and recently-closed working artifacts: PM
 dispatches to coders, PM decision notes, Bible amendment drafts, and
 session handoffs. Files in `Plans/` are working artifacts, not normative

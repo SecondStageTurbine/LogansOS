@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # AUDIT: the MVP app chain against `origin/main` (2026-11-11)
 
+> **2026-11-18 audit:** a snapshot at `6c3c4dcd`. Since then J.c. took §2's shortcut (`Plans/DECISION-2026-11-11-one-window-first.md`), T2 landed (#98), F0 landed (#106), and A2 (#111), A3p (#108) and F1a (#114) are in review. `docs/OPEN-THREADS.md` OT-88 carries the live state.
+
 **Seat:** Seat E. **Dispatch:** `Plans/DISPATCH-2026-11-11-seat-e-mvp-app-chain-audit.md`.
 **Audited at:** `origin/main` `6c3c4dcd` (2026-11-11).
 **Method:** code, not docs. For each rung I checked:

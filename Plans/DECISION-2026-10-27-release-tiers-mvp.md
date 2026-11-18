@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # DECISION: release tiers, and the MVP (PL, 2026-10-27)
 
+> **2026-11-18 audit:** the decision stands; the tracking table below is out of date. OT-87 (installer) is built through the Atrium installer, VM-only; OT-66 login and OT-90 shutdown/restart are built; OT-67 has E1; OT-88 is the MVP chain. The live state is in `docs/OPEN-THREADS.md` (OT-66, OT-67, OT-87, OT-88, OT-90). The "PR #149" below is a private-repo number.
+
 **PL (J.c.), 2026-10-27:** "Yeah make that the MVP tier." This came after the PM mapped LogansOS against a full
 desktop-OS checklist and proposed three tiers.
 

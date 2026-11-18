@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # QUEUE — single-lane priority order (PL directive, 2026-08-07)
 
+> **2026-11-18 audit:** superseded. Several seats now run in parallel and work lands in OT-58 batches; item 10 (NeoFS `mkdir`/`unlink`) landed as F0 (#106); the browser ladder (item 12) went ahead before 0.1 was demonstrated. The current order is the MVP path in `Plans/DECISION-2026-11-11-one-window-first.md`. Kept for history.
+
 **Directive:** *"lets bring the project back online — however for now I want to keep it 1 coder at a time, lets work our way down from most important to least important."*
 
 **Operating mode:** **one seat active at a time.** The PM dispatches item 1 only; item 2 is not relayed until item 1 merges. This is the standing order so priority is not re-derived every time a lane closes — it is amended when reality changes, not rebuilt from scratch.

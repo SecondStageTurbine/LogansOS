@@ -231,3 +231,18 @@ RELAY 410 | janus | GPT-6-Astra | medium | Plans/DISPATCH-2026-11-12-relays-410-
 RELAY 411 | chad | GPT-6.1-Sol | high | Plans/DISPATCH-2026-11-12-relays-410-411.md | Section 411 (#110 OT-100 R3 code review at `ac939654`); RETURN `Plans/RETURN-2026-11-12-pr110-review-chad.md` on `codex/pr110-review-chad`
 RELAY 412 | janus | GPT-6-Astra | medium | Plans/DISPATCH-2026-11-12-relays-412-413.md | Section 412 (#108 A3p item 3's guards 1+2 at `d276e746`); RETURN `Plans/RETURN-2026-11-12-pr108-recheck4-janus.md` on `codex/pr108-recheck4-janus`
 RELAY 413 | jarvis | GPT-6-Luna | high | Plans/DISPATCH-2026-11-12-relays-412-413.md | Section 413 (A2 #111 code review at `372d9a74`); RETURN `Plans/RETURN-2026-11-12-pr111-review-jarvis.md` on `codex/pr111-review-jarvis`
+
+## Relays that never returned (audit, 2026-11-18)
+
+The runner only reads lines that start with `RELAY`, so this note doesn't change what it runs. Each relay below
+ran, or was meant to, and pushed no RETURN.
+
+- **Superseded by a reroute, with the rerouted RETURN on main:** 205 → 214; 215–218 → 220–223; 315, 316 → 336;
+  317, 324 → 335; 318 (the #75 destructor cap) → Dexter's #75 review; 328 → 340; 329 → Dexter's #77–#80 reviews;
+  331 → 341; 332 → 337; 387 and 389 → 391.
+- **Covered by another reviewer, never closed:** 339 (Prometheus, #76 survey; Janus 321 covered it); 343
+  (Prometheus, quant-drift harness; Jarvis 334 covered it); 201 (Prometheus, SpiderMonkey port research;
+  overtaken by `docs/THINK-2026-10-31-ot61-c3c-spidermonkey.md` and C3c-1, #107).
+- **Never delivered, still owed:** 202 (Prometheus, the html5lib/WPT browser fixtures), tracked as OT-116; and
+  **409** (Jarvis, the C3c-2 THINK design read), to re-queue when the PM resumes, folded into #113/#116's
+  cross-family lens.

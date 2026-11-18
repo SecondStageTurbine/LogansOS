@@ -15,6 +15,9 @@ Every item J.c. reports from trying LogansOS goes here, with its owner and state
 | F8 | Arthur answers "what time is it" with a model disclaimer | The model has no clock; Arthur should answer time/date questions from the system clock (with the user's zone, F4) | Seat I (with F4) | **Fixed, on main:** #68 (`08a3f30f`); in the preview of 2026-11-03 2:23 PM Eastern |
 | F9 | A wrong password at login is refused silently; J.c. wants "Incorrect password. Try again." | The login screen gives no failure feedback | Seat I | **Fixed, on main:** #62 (`d8217c05`); in the preview of 2026-11-03 6:36 AM Eastern |
 | F10 | Holding Backspace (or any key) doesn't repeat | The i8042 driver drops typematic repeats on purpose (FINDINGS trap 9) expecting software auto-repeat, which was never built | Seat I | **Fixed, on main:** #61 (`504d582f`); in the preview of 2026-11-03 6:36 AM Eastern |
+| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64); built by Seat I (S1-S4), Seat E (S5) and Seat C (S6b) | **Design approved and merged** (#64, `dfa85c06`; Jarvis re-check relay 305 all PASS). Seat I builds it (rungs S1-S7b) after F8 (#68). **S1 on main** (#70, `858e1284`, 2026-11-08: the wizard shell); **S2 on main** (#71, `1b0b9097`, 2026-11-09: choices saved, volatile overlay when the store can't be written); S3 on main (#92, `0b434c3e`, 2026-11-09: time zone + clock confirm); S4 on main (#100, `77d26bc6`, 2026-11-12: the Network page and `SYS_NET_IF_STATUS`); S5 on main (#99, `6bdce6c9`, 2026-11-10: keyboard layouts US + Spanish); S6a language catalog (English + Spanish) on main (#101, `cee75016`). **S6b on main** (#109, `2cfc61eb`, 2026-11-12: the Language page, the catalog wired in). Follow-up after S5: Home and Arthur take only the ASCII part of the Spanish layout until a UTF-8 slice lands (recv_intent, char-wise input line, write_byte by character) **Not started: S7** (Try or Install; needs OT-87 R5) **and S7b** (carry the record into the installed system; needs OT-87 R4). |
+
+*History (the rows above are current; added in the 2026-11-18 audit).*
 
 **2026-11-02 midday:** J.c. confirmed the accelerated launcher boots on his machine (F2 verified on real WHPX). F4/F8
 (time zone, Arthur's time answers) are still open: only the design (#51) has merged; the build is Seat I's.
@@ -24,9 +27,6 @@ after the tiered-gate stack lands.
 **J.c. (2026-11-02 midday):** he'll test F4/F8 (time zone), F10 (key repeat) and F9 (password message) together:
 the PM tells him once all three are on `main` **and** in a published preview. No interim updates on these.
 
-| F11 | J.c. wants an Ubuntu-style first-boot setup menu for Try/Install: language, keyboard, network (Wi-Fi), time zone | New feature (MVP: OT-87 Try or Install) | Dexter (THINK, relay 282, PR #64), then Seat I builds | **Design approved and merged** (#64, `dfa85c06`; Jarvis re-check relay 305 all PASS). Seat I builds it (rungs S1-S7b) after F8 (#68). **S1 on main** (#70, `858e1284`, 2026-11-08: the wizard shell); **S2 on main** (#71, `1b0b9097`, 2026-11-09: choices saved, volatile overlay when the store can't be written); S3 on main (#92, `0b434c3e`, 2026-11-09: time zone + clock confirm); S4 on main (#100, `77d26bc6`, 2026-11-12: the Network page and `SYS_NET_IF_STATUS`); S5 on main (#99, `6bdce6c9`, 2026-11-10: keyboard layouts US + Spanish); S6a language catalog (English + Spanish) on main (#101, `cee75016`). **S6b on main** (#109, `2cfc61eb`, 2026-11-12: the Language page, the catalog wired in). Follow-up after S5: Home and Arthur take only the ASCII part of the Spanish layout until a UTF-8 slice lands (recv_intent, char-wise input line, write_byte by character) |
-
-
 **Landing order (2026-11-03 03:45 UTC).** gate-plan puts #59, #62, #61 and #60 each in `full-alone` (they touch
 xtask, `Cargo.*` or the kernel), so each lands as its own batch of one, about 100 minutes apiece, in that order.
-The preview for J.c.'s test follows the fourth.
+The preview for J.c.'s test follows the fourth. *(Done: all four landed.)*

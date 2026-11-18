@@ -1,6 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 # LogansOS RELEASE LEDGER — the five journeys, honestly audited (2026-07-29)
 
+> **2026-11-18 audit:** the running log below stops at 2026-11-01, and the journey table is frozen at 2026-07-29. The catch-up for 2026-11-01 to 2026-11-18 is at the end of this file; the live thread state is `docs/OPEN-THREADS.md`.
+
 **From:** PM (Claude). **Status:** the ledger `HANDOVER-2026-07-25` §2 instructed the incoming PM to create and which did not exist on `main`. Audited against HEAD by independent repo sweep, not from memory.
 
 ## The finding in one line
@@ -1743,3 +1745,36 @@ None bounces. Notes kept for the merge reports and follow-ups:
   #12, #9, #20, #31, #5, #32, #13 (user-copy-fixup, CP-99), #43, and #30 (USB mass storage, carrying #23).
 - **Process:** every kernel PR gets a cross-family review on the relay box before merge; merge-ready PRs are gated
   together in a PM batch (`claude/pm-batch-N`) so one merge doesn't invalidate the others' gates.
+
+---
+
+## Catch-up, 2026-11-01 to 2026-11-18 (written in the 2026-11-18 audit)
+
+The log above stopped on 2026-11-01. This records what landed since, by PR on this public repo, from the
+batch commits and GitHub merges on `main`. From here the live thread state is `docs/OPEN-THREADS.md`, and the
+open decisions are in `Plans/AUDIT-2026-11-18-docs-and-decisions.md`.
+
+- **CI and process:** the OT-58 tiered gate (#31 THINK; #32 S0, #40 S1, #47 S2b), batch-plan stderr (#83), the
+  failed-attempt serial tail (#34), the size budget on a stable image A (#96).
+- **Preview:** the Windows VM image (#44), the MSYS2 QEMU launcher (#49), and J.c.'s preview feedback
+  F1–F11 (`Plans/FEEDBACK-2026-11-02-preview.md`).
+- **Desktop and input:** the thinking indicator (#50), the WHPX #GP fix and its follow-ups (#52, #57), the keymap
+  and keypad (#53, #63), drag smoothness (#58), key repeat (#61), the password message (#62), time zones
+  (#51 THINK, #59, #60), Arthur's time answers (#68).
+- **Setup menu (F11):** THINK #64; S1 #70, S2 #71, S3 #92, S4 #100, S5 #99, S6a #101, S6b #109. S7 and S7b wait
+  on OT-87 R5/R4.
+- **Terminal and pipes (L1a):** neo-term-core (#42), the kernel pipe (#46, #56, #72), the terminal window (#98).
+  Surveys: kibi (#39), coreutils (#38).
+- **Files and NeoFS:** the cache-lookup loop (#69), its index (#73 THINK, #82, #95), F0 directory operations
+  (#106). The MVP chain was audited (#105), and J.c. chose one window at a time first
+  (`Plans/DECISION-2026-11-11-one-window-first.md`).
+- **Arthur:** the quantization drift check (#84), the move to Q8_0 (#90, J.c.'s decision) and its re-check (#94).
+- **Browser (OT-61):** decoders and fuzzing (#37), the layout-without-script THINK (#48), SWGL (#66), WebRender
+  (#77), the Atrium buffer and grant (#78, #79), the I/O surface (#80), Servo layout L0–L4 (#81), the first page
+  in a window (#85), neo-crt threads, clock and entropy (#65, #67, #75, #86, #88), SpiderMonkey vendored and
+  built (#87, #89, #91, #93, #107), and the C3c-2 THINK (#112).
+- **Storage on the boot stick (OT-100):** the THINK (#103) and the USB write path (#104).
+- **Other:** the CSPRNG RDRAND fix (#43), USB mass storage read-only (#30), images in the desktop THINK (#41),
+  the Raven lessons THINK (#74), the file-viewer survey (#76).
+- **In review when the PM paused (2026-11-13):** A3p #108, R3 #110, A2 #111, C3c-2a #113, F1a #114, OT-101 #115,
+  C3c-2b #116, and the draft #102. See `Plans/PAUSE-2026-11-13.md`.
