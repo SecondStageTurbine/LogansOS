@@ -252,6 +252,10 @@ desktop = [
     "usb-hotplug",
     "rtc-epoch",
     "rtc-offset",
+    # A3p (OT-88 THINK §2.3 item 9): SYS_WAIT_ANY, so the WM's loop parks
+    # (its `desktop-park`, xtask's default for the intro WM) in image A and
+    # every desktop kernel. Without the WM's `desktop-park` nothing calls it.
+    "wait-multiplex",
     # F10 (J.c., 2026-11-02): held keys repeat, in every desktop kernel the
     # gate boots as in the product image.
     "key-autorepeat",
@@ -607,6 +611,10 @@ wait-multiplex-no-handle-fire = ["wait-multiplex"]
 # deadline, and kill-while-parked.
 neo-test-wait-any-core = ["neo-test", "wait-multiplex", "neo-test-wait-any-race"]
 neo-test-wait-any-race = ["neo-test", "wait-multiplex"]
+# A3p CP-61 (relay 406): the wait core logs each waiter's channel items
+# (handle, key, CapId) when they change, and each real park's wake with the
+# key that fired it (`desktop_apps_reuse_boot`'s kernel-order witness).
+neo-test-wait-any-witness = ["neo-test", "wait-multiplex"]
 # C1.0 gate: neo-init runs the VM+clock battery (map/protect/unmap round-trip,
 # W^X-negative, guard-unmapped, clock-monotonic) and exits 0 on pass.
 neo-test-vm-primitives = ["neo-test", "browser-runtime"]
@@ -1232,7 +1240,7 @@ neo-test-desktop-apps-drop-boot = ["neo-test-desktop-pointer", "ipc-try-send", "
 # PR #15 review: a client dead mid-handoff, slot reuse with a stale handle,
 # a flooding Arthur, and a held button across a front change and a death.
 neo-test-desktop-apps-handoff-death-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
-neo-test-desktop-apps-reuse-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
+neo-test-desktop-apps-reuse-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles", "neo-test-wait-any-witness"]
 neo-test-desktop-apps-flood-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 neo-test-desktop-apps-grab-boot = ["neo-test-desktop-pointer", "ipc-try-send", "close-object-handles"]
 # PR #15 re-check item 3: Arthur hangs on a reply with the probe app live; he

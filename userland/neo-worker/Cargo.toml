@@ -70,6 +70,9 @@ terminal-test-echo = ["terminal-child-worker"]
 terminal-test-flood = ["terminal-child-worker"]
 # Test only: the probe app exits 7 after its first key (per-client faults).
 probe-app-exit-after-key = ["probe-app"]
+# A3p CP-61 (test only): as `probe-app-exit-after-key`, but idle 2 s after
+# the key's reply first, so the WM parks over this client before it dies.
+probe-app-exit-idle = ["probe-app-exit-after-key"]
 probe-app-hang-reply = ["probe-app"]
 probe-app-stall-handshake = ["probe-app"]
 probe-app-drop-reply = ["probe-app"]

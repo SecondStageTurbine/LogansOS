@@ -9109,13 +9109,22 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         | Some("desktop-apps-stall-boot-test")
         | Some("desktop-apps-drop-boot-test")
         | Some("desktop-apps-handoff-death-boot-test")
-        | Some("desktop-apps-reuse-boot-test")
         | Some("desktop-apps-flood-boot-test")
         | Some("desktop-apps-arthur-hang-boot-test")
         | Some("desktop-apps-arthur-yield-hang-boot-test")
         | Some("desktop-apps-grab-boot-test") => {
-            vec!["atrium-apps", "desktop-home-boot-test"]
+            // A3p: parked, so every A1a leg (hang, drop, flood, grab) runs
+            // the client table's wait set.
+            vec!["atrium-apps", "desktop-home-boot-test", "desktop-park"]
         }
+        // A3p CP-61: parked, with the park witness (its oracle reads the
+        // park's client set and the wakes the clients' items caused).
+        Some("desktop-apps-reuse-boot-test") => vec![
+            "atrium-apps",
+            "desktop-home-boot-test",
+            "desktop-park",
+            "desktop-park-witness",
+        ],
         // OT-61 L5: the same, with the browser's slot.
         Some("desktop-browser-boot-test") => {
             vec!["atrium-apps-browser", "desktop-home-boot-test"]
@@ -9290,8 +9299,10 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         Some("desktop-apps-stall-boot-test") => vec!["probe-app-stall-handshake"],
         Some("desktop-apps-drop-boot-test") => vec!["probe-app-drop-reply"],
         Some("desktop-apps-handoff-death-boot-test") => vec!["probe-app-die-on-discard"],
-        Some("desktop-apps-reuse-boot-test")
-        | Some("desktop-apps-grab-boot-test")
+        // A3p CP-61: the probe idles 2 s after its key, so it dies while
+        // the WM is parked over it.
+        Some("desktop-apps-reuse-boot-test") => vec!["probe-app-exit-idle"],
+        Some("desktop-apps-grab-boot-test")
         | Some("desktop-apps-arthur-hang-boot-test")
         | Some("desktop-apps-arthur-yield-hang-boot-test") => vec!["probe-app-exit-after-key"],
         Some("desktop-apps-flood-boot-test") => vec!["probe-app"],
@@ -9696,6 +9707,16 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         init_features.push("cap-rooted-open");
         shell_features.push("cap-rooted-open");
     }
+    // A3p (OT-88 THINK §2.3 item 9): the parked loop is image A's default:
+    // every WM build that includes `desktop-intro` (the product's base: the
+    // image, the intro, setup and login scenarios) gets `desktop-park`, unless
+    // it names the `desktop-poll` marker (the kill-switch).
+    if !init_features.contains(&"desktop-park")
+        && !init_features.contains(&"desktop-poll")
+        && neo_init_reaches(&init_features, "desktop-intro")?
+    {
+        init_features.push("desktop-park");
+    }
     // L7.1: `iso --with-model --boot-time`.
     let mut arthur_features = arthur_features;
     if boot_time_image() && feature == Some("desktop-with-model") {
@@ -9709,6 +9730,326 @@ fn build_user_with_feature(feature: Option<&str>) -> Result<(), String> {
         arthur_features.as_slice(),
         feature == Some("arthur-real-brain-boot-qwen35"),
     )
+}
+
+/// A3p: a scenario whose WM is intro-based (the product's base) runs it
+/// parked by default: its first park must have reached the kernel (no
+/// `ENOSYS`). Only where the scenario's user feature is a neo-init feature
+/// that reaches both `desktop-intro` and the boot-test log, and not the
+/// `desktop-poll` marker. A scenario that ends before any park (the login
+/// cuts) logs no line, which passes; an A1a scenario must log one.
+fn require_parked_by_default(
+    scenario: TestScenario,
+    observed: &ObservedTest,
+) -> Result<(), String> {
+    let Some(feature) = scenario.user_feature else {
+        return Ok(());
+    };
+    let path = workspace_root().join("userland/neo-init/Cargo.toml");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let table = parse_features(&text);
+    // The A1a scenarios' WM is built parked too (their client-table wait set).
+    let a1a = scenario.name.starts_with("desktop_apps_");
+    if !a1a
+        && (!table.contains_key(feature)
+            || !feature_reaches(&table, &[feature], "desktop-intro")
+            || !feature_reaches(&table, &[feature], "desktop-session-boot-test")
+            || feature_reaches(&table, &[feature], "desktop-poll"))
+    {
+        return Ok(());
+    }
+    let serial = read_serial(observed)?;
+    match serial
+        .lines()
+        .find_map(|l| l.split("DESKTOP loop parked rc=").nth(1))
+    {
+        Some(rc) if !rc.trim().starts_with('-') || rc.trim() == "-110" => Ok(()),
+        Some(rc) => Err(format!(
+            "`{}`: the WM's first park failed (rc={}): an intro-based WM parks by default (A3p)",
+            scenario.name,
+            rc.trim()
+        )),
+        // A scenario may end before the WM's first park (the login cuts);
+        // an A1a scenario always reaches the session loop's.
+        None if !a1a => Ok(()),
+        None => Err(format!(
+            "`{}`: no `DESKTOP loop parked` line: an intro-based WM parks by default (A3p)",
+            scenario.name
+        )),
+    }
+}
+
+/// A3p CP-61 (relays 400 and 406): `desktop_apps_reuse_boot`'s ordering, in
+/// the kernel's order. Two witnesses:
+/// - the WM's (`desktop-park-witness`): `DESKTOP park set c<slot>g<gen> f=F
+///   s=S` names each client's generation and numeric handles;
+/// - the wait core's (`neo-test-wait-any-witness`): `WAITANY witness set
+///   pid=P items=H:K:C,...` gives each registered channel item's handle, wait
+///   key and `CapId` (never reused, so it names the object, where a key can
+///   repeat once memory is reused); and `WAITANY witness woke ... key=K`
+///   says a channel fire on `K` found the waiter's entry registered, after
+///   it had blocked and before its wake (the line orders the three events).
+///
+/// Required:
+/// 1. gen 1's registration: after the WM's gen-1 set, a kernel set naming
+///    `F` and `S` gives gen 1's caps and keys;
+/// 2. its death while the WM waits over it: after the probe's idle line and
+///    before its end, a kernel wake on one of gen 1's keys, whose latest
+///    registration names gen 1's caps; then the WM's own wake names gen 1;
+/// 3. no kernel registration names a gen-1 cap after that wake;
+/// 4. gen 2 at the same numeric handles `F` and `S`, registered with new
+///    caps;
+/// 5. gen 2's first request wakes the WM: after its first key and before its
+///    idle line (so the client is alive and the fire is its request, not its
+///    end), a kernel wake on gen 2's surface key, whose latest registration
+///    names gen 2's surface cap; then the WM's next wake names gen 2's
+///    surface (`c1g2f`). The request's fire finds the WM's entry already
+///    woken by the tick (`parked=0`, `fire_tick` equal to its deadline): the
+///    WM's wait watches input, so the kernel re-parks it every tick, and a
+///    send driven by time always lands on such a tick (40 boots, relay 408).
+///    The PM's ruling (A) accepts the registered entry here, with two guards:
+/// 6. the park-wake path is exercised in this boot: at least one channel fire
+///    woke a parked waiter (`parked=1 why=1`; Arthur's, in practice);
+/// 7. a boot whose tick woke the WM with no fire of gen 2's request (no
+///    cap-44 fire, no `c1g2f` ready) is refused (unit test).
+///
+/// At the WM's level too: no WM set or wake names gen 1 after its death's
+/// wake (relay 408 item 2).
+fn require_cp61_parked_death(serial: &str) -> Result<(), String> {
+    const KSET: &str = "WAITANY witness set pid=";
+    const KWOKE: &str = "WAITANY witness woke pid=";
+    type Items = Vec<(u32, u64, u64)>;
+    type KeyCap = (u64, u64);
+    let lines: Vec<&str> = serial.lines().collect();
+    let at = |needle: &str, from: usize| -> Result<usize, String> {
+        lines[from.min(lines.len())..]
+            .iter()
+            .position(|l| l.contains(needle))
+            .map(|i| i + from)
+            .ok_or_else(|| format!("no `{needle}` after line {from}"))
+    };
+    // The WM's handles for a generation: `c1g<gen> f=F s=S`.
+    let wm_handles = |line: &str, client: &str| -> Option<(u32, u32)> {
+        let rest = line.split(client).nth(1)?;
+        let f = rest.split(" f=").nth(1)?.split(' ').next()?.parse().ok()?;
+        let s = rest.split(" s=").nth(1)?.split(' ').next()?.parse().ok()?;
+        Some((f, s))
+    };
+    // A kernel set line's items: (handle, key, cap).
+    let kitems = |line: &str| -> Items {
+        line.split("items=")
+            .nth(1)
+            .unwrap_or("")
+            .split(',')
+            .filter_map(|item| {
+                let mut parts = item.trim().split(':');
+                let h = parts.next()?.parse().ok()?;
+                let k = u64::from_str_radix(parts.next()?.trim_start_matches("0x"), 16).ok()?;
+                let c = parts.next()?.parse().ok()?;
+                Some((h, k, c))
+            })
+            .collect()
+    };
+    let kwoke_key = |line: &str| -> Option<u64> {
+        let k = line.split(" key=").nth(1)?.split(' ').next()?;
+        u64::from_str_radix(k.trim_start_matches("0x"), 16).ok()
+    };
+    // The first kernel set at or after `from` naming both handles: their
+    // (key, cap).
+    let kset_for = |from: usize, f: u32, s: u32| -> Result<(KeyCap, KeyCap), String> {
+        lines[from..]
+            .iter()
+            .filter(|l| l.contains(KSET))
+            .find_map(|l| {
+                let items = kitems(l);
+                let get = |h: u32| {
+                    items
+                        .iter()
+                        .find(|&&(x, _, _)| x == h)
+                        .map(|&(_, k, c)| (k, c))
+                };
+                Some((get(f)?, get(s)?))
+            })
+            .ok_or_else(|| {
+                format!("no kernel registration of handles {f} and {s} after line {from}")
+            })
+    };
+    // The latest kernel set before line `i`.
+    let kset_before = |i: usize| -> Option<Items> {
+        lines[..i]
+            .iter()
+            .rev()
+            .find(|l| l.contains(KSET))
+            .map(|l| kitems(l))
+    };
+
+    // 1. Gen 1, its handles, and the kernel's registration of them.
+    let connected1 = at("DESKTOP apps client connected client=1 value=1", 0)?;
+    let set1 = at("DESKTOP park set c1g1 f=", connected1)?;
+    let (f, s) = wm_handles(lines[set1], " c1g1").ok_or("no handles in the WM's gen-1 set")?;
+    let ((k1f, c1f), (k1s, c1s)) = kset_for(set1, f, s)?;
+
+    // 2. Its death, fired on a registered entry of the WM's.
+    let idle1 = at("PROBEAPP idling before exit", set1)?;
+    let ended1 = at("DESKTOP apps client ended client=1 value=7", idle1)?;
+    let death = (idle1..ended1)
+        .find(|&i| {
+            lines[i].contains(KWOKE)
+                && kwoke_key(lines[i]).is_some_and(|k| k == k1f || k == k1s)
+                && kset_before(i)
+                    .is_some_and(|items| items.iter().any(|&(_, _, c)| c == c1f || c == c1s))
+        })
+        .ok_or_else(|| {
+            format!(
+                "no kernel wake on gen 1's keys ({k1f:#x}, {k1s:#x}) under a registration of \
+                 its caps ({c1f}, {c1s}) between its idle and its end"
+            )
+        })?;
+    let wm_death = at("DESKTOP park woke ms=", death)?;
+    if wm_death > ended1 || !lines[wm_death].contains("c1g1") {
+        return Err(format!(
+            "the WM's wake after the kernel's doesn't name gen 1: {}",
+            lines[wm_death]
+        ));
+    }
+
+    // 3. Gen 1's objects are never registered again, and the WM never names
+    //    gen 1 again.
+    if let Some(stale) = lines[wm_death + 1..]
+        .iter()
+        .find(|l| l.contains("DESKTOP park ") && l.contains("c1g1"))
+    {
+        return Err(format!("the WM named gen 1 after its death: {stale}"));
+    }
+    if let Some(stale) = lines[death..]
+        .iter()
+        .find(|l| l.contains(KSET) && kitems(l).iter().any(|&(_, _, c)| c == c1f || c == c1s))
+    {
+        return Err(format!("a gen-1 cap registered after its death: {stale}"));
+    }
+
+    // 4. Gen 2: the same numeric handles, new objects.
+    let connected2 = at("DESKTOP apps client connected client=1 value=2", ended1)?;
+    let set2 = at("DESKTOP park set c1g2 f=", connected2)?;
+    let gen2 = wm_handles(lines[set2], " c1g2").ok_or("no handles in the WM's gen-2 set")?;
+    if gen2 != (f, s) {
+        return Err(format!(
+            "slot 1's handles weren't reused: gen 1 (f, s) = {:?}, gen 2 = {gen2:?}",
+            (f, s)
+        ));
+    }
+    let ((k2f, c2f), (_, c2s)) = kset_for(set2, f, s)?;
+    if [c2f, c2s].iter().any(|c| *c == c1f || *c == c1s) {
+        return Err(format!(
+            "gen 2's caps ({c2f}, {c2s}) repeat gen 1's ({c1f}, {c1s})"
+        ));
+    }
+
+    // 5. Gen 2's first request wakes the WM, while gen 2 is alive.
+    let key2 = at("PROBEAPP key code=", set2)?;
+    let idle2 = at("PROBEAPP idling before exit", key2)?;
+    let request = (key2..idle2)
+        .find(|&i| {
+            lines[i].contains(KWOKE)
+                && kwoke_key(lines[i]) == Some(k2f)
+                && kset_before(i)
+                    .is_some_and(|items| items.iter().any(|&(h, _, c)| h == f && c == c2f))
+        })
+        .ok_or_else(|| {
+            format!(
+                "no kernel wake on gen 2's surface key ({k2f:#x}, cap {c2f}) between its first \
+                 key and its idle"
+            )
+        })?;
+    // 6. The park-wake path ran in this boot.
+    if !lines
+        .iter()
+        .any(|l| l.contains(KWOKE) && l.contains(" parked=1 why=1 "))
+    {
+        return Err(
+            "no channel fire woke a parked waiter (`parked=1 why=1`) in this boot: the \
+             park-wake path wasn't exercised"
+                .to_string(),
+        );
+    }
+    let wm_request = at("DESKTOP park woke ms=", request)?;
+    if wm_request > idle2 || !lines[wm_request].contains("c1g2f") {
+        return Err(format!(
+            "the WM's wake after gen 2's request doesn't name gen 2's surface: {}",
+            lines[wm_request]
+        ));
+    }
+    Ok(())
+}
+
+/// A3p: whether neo-init built with `features` has `target` on, through
+/// its own `[features]` table (`userland/neo-init/Cargo.toml`, read
+/// line by line: `name = [..]`, arrays may span lines; `dep:` and
+/// `crate/feature` entries are other crates' and are skipped).
+fn neo_init_reaches(features: &[&str], target: &str) -> Result<bool, String> {
+    let path = workspace_root().join("userland/neo-init/Cargo.toml");
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok(feature_reaches(&parse_features(&text), features, target))
+}
+
+/// The `[features]` table of a Cargo.toml: each feature and its entries.
+fn parse_features(text: &str) -> std::collections::BTreeMap<String, Vec<String>> {
+    let mut table = std::collections::BTreeMap::new();
+    let mut in_features = false;
+    let mut current: Option<(String, String)> = None;
+    for raw in text.lines() {
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if current.is_none() && line.starts_with('[') {
+            in_features = line == "[features]";
+            continue;
+        }
+        if !in_features || line.is_empty() {
+            continue;
+        }
+        let (name, mut body) = match current.take() {
+            Some((name, body)) => (name, body + " " + line),
+            None => match line.split_once('=') {
+                Some((name, rest)) => (name.trim().to_string(), rest.trim().to_string()),
+                None => continue,
+            },
+        };
+        if !body.contains(']') {
+            current = Some((name, body));
+            continue;
+        }
+        body = body.trim_start_matches('[').to_string();
+        let body = body.split(']').next().unwrap_or("");
+        let entries = body
+            .split(',')
+            .map(|e| e.trim().trim_matches('"').to_string())
+            .filter(|e| !e.is_empty())
+            .collect();
+        table.insert(name, entries);
+    }
+    table
+}
+
+/// Whether `target` is among `features` or reachable from them in `table`
+/// (entries naming another crate, `dep:x` or `x/y`, are skipped).
+fn feature_reaches(
+    table: &std::collections::BTreeMap<String, Vec<String>>,
+    features: &[&str],
+    target: &str,
+) -> bool {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut stack: Vec<String> = features.iter().map(|f| (*f).to_string()).collect();
+    while let Some(f) = stack.pop() {
+        if f == target {
+            return true;
+        }
+        if f.contains(':') || f.contains('/') || !seen.insert(f.clone()) {
+            continue;
+        }
+        if let Some(entries) = table.get(&f) {
+            stack.extend(entries.iter().cloned());
+        }
+    }
+    false
 }
 
 /// Whether `NEO_TEST_EXTRA_FEATURES` names `feature`.
@@ -21069,6 +21410,7 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             observed.serial_log.display()
         ));
     }
+    require_parked_by_default(scenario, observed)?;
     require_observed_terminal_pass(scenario, observed)?;
     // OT-90 P2: the kill-switch build has no power module, so boot logs no plan.
     if scenario.name == "ot90_kill_switch_off" {
@@ -21476,9 +21818,14 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
                 " ipc_wakes=1",
                 "WAITANY revoke rc=0 returned=true result=-9 handle_wakes=",
                 " ipc_wakes=0",
-                "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf",
+                // A3p: the bound of 16.
+                "WAITANY sixteen items=16 result=0x8000 latency_ticks=",
+                " ipc_wakes=1",
+                "WAITANY bound seventeen=-22 sixteen=-14",
+                "WAITANY race16 rounds=8 woken=8 fired_before_park=",
+                "wait_any=ok ipc=woken_by_send race=no_lost_wakeup deadline=tick_exact kill=purged rebind=rewatched revoke=ebadf sixteen=last_item bound=einval_17 race16=no_lost_wakeup",
             ],
-            "an IPC-only wait must end on the send, a send inside the check-to-park window must never be lost, a deadline must end the wait by the tick, a waiter killed while parked must leave no entry, a handle closed and reused before the registration must be re-watched, and a handle revoked under a parked wait must end it with EBADF (Jarvis rung-1 F1)",
+            "an IPC-only wait must end on the send, a send inside the check-to-park window must never be lost, a deadline must end the wait by the tick, a waiter killed while parked must leave no entry, a handle closed and reused before the registration must be re-watched, a handle revoked under a parked wait must end it with EBADF (Jarvis rung-1 F1); A3p: a 16-item wait wakes on its last item, a 17-item wait is EINVAL before any copy, and a send on the 16th item inside the check-to-park window is never lost",
         )?;
     }
     if scenario.name == "hid_contention" {
@@ -22021,6 +22368,8 @@ fn require_observed_pass(scenario: TestScenario, observed: &ObservedTest) -> Res
             "DESKTOP apps stale activator client=1 refused=no\n",
             "PR #15 item 2: a released activator must be stale",
         )?;
+        require_cp61_parked_death(&read_serial(observed)?)
+            .map_err(|e| format!("`{}`: A3p CP-61: {e}", scenario.name))?;
     }
     // PR #15 review item 3: Arthur's flood starves nobody.
     if scenario.name == "desktop_apps_flood_boot" {
@@ -30073,6 +30422,139 @@ mod tests {
     /// The check is on the rows, not on "does the name appear anywhere in the
     /// file", so deleting one row fails even when the name is mentioned in a
     /// note. Falsified by deleting any non-test row: the missing list names it.
+    /// A3p: the feature resolver behind the parked default.
+    /// A3p CP-61: the parked-death oracle on a synthetic log in the WM's
+    /// order, then with each ordering it must refuse.
+    const CP61_LOG: &str = "\
+DESKTOP apps client connected client=1 value=1
+DESKTOP park set c1g1 f=22 s=19
+WAITANY witness set pid=1 items=12:0x10a8:14,22:0xb4d0:32,19:0x9cd8:28,
+WAITANY witness woke pid=1 ticket=1592 parked=1 why=1 key=0x10a8 fire_tick=1558 deadline=1559 now=1558
+PROBEAPP key code=4 count=1
+WAITANY witness woke pid=1 ticket=1696 parked=0 why=2 key=0xb4d0
+DESKTOP park woke ms=500 ready=c1g1f,
+PROBEAPP idling before exit ms=2000
+WAITANY witness woke pid=1 ticket=1907 parked=0 why=2 key=0x9cd8
+DESKTOP park woke ms=2010 ready=c1g1f,c1g1s,
+DESKTOP apps client ended client=1 value=7
+DESKTOP park set clients=none
+WAITANY witness set pid=1 items=12:0x10a8:14,
+DESKTOP apps client connected client=1 value=2
+DESKTOP park set c1g2 f=22 s=19
+WAITANY witness set pid=1 items=12:0x10a8:14,22:0xb4d0:44,19:0x9cd8:40,
+PROBEAPP key code=5 count=1
+WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0 fire_tick=1894 deadline=1894 now=1894
+DESKTOP park woke ms=490 ready=c1g2f,
+PROBEAPP idling before exit ms=2000
+";
+
+    #[test]
+    fn cp61_oracle_accepts_death_while_parked_and_reuse() {
+        assert_eq!(super::require_cp61_parked_death(CP61_LOG), Ok(()));
+    }
+
+    /// Guard 2 (the PM's ruling on relay 408 item 3): the tick wakes the WM
+    /// and gen 2's request never fires: no cap-44 fire, and no `c1g2f` in any
+    /// ready set. Refused.
+    #[test]
+    fn cp61_oracle_refuses_a_tick_wake_without_the_request() {
+        let log = CP61_LOG.replace(
+            "WAITANY witness woke pid=1 ticket=2598 parked=0 why=2 key=0xb4d0 fire_tick=1894 \
+             deadline=1894 now=1894\nDESKTOP park woke ms=490 ready=c1g2f,\n",
+            // The tick's wake stays (relay 412): the WM woke, with no gen-2
+            // item ready.
+            "DESKTOP park woke ms=490 ready=\n",
+        );
+        assert_ne!(log, CP61_LOG);
+        assert!(log.contains("DESKTOP park woke ms=490 ready=\n"));
+        assert!(!log.contains("c1g2f"));
+        assert!(!log.contains(":44,") || !log.contains("key=0xb4d0 fire_tick=1894"));
+        assert!(super::require_cp61_parked_death(&log).is_err());
+    }
+
+    #[test]
+    fn cp61_oracle_refuses_each_wrong_ordering() {
+        let cases = [
+            // The death's fire found no registration of gen 1 (relay 406's
+            // preempted schedule: the first scan returns ready, no fire).
+            (
+                "ticket=1907 parked=0 why=2 key=0x9cd8",
+                "ticket=1907 parked=0 why=2 key=0x10a8",
+            ),
+            // The WM's registration at the death no longer named gen 1.
+            (
+                "ms=2000\nWAITANY witness woke pid=1 ticket=1907",
+                "ms=2000\nWAITANY witness set pid=1 items=12:0x10a8:14,\n\
+                 WAITANY witness woke pid=1 ticket=1907",
+            ),
+            // The slot's handles weren't reused.
+            ("c1g2 f=22 s=19", "c1g2 f=23 s=19"),
+            // Gen 2 registered with one of gen 1's caps.
+            ("22:0xb4d0:44,19:0x9cd8:40,", "22:0xb4d0:32,19:0x9cd8:40,"),
+            // A gen-1 cap registered again after its death.
+            (
+                "set pid=1 items=12:0x10a8:14,\n",
+                "set pid=1 items=12:0x10a8:14,19:0x9cd8:28,\n",
+            ),
+            // Gen 2's wake was its session's, not its request's.
+            (
+                "ticket=2598 parked=0 why=2 key=0xb4d0",
+                "ticket=2598 parked=0 why=2 key=0x9cd8",
+            ),
+            // Guard 1: no fire woke a parked waiter in this boot.
+            (
+                "ticket=1592 parked=1 why=1 key=0x10a8",
+                "ticket=1592 parked=0 why=2 key=0x10a8",
+            ),
+            // The WM's wake after gen 2's request named gen 1 (relay 408
+            // item 2).
+            ("ms=490 ready=c1g2f,", "ms=490 ready=c1g1f,"),
+            // The WM named gen 1 after its death.
+            ("park set clients=none", "park set c1g1 f=22 s=19"),
+        ];
+        for (from, to) in cases {
+            let log = CP61_LOG.replace(from, to);
+            assert_ne!(log, CP61_LOG, "{from}");
+            assert!(super::require_cp61_parked_death(&log).is_err(), "{to}");
+        }
+    }
+
+    #[test]
+    fn feature_resolver_follows_neo_init_features() {
+        let table = parse_features(
+            "[package]\nname = \"x\"\n[features]\n# c\na = [\"b\", \"dep:z\"]\nb = [\n    \"c\", # tail\n    \"y/q\",\n]\nc = []\n[dependencies]\nd = \"1\"\n",
+        );
+        assert_eq!(
+            table.get("a").unwrap(),
+            &vec!["b".to_string(), "dep:z".to_string()]
+        );
+        assert_eq!(
+            table.get("b").unwrap(),
+            &vec!["c".to_string(), "y/q".to_string()]
+        );
+        assert!(!table.contains_key("d"));
+        assert!(feature_reaches(&table, &["a"], "c"));
+        assert!(!feature_reaches(&table, &["c"], "a"));
+        assert!(!feature_reaches(&table, &["a"], "z"));
+        // The real table: the image and the intro-based scenarios park; the
+        // Home and session scenarios (no intro) keep polling.
+        for (list, parks) in [
+            (&["desktop-intro", "login"][..], true),
+            (&["login-boot-test"][..], true),
+            (&["setup-menu-boot-test"][..], true),
+            (&["desktop-intro-boot-test"][..], true),
+            (&["desktop-home-boot-test"][..], false),
+            (&["desktop-session-boot-test"][..], false),
+            (&["atrium-apps", "desktop-home-boot-test"][..], false),
+        ] {
+            assert_eq!(
+                neo_init_reaches(list, "desktop-intro").unwrap(),
+                parks,
+                "{list:?}"
+            );
+        }
+    }
+
     #[test]
     fn sdk_abi_doc_covers_every_kernel_syscall() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");

@@ -276,6 +276,14 @@ pub fn run() -> i32 {
                     return 36;
                 }
                 if cfg!(feature = "probe-app-exit-after-key") {
+                    // A3p CP-61 (test only): idle first, so the WM, with
+                    // nothing to serve, parks over this client's channels
+                    // and is woken by its death (the scenario's oracle checks
+                    // that from the WM's own park log).
+                    if cfg!(feature = "probe-app-exit-idle") {
+                        log_line(b"PROBEAPP idling before exit ms=2000\n");
+                        idle_ns(2_000_000_000);
+                    }
                     return 7;
                 }
             }
@@ -286,6 +294,17 @@ pub fn run() -> i32 {
             _ => return 37,
         }
         libneo::sys_sched_yield();
+    }
+}
+
+/// Sleep `ns` without spinning: a futex wait on a word nobody wakes, to its
+/// deadline (an early return waits again).
+fn idle_ns(ns: u64) {
+    let now = || libneo::sys_clock_gettime(libneo::CLOCK_MONOTONIC).unwrap_or(u64::MAX);
+    let deadline = now().saturating_add(ns);
+    let word = 0u32;
+    while now() < deadline {
+        let _ = libneo::sys_futex_wait(&word, 0, deadline);
     }
 }
 

@@ -149,6 +149,15 @@ desktop-motion-rm-boot-test = ["desktop-motion-boot-test", "reduce-motion"]
 # SYS_WAIT_ANY on its channel, input route, SAK latch and focus instead.
 # Off: the loops spin exactly as before (the kill-switch).
 desktop-park = ["desktop-pointer"]
+# A3p CP-61 witness (test only): the session loop logs its park's client set
+# and each wake a client's item caused (`desktop_apps_reuse_boot`'s oracle).
+desktop-park-witness = ["desktop-park", "atrium-apps"]
+# A3p (OT-88 THINK §2.3 item 9): `desktop-park` is image A's default: xtask
+# adds it to every WM build that includes `desktop-intro` (the product's
+# base), unless the build names this marker. It does nothing itself: it is
+# the kill-switch, a build without `desktop-park` (the polling loop, bit for
+# bit as before).
+desktop-poll = []
 # OT-22 idle witness: log the BSP's idle ticks across the first quiet gap
 # between Arthur's requests (kernel `neo-test-desktop-idle`). The parked
 # build must idle most of it; the spinning control almost none.
