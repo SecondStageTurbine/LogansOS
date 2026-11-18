@@ -482,7 +482,7 @@ The design follows ADR-010 (`docs/ADR-010-capability-system-foundation.md`) and 
     confirm in every posture, `userland/neo-arthur/src/conversation_logic.rs:722-742`), never a capability Arthur
     holds.
   - A future `neo-shell` `shutdown` command works the same way, as a request to the desktop.
-- **With login (OT-88):** the session broker becomes the holder. The lock and login screens still offer Shut down
+- **With login (OT-66):** the session broker becomes the holder. The lock and login screens still offer Shut down
   and Restart, as desktop OSes do. That is OT-88's call; this design doesn't block it.
 
 ## 7. Prior-art survey
@@ -659,7 +659,7 @@ Dependencies, cycles and gates only, per the no-calendar rule. **Kill-switch on 
 | **P2** | The mechanism: S5 write and reset chain, test-entry only. Scenarios `ot90_s5_exits_qemu`, `ot90_restart_second_boot`, `ot90_restart_fallback_i8042`, `ot90_kill_switch_off`; the xtask QMP discriminator | P1 | 1-3 (QEMU is forgiving; the QMP plumbing is new) | 4-shard QEMU + AAG (port I/O and interrupt lenses) |
 | **P3** | Clean: K1-K6, with the STOP IPI, interrupt masking, per-driver `quiesce()`, the K2 freeze and shutdown-only drain with its clean/unclean outcome, guarded flush, and the bounds. Needs #180 merged. Scenarios `ot90_s5_durability`, `ot90_straggler_forced`, `ot90_s5_smp4_viommu` | P2 | 2-4 (new SMP stop path, six drivers) | 4-shard QEMU + AAG **with a cross-family lens** (SMP core: CPU stop, IPI); pitfall-bank consult (CP-2, -3, -7, -8, -29, -33, -36, -64, -72, -75) |
 | **P4** | The capability and `SYS_POWER`, root-minted into neo-init. Scenario `ot90_cap_denied`; the constants KAT; the CP-34 product-composition check | P3 | 1-2 | 4-shard QEMU + AAG (ABI lens) |
-| **P5** | Userland: the Power item at the right end of the craft bar, the confirm dialog, `PREPARE_POWER_OFF` / `READY` to apps, Arthur's save path, the U2 bound | P4; parallel with OT-89 | 1-2 | QEMU desktop scenario with synthetic input; cross-family review |
+| **P5** | Userland: the Power item at the right end of the craft bar, the confirm dialog, `PREPARE_POWER_OFF` / `READY` to apps, Arthur's save path, the U2 bound | P4; parallel with OT-88 (the number was written as OT-89, which was never assigned; corrected in the 2026-11-18 audit) | 1-2 | QEMU desktop scenario with synthetic input; cross-family review |
 | **P6** | Bare-metal acceptance: OptiPlex (power-off, restart), then the Zenbook (photos) | P5 (P3 is enough for a scenario-driven run) | **unknown depth** (blind hardware: the next run may reveal the next layer, F1-F10) | acceptance milestone in the ledger, not a merge gate |
 | **P7** (post-MVP) | `_PTS(5)` / `_SST`, `\_S5` from the interpreter (the static decode stays as a cross-check), the fixed-event power button (PM1 `PWRBTN_STS`, SCI on GSI 9 for every set), then the control-method button (Zenbook PWRB `Notify` via GPE/EC) | OT-86 L6, L7, L9 and an in-kernel interpreter rung | many; genuinely open | as for each OT-86 rung |
 | **1.0** | Sleep and wake (§10) | P7 | many | its own THINK |
