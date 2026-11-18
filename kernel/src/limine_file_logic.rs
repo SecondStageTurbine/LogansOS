@@ -31,6 +31,19 @@
 /// The struct's size: every field through `part_uuid`.
 pub const FILE_BYTES: usize = 112;
 pub const GPT_DISK_UUID_OFFSET: usize = 64;
+/// The entry's command line (`const char *`): Limine v8.6.0 fills it on the
+/// executable file's response, and answers no separate command-line request
+/// (OT-100 R3: the first CI run saw `persist=off` on a `persist=on` entry).
+pub const CMDLINE_OFFSET: usize = 32;
+
+/// The command-line pointer Limine stored in the file, as an address (zero
+/// when it gave none).
+#[allow(dead_code)] // the installer build reads only the GUID
+pub fn cmdline_ptr(file: &[u8; FILE_BYTES]) -> u64 {
+    let mut raw = [0u8; 8];
+    raw.copy_from_slice(&file[CMDLINE_OFFSET..CMDLINE_OFFSET + 8]);
+    u64::from_le_bytes(raw)
+}
 
 /// The GPT disk GUID of the medium the file was loaded from, as GPT stores
 /// it (Limine copies the header's 16 bytes). `None` when Limine reports

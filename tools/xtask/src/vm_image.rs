@@ -229,6 +229,17 @@ fn check_boot_disk_partitions(boot: &[u8]) -> Result<(), String> {
     if !has_esp {
         return Err(format!("{BOOT_DISK}'s GPT has no EFI system partition"));
     }
+    // OT-100 R3 (THINK §4.1 item 4, Dexter's F5): a persistent ISO carries a
+    // LogansOS NeoFS partition, and the VM's boot disk must not.
+    let has_area = (0..count).any(|i| {
+        let start = (entries_lba * 512 + i * size) as usize;
+        boot.get(start..start + 16) == Some(&crate::persist_image::PERSIST_TYPE[..])
+    });
+    if has_area {
+        return Err(format!(
+            "{BOOT_DISK} carries a LogansOS persistence partition: vm-image builds without --persist-mib"
+        ));
+    }
     Ok(())
 }
 

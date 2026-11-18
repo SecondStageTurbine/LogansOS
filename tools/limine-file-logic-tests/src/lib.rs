@@ -65,6 +65,17 @@ mod tests {
         assert_eq!(logic::gpt_disk_guid(&f), Some(DISK_GUID));
     }
 
+    /// The command line is the pointer at offset 32, little-endian, between
+    /// `path` and `media_type`.
+    #[test]
+    fn the_cmdline_pointer_is_read_at_the_protocol_offset() {
+        let mut f = fixture();
+        f[24..32].fill(0xaa); // path
+        f[32..40].copy_from_slice(&0xffff_8000_1234_5678u64.to_le_bytes());
+        assert_eq!(logic::cmdline_ptr(&f), 0xffff_8000_1234_5678);
+        assert_eq!(logic::cmdline_ptr(&fixture()), 0);
+    }
+
     /// The divergence `limine_file_logic` exists for: the crate puts the
     /// field 8 bytes early and doesn't lay `Uuid` out as C does. If a crate
     /// update fixes either, this fails, and the raw read can be revisited.

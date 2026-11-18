@@ -91,6 +91,26 @@ on screen. With no sink on this machine, a photo of that line is the verdict.
    conv=fsync` on Linux. **Double-check the target is the Kingston stick**, never the laptop's disk:
    compare the size, about 30 GB, against 954 GB.
 
+### A persistent image: the stick is a data medium too (OT-100 R3)
+
+An image built with `cargo xtask iso --persist-mib <n>` (with a kernel built with `usb-persistence`) carries a
+persistence area: a LogansOS NeoFS partition appended after the boot files. From R3 on, **the stick is not only a
+boot medium: it holds data** (Arthur's memory, settings, the user's files), and that data stays across boots.
+
+- **Re-writing the stick with a new image erases the area.** Anything saved on the stick is gone. Copy off what you
+  need first (a later rung adds a way to read it on another OS).
+- **The boot menu now waits 3 seconds** and has two entries. The default saves to the stick (`persist=on`). The second,
+  "- try (nothing is saved)", boots with `persist=off`: the stick is mounted read-only and nothing on it is written.
+- **The census lines** at boot (`persist: guard census device=… armed=… table=…`) name what the write guard arms on
+  each disk. On this laptop the internal NVMe must read `armed=none table=gpt`, every boot; the stick names exactly its
+  area. Photograph them with the rest of the run.
+- **One stick at a time.** Two sticks written from the same image share a disk GUID, so the boot stick can't be
+  identified and nothing on USB is written (`persist: boot device not identified … matches=2`). A second LogansOS
+  stick from another image is never written either.
+- **Pulling the stick while LogansOS runs** turns the session read-only (`persist: volume lost (removed); …`). The
+  stick keeps what was last saved; the next boot uses it.
+- **Wi-Fi passwords are never saved to the stick** until the area is encrypted (THINK §6); they are typed each boot.
+
 ## Booting the run (the PL, at the laptop)
 
 1. Power the laptop **off** (a full shutdown; with Windows Fast Startup a "shut down" is hibernation, so

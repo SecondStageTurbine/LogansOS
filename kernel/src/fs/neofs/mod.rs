@@ -24,6 +24,31 @@ mod tree_logic;
 
 #[cfg(feature = "neo-test")]
 pub use cache::{CacheStats, WriteBackWorkerStopReport};
+
+/// OT-100 R3, #110 review F1/F2: hold a mutation just past its
+/// `is_writable()` check, so a scenario can flip the volume read-only while
+/// the mutation is admitted but has written nothing.
+#[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+pub mod admission_hold {
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering::SeqCst};
+
+    /// While set, each admitted create waits at the hold.
+    pub static HOLD: AtomicBool = AtomicBool::new(false);
+    /// The creates now waiting at the hold.
+    pub static ADMITTED: AtomicU32 = AtomicU32::new(0);
+    /// Set to let the waiting creates go on.
+    pub static RELEASE: AtomicBool = AtomicBool::new(false);
+
+    pub(super) fn point() {
+        if !HOLD.load(SeqCst) {
+            return;
+        }
+        ADMITTED.fetch_add(1, SeqCst);
+        while !RELEASE.load(SeqCst) {
+            crate::sched::yield_now();
+        }
+    }
+}
 #[allow(unused_imports)] // exported ABI tag for callers that inspect mounted volume kind
 pub use format::NeoFsKind;
 #[cfg(feature = "power-clean")]

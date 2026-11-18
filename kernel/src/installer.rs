@@ -52,7 +52,6 @@ use crate::drivers::block::{
 use crate::fs::neofs::NeoFs;
 use crate::fs::{Inode, VfsError};
 use crate::install_bundle_logic as bundle;
-use crate::limine_file_logic;
 use crate::serial_println;
 use crate::sync::SwitchMutex;
 
@@ -152,31 +151,15 @@ pub fn load_bundle() -> Result<Bundle, Refused> {
     Ok(Bundle { bytes, parts })
 }
 
-/// The kernel file as Limine loaded it. SAFETY (for the `'static`): Limine
-/// keeps the executable file mapped for the kernel's life; nothing frees it.
-fn kernel_file() -> Option<&'static limine::file::File> {
-    crate::EXECUTABLE_FILE_REQUEST
-        .response()
-        .map(|r| r.executable_file())
-}
+// The kernel file and the boot medium's GPT disk GUID now live in
+// `boot_medium`, shared with OT-100 R3's persistence mount.
+pub use crate::boot_medium::boot_disk_guid;
+use crate::boot_medium::kernel_file;
 
 fn kernel_bytes() -> Option<&'static [u8]> {
     let data = kernel_file()?.data();
-    // SAFETY: see `kernel_file`.
+    // SAFETY: see `boot_medium::kernel_file`.
     Some(unsafe { core::slice::from_raw_parts(data.as_ptr(), data.len()) })
-}
-
-/// The boot medium's GPT disk GUID, as GPT stores it (Limine's file
-/// response; zero when the medium has no GPT). Read at the protocol's offset,
-/// not through the `limine` crate's field (`limine_file_logic`).
-pub fn boot_disk_guid() -> Option<[u8; 16]> {
-    let file = kernel_file()? as *const limine::file::File as *const u8;
-    // SAFETY: Limine's response points at a whole `struct limine_file`
-    // (`limine_file_logic::FILE_BYTES`, every revision), mapped for the
-    // kernel's life (see `kernel_file`); read unaligned as plain bytes.
-    let raw =
-        unsafe { core::ptr::read_unaligned(file as *const [u8; limine_file_logic::FILE_BYTES]) };
-    limine_file_logic::gpt_disk_guid(&raw)
 }
 
 /// The running system's deployment: (slot file name, bytes), kernel first.

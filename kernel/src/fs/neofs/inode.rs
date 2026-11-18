@@ -234,8 +234,32 @@ impl NeoFsState {
         }
     }
 
+    /// Writable: mounted writable, and (OT-100 R3) not flipped read-only
+    /// since (`Acquire`; THINK §4.2).
     pub(super) fn is_writable(&self) -> bool {
+        #[cfg(feature = "usb-persistence")]
+        if self.cache.lost().is_some() {
+            return false;
+        }
         self.writable
+    }
+
+    /// OT-100 R3: why the mount went read-only, if it did.
+    #[cfg(feature = "usb-persistence")]
+    pub(super) fn lost(&self) -> Option<crate::persist_logic::Lost> {
+        self.cache.lost()
+    }
+
+    /// OT-100 R3: the "try" switch: drain, then go read-only.
+    #[cfg(feature = "usb-persistence")]
+    pub(super) fn switch_read_only(&self) {
+        if self.writable {
+            // Namespace mutations already admitted finish staging (they hold
+            // `entries`) and go out in the last pass; then the flip. Lock
+            // order: `entries`, then `drain` (as `fsync`).
+            let _entries = self.entries.lock();
+            self.cache.lose_by_user();
+        }
     }
 
     /// OT-90 P3a: count a mutator in, unless the mount is frozen for
@@ -267,7 +291,7 @@ impl NeoFsState {
             drain_error: false,
             worker_exit: 0,
         };
-        if !self.writable {
+        if !self.is_writable() {
             return report;
         }
         self.frozen.store(true, SeqCst);
@@ -360,9 +384,11 @@ impl NeoFsState {
     }
 
     pub(super) fn create_regular(&self, name: String) -> Result<(u64, InodeRecord), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
+        #[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+        super::admission_hold::point();
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
 
@@ -437,9 +463,11 @@ impl NeoFsState {
         bytes: &[u8],
     ) -> Result<(u64, InodeRecord), NeoFsError> {
         use super::tree_logic::{Tree, pointer_blocks};
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
+        #[cfg(all(feature = "neo-test", feature = "usb-persistence"))]
+        super::admission_hold::point();
         #[cfg(feature = "power-clean")]
         let _op = self.begin_write()?;
         if bytes.len() > MAX_FILE_SIZE {
@@ -592,11 +620,13 @@ impl NeoFsState {
                 );
                 return Err(NeoFsError::BlockDevice);
             }
-            write_fs_blocks(
-                &self.device,
-                tree.data + (done / FS_BLOCK_SIZE) as u64,
-                &run[..padded],
-            )?;
+            self.cache.with_io(|| {
+                write_fs_blocks(
+                    &self.device,
+                    tree.data + (done / FS_BLOCK_SIZE) as u64,
+                    &run[..padded],
+                )
+            })?;
             done += take;
         }
         let mut pointers = alloc::boxed::Box::new([0u8; FS_BLOCK_SIZE]);
@@ -604,10 +634,12 @@ impl NeoFsState {
             let block = tree
                 .pointer_block_into(i, &mut pointers)
                 .ok_or(NeoFsError::InvalidInode)?;
-            write_fs_blocks(&self.device, block, &pointers[..])?;
+            self.cache
+                .with_io(|| write_fs_blocks(&self.device, block, &pointers[..]))?;
         }
         if self.device.supports_flush() {
-            retry_busy_block_io(|| self.device.flush())?;
+            self.cache
+                .with_io(|| retry_busy_block_io(|| self.device.flush()))?;
         }
         #[cfg(feature = "neo-test-neofs-large-write")]
         if LARGE_WRITE_STOP_BEFORE_COMMIT.swap(false, core::sync::atomic::Ordering::AcqRel) {
@@ -624,7 +656,7 @@ impl NeoFsState {
     /// `subdir`: a directory inode with no data blocks.
     #[cfg(feature = "installer")]
     pub(super) fn create_directory(&self, name: String) -> Result<(u64, InodeRecord), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -682,7 +714,7 @@ impl NeoFsState {
     /// The device must already hold `total_blocks`.
     #[cfg(feature = "installer")]
     pub(super) fn grow(&self, total_blocks: u64) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -730,7 +762,7 @@ impl NeoFsState {
         offset: usize,
         input: &[u8],
     ) -> Result<(u64, InodeRecord), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -809,7 +841,7 @@ impl NeoFsState {
         old_record: &InodeRecord,
         new_len: u64,
     ) -> Result<(u64, InodeRecord), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -925,7 +957,7 @@ impl NeoFsState {
         bytes: &[u8],
         stop_before_publish: bool,
     ) -> Result<(u64, InodeRecord), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -1003,7 +1035,14 @@ impl NeoFsState {
     }
 
     pub(super) fn fsync_regular(&self) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
+            // OT-100 R3 (THINK §4.2): a lost volume refuses fsync, so the
+            // caller learns its data was not saved. A mount that was always
+            // read-only has nothing to save, and keeps answering Ok.
+            #[cfg(feature = "usb-persistence")]
+            if self.cache.lost().is_some() {
+                return Err(NeoFsError::ReadOnly);
+            }
             return Ok(());
         }
 
@@ -1307,7 +1346,7 @@ impl NeoFsState {
 
     #[cfg(feature = "neo-test-phase3-neofs-3c")]
     pub(super) fn debug_run_quiescent_gc(&self) -> Result<GcStats, NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         let _entries = self.entries.lock();
@@ -1319,7 +1358,7 @@ impl NeoFsState {
 
     #[cfg(feature = "neo-test-phase3-neofs-3c")]
     pub(super) fn debug_inject_gc_before_superblock(&self) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         let _entries = self.entries.lock();
@@ -1388,7 +1427,7 @@ impl NeoFsState {
         &self,
         name: alloc::string::String,
     ) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         let _writeback_pause = self.cache.pause_worker();
@@ -1442,7 +1481,7 @@ impl NeoFsState {
         offset: usize,
         input: &[u8],
     ) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
 

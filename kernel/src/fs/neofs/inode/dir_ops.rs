@@ -119,7 +119,7 @@ impl NeoFsState {
         dir: Option<&str>,
         name: &str,
     ) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -162,7 +162,7 @@ impl NeoFsState {
         dir: Option<&str>,
         name: &str,
     ) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]
@@ -225,7 +225,7 @@ impl NeoFsState {
         (src_dir, src_name): (Option<&str>, &str),
         (dst_dir, dst_name): (Option<&str>, &str),
     ) -> Result<(), NeoFsError> {
-        if !self.writable {
+        if !self.is_writable() {
             return Err(NeoFsError::ReadOnly);
         }
         #[cfg(feature = "power-clean")]

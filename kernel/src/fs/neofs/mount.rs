@@ -107,6 +107,25 @@ impl NeoFs {
         self.report
     }
 
+    /// OT-100 R3: writable now (mounted read-write and not lost).
+    #[cfg(feature = "usb-persistence")]
+    pub fn is_writable(&self) -> bool {
+        self.state.is_writable()
+    }
+
+    /// OT-100 R3 (THINK §4.2): why this mount went read-only, if it did.
+    #[cfg(feature = "usb-persistence")]
+    pub fn lost(&self) -> Option<crate::persist_logic::Lost> {
+        self.state.lost()
+    }
+
+    /// OT-100 R3 (THINK §2.3, §4.2): the "try" switch: drain what is dirty,
+    /// then go read-only for the rest of this boot (`Lost::User`).
+    #[cfg(feature = "usb-persistence")]
+    pub fn switch_read_only(&self) {
+        self.state.switch_read_only();
+    }
+
     pub fn lookup(&self, path: &str) -> Result<Arc<dyn Inode>, VfsError> {
         let normalized = normalize_relative_path(path)?;
         if normalized.is_empty() {
@@ -200,7 +219,12 @@ impl NeoFs {
     pub fn total_blocks(&self) -> u64 {
         self.state.total_blocks()
     }
+}
 
+/// The mount-wide drain, for the installer and (OT-100 R3) the persistence
+/// scenarios.
+#[cfg(any(feature = "installer", feature = "usb-persistence"))]
+impl NeoFs {
     /// Write every dirty block and flush the device (the mount-wide drain
     /// `fsync` uses).
     pub fn sync(&self) -> Result<(), VfsError> {

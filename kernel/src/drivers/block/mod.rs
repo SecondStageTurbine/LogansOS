@@ -180,6 +180,14 @@ pub trait BlockDevice: Send + Sync {
         None
     }
 
+    /// OT-100 R3 (THINK §4.2): the class of this device's last failed write
+    /// or flush, for the NeoFS drain worker's classifier. `None`: none
+    /// recorded, or a device that doesn't record (only a partition view does).
+    #[cfg(feature = "usb-persistence")]
+    fn last_failure(&self) -> Option<crate::persist_logic::BlockFailure> {
+        None
+    }
+
     fn read_block(&self, lba: u64, buffers: &[Arc<DmaBuffer>]) -> BlockResult<()> {
         self.submit(BlockRequest {
             op: BlockOp::Read,
@@ -459,6 +467,19 @@ impl GuardedDevice {
         !self.arming().claims.is_empty()
     }
 
+    /// OT-100 R3 (Muse's #104 observations 1 and 2): whether the paths that
+    /// drive the device's write machinery without writing data (`flush`, the
+    /// write-protect query, a `Flush` request) may reach it: the device is
+    /// armed, or the installer has claimed it (its claim flushes the target).
+    #[cfg(feature = "usb-persistence")]
+    fn non_write_allowed(&self) -> bool {
+        #[cfg(feature = "installer")]
+        if self.claimed.load(Ordering::Acquire) {
+            return true;
+        }
+        self.writes_allowed()
+    }
+
     /// Whether this disk is armed, without judging it: a judgement not yet
     /// made (or one stuck on a disk that stopped answering) reads as not
     /// armed. The shutdown's K6 plan reads this; it never waits.
@@ -585,6 +606,14 @@ impl BlockDevice for GuardedDevice {
         if request.op == BlockOp::Write && !self.write_allowed(request.lba, request.buffers) {
             return Err(BlockError::WriteRefused);
         }
+        #[cfg(feature = "usb-persistence")]
+        if request.op == BlockOp::Flush {
+            return write_guard_logic::gate_non_write(
+                self.non_write_allowed(),
+                Err(BlockError::Unsupported),
+                || self.inner.submit(request),
+            );
+        }
         #[cfg(feature = "installer")]
         if request.op == BlockOp::Read {
             self.reads.fetch_add(1, Ordering::Relaxed);
@@ -597,11 +626,23 @@ impl BlockDevice for GuardedDevice {
     }
 
     fn flush(&self) -> BlockResult<()> {
+        #[cfg(feature = "usb-persistence")]
+        return write_guard_logic::gate_non_write(
+            self.non_write_allowed(),
+            Err(BlockError::Unsupported),
+            || self.inner.flush(),
+        );
+        #[cfg(not(feature = "usb-persistence"))]
         self.inner.flush()
     }
 
     #[cfg(feature = "usb-storage-write")]
     fn write_protected(&self) -> Option<bool> {
+        #[cfg(feature = "usb-persistence")]
+        return write_guard_logic::gate_non_write(self.non_write_allowed(), None, || {
+            self.inner.write_protected()
+        });
+        #[cfg(not(feature = "usb-persistence"))]
         self.inner.write_protected()
     }
 
@@ -704,6 +745,18 @@ pub fn writes_allowed(index: usize) -> Option<bool> {
     let device = registry.guards.get(index)?.clone();
     drop(registry);
     Some(device.writes_allowed())
+}
+
+/// OT-100 R3 (THINK §4.1, §5): registered device `index`'s arming, judged
+/// now if no write has judged it yet (reads only, in the caller's thread:
+/// the census and the mount force it at boot, before the drain kthread's
+/// first write; CP-82), as a copy. `None`: no such device.
+#[cfg(feature = "usb-persistence")]
+pub fn arming_report(index: usize) -> Option<write_guard_logic::Arming> {
+    let registry = REGISTRY.lock();
+    let device = registry.guards.get(index)?.clone();
+    drop(registry);
+    Some(device.arming().clone())
 }
 
 /// OT-90 K6: whether device `index` is armed, never judging it (see
