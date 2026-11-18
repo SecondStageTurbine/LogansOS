@@ -464,3 +464,154 @@ pub fn fill(template: &str, args: &[&str]) -> String {
 pub fn format(lang: Lang, msg: Msg, args: &[&str]) -> String {
     fill(text(lang, msg), args)
 }
+
+/// F1a: the macro for [`files`], a catalog with its own tables and lookups.
+/// It sits here, after the main catalog, behind the `files` feature: only
+/// `files-core` turns it on, so the image's binaries (which link this crate
+/// through `libneo`) don't compile it, nor carry its debug info.
+#[cfg(feature = "files")]
+macro_rules! files_catalog {
+    ($($(#[$doc:meta])* $id:ident = $en:literal, $es:literal;)*) => {
+        /// One string Files shows. The variant's position is its index into
+        /// each table.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub enum Msg {
+            $($(#[$doc])* $id,)*
+        }
+
+        impl Msg {
+            /// Every id, in table order.
+            pub const ALL: &'static [Msg] = &[$(Msg::$id,)*];
+        }
+
+        /// How many ids there are.
+        pub const MSG_COUNT: usize = Msg::ALL.len();
+
+        /// The English table.
+        const EN: [&str; MSG_COUNT] = [$($en,)*];
+
+        /// The Spanish table (neutral Latin American Spanish).
+        const ES: [&str; MSG_COUNT] = [$($es,)*];
+
+        /// The table for `lang`.
+        const fn table(lang: $crate::Lang) -> &'static [&'static str; MSG_COUNT] {
+            match lang {
+                $crate::Lang::En => &EN,
+                $crate::Lang::Es => &ES,
+            }
+        }
+
+        /// `msg` in `lang`, and whether the English fallback was taken (an
+        /// empty entry). A KAT holds that no entry falls back.
+        pub const fn lookup(lang: $crate::Lang, msg: Msg) -> (&'static str, bool) {
+            let s = table(lang)[msg as usize];
+            if s.is_empty() {
+                (EN[msg as usize], true)
+            } else {
+                (s, false)
+            }
+        }
+
+        /// `msg` in `lang`, falling back to English.
+        pub const fn text(lang: $crate::Lang, msg: Msg) -> &'static str {
+            lookup(lang, msg).0
+        }
+
+        /// [`fill`]($crate::fill) on `msg` in `lang`.
+        pub fn format(lang: $crate::Lang, msg: Msg, args: &[&str]) -> alloc::string::String {
+            $crate::fill(text(lang, msg), args)
+        }
+    };
+}
+
+/// F1a: the Files app's rows (`files-core`), in English and Spanish only: its
+/// kinds, sizes, hints, confirmations and every F0 error. A catalog of its own so the
+/// image's binaries, which link the main catalog, don't carry them: only
+/// `files-core` (linked into no image until F1b) turns on the `files`
+/// feature. The same rules and KATs hold for it (`files_tests.rs`): both
+/// tables complete, English pinned in `fixtures/en-files.txt`, every row in
+/// the face and inside the card.
+#[cfg(feature = "files")]
+pub mod files {
+    files_catalog! {
+        FilesTitle = "Files", "Archivos";
+        /// The kind column.
+        FilesKindFolder = "Folder", "Carpeta";
+        FilesKindFile = "File", "Archivo";
+        FilesKindModel = "Model", "Modelo";
+        FilesKindLink = "Link", "Enlace";
+        /// The size column; the argument is the number, already written with
+        /// [`Msg::FilesDecimalMark`].
+        FilesSizeBytes = "{} B", "{} B";
+        FilesSizeKb = "{} KB", "{} KB";
+        FilesSizeMb = "{} MB", "{} MB";
+        /// The decimal mark in a size (1.5 KB, 1,5 KB).
+        FilesDecimalMark = ".", ",";
+        /// A folder's size column: its entry count.
+        FilesItemsOne = "1 item", "1 elemento";
+        FilesItemsMany = "{} items", "{} elementos";
+        FilesEmpty = "This folder is empty.", "Esta carpeta está vacía.";
+        /// The argument is the limit (64).
+        FilesFolderFullNote = "This folder holds {} items, the most it can.",
+            "Esta carpeta tiene {} elementos, el máximo posible.";
+        /// The first new folder's name; later ones add " 2", " 3", ...
+        FilesNewFolderName = "New folder", "Carpeta nueva";
+        FilesHintBrowse = "Enter opens. Backspace goes up. N makes a folder. F2 renames.",
+            "Enter abre. Retroceso sube. N crea una carpeta. F2 cambia el nombre.";
+        FilesHintBrowse2 = "Del deletes. C copies. V pastes.", "Supr elimina. C copia. V pega.";
+        FilesRenameTitle = "Rename", "Cambiar nombre";
+        FilesHintNaming = "Type a name. Enter to save, Esc to cancel.",
+            "Escribe un nombre. Enter para guardar, Esc para cancelar.";
+        FilesConfirmDeleteFile = "Delete this file? This can't be undone.",
+            "¿Eliminar este archivo? No se puede deshacer.";
+        FilesConfirmDeleteFolder = "Delete this empty folder?", "¿Eliminar esta carpeta vacía?";
+        FilesConfirmHint = "Enter to delete; any other key goes back.",
+            "Enter para eliminar; cualquier otra tecla vuelve atrás.";
+        FilesNameEmpty = "A name can't be empty.", "El nombre no puede estar vacío.";
+        /// The argument is the limit (47).
+        FilesNameTooLong = "A name can be at most {} bytes long.",
+            "Un nombre puede tener como máximo {} bytes.";
+        FilesNameSlash = "A name can't contain /.", "Un nombre no puede contener /.";
+        FilesNameControl = "A name can't contain control characters.",
+            "Un nombre no puede contener caracteres de control.";
+        FilesNameDot = "A name can't be . or ..", "Un nombre no puede ser . ni ..";
+        FilesErrStale = "That folder moved or was removed. This is the nearest one above it.",
+            "Esa carpeta se movió o se eliminó. Esta es la más cercana por encima.";
+        FilesErrExists = "Something here already has that name.", "Ya hay algo aquí con ese nombre.";
+        FilesErrNotEmpty = "That folder isn't empty. Empty it first.",
+            "Esa carpeta no está vacía. Vacíala primero.";
+        FilesErrNoSpace = "There isn't enough space on the disk.",
+            "No hay espacio suficiente en el disco.";
+        FilesErrRefused = "That isn't allowed here.", "Eso no está permitido aquí.";
+        /// The argument is the limit (64).
+        FilesErrFolderFull = "This folder is full: {} items at most.",
+            "Esta carpeta está llena: {} elementos como máximo.";
+        FilesErrNotFound = "That item is gone; the list is up to date now.",
+            "Ese elemento ya no está; la lista ya está al día.";
+        FilesErrBusy = "The system needs that item, so it stays.",
+            "El sistema necesita ese elemento, así que se queda.";
+        FilesErrRetry = "The disk was busy. Try again.", "El disco estaba ocupado. Inténtalo de nuevo.";
+        FilesErrIo = "The disk couldn't do that.", "El disco no pudo hacerlo.";
+        FilesErrInvalid = "That can't be done here; the disk may be full.",
+            "Eso no se puede hacer aquí; puede que el disco esté lleno.";
+        /// The argument is the (negative) errno.
+        FilesErrOther = "That didn't work (error {}).", "No funcionó (error {}).";
+        FilesRootUnavailable = "Files can't read its folders right now.",
+            "Archivos no puede leer sus carpetas ahora.";
+        FilesCopied = "Copied. Open a folder and paste it there.",
+            "Copiado. Abre una carpeta y pégalo ahí.";
+        /// The argument is the limit in KB (32).
+        FilesCopyTooBig = "Only files up to {} KB copy for now. Nothing was copied.",
+            "Por ahora solo se copian archivos de hasta {} KB. No se copió nada.";
+        FilesCopyNotFile = "Only files copy for now, not folders.",
+            "Por ahora solo se copian archivos, no carpetas.";
+        FilesPasted = "Pasted.", "Pegado.";
+        FilesNothingToPaste = "Copy a file first.", "Copia un archivo primero.";
+        FilesNoApp = "No app opens this.", "Ninguna app abre esto.";
+        FilesModelArthur = "Models are Arthur's; no app opens them.",
+            "Los modelos son de Arthur; ninguna app los abre.";
+    }
+}
+
+#[cfg(all(test, feature = "files"))]
+mod files_tests;

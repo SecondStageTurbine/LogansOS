@@ -13,11 +13,11 @@ the card.
   verbs are what the parsers read. They appear unchanged inside the Spanish rows.
 - **Names stay.** LogansOS, Arthur (and its English acronym), Lens, UTC, USB, CPU, Windows, Enter, Esc, Tab.
 - **Persona rules hold.** No exclamations (so no "¡" either), no emoji, economy.
-- **Characters.** Beyond ASCII the table uses only `¿ á é í ñ ó ú`, all in Inter Regular (KAT). The intro
+- **Characters.** Beyond ASCII the table uses only `¿ á é í ñ ó ú` (F1a adds none), all in Inter Regular (KAT). The intro
   persona KAT in `neo-atrium` allows printable ASCII only; S6b relaxes it to "covered by the face" for the
   Spanish table.
 - **Width.** Every row fits the card with its widest realistic arguments (a 30-byte zone name, a 32-byte
-  typed name, the longest date). The widest Spanish row is IntroModelAbsent at 96.7% of the card.
+  typed name, the longest date; for F1a, a size, the limits and an errno at their widest). The widest Spanish row is IntroModelAbsent at 96.7% of the card.
 
 ## Every row
 
@@ -159,3 +159,49 @@ the card.
 | `ClockSavedLocal` | Saved: this computer's clock keeps local time. | Guardado: el reloj de esta computadora guarda la hora local. |  |
 | `ClockSavedUtc` | Saved: this computer's clock keeps UTC. | Guardado: el reloj de esta computadora guarda la hora UTC. |  |
 | `ClockReadoutZoneNotSet` |  (zone not set) |  (zona sin definir) | S6b. Home's clock readout, after the time (with its leading space). S6a missed it; the no-stray-literals scan found it. "sin definir" as in SetupNotSet. |
+| `FilesTitle` | Files | Archivos | F1a. The app's name: "Archivos", as the window and the Spine chip say it. |
+| `FilesKindFolder` | Folder | Carpeta | F1a. The kind column. |
+| `FilesKindFile` | File | Archivo | F1a. |
+| `FilesKindModel` | Model | Modelo | F1a. |
+| `FilesKindLink` | Link | Enlace | F1a. A symbolic link (NeoFS lists them but won't read them): "Enlace". |
+| `FilesSizeBytes` | {} B | {} B | F1a. Units stay as symbols (B, KB, MB) in both languages. |
+| `FilesSizeKb` | {} KB | {} KB | F1a. |
+| `FilesSizeMb` | {} MB | {} MB | F1a. |
+| `FilesDecimalMark` | . | , | F1a. The decimal mark in a size: a comma in Spanish ("1,5 KB"). |
+| `FilesItemsOne` | 1 item | 1 elemento | F1a. A folder's size column. Two rows, since the catalog has no plurals; "0 elementos" uses the plural, as Spanish does. |
+| `FilesItemsMany` | {} items | {} elementos | F1a. |
+| `FilesEmpty` | This folder is empty. | Esta carpeta está vacía. | F1a. |
+| `FilesFolderFullNote` | This folder holds {} items, the most it can. | Esta carpeta tiene {} elementos, el máximo posible. | F1a. |
+| `FilesNewFolderName` | New folder | Carpeta nueva | F1a. The new folder's name; later ones are "Carpeta nueva 2", "Carpeta nueva 3". Adjective after the noun, the usual order. |
+| `FilesHintBrowse` | Enter opens. Backspace goes up. N makes a folder. F2 renames. | Enter abre. Retroceso sube. N crea una carpeta. F2 cambia el nombre. | F1a. "Retroceso" is the Backspace key's name; Enter, N and F2 stay. Present tense ("abre", "sube") for what each key does. |
+| `FilesHintBrowse2` | Del deletes. C copies. V pastes. | Supr elimina. C copia. V pega. | F1a. "Supr" is the Delete key's label on Spanish keyboards; C and V stay. |
+| `FilesRenameTitle` | Rename | Cambiar nombre | F1a. "Cambiar nombre" (not "Renombrar"), the usual menu wording. |
+| `FilesHintNaming` | Type a name. Enter to save, Esc to cancel. | Escribe un nombre. Enter para guardar, Esc para cancelar. | F1a. |
+| `FilesConfirmDeleteFile` | Delete this file? This can't be undone. | ¿Eliminar este archivo? No se puede deshacer. | F1a. "Eliminar" for delete throughout. No trash in the MVP, so it says it can't be undone. |
+| `FilesConfirmDeleteFolder` | Delete this empty folder? | ¿Eliminar esta carpeta vacía? | F1a. |
+| `FilesConfirmHint` | Enter to delete; any other key goes back. | Enter para eliminar; cualquier otra tecla vuelve atrás. | F1a. As PowerConfirmHint. |
+| `FilesNameEmpty` | A name can't be empty. | El nombre no puede estar vacío. | F1a. |
+| `FilesNameTooLong` | A name can be at most {} bytes long. | Un nombre puede tener como máximo {} bytes. | F1a. The limit is in bytes (47), as NeoFS counts it; a name in accented letters reaches it sooner. |
+| `FilesNameSlash` | A name can't contain /. | Un nombre no puede contener /. | F1a. |
+| `FilesNameControl` | A name can't contain control characters. | Un nombre no puede contener caracteres de control. | F1a. |
+| `FilesNameDot` | A name can't be . or .. | Un nombre no puede ser . ni .. | F1a. Ends without a period after "..", which is the name itself. |
+| `FilesErrStale` | That folder moved or was removed. This is the nearest one above it. | Esa carpeta se movió o se eliminó. Esta es la más cercana por encima. | F1a. Shown after Files falls back to an ancestor (Muse's path-binding case). "la más cercana por encima": the nearest folder above. |
+| `FilesErrExists` | Something here already has that name. | Ya hay algo aquí con ese nombre. | F1a. |
+| `FilesErrNotEmpty` | That folder isn't empty. Empty it first. | Esa carpeta no está vacía. Vacíala primero. | F1a. "Vacíala primero": empty it (the folder) first. |
+| `FilesErrNoSpace` | There isn't enough space on the disk. | No hay espacio suficiente en el disco. | F1a. |
+| `FilesErrRefused` | That isn't allowed here. | Eso no está permitido aquí. | F1a. |
+| `FilesErrFolderFull` | This folder is full: {} items at most. | Esta carpeta está llena: {} elementos como máximo. | F1a. |
+| `FilesErrNotFound` | That item is gone; the list is up to date now. | Ese elemento ya no está; la lista ya está al día. | F1a. |
+| `FilesErrBusy` | The system needs that item, so it stays. | El sistema necesita ese elemento, así que se queda. | F1a. |
+| `FilesErrRetry` | The disk was busy. Try again. | El disco estaba ocupado. Inténtalo de nuevo. | F1a. |
+| `FilesErrIo` | The disk couldn't do that. | El disco no pudo hacerlo. | F1a. |
+| `FilesErrInvalid` | That can't be done here; the disk may be full. | Eso no se puede hacer aquí; puede que el disco esté lleno. | F1a. F0 reports no space, a folder too deep and a bad move with one error; the message names the likely one. |
+| `FilesErrOther` | That didn't work (error {}). | No funcionó (error {}). | F1a. `(error -38)` stays; only the words are translated. |
+| `FilesRootUnavailable` | Files can't read its folders right now. | Archivos no puede leer sus carpetas ahora. | F1a. |
+| `FilesCopied` | Copied. Open a folder and paste it there. | Copiado. Abre una carpeta y pégalo ahí. | F1a. |
+| `FilesCopyTooBig` | Only files up to {} KB copy for now. Nothing was copied. | Por ahora solo se copian archivos de hasta {} KB. No se copió nada. | F1a. The MVP's 32 KB copy limit. |
+| `FilesCopyNotFile` | Only files copy for now, not folders. | Por ahora solo se copian archivos, no carpetas. | F1a. |
+| `FilesPasted` | Pasted. | Pegado. | F1a. |
+| `FilesNothingToPaste` | Copy a file first. | Copia un archivo primero. | F1a. |
+| `FilesNoApp` | No app opens this. | Ninguna app abre esto. | F1a. "app" stays, as in PowerWarning. |
+| `FilesModelArthur` | Models are Arthur's; no app opens them. | Los modelos son de Arthur; ninguna app los abre. | F1a. Models are Arthur's (`.neom`). |

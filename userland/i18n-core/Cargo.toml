@@ -6,6 +6,11 @@ edition.workspace = true
 license.workspace = true
 description = "F11 S6a: the message catalog (ids, the English and Spanish tables, the fallback lookup); no_std, nothing links it yet"
 
+[features]
+# F1a: the Files app's catalog (`i18n_core::files`). Only `files-core` turns
+# it on; off, the crate is the main catalog alone, as the image builds it.
+files = []
+
 [dependencies]
 
 [dev-dependencies]
