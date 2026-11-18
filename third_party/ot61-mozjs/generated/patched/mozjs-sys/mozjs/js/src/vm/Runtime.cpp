@@ -60,7 +60,7 @@ JS::FilenameValidationCallback js::gFilenameValidationCallback = nullptr;
 
 namespace js {
 
-#if !(defined(__wasi__) || defined(__neoplutarch__))
+#ifndef __wasi__
 bool gCanUseExtraThreads = true;
 #else
 bool gCanUseExtraThreads = false;
@@ -68,6 +68,15 @@ bool gCanUseExtraThreads = false;
 }  // namespace js
 
 void js::DisableExtraThreads() { gCanUseExtraThreads = false; }
+
+#ifdef __neoplutarch__
+// OT-61 C3c-2: the helper-thread kill-switch, as a C symbol the embedding can
+// reach without a bindings change. Called before the first JSRuntime is made,
+// it leaves the process in C3c-1's configuration: no helper thread pool.
+extern "C" JS_PUBLIC_API void neo_js_disable_extra_threads() {
+  js::DisableExtraThreads();
+}
+#endif
 
 const JSSecurityCallbacks js::NullSecurityCallbacks = {};
 

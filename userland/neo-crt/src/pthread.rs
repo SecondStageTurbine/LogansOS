@@ -21,13 +21,14 @@
 //! rwlocks; and the attribute calls they make.
 
 use core::ffi::{c_char, c_int, c_void};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
 
 use crate::seqcond::SeqCond;
+use crate::thread_record::ThreadRecord;
 use crate::{Timespec, monotonic_epoch};
 
 // musl's values (include/bits/errno.h, include/pthread.h, include/time.h).
@@ -111,7 +112,14 @@ const ERANGE: c_int = 34;
 
 std::thread_local! {
     static SELF: RefCell<Option<Arc<PThread>>> = const { RefCell::new(None) };
+    /// Whether this thread is one `pthread_create` made (C3c-2's record
+    /// counts only those threads' condvar waits).
+    static OURS: Cell<bool> = const { Cell::new(false) };
 }
+
+/// OT-61 C3c-2: threads made, exited and joined, and their condvar wakes
+/// (`thread_record.rs`).
+pub(crate) static THREADS: ThreadRecord = ThreadRecord::new();
 
 type StartFn = unsafe extern "C" fn(*mut c_void) -> *mut c_void;
 
@@ -154,14 +162,17 @@ pub unsafe extern "C" fn pthread_create(
         }
         let me = lock(&slot2).take();
         SELF.with(|s| *s.borrow_mut() = me);
+        OURS.with(|o| o.set(true));
         let ret = unsafe { start(arg as *mut c_void) } as usize;
         crate::pthread::run_key_destructors();
+        THREADS.exited();
         ret
     });
     let handle = match spawned {
         Ok(h) => h,
         Err(_) => return EAGAIN,
     };
+    THREADS.created();
     let rec = Arc::new(PThread {
         id: handle.thread().id(),
         handle: Mutex::new(Some(handle)),
@@ -197,6 +208,7 @@ pub unsafe extern "C" fn pthread_join(t: *const PThread, ret: *mut *mut c_void) 
         return EINVAL; // detached, or already joined
     };
     let v = h.join().unwrap_or(0);
+    THREADS.joined();
     if !ret.is_null() {
         unsafe { ret.write(v as *mut c_void) };
     }
@@ -591,6 +603,9 @@ unsafe fn cond_wait(c: *mut PthreadCond, m: *mut PthreadMutex, until: Option<Ins
         Ok(t) => t,
         Err(r) => return r,
     };
+    // `try_with`: a key destructor can wait on a condvar after this thread's
+    // std TLS is gone; such a wait just isn't counted.
+    THREADS.cond_returned(OURS.try_with(Cell::get).unwrap_or(false), timed_out);
     let r = unsafe { pthread_mutex_lock(m) };
     if r != 0 {
         return r;
