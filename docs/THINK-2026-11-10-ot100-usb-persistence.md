@@ -315,6 +315,10 @@ Under a new `usb-persistence` feature (it implies `usb-storage-write` and `neofs
    identified boot device is never mounted read-write. LogansOS volumes on internal disks (an installed system) keep
    today's selection, so an installed LogansOS still mounts its own volume read-write. On the Zenbook there is none
    (Windows only), so the statement there is unconditional: nothing but the boot stick's area is ever writable.
+   **Amended (PM ruling on Chad's relay-411 F4, 2026-11-12; built in #110 at `63fc824b`):** under `usb-persistence`,
+   a volume mounts read-write **only if it is on the identified boot device**, whatever its bus. An installed system
+   boots from its internal disk, so that disk is its boot device and still mounts read-write; a stick boot never
+   writes an internal disk, LogansOS partition or not. With the feature off, today's selection is unchanged.
 4. **`xtask vm-image` always builds without `--persist-mib`**, and refuses a persistent ISO as its boot disk (F5),
    so `check_vm_layout`, `check_one_disk` and the installer's invariants keep holding. A unit test pins that refusal.
 

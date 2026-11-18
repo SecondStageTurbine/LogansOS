@@ -41,7 +41,7 @@ Notes:
 
 ## Status
 
-**As of 2026-11-08.** The work runs in phases (the ledger is `docs/bible.md` Article 13): **0–4** the classic kernel
+**As of 2026-11-18.** The work runs in phases (the ledger is `docs/bible.md` Article 13): **0–4** the classic kernel
 (boot, memory, scheduling, SMP, capabilities, the NeoFS filesystem, networking); **5–7** the AI subsystem; **7.5**
 connectivity; **8** Arthur and the userland, which is active now. Where the AI substrate stands:
 - **Phase 6** brought a kernel-managed `accel` driver class up on a real Intel UHD 630 GPU.
@@ -68,23 +68,30 @@ Releases are tiered (`Plans/DECISION-2026-10-27-release-tiers-mvp.md`):
   - Arthur answers. "What's 2+2?" went from ~57 s to ~1.2 s of compute across the A6→A9 images, through HWP, a
     prebuilt binary vocabulary and parallel attention. (The binary vocabulary is the same full vocabulary, encoded so
     it needs no parsing at boot. It's lossless, and a host test proves it token-for-token identical to the text one.)
-  - A block **write guard** makes it impossible for LogansOS to write the laptop's internal Windows disk (#83, #85, #88).
+  - A block **write guard** makes it impossible for LogansOS to write the laptop's internal Windows disk (private-repo PRs #83, #85, #88).
 - **On the OptiPlex 7080:**
   - a real DHCP lease over USB-Ethernet on a product boot;
   - NeoFS persistence across a power cycle;
   - the Gen9.5 GPU running AI ops.
 - **In the VM preview:** login with a password and a lock screen, the clock in your time zone (`timezone` in Home),
-  key repeat, Arthur answering "what time is it" from the clock, and Shut down and Restart arriving now (OT-90).
+  key repeat, Arthur answering "what time is it" from the clock, Shut down and Restart (OT-90), the first-boot
+  setup menu (language, keyboard, network, time zone; English and Spanish), a terminal window running `neo-shell`,
+  and the first web page drawn in a LogansOS window (Servo layout and WebRender, no script yet).
 - **In VMs only:** the installer (OT-87), behind the off-by-default `installer` feature. It installs to a blank disk
   that then boots on its own with Arthur's model loading from it (GPT and a FAT32 ESP, a power-cut-safe W0–W6 state
   machine, a one-shot install claim past the write guard).
 
 **What's next:**
-- **A first-boot setup menu**, Ubuntu-style ("Try or Install"): its design is merged (#64) and step 1 is in review.
-- **The browser ladder (OT-61):** the C/C++ runtime, the rendering layer (SWGL) and POSIX threads are on `main`; Servo's
-  page layout, without script, is running in tests; next is drawing a first static page to the screen, then script.
-- **Terminal, file manager and settings apps** (surveyed; the terminal's pipes are landing).
-- **Not started:** printing (post-1.0) and a document editor (MVP; a design comes first).
+- **The MVP app path**, one window at a time first (J.c., `Plans/DECISION-2026-11-11-one-window-first.md`):
+  launching apps from the Spine and Home (A2, in review), then the Files app (F1; its directory operations F0 are on
+  `main`, and its core is in review), then the document editor (E2; its text engine E1 is on `main`). Side-by-side
+  windows come after the editor.
+- **Persistence on the boot stick** (OT-100, Tails-style, never the internal drive): the USB write path is on `main`;
+  the persistence area and its mount are in review; then the boot log and the 0.1 showcase on the Zenbook.
+- **The browser ladder (OT-61):** the first static page is on screen; SpiderMonkey builds for LogansOS and runs a
+  smoke test; its helper threads and crash containment are in review. Script in the page comes next.
+- **Not started:** printing (post-1.0), and the setup menu's "Try or Install" step (it waits on the installer's
+  next rung).
 
 The release ledger is `Plans/LEDGER-2026-07-29-logansos-release-ledger.md`. Open obligations are in
 `docs/OPEN-THREADS.md` and `docs/complexity-governance.md`. Feedback from testing the preview is tracked in
@@ -92,18 +99,22 @@ The release ledger is `Plans/LEDGER-2026-07-29-logansos-release-ledger.md`. Open
 
 ### Recent activity
 
+- **2026-11-08/13: the setup menu, the terminal and the first page.** The setup menu S3–S6b (time zone, network,
+  keyboard layouts, English and Spanish), the terminal window, NeoFS directory operations, the first web page in a
+  window, SpiderMonkey's product build, the USB write path for persistence, and Arthur moved to Q8_0. The full list
+  by PR is the catch-up at the end of `Plans/LEDGER-2026-07-29-logansos-release-ledger.md`.
 - **2026-11-02/08: J.c.'s preview feedback, fixed and shipped in two previews.** The clock in your time zone, key
   repeat, "Incorrect password. Try again.", Shift punctuation and the keypad, Arthur telling the time
   (`Plans/FEEDBACK-2026-11-02-preview.md`).
 - **2026-11-01/03: a tiered CI gate for the free tier.** A quick tier on every PR, the full tier on each landing batch (OT-58, `docs/THINK-2026-11-01-ot58-tiered-gate.md`).
 - **2026-10-27/28: the reviews earn their keep.** About 20 changes merged under "merge on green, review after"; the
   post-merge reviews found real defects no green run could, including a NeoFS crash-consistency bug checked against
-  56,470 power-cut cases (#180), and twice a second model family broke a pass the first had given (Muse passed,
+  56,470 power-cut cases (private-repo #180), and twice a second model family broke a pass the first had given (Muse passed,
   Janus broke it). See `docs/concurrency-pitfalls.md` CP-87 to CP-92.
 - **2026-10-26/28: the installer, rung by rung** (OT-87, R1 to R4.3; Muse's security review of the writes: PASS).
 - **2026-10-21/25: the Zenbook S14 becomes the bare-metal target** (x2APIC, xHCI and i8042 input, an I2C-HID touchpad, RTL8125, a boot-time model preload).
 - **2026-10-18/21: the Atrium desktop**, capability-native: no client can name, see or touch another's window.
-- **2026-10-16/20: ring-3 hardening** (CP-38 to CP-50) **and Arthur's real model** as a hash-pinned boot module (#70, #71, #74).
+- **2026-10-16/20: ring-3 hardening** (CP-38 to CP-50) **and Arthur's real model** as a hash-pinned boot module (private-repo #70, #71, #74).
 
 <details>
 <summary>Earlier activity (2026-08-11 and before)</summary>
@@ -198,7 +209,11 @@ These run in userspace:
 - `neo-atrium`, the desktop's design language and scene.
 - `neo-text`, text layout.
 - `neo-arthur`, the assistant.
-- `neo-shell`.
+- `neo-shell`, and `neo-terminal`, the terminal window it runs in (on `neo-term-core`).
+- The setup menu, login and settings logic (`setup-core`, `login-core`, `settings-core`, `i18n-core`).
+- `neo-edit-core`, the editor's text engine (not yet in an app).
+- The browser's processes and libraries: `browser-app`, `fetch-broker`, `neo-static-page`, `neo-layout-dom`, and
+  `neo-crt`, the C runtime SpiderMonkey builds on.
 - `neo-worker`, which also plays the Lens and other roles.
 - `libneo`, the syscall, threading and sync library.
 - `vault-core`, which holds secrets.
@@ -211,9 +226,9 @@ These run in userspace:
 
 **What's still missing:**
 - an installer you can reach from the desktop (the engine exists, VM-only, and its UI is in progress);
-- a first-boot setup menu (designed; step 1 in review);
-- terminal, file manager and settings apps (surveyed);
-- a document editor;
+- the Files app (its core is in review) and the Settings app;
+- the document editor app (its text engine exists);
+- launching apps from the Spine and Home (in review);
 - printing.
 
 ### Is this a personal project or intended for deployment?
