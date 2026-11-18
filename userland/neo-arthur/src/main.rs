@@ -279,6 +279,7 @@ const QWEN_05B_ALIASES: &[&str] = &[
     "0.5b",
     "qwen2.5-0.5b",
     "qwen2.5-0.5b-instruct",
+    // The Q4 spelling is still accepted as a name for the same 0.5B (now Q8_0, #90).
     "qwen2.5-0.5b-q4_k_m",
 ];
 #[cfg(all(
@@ -639,7 +640,7 @@ fn run() -> i32 {
         log_footer_model(&footer);
         showcase.set_footer(footer);
         stage_b_log_line(
-            b"SHOWCASE footprint discriminator=model-485MB-plus-compositor source=qwen2.5-0.5b",
+            b"SHOWCASE footprint discriminator=model-plus-compositor source=qwen2.5-0.5b",
         );
         let code = run_arthur_compositor(
             &mut showcase,

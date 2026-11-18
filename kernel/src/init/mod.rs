@@ -10,9 +10,5 @@
 //! per-syscall initialization (none exists; syscalls are stateless from
 //! the kernel's perspective).
 
-#[cfg(not(feature = "boot-eth0"))]
-pub mod boot_frame;
-#[cfg(feature = "boot-eth0")]
-#[path = "boot_frame_eth0.rs"]
 pub mod boot_frame;
 mod boot_logo;

@@ -108,8 +108,16 @@ fn draw_diagnostic_feed(w: usize, h: usize) {
 
 /// Status line: the line that closes the boot sequence and lives there
 /// until Phase 1 replaces this with a real login prompt.
+///
+/// With `boot-eth0` the line reports the wired interface instead (OT-76: this
+/// used to be a whole forked file, `boot_frame_eth0.rs`, for these few lines).
 fn draw_status_line(w: usize, h: usize) {
+    #[cfg(not(feature = "boot-eth0"))]
     let status = "the world is listening.";
+    #[cfg(feature = "boot-eth0")]
+    let status_buf = boot_eth0_status_line();
+    #[cfg(feature = "boot-eth0")]
+    let status = status_buf.as_str();
     let pixel_width = status.len() * 8;
     let x = w.saturating_sub(pixel_width) / 2;
     let y = h.saturating_sub(60);
@@ -124,4 +132,11 @@ fn wordmark_title_y(h: usize) -> usize {
     default_y
         .max(min_logo_clearance)
         .min(max_text_clearance.max(default_y))
+}
+
+#[cfg(feature = "boot-eth0")]
+fn boot_eth0_status_line() -> alloc::string::String {
+    let mut line = alloc::string::String::new();
+    crate::drivers::usb::boot_eth0::write_status_line(&mut line);
+    line
 }
